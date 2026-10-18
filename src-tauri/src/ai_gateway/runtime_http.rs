@@ -526,6 +526,11 @@ pub(in crate::ai_gateway) struct ForwardCapture {
     /// The served candidate's resolved upstream base URL, so a changed endpoint
     /// invalidates a retained continuation preference.
     pub(in crate::ai_gateway) endpoint: String,
+    /// Caller-protocol tool-call identities observed in the successfully
+    /// delivered response, in arrival order. Transport-only: it feeds the
+    /// same-turn continuation preference and never reaches a response, the usage
+    /// log or a command payload.
+    pub(in crate::ai_gateway) served_tool_ids: Vec<String>,
 }
 
 impl ForwardCapture {
@@ -2077,6 +2082,14 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         // and is finished before health settlement and persistence so the
         // whole-attempt window excludes downstream and bookkeeping time.
         let mut output_timing = OutputTimingObserver::new(upstream_protocol, started);
+        // Caller-protocol tool identities observed incrementally from the bytes
+        // actually written to the caller, so a completed pool stream can publish
+        // or close the same-turn continuation preference without buffering the
+        // answer. Only a prepared pool candidate needs this evidence.
+        let mut pool_tools = provider
+            .pool_candidate
+            .is_some()
+            .then(|| pool_context_hold::StreamingToolObserver::new(path));
         let (
             class,
             retryable,
@@ -2320,6 +2333,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         vec![first.to_vec()]
                     };
                     if stream_error.is_none() {
+                        if let Some(observer) = pool_tools.as_mut() {
+                            for output in &first_output {
+                                observer.feed(output);
+                            }
+                        }
                         for output in &first_output {
                             if let Err(error) = writer.write_all(output).await {
                                 health.apply();
@@ -2469,6 +2487,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 if stream_error.is_some() {
                                     continue;
                                 }
+                                if let Some(observer) = pool_tools.as_mut() {
+                                    for item in &output {
+                                        observer.feed(item);
+                                    }
+                                }
                                 for item in &output {
                                     if writer.write_all(item).await.is_err() {
                                         health.apply();
@@ -2588,6 +2611,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 // completion marker (REQ-004).
                                 if let Some(mut converter) = converted_sse.take() {
                                     if let Ok(outputs) = converter.finish() {
+                                        if let Some(observer) = pool_tools.as_mut() {
+                                            for output in &outputs {
+                                                observer.feed(output);
+                                            }
+                                        }
                                         for output in &outputs {
                                             let _ = writer.write_all(output).await;
                                         }
@@ -2600,6 +2628,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 if let Some(mut converter) = pool_sse.take() {
                                     let finished = converter.finish();
                                     if let Ok(outputs) = &finished {
+                                        if let Some(observer) = pool_tools.as_mut() {
+                                            for output in outputs {
+                                                observer.feed(output);
+                                            }
+                                        }
                                         for output in outputs {
                                             let _ = writer.write_all(output).await;
                                         }
@@ -2720,6 +2753,17 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                     first_token_ms,
                                     avg_tps,
                                 ));
+                                // A completed, delivered stream is the served
+                                // success of this pool candidate: publish its
+                                // exact identity and the caller-protocol tool
+                                // identities observed on the client stream. A
+                                // failed, incomplete or cancelled stream never
+                                // reaches here and so never publishes.
+                                if let Some(observer) = pool_tools.take() {
+                                    capture.pool_candidate = provider.pool_candidate.clone();
+                                    capture.endpoint = provider.base_url.clone();
+                                    capture.served_tool_ids = observer.finish();
+                                }
                                 return Ok(capture);
                             }
                         }
@@ -3508,10 +3552,6 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     // and borrowed by the forwarding future: dropping an in-flight attempt keeps
     // every entry that already completed (REQ-001).
     let mut attempts: Vec<AttemptLog> = Vec::new();
-    // Tool identities of a successfully delivered caller-protocol non-streaming
-    // response, captured before the bytes are written so a completed pool
-    // outcome can publish or close the same-turn continuation preference.
-    let mut served_tool_ids: Vec<String> = Vec::new();
     let forward = async {
         if wants_stream {
             if is_messages_path(path) {
@@ -3555,10 +3595,10 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             )
             .await;
             let status = response.status;
-            let capture = response.capture.take().unwrap_or_default();
+            let mut capture = response.capture.take().unwrap_or_default();
             if is_pool && capture.result() == UsageResult::Success {
                 if let Ok(value) = serde_json::from_slice::<Value>(&response.body) {
-                    served_tool_ids = pool_context_hold::tool_identities(path, &value);
+                    capture.served_tool_ids = pool_context_hold::tool_identities(path, &value);
                 }
             }
             write_response(&mut writer, response).await?;
@@ -3623,7 +3663,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                         history,
                         identity,
                         &capture.endpoint,
-                        &served_tool_ids,
+                        &capture.served_tool_ids,
                     );
                 }
             }

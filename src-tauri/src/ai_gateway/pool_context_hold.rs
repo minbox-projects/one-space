@@ -108,6 +108,30 @@ pub(in crate::ai_gateway) struct HoldScope {
     ingress: &'static str,
 }
 
+impl HoldScope {
+    /// Build one hold scope from its already-resolved parts. Every field
+    /// participates in equality and hashing, so a scope can only match an
+    /// identical key identity, session, supplied thread, pool, alias and ingress
+    /// protocol.
+    pub(in crate::ai_gateway) fn new(
+        key_id: String,
+        session: String,
+        thread: Option<String>,
+        pool_id: String,
+        alias: String,
+        ingress: &'static str,
+    ) -> Self {
+        Self {
+            key_id,
+            session,
+            thread,
+            pool_id,
+            alias,
+            ingress,
+        }
+    }
+}
+
 /// The caller-protocol request facts a continuation is compared against: the
 /// caller's own history plus the instruction/tool context it was sent with.
 pub(in crate::ai_gateway) struct CallerHistory {
@@ -144,7 +168,7 @@ impl CallerHistory {
 /// One completed hold: the request snapshot, instruction/tool context and tool
 /// identities that a later continuation must match, plus the exact candidate
 /// identity and resolved endpoint that delivered it.
-struct HoldEntry {
+pub(in crate::ai_gateway) struct HoldEntry {
     history: Value,
     context: Value,
     tool_ids: Vec<String>,
@@ -157,17 +181,22 @@ struct HoldEntry {
 /// Process-memory hold table plus the per-scope latest-admission map. Nothing is
 /// ever written to disk, emitted to logs or read back after a restart, so a new
 /// process begins without holds.
+///
+/// The completed entries and the retained total are reachable within the gateway
+/// so an isolated store can be driven with an explicit monotonic clock for
+/// deterministic expiry, capacity and payload-boundary checks; the production
+/// wrappers always use the process-global store and `Instant::now()`.
 #[derive(Default)]
-struct HoldStore {
-    entries: HashMap<HoldScope, HoldEntry>,
+pub(in crate::ai_gateway) struct HoldStore {
+    pub(in crate::ai_gateway) entries: HashMap<HoldScope, HoldEntry>,
     admissions: HashMap<HoldScope, u64>,
     next_admission: u64,
-    total_bytes: usize,
+    pub(in crate::ai_gateway) total_bytes: usize,
 }
 
 impl HoldStore {
     /// Drop every hold idle for strictly more than the timeout.
-    fn prune_expired(&mut self, now: Instant) {
+    pub(in crate::ai_gateway) fn prune_expired(&mut self, now: Instant) {
         let mut removed = 0usize;
         self.entries.retain(|_, entry| {
             let live = now.duration_since(entry.last_used) <= HOLD_IDLE_TIMEOUT;
@@ -179,8 +208,11 @@ impl HoldStore {
         self.total_bytes = self.total_bytes.saturating_sub(removed);
     }
 
-    /// Admit one request as the newest turn of its scope and return its token.
-    fn admit(&mut self, scope: &HoldScope) -> u64 {
+    /// Admit one request as the newest turn of its scope and return its token,
+    /// dropping holds already idle for longer than the timeout on the same
+    /// explicit clock.
+    pub(in crate::ai_gateway) fn admit(&mut self, scope: &HoldScope, now: Instant) -> u64 {
+        self.prune_expired(now);
         let token = self.next_admission;
         self.next_admission = self.next_admission.wrapping_add(1);
         self.admissions.insert(scope.clone(), token);
@@ -233,6 +265,95 @@ impl HoldStore {
             }
         }
     }
+
+    /// Reorder a currently healthy held candidate to the front of `ordered` when
+    /// the incoming request is a recognized continuation of this scope, using the
+    /// explicit monotonic `now`, and preserve the relative order of the remaining
+    /// candidates. The list is returned unchanged for a missing, expired,
+    /// non-matching or no-longer-eligible hold, so a hold never adds, drops,
+    /// widens or promotes an unavailable candidate.
+    pub(in crate::ai_gateway) fn prefer(
+        &mut self,
+        config: &GatewayConfig,
+        scope: &HoldScope,
+        caller: &CallerHistory,
+        ordered: &mut Vec<GatewayUpstreamProvider>,
+        now: Instant,
+    ) {
+        if ordered.is_empty() {
+            return;
+        }
+        self.prune_expired(now);
+        let Some(entry) = self.entries.get(scope) else {
+            return;
+        };
+        let identity = entry.identity.clone();
+        let endpoint = entry.endpoint.clone();
+        if !is_continuation(&entry.history, &entry.context, &entry.tool_ids, caller) {
+            return;
+        }
+        if !candidate_is_currently_healthy(config, &identity, &endpoint) {
+            return;
+        }
+        let Some(index) = ordered
+            .iter()
+            .position(|provider| matches_candidate(provider, &identity, &endpoint))
+        else {
+            return;
+        };
+        if index != 0 {
+            let candidate = ordered.remove(index);
+            ordered.insert(0, candidate);
+        }
+        // Refresh recency only after a real continuation match, so unrelated
+        // scope traffic never extends an idle hold's lifetime.
+        if let Some(entry) = self.entries.get_mut(scope) {
+            entry.last_used = now;
+        }
+    }
+
+    /// Publish, replace or close the continuation preference after a delivered
+    /// pool outcome, using the explicit monotonic `now`. The call is a no-op
+    /// unless the caller holds the latest admission token of its scope, so an
+    /// older overlapping request can never publish over a newer admitted turn. A
+    /// response with no recognizable tool identity closes the hold, and an
+    /// over-budget payload is never retained.
+    pub(in crate::ai_gateway) fn record(
+        &mut self,
+        scope: &HoldScope,
+        admission: u64,
+        caller: &CallerHistory,
+        identity: &PoolCandidateIdentity,
+        endpoint: &str,
+        tool_ids: &[String],
+        now: Instant,
+    ) {
+        self.prune_expired(now);
+        if self.admissions.get(scope).copied() != Some(admission) {
+            return;
+        }
+        if tool_ids.is_empty() {
+            self.remove(scope);
+            return;
+        }
+        let identity = CandidateIdentity::from_pool_candidate(identity);
+        let bytes = entry_bytes(caller, &identity, endpoint, tool_ids);
+        if bytes > HOLD_MAX_ENTRY_BYTES {
+            // Over-budget evidence cannot be retained, and no stale hold is kept.
+            self.remove(scope);
+            return;
+        }
+        let entry = HoldEntry {
+            history: caller.history.clone(),
+            context: caller.context.clone(),
+            tool_ids: tool_ids.to_vec(),
+            identity,
+            endpoint: endpoint.to_string(),
+            last_used: now,
+            bytes,
+        };
+        self.insert_completed(scope.clone(), entry);
+    }
 }
 
 static POOL_HOLDS: OnceLock<Mutex<HoldStore>> = OnceLock::new();
@@ -268,14 +389,14 @@ pub(in crate::ai_gateway) fn resolve_scope(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    Some(HoldScope {
+    Some(HoldScope::new(
         key_id,
         session,
         thread,
-        pool_id: pool.id.trim().to_string(),
-        alias: alias.to_string(),
-        ingress: protocol.endpoint_path(),
-    })
+        pool.id.trim().to_string(),
+        alias.to_string(),
+        protocol.endpoint_path(),
+    ))
 }
 
 /// The identity of the first configured enabled key that matches either accepted
@@ -304,7 +425,7 @@ pub(in crate::ai_gateway) fn admit(scope: &HoldScope) -> u64 {
     hold_store()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .admit(scope)
+        .admit(scope, Instant::now())
 }
 
 /// Reorder a currently healthy held candidate to the front of `ordered` when the
@@ -321,37 +442,10 @@ pub(in crate::ai_gateway) fn prefer(
     if ordered.is_empty() {
         return;
     }
-    let now = Instant::now();
     let mut store = hold_store()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    store.prune_expired(now);
-    let Some(entry) = store.entries.get(scope) else {
-        return;
-    };
-    let identity = entry.identity.clone();
-    let endpoint = entry.endpoint.clone();
-    if !is_continuation(&entry.history, &entry.context, &entry.tool_ids, caller) {
-        return;
-    }
-    if !candidate_is_currently_healthy(config, &identity, &endpoint) {
-        return;
-    }
-    let Some(index) = ordered
-        .iter()
-        .position(|provider| matches_candidate(provider, &identity, &endpoint))
-    else {
-        return;
-    };
-    if index != 0 {
-        let candidate = ordered.remove(index);
-        ordered.insert(0, candidate);
-    }
-    // Refresh recency only after a real continuation match, so unrelated scope
-    // traffic never extends an idle hold's lifetime.
-    if let Some(entry) = store.entries.get_mut(scope) {
-        entry.last_used = now;
-    }
+    store.prefer(config, scope, caller, ordered, Instant::now());
 }
 
 /// Publish, replace or close the continuation preference after a delivered pool
@@ -367,35 +461,18 @@ pub(in crate::ai_gateway) fn record(
     endpoint: &str,
     tool_ids: &[String],
 ) {
-    let now = Instant::now();
     let mut store = hold_store()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    store.prune_expired(now);
-    if store.admissions.get(scope).copied() != Some(admission) {
-        return;
-    }
-    if tool_ids.is_empty() {
-        store.remove(scope);
-        return;
-    }
-    let identity = CandidateIdentity::from_pool_candidate(identity);
-    let bytes = entry_bytes(caller, &identity, endpoint, tool_ids);
-    if bytes > HOLD_MAX_ENTRY_BYTES {
-        // Over-budget evidence cannot be retained, and no stale hold is kept.
-        store.remove(scope);
-        return;
-    }
-    let entry = HoldEntry {
-        history: caller.history.clone(),
-        context: caller.context.clone(),
-        tool_ids: tool_ids.to_vec(),
+    store.record(
+        scope,
+        admission,
+        caller,
         identity,
-        endpoint: endpoint.to_string(),
-        last_used: now,
-        bytes,
-    };
-    store.insert_completed(scope.clone(), entry);
+        endpoint,
+        tool_ids,
+        Instant::now(),
+    );
 }
 
 /// Tool-call identities of a successfully delivered caller-protocol response,
@@ -435,6 +512,133 @@ pub(in crate::ai_gateway) fn tool_identities(path: &str, body: &Value) -> Vec<St
         }
     }
     ids
+}
+
+/// Upper bound on the partial SSE line retained while observing a caller
+/// stream. A single event that never fits is dropped rather than accumulated, so
+/// in-flight observation stays bounded like the completed store.
+const OBSERVER_MAX_LINE_BYTES: usize = 1024 * 1024;
+
+/// Incremental caller-protocol tool-identity observer for one forwarded stream.
+///
+/// It scans only the bytes the gateway writes to the caller, one SSE line at a
+/// time, and retains just the nonblank tool-call identities of the caller's own
+/// protocol: Chat `choices[].delta.tool_calls[].id` and Responses
+/// `function_call` items by `call_id`. Lines split across chunks are reassembled
+/// and both LF and CRLF boundaries are accepted. Comment, metadata, usage-only,
+/// `[DONE]` and error events carry no tool identity and are ignored, so a
+/// completed stream without a recognizable call yields no evidence. Only the
+/// current partial line is buffered, never the whole answer.
+pub(in crate::ai_gateway) struct StreamingToolObserver {
+    responses: bool,
+    pending: Vec<u8>,
+    discarding: bool,
+    ids: Vec<String>,
+}
+
+impl StreamingToolObserver {
+    pub(in crate::ai_gateway) fn new(path: &str) -> Self {
+        Self {
+            responses: path.split('?').next().unwrap_or(path) == "/v1/responses",
+            pending: Vec::new(),
+            discarding: false,
+            ids: Vec::new(),
+        }
+    }
+
+    /// Consume one client-facing output frame in arrival order.
+    pub(in crate::ai_gateway) fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if byte == b'\n' {
+                let mut line = std::mem::take(&mut self.pending);
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                if !self.discarding {
+                    self.observe_line(&line);
+                }
+                self.discarding = false;
+            } else if !self.discarding {
+                self.pending.push(byte);
+                if self.pending.len() > OBSERVER_MAX_LINE_BYTES {
+                    self.pending.clear();
+                    self.discarding = true;
+                }
+            }
+        }
+    }
+
+    /// Finish observation and return the deduplicated tool identities in arrival
+    /// order.
+    pub(in crate::ai_gateway) fn finish(mut self) -> Vec<String> {
+        if !self.discarding && !self.pending.is_empty() {
+            let mut line = std::mem::take(&mut self.pending);
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            self.observe_line(&line);
+        }
+        self.ids
+    }
+
+    fn observe_line(&mut self, line: &[u8]) {
+        let Ok(text) = std::str::from_utf8(line) else {
+            return;
+        };
+        let Some(data) = text.strip_prefix("data:") else {
+            return;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            return;
+        };
+        if self.responses {
+            if let Some(item) = value.get("item") {
+                if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                    if let Some(id) = nonblank(item.get("call_id")) {
+                        self.push(id);
+                    }
+                }
+            }
+            if let Some(output) = value
+                .get("response")
+                .and_then(|response| response.get("output"))
+                .and_then(Value::as_array)
+            {
+                for item in output {
+                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                        if let Some(id) = nonblank(item.get("call_id")) {
+                            self.push(id);
+                        }
+                    }
+                }
+            }
+        } else if let Some(choices) = value.get("choices").and_then(Value::as_array) {
+            for choice in choices {
+                let Some(calls) = choice
+                    .get("delta")
+                    .and_then(|delta| delta.get("tool_calls"))
+                    .and_then(Value::as_array)
+                else {
+                    continue;
+                };
+                for call in calls {
+                    if let Some(id) = nonblank(call.get("id")) {
+                        self.push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    fn push(&mut self, id: String) {
+        if !self.ids.iter().any(|existing| existing == &id) {
+            self.ids.push(id);
+        }
+    }
 }
 
 fn nonblank(value: Option<&Value>) -> Option<String> {

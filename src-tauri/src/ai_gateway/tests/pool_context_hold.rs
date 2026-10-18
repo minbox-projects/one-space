@@ -18,11 +18,19 @@ use super::{
     call_gateway, free_port, pool_key, pool_provider, spawn_mock_upstream, temp_home,
     write_raw_gateway_config, Captured, CapturedLog, MockReply,
 };
-use crate::ai_gateway::runtime_http::{start_server, stop_server};
-use crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION;
+use crate::ai_gateway::pool_context_hold::{CallerHistory, HoldScope, HoldStore};
+use crate::ai_gateway::runtime_http::{read_http_request, start_server, stop_server};
+use crate::ai_gateway::{
+    GatewayConfig, GatewayUpstreamProvider, PoolCandidateIdentity, UpstreamProtocol,
+    GATEWAY_CONFIG_SCHEMA_VERSION,
+};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Instant;
 
 /// Unique suffix per test so the process-global pool scheduler and any hold
 /// state never carry another test's pool/provider/alias identity.
@@ -1522,6 +1530,3052 @@ async fn an_oversized_history_still_forwards_with_normal_routing() {
         served.body.len() > 1_000_000,
         "the oversized history must be forwarded intact, got {} bytes",
         served.body.len()
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+// ---------------------------------------------------------------------------
+// Streaming behavior: local SSE builders, parsers and gated mock upstreams
+// ---------------------------------------------------------------------------
+
+/// One Chat SSE tool-call stream split across two writes, with a mix of LF and
+/// CRLF event boundaries and the terminal `data: [DONE]`. The first write ends
+/// in the middle of an event body, so it exercises incremental re-assembly.
+fn chat_sse_tool_call_chunks(call_id: &str) -> Vec<Vec<u8>> {
+    let first = json!({
+        "id": format!("chatcmpl-{call_id}"),
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "index": 0,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": ""}
+                }]
+            },
+            "finish_reason": Value::Null
+        }]
+    });
+    let second = json!({
+        "id": format!("chatcmpl-{call_id}"),
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{
+            "index": 0,
+            "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"city\":\"SF\"}"}}]},
+            "finish_reason": Value::Null
+        }]
+    });
+    let third = json!({
+        "id": format!("chatcmpl-{call_id}"),
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+    });
+    let full = format!("data: {first}\n\ndata: {second}\r\n\r\ndata: {third}\n\ndata: [DONE]\n\n");
+    let split = full.find("\"choices\"").expect("choices field present") + 3;
+    vec![
+        full.as_bytes()[..split].to_vec(),
+        full.as_bytes()[split..].to_vec(),
+    ]
+}
+
+/// The same Chat tool-call stream as a single buffer for upstreams where
+/// fragmentation is not the behavior under test.
+fn chat_sse_tool_call(call_id: &str) -> String {
+    chat_sse_tool_call_chunks(call_id)
+        .into_iter()
+        .map(|chunk| String::from_utf8(chunk).expect("ascii sse"))
+        .collect()
+}
+
+/// The first Chat tool-call event on its own, for a stream that deliberately
+/// never completes.
+fn first_chat_tool_event(call_id: &str) -> Vec<u8> {
+    let value = json!({
+        "id": format!("chatcmpl-{call_id}"),
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "index": 0,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": ""}
+                }]
+            },
+            "finish_reason": Value::Null
+        }]
+    });
+    format!("data: {value}\n\n").into_bytes()
+}
+
+/// A Chat SSE stream that ends with a plain assistant text answer and no tool
+/// call.
+fn chat_sse_plain(text: &str) -> String {
+    let body = json!({
+        "id": "chatcmpl-plain",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": Value::Null}]
+    });
+    let stop = json!({
+        "id": "chatcmpl-plain",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    });
+    format!("data: {body}\n\ndata: {stop}\n\ndata: [DONE]\n\n")
+}
+
+/// A Chat SSE stream whose only non-text events are a comment, a metadata event
+/// and a usage-only chunk: none of them may count as tool evidence.
+fn chat_sse_heartbeat_then_text() -> String {
+    let usage = json!({
+        "id": "chatcmpl-heartbeat",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1}
+    });
+    let metadata = json!({
+        "id": "chatcmpl-heartbeat",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [],
+        "metadata": {"provider": "mock", "region": "test"}
+    });
+    let text = json!({
+        "id": "chatcmpl-heartbeat",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": "ok"}, "finish_reason": Value::Null}]
+    });
+    let stop = json!({
+        "id": "chatcmpl-heartbeat",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    });
+    format!(
+        ": keep-alive\n\nevent: response.metadata\ndata: {metadata}\n\ndata: {usage}\n\ndata: {text}\n\ndata: {stop}\n\ndata: [DONE]\n\n"
+    )
+}
+
+/// A Responses SSE stream that announces one function call, streams its
+/// arguments and completes.
+fn responses_sse_tool_call(call_id: &str) -> String {
+    let item_id = format!("fc-{call_id}");
+    let response_id = format!("resp-{call_id}");
+    let event = |kind: &str, value: Value| format!("event: {kind}\ndata: {value}\n\n");
+    let mut stream = String::new();
+    stream.push_str(&event(
+        "response.created",
+        json!({"type": "response.created", "response": {"id": response_id.clone(), "status": "in_progress"}}),
+    ));
+    stream.push_str(&event(
+        "response.output_item.added",
+        json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "id": item_id.clone(),
+                "type": "function_call",
+                "call_id": call_id,
+                "name": "get_weather",
+                "arguments": "",
+                "status": "in_progress"
+            }
+        }),
+    ));
+    stream.push_str(&event(
+        "response.function_call_arguments.delta",
+        json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": item_id.clone(),
+            "output_index": 0,
+            "delta": "{\"city\":\"SF\"}"
+        }),
+    ));
+    stream.push_str(&event(
+        "response.output_item.done",
+        json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": item_id.clone(),
+                "type": "function_call",
+                "call_id": call_id,
+                "name": "get_weather",
+                "arguments": "{\"city\":\"SF\"}",
+                "status": "completed"
+            }
+        }),
+    ));
+    stream.push_str(&event(
+        "response.completed",
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": response_id,
+                "status": "completed",
+                "output": [{
+                    "id": item_id,
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"SF\"}",
+                    "status": "completed"
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }
+        }),
+    ));
+    stream
+}
+
+/// A plain non-streaming Chat completion body.
+fn chat_plain_body() -> Value {
+    json!({
+        "id": "chatcmpl-plain-ns",
+        "object": "chat.completion",
+        "model": "upstream",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    })
+}
+
+/// The JSON values of every `data:` line of a client-visible SSE body, ignoring
+/// the terminal `[DONE]` marker.
+fn client_sse_values(text: &str) -> Vec<Value> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim)
+        .filter(|data| !data.is_empty() && *data != "[DONE]")
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .collect()
+}
+
+/// Client-visible Chat tool-call identities of a streamed response.
+fn client_chat_tool_ids(text: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    for value in client_sse_values(text) {
+        let Some(choices) = value.get("choices").and_then(Value::as_array) else {
+            continue;
+        };
+        for choice in choices {
+            let Some(calls) = choice
+                .get("delta")
+                .and_then(|delta| delta.get("tool_calls"))
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for call in calls {
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    if !id.is_empty() {
+                        ids.push(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Client-visible Responses function-call identities of a streamed response.
+fn client_responses_call_ids(text: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(data.trim()) else {
+            continue;
+        };
+        if let Some(item) = value.get("item") {
+            if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+                if !id.is_empty() {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        if let Some(output) = value
+            .get("response")
+            .and_then(|response| response.get("output"))
+            .and_then(Value::as_array)
+        {
+            for item in output {
+                if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                    if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+                        if !id.is_empty() {
+                            ids.push(id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Whether a streamed response carried the ingress protocol's completion marker.
+fn client_stream_completed(path: &str, text: &str) -> bool {
+    if path == "/v1/responses" {
+        text.contains("response.completed")
+    } else {
+        text.contains("data: [DONE]")
+    }
+}
+
+/// Whether one forwarded request asked for streaming.
+fn request_wants_stream(captured: &Captured) -> bool {
+    parsed_body(captured)
+        .and_then(|value| value.get("stream").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+/// The first captured request matching a predicate.
+fn find_request<F>(log: &CapturedLog, predicate: F) -> Option<Captured>
+where
+    F: Fn(&Captured) -> bool,
+{
+    log.lock()
+        .expect("mock log")
+        .iter()
+        .find(|captured| predicate(captured))
+        .cloned()
+}
+
+/// A scripted local upstream reply.
+enum ScriptedReply {
+    /// Write SSE headers, then these chunks in order, one write each.
+    Sse(Vec<Vec<u8>>),
+    /// Write SSE headers and the first event, then hold the connection open until
+    /// the release signal, so the caller can observe a stream that began but
+    /// never finished.
+    HoldAfterFirst {
+        first: Vec<u8>,
+        release: Arc<tokio::sync::Notify>,
+    },
+    /// Write SSE headers, announce arrival, wait for the release signal, then
+    /// write every chunk and close. It holds a *successful* stream open so the
+    /// test can let it finish after a newer request.
+    HoldThenRelease {
+        arrived: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        chunks: Vec<Vec<u8>>,
+    },
+}
+
+/// A local upstream that records every request and answers it from a per-request
+/// script, allowing fragmented SSE writes and a deliberately held stream. Used
+/// only where the fixed `MockReply` variants cannot express the transport.
+async fn spawn_scripted_upstream<F>(script: F) -> (String, CapturedLog)
+where
+    F: Fn(usize, &Captured) -> ScriptedReply + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind scripted upstream");
+    let addr = listener.local_addr().expect("scripted upstream addr");
+    let log: CapturedLog = Arc::new(Mutex::new(Vec::new()));
+    let log_for_server = log.clone();
+    let script = Arc::new(script);
+    let counter = Arc::new(AtomicUsize::new(0));
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let log = log_for_server.clone();
+            let script = script.clone();
+            let counter = counter.clone();
+            tauri::async_runtime::spawn(async move {
+                let Ok(request) = read_http_request(&mut stream).await else {
+                    return;
+                };
+                let captured = Captured {
+                    method: request.method,
+                    path: request.path,
+                    headers: request.headers,
+                    body: request.body,
+                };
+                log.lock().expect("mock log").push(captured.clone());
+                let index = counter.fetch_add(1, Ordering::SeqCst);
+                match script(index, &captured) {
+                    ScriptedReply::Sse(chunks) => {
+                        let total: usize = chunks.iter().map(Vec::len).sum();
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {total}\r\nconnection: close\r\n\r\n"
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        for chunk in &chunks {
+                            let _ = stream.write_all(chunk).await;
+                            let _ = stream.flush().await;
+                        }
+                    }
+                    ScriptedReply::HoldAfterFirst { first, release } => {
+                        let header = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 1000000\r\nconnection: close\r\n\r\n";
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&first).await;
+                        let _ = stream.flush().await;
+                        release.notified().await;
+                    }
+                    ScriptedReply::HoldThenRelease {
+                        arrived,
+                        release,
+                        chunks,
+                    } => {
+                        let total: usize = chunks.iter().map(Vec::len).sum();
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {total}\r\nconnection: close\r\n\r\n"
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.flush().await;
+                        arrived.notify_one();
+                        release.notified().await;
+                        for chunk in &chunks {
+                            let _ = stream.write_all(chunk).await;
+                            let _ = stream.flush().await;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    (format!("http://{addr}"), log)
+}
+
+/// Send one streaming request over a raw socket and drop the connection once the
+/// response has started, so the gateway observes a mid-stream client disconnect
+/// rather than a pre-output cancellation.
+async fn raw_stream_then_disconnect(
+    port: u16,
+    path: &str,
+    auth: &str,
+    session: &str,
+    body: Value,
+    awaited: &str,
+) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect gateway");
+    let body = serde_json::to_vec(&body).expect("encode body");
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: application/json\r\nauthorization: {auth}\r\nx-opencode-session: {session}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write headers");
+    stream.write_all(&body).await.expect("write body");
+    stream.flush().await.expect("flush request");
+    let mut buffer = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut tmp))
+            .await
+            .expect("the gateway must begin streaming")
+            .expect("read from gateway");
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&tmp[..read]);
+        if String::from_utf8_lossy(&buffer).contains(awaited) {
+            break;
+        }
+    }
+    drop(stream);
+}
+
+// ---------------------------------------------------------------------------
+// Streaming continuity and failover (current behavior rotates away)
+// ---------------------------------------------------------------------------
+
+/// A streamed Chat tool chain must keep attempting the candidate that delivered
+/// the preceding tool call for both appended continuations, instead of advancing
+/// the weighted rotation. The upstream bytes are fragmented mid-line and mix LF
+/// and CRLF event boundaries.
+#[tokio::test]
+async fn streaming_chat_tool_chain_prefers_the_preceding_candidate() {
+    let _home = temp_home("pool-stream-chat-chain");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-chat-{tag}");
+    let session = format!("sess-stream-chat-{tag}");
+    let counter_a = Arc::new(AtomicUsize::new(0));
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_scripted_upstream(move |_index, _captured| {
+        let n = counter_a.fetch_add(1, Ordering::SeqCst) + 1;
+        ScriptedReply::Sse(chat_sse_tool_call_chunks(&format!("call_a_{n}")))
+    })
+    .await;
+    let (url_b, log_b) = spawn_scripted_upstream(move |_index, _captured| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        ScriptedReply::Sse(chat_sse_tool_call_chunks(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-chat-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let mut messages = vec![json!({"role": "user", "content": "weather?"})];
+    let mut call_ids: Vec<String> = Vec::new();
+    for round in 0..3 {
+        let body = json!({
+            "model": alias,
+            "messages": messages.clone(),
+            "tools": weather_tools(),
+            "stream": true,
+        });
+        let (status, text) = post_json(port, path, "Bearer local-key", Some(&session), None, body).await;
+        assert_eq!(status, 200, "round {round} must be served: {text}");
+        assert!(
+            text.contains(&format!("\"model\":\"{alias}\"")),
+            "round {round} must keep the public alias: {text}"
+        );
+        assert!(
+            client_stream_completed(path, &text),
+            "round {round} must end with the completion marker: {text}"
+        );
+        let ids = client_chat_tool_ids(&text);
+        let call_id = ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| panic!("round {round} must stream a tool call: {text}"));
+        call_ids.push(call_id.clone());
+        messages.push(json!({"role": "assistant", "content": null, "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}
+        }]}));
+        messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
+    }
+
+    for results in 1..=2usize {
+        let served_a = with_results(&log_a, results);
+        let served_b = with_results(&log_b, results);
+        assert!(
+            served_a.is_some(),
+            "streaming continuation {results} must attempt the preceding candidate: a={} b={}",
+            served_a.is_some(),
+            served_b.is_some()
+        );
+        assert!(
+            served_b.is_none(),
+            "streaming continuation {results} must not rotate to the sibling"
+        );
+    }
+
+    let continuation = with_results(&log_a, 1).expect("the first continuation must reach candidate A");
+    assert!(
+        String::from_utf8_lossy(&continuation.body).contains(&call_ids[0]),
+        "the forwarded continuation must retain the observed tool identity"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A streamed Responses function-call chain must keep attempting the candidate
+/// that delivered the preceding call for both appended continuations.
+#[tokio::test]
+async fn streaming_responses_tool_chain_prefers_the_preceding_candidate() {
+    let _home = temp_home("pool-stream-responses-chain");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-resp-{tag}");
+    let session = format!("sess-stream-resp-{tag}");
+    let counter_a = Arc::new(AtomicUsize::new(0));
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_mock_upstream(move |_| {
+        let n = counter_a.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(responses_sse_tool_call(&format!("call_a_{n}")))
+    })
+    .await;
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(responses_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "responses")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "responses")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-resp-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "responses", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "responses", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/responses";
+    let mut input = vec![json!({
+        "role": "user",
+        "content": [{"type": "input_text", "text": "weather?"}],
+    })];
+    for round in 0..3 {
+        let body = json!({"model": alias, "input": input.clone(), "stream": true});
+        let (status, text) = post_json(port, path, "Bearer local-key", Some(&session), None, body).await;
+        assert_eq!(status, 200, "round {round} must be served: {text}");
+        assert!(
+            client_stream_completed(path, &text),
+            "round {round} must complete with response.completed: {text}"
+        );
+        let ids = client_responses_call_ids(&text);
+        let call_id = ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| panic!("round {round} must expose a function call: {text}"));
+        input.push(json!({
+            "type": "function_call",
+            "call_id": call_id.clone(),
+            "name": "get_weather",
+            "arguments": "{\"city\":\"SF\"}",
+        }));
+        input.push(json!({
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": "sunny",
+        }));
+    }
+
+    for results in 1..=2usize {
+        assert!(
+            with_results(&log_a, results).is_some(),
+            "streaming Responses continuation {results} must attempt the preceding candidate"
+        );
+        assert!(
+            with_results(&log_b, results).is_none(),
+            "streaming Responses continuation {results} must not rotate to the sibling"
+        );
+    }
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A streamed Chat chain whose pool candidate is served by a Responses-protocol
+/// upstream keeps its continuity and its client-visible tool identity through
+/// the existing conversion adapter.
+#[tokio::test]
+async fn streaming_chat_chain_through_a_responses_upstream_prefers_the_preceding_candidate() {
+    let _home = temp_home("pool-stream-adapter-chain");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-adapter-{tag}");
+    let session = format!("sess-stream-adapter-{tag}");
+    let counter_a = Arc::new(AtomicUsize::new(0));
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_mock_upstream(move |_| {
+        let n = counter_a.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(responses_sse_tool_call(&format!("call_a_{n}")))
+    })
+    .await;
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(responses_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "responses")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "responses")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-adapter-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "responses", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "responses", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let mut messages = vec![json!({"role": "user", "content": "weather?"})];
+    for round in 0..3 {
+        let body = json!({
+            "model": alias,
+            "messages": messages.clone(),
+            "tools": weather_tools(),
+            "stream": true,
+        });
+        let (status, text) = post_json(port, path, "Bearer local-key", Some(&session), None, body).await;
+        assert_eq!(status, 200, "round {round} must be served: {text}");
+        assert!(
+            client_stream_completed(path, &text),
+            "the adapted Chat stream must end with [DONE]: {text}"
+        );
+        let ids = client_chat_tool_ids(&text);
+        let call_id = ids.first().cloned().unwrap_or_else(|| {
+            panic!("the adapted Chat stream must expose a stable tool identity: {text}")
+        });
+        messages.push(json!({"role": "assistant", "content": null, "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}
+        }]}));
+        messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
+    }
+
+    for results in 1..=2usize {
+        assert!(
+            with_results(&log_a, results).is_some(),
+            "adapted continuation {results} must attempt the preceding candidate"
+        );
+        assert!(
+            with_results(&log_b, results).is_none(),
+            "adapted continuation {results} must not rotate to the sibling"
+        );
+    }
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// After the streamed candidate fails before any client byte, the sibling that
+/// streams the tool call becomes the immediate next continuation preference.
+#[tokio::test]
+async fn streaming_failover_becomes_the_next_continuation_preference() {
+    let _home = temp_home("pool-stream-failover");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-failover-{tag}");
+    let session = format!("sess-stream-failover-{tag}");
+    let seed_call = format!("call_a_seed_{tag}");
+    let calls_a = Arc::new(AtomicUsize::new(0));
+    let seed_call_for_mock = seed_call.clone();
+    let (url_a, log_a) = spawn_mock_upstream(move |_| {
+        let n = calls_a.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            MockReply::Stream(chat_sse_tool_call(&seed_call_for_mock))
+        } else {
+            MockReply::Json(500, json!({"error": {"message": "upstream unavailable"}}))
+        }
+    })
+    .await;
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-failover-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let mut messages = vec![json!({"role": "user", "content": "weather?"})];
+    let mut tool_calls: Vec<String> = Vec::new();
+    for round in 0..3 {
+        let body = json!({
+            "model": alias,
+            "messages": messages.clone(),
+            "tools": weather_tools(),
+            "stream": true,
+        });
+        let (status, text) = post_json(port, path, "Bearer local-key", Some(&session), None, body).await;
+        assert_eq!(status, 200, "round {round} must be served after failover: {text}");
+        let ids = client_chat_tool_ids(&text);
+        let call_id = ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| panic!("round {round} must stream a tool call: {text}"));
+        tool_calls.push(call_id.clone());
+        messages.push(json!({"role": "assistant", "content": null, "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}
+        }]}));
+        messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
+    }
+
+    let a_first = with_results(&log_a, 1);
+    assert!(
+        a_first.is_some(),
+        "the held candidate must be attempted first and fail before the fallback: a={} b={}",
+        a_first.is_some(),
+        with_results(&log_b, 1).is_some()
+    );
+    assert_eq!(
+        forwarded_model(&a_first.expect("checked above")),
+        "remote-a"
+    );
+    assert!(
+        with_results(&log_a, 2).is_none(),
+        "the continuation after failover must prefer the successful sibling, not re-attempt the failed candidate"
+    );
+    assert_eq!(
+        forwarded_model(&with_results(&log_b, 1).expect("the fallback must serve the first continuation")),
+        "remote-b"
+    );
+    assert_eq!(
+        forwarded_model(&with_results(&log_b, 2).expect("the fallback must serve the second continuation")),
+        "remote-b"
+    );
+    assert_eq!(tool_calls.len(), 3);
+    assert_eq!(tool_calls[0], seed_call);
+    assert!(tool_calls[1].starts_with("call_b_"));
+    assert!(tool_calls[2].starts_with("call_b_"));
+
+    stop_server().await.expect("stop the listener");
+}
+
+// ---------------------------------------------------------------------------
+// Streaming guards: boundaries a delivered implementation must preserve
+// ---------------------------------------------------------------------------
+
+/// Heartbeat, metadata and usage-only events create no tool evidence: the stream
+/// still completes and a later would-be continuation follows the ordinary
+/// rotation.
+#[tokio::test]
+async fn streaming_metadata_and_usage_events_create_no_tool_evidence() {
+    let _home = temp_home("pool-stream-metadata");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-metadata-{tag}");
+    let session = format!("sess-stream-metadata-{tag}");
+    let (url_a, log_a) =
+        spawn_mock_upstream(|_| MockReply::Stream(chat_sse_heartbeat_then_text())).await;
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-metadata-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": [{"role": "user", "content": "hi"}], "stream": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "the heartbeat stream must complete: {text}");
+    assert!(client_stream_completed(path, &text), "the stream must end with [DONE]: {text}");
+    assert!(
+        client_chat_tool_ids(&text).is_empty(),
+        "metadata/usage events must not surface a tool call: {text}"
+    );
+    assert!(
+        with_results(&log_a, 0).is_some(),
+        "the seed must be served by the first candidate"
+    );
+
+    let fabricated = format!("call_fabricated_{tag}");
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": fabricated,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": fabricated, "content": "sunny"},
+            ],
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the later request must be served: {text}");
+    assert!(
+        with_results(&log_b, 1).is_some() && with_results(&log_a, 1).is_none(),
+        "a metadata-only stream must not hold the next request on the first candidate"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A successful streamed response without a further tool call closes the
+/// continuation preference: a later identically shaped request follows the
+/// ordinary rotation instead of the old candidate.
+#[tokio::test]
+async fn a_streamed_answer_without_a_tool_call_closes_the_preference() {
+    let _home = temp_home("pool-stream-close");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let provider_c = format!("pc-{tag}");
+    let alias = format!("free-stream-close-{tag}");
+    let session = format!("sess-stream-close-{tag}");
+    let counter_a = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_mock_upstream(move |captured| {
+        if tool_result_count(captured) == 0 {
+            let n = counter_a.fetch_add(1, Ordering::SeqCst) + 1;
+            MockReply::Stream(chat_sse_tool_call(&format!("call_a_{n}")))
+        } else {
+            MockReply::Stream(chat_sse_plain("final"))
+        }
+    })
+    .await;
+    let (url_b, _log_b) = spawn_mock_upstream(|_| MockReply::Stream(chat_sse_plain("b"))).await;
+    let (url_c, log_c) = spawn_mock_upstream(|captured| {
+        if request_wants_stream(captured) {
+            MockReply::Stream(chat_sse_plain("c"))
+        } else {
+            MockReply::Json(200, chat_plain_body())
+        }
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let provider_c_value = pool_provider(
+        &provider_c,
+        "Provider C",
+        &url_c,
+        vec![pool_key("key-c", "Key C", "sk-c", true)],
+        vec![provider_mapping("local-c", "remote-c", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-close-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+            pool_candidate(&provider_c, "local-c", "remote-c", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value, provider_c_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let (status, seed_text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": [{"role": "user", "content": "weather?"}], "tools": weather_tools(), "stream": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "the seed must be served: {seed_text}");
+    let seed_call = client_chat_tool_ids(&seed_text)
+        .into_iter()
+        .next()
+        .expect("the seed must stream a tool call");
+    let continuation = json!([
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "content": null, "tool_calls": [{
+            "id": seed_call,
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}
+        }]},
+        {"role": "tool", "tool_call_id": seed_call, "content": "sunny"},
+    ]);
+
+    // A continuated final answer with no further tool call closes the preference.
+    let (status, final_text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": continuation.clone(), "tools": weather_tools(), "stream": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "the final answer must be served: {final_text}");
+    assert!(
+        client_chat_tool_ids(&final_text).is_empty(),
+        "the final answer must not stream a tool call: {final_text}"
+    );
+
+    // The same shape sent again must use the ordinary rotation, not the closed
+    // candidate.
+    let (status, later_text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": continuation, "tools": weather_tools()}),
+    )
+    .await;
+    assert_eq!(status, 200, "the later request must be served: {later_text}");
+    assert!(
+        find_request(&log_c, |captured| {
+            tool_result_count(captured) == 1 && !request_wants_stream(captured)
+        })
+        .is_some(),
+        "the closed preference must rotate the later request to the third candidate"
+    );
+    assert!(
+        find_request(&log_a, |captured| {
+            tool_result_count(captured) == 1 && !request_wants_stream(captured)
+        })
+        .is_none(),
+        "a closed preference must not send the later request back to the first candidate"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A downstream disconnect after the stream began publishes no hold and triggers
+/// no replay: the next request follows the ordinary rotation.
+#[tokio::test]
+async fn a_mid_stream_disconnect_publishes_no_hold_and_plays_no_replay() {
+    let _home = temp_home("pool-stream-disconnect");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-disconnect-{tag}");
+    let session = format!("sess-stream-disconnect-{tag}");
+    let aborted_call = format!("call_aborted_{tag}");
+    let release = Arc::new(tokio::sync::Notify::new());
+    let first = first_chat_tool_event(&aborted_call);
+    let (url_a, log_a) = spawn_scripted_upstream(move |_index, _captured| {
+        ScriptedReply::HoldAfterFirst {
+            first: first.clone(),
+            release: release.clone(),
+        }
+    })
+    .await;
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-disconnect-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    raw_stream_then_disconnect(
+        port,
+        path,
+        "Bearer local-key",
+        &session,
+        json!({"model": alias, "messages": [{"role": "user", "content": "weather?"}], "tools": weather_tools(), "stream": true}),
+        &aborted_call,
+    )
+    .await;
+
+    assert!(
+        with_results(&log_a, 0).is_some(),
+        "the aborted request must have reached the first candidate"
+    );
+    assert!(
+        log_b.lock().expect("mock log").is_empty(),
+        "a disconnect after output began must not replay to another candidate"
+    );
+
+    // The same shape as the aborted request's would-be continuation must rotate
+    // normally rather than inherit a hold.
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": aborted_call,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": aborted_call, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the next request must be served: {text}");
+    assert!(
+        with_results(&log_b, 1).is_some() && with_results(&log_a, 1).is_none(),
+        "an aborted stream must not hold the next request on the first candidate"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A truncated stream without its completion marker publishes no hold, does not
+/// replay, and leaves the bytes already delivered to the caller unchanged.
+#[tokio::test]
+async fn a_truncated_stream_publishes_no_hold_and_plays_no_replay() {
+    let _home = temp_home("pool-stream-truncated");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-truncated-{tag}");
+    let session = format!("sess-stream-truncated-{tag}");
+    let truncated_call = format!("call_truncated_{tag}");
+    let truncated = String::from_utf8(first_chat_tool_event(&truncated_call))
+        .expect("ascii first event");
+    let (url_a, log_a) =
+        spawn_mock_upstream(move |_| MockReply::Stream(truncated.clone())).await;
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-truncated-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": [{"role": "user", "content": "weather?"}], "tools": weather_tools(), "stream": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "the truncated stream still answers: {text}");
+    assert!(
+        text.contains(&truncated_call),
+        "the bytes delivered before the truncation must stay visible: {text}"
+    );
+    assert!(
+        !client_stream_completed(path, &text),
+        "a truncated stream must not fabricate the completion marker: {text}"
+    );
+    assert!(
+        log_b.lock().expect("mock log").is_empty(),
+        "a post-first-byte failure must not replay to another candidate"
+    );
+
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": truncated_call,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": truncated_call, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the next request must be served: {text}");
+    assert!(
+        with_results(&log_b, 1).is_some() && with_results(&log_a, 1).is_none(),
+        "a truncated stream must not hold the next request on the first candidate"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// Two overlapping requests in one scope: the newer admitted turn's hold survives
+/// when the older request finishes last successfully.
+#[tokio::test]
+async fn an_older_successful_completion_cannot_replace_a_newer_turn() {
+    let _home = temp_home("pool-order-older-newer");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-order-{tag}");
+    let session = format!("sess-order-{tag}");
+    let arrived_a = Arc::new(tokio::sync::Notify::new());
+    let release_a = Arc::new(tokio::sync::Notify::new());
+    let old_call = format!("call_old_{tag}");
+    let new_call = format!("call_new_{tag}");
+    let (url_a, log_a) = spawn_mock_upstream({
+        let arrived = arrived_a.clone();
+        let release = release_a.clone();
+        move |_| {
+            MockReply::Withhold(
+                arrived.clone(),
+                release.clone(),
+                200,
+                chat_tool_call_body(&old_call),
+            )
+        }
+    })
+    .await;
+    let new_call_for_mock = new_call.clone();
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        MockReply::Json(200, chat_tool_call_body(&new_call_for_mock))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-order-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let older_body = json!({"model": alias, "messages": [{"role": "user", "content": "order?"}], "tools": weather_tools()});
+    let newer_body = older_body.clone();
+
+    let older = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            post_json(port, path, "Bearer local-key", Some(&session), None, older_body).await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), arrived_a.notified())
+        .await
+        .expect("the older request must reach the first candidate");
+    let (status, newer_text) =
+        post_json(port, path, "Bearer local-key", Some(&session), None, newer_body).await;
+    assert_eq!(status, 200, "the newer turn must complete: {newer_text}");
+    let newer_call = chat_call(&parse(&newer_text))["id"]
+        .as_str()
+        .expect("newer call id")
+        .to_string();
+
+    release_a.notify_one();
+    let (status, older_text) = older.await.expect("older task");
+    assert_eq!(status, 200, "the older turn must complete: {older_text}");
+
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "order?"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": newer_call,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": newer_call, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the continuation must be served: {text}");
+    assert!(
+        with_results(&log_b, 1).is_some() && with_results(&log_a, 1).is_none(),
+        "the older completion must not replace the newer turn's preference"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// Two overlapping requests in one scope: an older request that finishes last
+/// unsuccessfully cannot remove or resurrect the newer turn's hold.
+#[tokio::test]
+async fn an_older_unsuccessful_completion_cannot_resurrect_a_newer_turn() {
+    let _home = temp_home("pool-order-older-failure");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-order-fail-{tag}");
+    let session = format!("sess-order-fail-{tag}");
+    let arrived_a = Arc::new(tokio::sync::Notify::new());
+    let release_a = Arc::new(tokio::sync::Notify::new());
+    let (url_a, log_a) = spawn_mock_upstream({
+        let arrived = arrived_a.clone();
+        let release = release_a.clone();
+        move |_| {
+            MockReply::Withhold(
+                arrived.clone(),
+                release.clone(),
+                400,
+                json!({"error": {"message": "invalid request"}}),
+            )
+        }
+    })
+    .await;
+    let new_call = format!("call_new_{tag}");
+    let new_call_for_mock = new_call.clone();
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        MockReply::Json(200, chat_tool_call_body(&new_call_for_mock))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-order-fail-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let older_body = json!({"model": alias, "messages": [{"role": "user", "content": "order?"}], "tools": weather_tools()});
+    let newer_body = older_body.clone();
+
+    let older = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            post_json(port, path, "Bearer local-key", Some(&session), None, older_body).await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), arrived_a.notified())
+        .await
+        .expect("the older request must reach the first candidate");
+    let (status, newer_text) =
+        post_json(port, path, "Bearer local-key", Some(&session), None, newer_body).await;
+    assert_eq!(status, 200, "the newer turn must complete: {newer_text}");
+    let newer_call = chat_call(&parse(&newer_text))["id"]
+        .as_str()
+        .expect("newer call id")
+        .to_string();
+
+    release_a.notify_one();
+    let (status, older_text) = older.await.expect("older task");
+    assert_eq!(
+        status, 400,
+        "the older turn's terminal client error must pass through: {older_text}"
+    );
+
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "order?"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": newer_call,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": newer_call, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the continuation must be served: {text}");
+    assert!(
+        with_results(&log_b, 1).is_some() && with_results(&log_a, 1).is_none(),
+        "an older unsuccessful completion must not resurrect or replace the newer hold"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// Differing supplied thread identities in one session keep independent
+/// histories: a continuation in a second thread does not inherit the first
+/// thread's preference.
+#[tokio::test]
+async fn differing_thread_ids_keep_independent_streaming_histories() {
+    let _home = temp_home("pool-stream-threads");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-threads-{tag}");
+    let session = format!("sess-stream-threads-{tag}");
+    let counter_a = Arc::new(AtomicUsize::new(0));
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_mock_upstream(move |_| {
+        let n = counter_a.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_a_{n}")))
+    })
+    .await;
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-threads-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let (status, seed_text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        Some("thread-1"),
+        json!({"model": alias, "messages": [{"role": "user", "content": "weather?"}], "tools": weather_tools(), "stream": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "the thread-1 seed must be served: {seed_text}");
+    let call_id = client_chat_tool_ids(&seed_text)
+        .into_iter()
+        .next()
+        .expect("the seed must stream a tool call");
+    assert!(with_results(&log_a, 0).is_some(), "the seed must reach the first candidate");
+
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        Some("thread-2"),
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": call_id, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the thread-2 continuation must be served: {text}");
+    assert!(
+        with_results(&log_b, 1).is_some() && with_results(&log_a, 1).is_none(),
+        "a different thread identity must not inherit the first thread's preference"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// An oversized streaming request beyond the per-entry payload budget still
+/// forwards intact with normal routing and no new validation error.
+#[tokio::test]
+async fn an_oversized_streaming_request_still_forwards_with_normal_routing() {
+    let _home = temp_home("pool-stream-oversized");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-oversized-{tag}");
+    let session = format!("sess-stream-oversized-{tag}");
+    let (url_a, log_a) = spawn_mock_upstream(|_| MockReply::Stream(chat_sse_plain("ok"))).await;
+    let (url_b, _log_b) = spawn_mock_upstream(|_| MockReply::Stream(chat_sse_plain("ok"))).await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-oversized-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let large = "x".repeat(1_100_000);
+    let (status, text) = post_json(
+        port,
+        "/v1/chat/completions",
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": large}],
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "an oversized streaming request must forward without a new validation error: {text}"
+    );
+    let forwarded = find_request(&log_a, |captured| captured.body.len() > 1_000_000);
+    assert!(
+        forwarded.is_some(),
+        "the oversized request body must be forwarded intact to the first candidate"
+    );
+    assert!(
+        client_stream_completed("/v1/chat/completions", &text),
+        "the oversized streaming request must still complete: {text}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+// ---------------------------------------------------------------------------
+// Isolated-store boundaries: explicit monotonic time, capacity and payload
+//
+// These tests drive the store seam directly with an explicit monotonic clock
+// and their own store instance, so a time or budget boundary is asserted
+// deterministically instead of against the process-global table or real time.
+// Current eligibility, ordering and the routing effect still run through the
+// same resolution helpers the request path uses.
+// ---------------------------------------------------------------------------
+
+/// Idle time after which a completed hold is treated as absent; a hold idle for
+/// exactly this long stays eligible.
+const HOLD_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Maximum completed entries the store retains.
+const HOLD_ENTRY_CAPACITY: usize = 1024;
+/// Maximum retained serialized payload of one entry.
+const HOLD_ENTRY_BUDGET: usize = 1024 * 1024;
+/// Maximum retained serialized payload across the whole table.
+const HOLD_TOTAL_BUDGET: usize = 16 * 1024 * 1024;
+
+/// One typed provider with a single mapping and one usable upstream key, so an
+/// isolated hold store re-checks current eligibility through the real resolution
+/// helpers without any process-global pool state.
+fn typed_provider(
+    provider_id: &str,
+    base_url: &str,
+    local_model: &str,
+    upstream_model: &str,
+    protocol: &str,
+) -> GatewayUpstreamProvider {
+    let mut value = pool_provider(
+        provider_id,
+        provider_id,
+        base_url,
+        vec![pool_key(
+            &format!("{provider_id}-upstream-key"),
+            "Upstream Key",
+            "sk-upstream",
+            true,
+        )],
+        vec![provider_mapping(local_model, upstream_model, protocol)],
+    );
+    value["protocol"] = json!(protocol);
+    serde_json::from_value(value).expect("the typed provider fixture must deserialize")
+}
+
+/// The transport-only identity one prepared pool candidate carries.
+fn candidate_identity(
+    pool_id: &str,
+    provider_id: &str,
+    local_model: &str,
+    upstream_model: &str,
+    protocol: UpstreamProtocol,
+) -> PoolCandidateIdentity {
+    PoolCandidateIdentity {
+        pool_id: pool_id.to_string(),
+        provider_id: provider_id.to_string(),
+        local_model: local_model.to_string(),
+        upstream_model: upstream_model.to_string(),
+        protocol,
+        reasoning: None,
+    }
+}
+
+/// The routing clone of a typed provider for one ranked candidate slot.
+fn prepared_candidate(
+    provider: &GatewayUpstreamProvider,
+    identity: &PoolCandidateIdentity,
+) -> GatewayUpstreamProvider {
+    let mut prepared = provider.clone();
+    prepared.pool_candidate = Some(identity.clone());
+    prepared
+}
+
+/// A retained Chat caller history: one user turn plus the weather tool surface.
+fn chat_caller(user_content: &str) -> CallerHistory {
+    CallerHistory::parse(
+        "/v1/chat/completions",
+        &json!({
+            "messages": [{"role": "user", "content": user_content}],
+            "tools": weather_tools(),
+        }),
+    )
+    .expect("a Chat history carrying a messages array must parse")
+}
+
+/// The matching tool continuation of [`chat_caller`]: the same history plus the
+/// assistant tool call and its tool result for `call_id`, with no new user
+/// message.
+fn chat_continuation(user_content: &str, call_id: &str) -> CallerHistory {
+    CallerHistory::parse(
+        "/v1/chat/completions",
+        &json!({
+            "messages": [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"},
+                }]},
+                {"role": "tool", "tool_call_id": call_id, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+        }),
+    )
+    .expect("a Chat tool continuation must parse")
+}
+
+/// One isolated hold-store fixture with a unique key, pool, alias and session,
+/// so no process-global scheduler, cooldown or hold state can interfere.
+struct IsolatedHold {
+    key_id: String,
+    pool_id: String,
+    alias: String,
+    held: GatewayUpstreamProvider,
+    other: GatewayUpstreamProvider,
+    identity: PoolCandidateIdentity,
+    config: GatewayConfig,
+    endpoint: String,
+}
+
+impl IsolatedHold {
+    /// One scope of this fixture's key, pool, alias and ingress with its own
+    /// session, so many independent entries can coexist in one store.
+    fn scope(&self, index: usize) -> HoldScope {
+        HoldScope::new(
+            self.key_id.clone(),
+            format!("{}#{index}", self.pool_id),
+            None,
+            self.pool_id.clone(),
+            self.alias.clone(),
+            UpstreamProtocol::ChatCompletions.endpoint_path(),
+        )
+    }
+
+    /// Two ranked slots with the held candidate second, so a preference change
+    /// is observable as a reorder of `ordered`.
+    fn ranked(&self) -> Vec<GatewayUpstreamProvider> {
+        vec![self.other.clone(), prepared_candidate(&self.held, &self.identity)]
+    }
+}
+
+fn isolated_hold(name: &str) -> IsolatedHold {
+    let tag = tag();
+    let pool_id = format!("pool-{name}-{tag}");
+    let alias = format!("free-{name}-{tag}");
+    let provider_id = format!("p-{name}-{tag}");
+    let local_model = format!("local-{name}-{tag}");
+    let upstream_model = format!("remote-{name}-{tag}");
+    let endpoint = format!("https://{name}-{tag}.test/v1");
+    let held = typed_provider(
+        &provider_id,
+        &endpoint,
+        &local_model,
+        &upstream_model,
+        "chat_completions",
+    );
+    let identity = candidate_identity(
+        &pool_id,
+        &provider_id,
+        &local_model,
+        &upstream_model,
+        UpstreamProtocol::ChatCompletions,
+    );
+    let other = typed_provider(
+        &format!("p-{name}-other-{tag}"),
+        &format!("https://{name}-other-{tag}.test/v1"),
+        &format!("local-{name}-other-{tag}"),
+        &format!("remote-{name}-other-{tag}"),
+        "chat_completions",
+    );
+    let config = GatewayConfig {
+        providers: vec![held.clone(), other.clone()],
+        ..Default::default()
+    };
+    IsolatedHold {
+        key_id: format!("key-{name}-{tag}"),
+        pool_id,
+        alias,
+        held,
+        other,
+        identity,
+        config,
+        endpoint,
+    }
+}
+
+/// A completed hold idle for exactly the timeout stays eligible and preferred;
+/// strictly beyond it the hold expires and the request follows normal routing.
+#[tokio::test]
+async fn isolated_hold_stays_eligible_at_the_idle_boundary_and_expires_beyond_it() {
+    let fixture = isolated_hold("idle");
+    let scope = fixture.scope(0);
+    let retained = chat_caller("weather?");
+    let call_id = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &retained,
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(store.entries.len(), 1, "the completed hold must be retained");
+    assert!(
+        store.total_bytes > 0,
+        "the retained hold must account for its payload"
+    );
+
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + HOLD_IDLE_TIMEOUT,
+    );
+    assert_eq!(
+        ordered[0].id, fixture.held.id,
+        "a hold idle for exactly the timeout must stay preferred"
+    );
+    assert_eq!(
+        store.entries.len(),
+        1,
+        "a boundary-eligible hold must stay retained"
+    );
+
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &retained,
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + HOLD_IDLE_TIMEOUT + Duration::from_millis(1),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "a hold idle strictly beyond the timeout must not reorder the candidates"
+    );
+    assert!(
+        store.entries.is_empty(),
+        "an expired hold must be dropped"
+    );
+    assert_eq!(
+        store.total_bytes, 0,
+        "an expired hold must release its retained payload"
+    );
+}
+
+/// Past the entry cap the least recently used completed entry is evicted and the
+/// count stays bounded, while the newest entry stays reusable.
+#[tokio::test]
+async fn isolated_store_evicts_the_least_recently_used_entry_past_capacity() {
+    let fixture = isolated_hold("capacity");
+    let retained = chat_caller("weather?");
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let mut scopes = Vec::new();
+
+    for index in 0..=HOLD_ENTRY_CAPACITY {
+        let scope = fixture.scope(index);
+        let now = t0 + Duration::from_millis(index as u64);
+        let admission = store.admit(&scope, now);
+        let call_id = format!("call-capacity-{index}");
+        store.record(
+            &scope,
+            admission,
+            &retained,
+            &fixture.identity,
+            &fixture.endpoint,
+            std::slice::from_ref(&call_id),
+            now,
+        );
+        scopes.push(scope);
+    }
+
+    assert_eq!(
+        store.entries.len(),
+        HOLD_ENTRY_CAPACITY,
+        "the entry count must stay at the cap after one entry beyond it"
+    );
+    assert!(
+        !store.entries.contains_key(&scopes[0]),
+        "the least recently used scope must be evicted"
+    );
+    assert!(
+        store.entries.contains_key(&scopes[1]),
+        "only the least recently used scope may be evicted"
+    );
+    assert!(
+        store.entries.contains_key(&scopes[HOLD_ENTRY_CAPACITY]),
+        "the newest scope must stay retained"
+    );
+
+    let later = t0 + Duration::from_millis(HOLD_ENTRY_CAPACITY as u64 + 1);
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scopes[0],
+        &chat_continuation("weather?", "call-capacity-0"),
+        &mut ordered,
+        later,
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "an evicted scope must not be preferred"
+    );
+
+    let mut ordered = fixture.ranked();
+    let newest = HOLD_ENTRY_CAPACITY;
+    store.prefer(
+        &fixture.config,
+        &scopes[newest],
+        &chat_continuation("weather?", &format!("call-capacity-{newest}")),
+        &mut ordered,
+        later,
+    );
+    assert_eq!(
+        ordered[0].id, fixture.held.id,
+        "the newest retained scope must stay reusable"
+    );
+}
+
+/// A completion whose retained payload exceeds the per-entry budget is not
+/// retained and removes the scope's stale entry.
+#[tokio::test]
+async fn isolated_store_drops_an_over_budget_entry_and_its_stale_predecessor() {
+    let fixture = isolated_hold("over-budget");
+    let scope = fixture.scope(0);
+    let retained = chat_caller("weather?");
+    let call_id = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &retained,
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(
+        store.entries.len(),
+        1,
+        "the small completed hold must be retained"
+    );
+    assert!(store.total_bytes > 0, "the retained hold must be accounted");
+
+    // The retained entry's payload beyond its user content is the fixed shape
+    // overhead, so the same shape exactly one byte over the budget can be built.
+    let small_content_len = "weather?".len();
+    assert!(store.total_bytes > small_content_len);
+    let overhead = store.total_bytes - small_content_len;
+    let oversized = chat_caller(&"x".repeat(HOLD_ENTRY_BUDGET + 1 - overhead));
+    store.record(
+        &scope,
+        admission,
+        &oversized,
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0 + Duration::from_millis(1),
+    );
+    assert!(
+        !store.entries.contains_key(&scope),
+        "an over-budget completion must not be retained and must remove the scope's stale entry"
+    );
+    assert_eq!(
+        store.total_bytes, 0,
+        "the removed entry must release its retained payload"
+    );
+}
+
+/// A completion whose retained payload is exactly the per-entry budget stays
+/// retained, so the per-entry limit is exclusive above it.
+#[tokio::test]
+async fn isolated_store_retains_an_entry_exactly_at_the_per_entry_budget() {
+    let fixture = isolated_hold("exact-entry");
+    let scope = fixture.scope(0);
+    let call_id = "call-exact".to_string();
+    let t0 = Instant::now();
+
+    // Observe the fixed shape overhead of one entry through the retained total.
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(store.entries.len(), 1, "the probe entry must be retained");
+    let probe_len = "weather?".len();
+    assert!(store.total_bytes > probe_len);
+    let overhead = store.total_bytes - probe_len;
+
+    let mut exact = HoldStore::default();
+    let admission = exact.admit(&scope, t0);
+    exact.record(
+        &scope,
+        admission,
+        &chat_caller(&"x".repeat(HOLD_ENTRY_BUDGET - overhead)),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(
+        exact.total_bytes, HOLD_ENTRY_BUDGET,
+        "an entry exactly at the per-entry budget must be retained"
+    );
+    assert!(
+        exact.entries.contains_key(&scope),
+        "the boundary-compliant entry must stay retained"
+    );
+}
+
+/// A retained total exactly at the table budget is kept: entries are evicted
+/// only while the total is strictly above the budget.
+#[tokio::test]
+async fn isolated_store_retains_a_total_exactly_at_the_payload_budget() {
+    let fixture = isolated_hold("exact-total");
+    let call_id = "call-uniform".to_string();
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+
+    // Derive the fixed per-entry overhead from one observed entry, then fill
+    // with uniform entries until one tuned entry can land exactly on the budget.
+    let probe_len = 4_000usize;
+    let probe = fixture.scope(0);
+    let admission = store.admit(&probe, t0);
+    store.record(
+        &probe,
+        admission,
+        &chat_caller(&"x".repeat(probe_len)),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    let overhead = store.total_bytes - probe_len;
+    assert!(overhead > 0, "the entry shape must have a fixed overhead");
+
+    let uniform = 900_000usize;
+    let mut index = 1usize;
+    while HOLD_TOTAL_BUDGET - store.total_bytes > HOLD_ENTRY_BUDGET {
+        let scope = fixture.scope(index);
+        let now = t0 + Duration::from_millis(index as u64);
+        let admission = store.admit(&scope, now);
+        store.record(
+            &scope,
+            admission,
+            &chat_caller(&"x".repeat(uniform)),
+            &fixture.identity,
+            &fixture.endpoint,
+            std::slice::from_ref(&call_id),
+            now,
+        );
+        index += 1;
+    }
+
+    let remaining = HOLD_TOTAL_BUDGET - store.total_bytes;
+    assert!(
+        remaining > overhead,
+        "the remaining budget must cover the tuned entry's overhead, got {remaining}"
+    );
+    assert!(
+        remaining <= HOLD_ENTRY_BUDGET,
+        "the remaining budget must fit one entry, got {remaining}"
+    );
+    let tuned = fixture.scope(index);
+    let now = t0 + Duration::from_secs(1);
+    let admission = store.admit(&tuned, now);
+    store.record(
+        &tuned,
+        admission,
+        &chat_caller(&"x".repeat(remaining - overhead)),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        now,
+    );
+
+    assert_eq!(
+        store.total_bytes, HOLD_TOTAL_BUDGET,
+        "a retained total exactly at the table budget must be kept"
+    );
+    assert!(
+        store.entries.contains_key(&probe),
+        "no entry may be evicted at the exact table budget"
+    );
+    assert!(
+        store.entries.contains_key(&tuned),
+        "the tuned entry at the exact table budget must be retained"
+    );
+    assert_eq!(
+        store.entries.len(),
+        index + 1,
+        "every entry inside the exact table budget must be retained"
+    );
+}
+
+/// Cumulative entries beyond the total payload budget evict least recently used
+/// entries until the budget holds, and the newest evidence stays reusable.
+#[tokio::test]
+async fn isolated_store_evicts_least_recently_used_entries_until_the_total_budget_holds() {
+    let fixture = isolated_hold("total-budget");
+    // Each entry is below the per-entry budget while their sum exceeds the whole
+    // table budget, so the store must evict.
+    let large = chat_caller(&"x".repeat(900_000));
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let mut scopes = Vec::new();
+
+    for index in 0..19usize {
+        let scope = fixture.scope(index);
+        let now = t0 + Duration::from_millis(index as u64);
+        let admission = store.admit(&scope, now);
+        store.record(
+            &scope,
+            admission,
+            &large,
+            &fixture.identity,
+            &fixture.endpoint,
+            &[format!("call-large-{index}")],
+            now,
+        );
+        scopes.push(scope);
+    }
+
+    assert!(
+        store.total_bytes <= HOLD_TOTAL_BUDGET,
+        "the retained total must stay inside the table budget, got {}",
+        store.total_bytes
+    );
+    assert!(
+        store.entries.len() < scopes.len(),
+        "entries beyond the table budget must be evicted"
+    );
+    assert!(
+        !store.entries.contains_key(&scopes[0]),
+        "the least recently used entry must be evicted first"
+    );
+
+    let newest = fixture.scope(19);
+    let now = t0 + Duration::from_secs(1);
+    let newest_call = format!("call-newest-{}", fixture.pool_id);
+    let admission = store.admit(&newest, now);
+    store.record(
+        &newest,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&newest_call),
+        now,
+    );
+    assert!(
+        store.total_bytes <= HOLD_TOTAL_BUDGET,
+        "an insert inside the budget must keep the total bounded, got {}",
+        store.total_bytes
+    );
+    assert!(
+        store.entries.contains_key(&newest),
+        "the newest evidence must be retained"
+    );
+
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &newest,
+        &chat_continuation("weather?", &newest_call),
+        &mut ordered,
+        now + Duration::from_millis(1),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.held.id,
+        "the newest evidence must stay reusable"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Streamed out-of-order settlement and native Messages upstream streams
+// ---------------------------------------------------------------------------
+
+/// A streamed request that finishes last cannot replace the newer admitted
+/// turn's state: the older stream is held open until the newer turn has
+/// published its own candidate, then completes successfully with its own tool
+/// call, and the next continuation still prefers the newer turn's candidate.
+#[tokio::test]
+async fn a_streamed_completion_that_finishes_last_cannot_replace_a_newer_turn() {
+    let _home = temp_home("pool-stream-order-older-success");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-order-{tag}");
+    let session = format!("sess-stream-order-{tag}");
+    let older_call = format!("call_older_{tag}");
+    let arrived_a = Arc::new(tokio::sync::Notify::new());
+    let release_a = Arc::new(tokio::sync::Notify::new());
+    let older_chunks = chat_sse_tool_call_chunks(&older_call);
+    let (url_a, log_a) = spawn_scripted_upstream({
+        let arrived = arrived_a.clone();
+        let release = release_a.clone();
+        move |_index, _captured| ScriptedReply::HoldThenRelease {
+            arrived: arrived.clone(),
+            release: release.clone(),
+            chunks: older_chunks.clone(),
+        }
+    })
+    .await;
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-order-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let older_body = json!({
+        "model": alias,
+        "messages": [{"role": "user", "content": "order?"}],
+        "tools": weather_tools(),
+        "stream": true,
+    });
+    let newer_body = older_body.clone();
+
+    let older = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            post_json(port, path, "Bearer local-key", Some(&session), None, older_body).await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), arrived_a.notified())
+        .await
+        .expect("the older request must reach the first candidate and be held");
+
+    let (status, newer_text) =
+        post_json(port, path, "Bearer local-key", Some(&session), None, newer_body).await;
+    assert_eq!(status, 200, "the newer turn must complete: {newer_text}");
+    let newer_call = client_chat_tool_ids(&newer_text)
+        .into_iter()
+        .next()
+        .expect("the newer turn must stream a tool call");
+    assert!(
+        with_results(&log_b, 0).is_some(),
+        "the newer turn must be served by the rotated candidate"
+    );
+
+    release_a.notify_one();
+    let (status, older_text) = older.await.expect("older task");
+    assert_eq!(
+        status, 200,
+        "the held older stream must still complete successfully: {older_text}"
+    );
+    assert!(
+        client_chat_tool_ids(&older_text)
+            .iter()
+            .any(|id| id == &older_call),
+        "the older stream must expose its own tool call: {older_text}"
+    );
+
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "order?"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": newer_call,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": newer_call, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the continuation must be served: {text}");
+    assert!(
+        with_results(&log_b, 1).is_some() && with_results(&log_a, 1).is_none(),
+        "the last-finishing older stream must not replace the newer turn's preference"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A streamed request that finishes last as a failure cannot replace or
+/// resurrect the newer admitted turn's state: the newer turn publishes its own
+/// candidate and the older 400 does not remove it.
+#[tokio::test]
+async fn a_streamed_failure_that_finishes_last_cannot_replace_a_newer_turn() {
+    let _home = temp_home("pool-stream-order-older-failure");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-order-fail-{tag}");
+    let session = format!("sess-stream-order-fail-{tag}");
+    let arrived_a = Arc::new(tokio::sync::Notify::new());
+    let release_a = Arc::new(tokio::sync::Notify::new());
+    let (url_a, log_a) = spawn_mock_upstream({
+        let arrived = arrived_a.clone();
+        let release = release_a.clone();
+        move |_| {
+            MockReply::Withhold(
+                arrived.clone(),
+                release.clone(),
+                400,
+                json!({"error": {"message": "invalid request"}}),
+            )
+        }
+    })
+    .await;
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-order-fail-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let older_body = json!({
+        "model": alias,
+        "messages": [{"role": "user", "content": "order?"}],
+        "tools": weather_tools(),
+        "stream": true,
+    });
+    let newer_body = older_body.clone();
+
+    let older = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            post_json(port, path, "Bearer local-key", Some(&session), None, older_body).await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), arrived_a.notified())
+        .await
+        .expect("the older request must reach the first candidate and be held");
+
+    let (status, newer_text) =
+        post_json(port, path, "Bearer local-key", Some(&session), None, newer_body).await;
+    assert_eq!(status, 200, "the newer turn must complete: {newer_text}");
+    let newer_call = client_chat_tool_ids(&newer_text)
+        .into_iter()
+        .next()
+        .expect("the newer turn must stream a tool call");
+
+    release_a.notify_one();
+    let (status, older_text) = older.await.expect("older task");
+    assert_eq!(
+        status, 400,
+        "the older request's terminal client error must pass through: {older_text}"
+    );
+
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "order?"},
+                {"role": "assistant", "content": null, "tool_calls": [{
+                    "id": newer_call,
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": newer_call, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the continuation must be served: {text}");
+    assert!(
+        with_results(&log_b, 1).is_some() && with_results(&log_a, 1).is_none(),
+        "an older failure that finishes last must not resurrect or replace the newer hold"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A native Anthropic Messages SSE tool-use stream that completes, carrying the
+/// given tool-use id.
+fn anthropic_sse_tool_call(call_id: &str) -> String {
+    let event = |kind: &str, value: Value| format!("event: {kind}\ndata: {value}\n\n");
+    let mut stream = String::new();
+    stream.push_str(&event(
+        "message_start",
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": format!("msg-{call_id}"),
+                "role": "assistant",
+                "model": "upstream-anthropic",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 0}
+            }
+        }),
+    ));
+    stream.push_str(&event(
+        "content_block_start",
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": call_id,
+                "name": "get_weather",
+                "input": {}
+            }
+        }),
+    ));
+    stream.push_str(&event(
+        "content_block_delta",
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"city\":\"SF\"}"}
+        }),
+    ));
+    stream.push_str(&event(
+        "content_block_stop",
+        json!({"type": "content_block_stop", "index": 0}),
+    ));
+    stream.push_str(&event(
+        "message_delta",
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use"},
+            "usage": {"output_tokens": 5}
+        }),
+    ));
+    stream.push_str(&event("message_stop", json!({"type": "message_stop"})));
+    stream
+}
+
+/// A Chat ingress stream served by a native Messages upstream keeps its
+/// continuity: the continuation prefers the candidate that actually delivered
+/// the converted tool call, with a client-visible Chat tool identity and the
+/// Chat completion framing.
+#[tokio::test]
+async fn chat_stream_through_a_native_messages_upstream_prefers_the_delivering_candidate() {
+    let _home = temp_home("pool-stream-anthropic-chain");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-anthropic-{tag}");
+    let session = format!("sess-stream-anthropic-{tag}");
+    let counter_a = Arc::new(AtomicUsize::new(0));
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_mock_upstream(move |_| {
+        let n = counter_a.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(anthropic_sse_tool_call(&format!("toolu_a_{n}")))
+    })
+    .await;
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(anthropic_sse_tool_call(&format!("toolu_b_{n}")))
+    })
+    .await;
+
+    let mut provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "anthropic_messages")],
+    );
+    provider_a_value["protocol"] = json!("anthropic_messages");
+    let mut provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "anthropic_messages")],
+    );
+    provider_b_value["protocol"] = json!("anthropic_messages");
+    let pool = json!({
+        "id": format!("pool-stream-anthropic-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "anthropic_messages", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "anthropic_messages", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let mut messages = vec![json!({"role": "user", "content": "weather?"})];
+    let mut call_ids: Vec<String> = Vec::new();
+    for round in 0..3 {
+        let body = json!({
+            "model": alias,
+            "messages": messages.clone(),
+            "tools": weather_tools(),
+            "stream": true,
+        });
+        let (status, text) =
+            post_json(port, path, "Bearer local-key", Some(&session), None, body).await;
+        assert_eq!(status, 200, "round {round} must be served: {text}");
+        assert!(
+            text.contains(&format!("\"model\":\"{alias}\"")),
+            "round {round} must keep the public alias on the converted stream: {text}"
+        );
+        assert!(
+            client_stream_completed(path, &text),
+            "round {round} must end with the Chat completion marker: {text}"
+        );
+        assert!(
+            text.contains("\"finish_reason\":\"tool_calls\""),
+            "round {round} must convert the tool-use stop into the Chat finish reason: {text}"
+        );
+        let call_id = client_chat_tool_ids(&text)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("round {round} must expose a converted tool call: {text}"));
+        call_ids.push(call_id.clone());
+        messages.push(json!({"role": "assistant", "content": null, "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}
+        }]}));
+        messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
+    }
+
+    for (round, call_id) in call_ids.iter().take(2).enumerate() {
+        let served_a =
+            find_request(&log_a, |captured| {
+                String::from_utf8_lossy(&captured.body).contains(call_id)
+            });
+        assert!(
+            served_a.is_some(),
+            "continuation {} must attempt the candidate that delivered {call_id}",
+            round + 1
+        );
+        assert!(
+            find_request(&log_b, |captured| {
+                String::from_utf8_lossy(&captured.body).contains(call_id)
+            })
+            .is_none(),
+            "continuation {} must not rotate to the sibling",
+            round + 1
+        );
+    }
+
+    let continuation = find_request(&log_a, |captured| {
+        String::from_utf8_lossy(&captured.body).contains(&call_ids[0])
+    })
+    .expect("the first continuation must reach the delivering candidate");
+    let forwarded = String::from_utf8_lossy(&continuation.body);
+    assert!(
+        forwarded.contains(&call_ids[0]) && forwarded.contains("\"tool_use\""),
+        "the continuation must be forwarded in the native Messages shape: {forwarded}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A Chat SSE stream whose only tool-call-like identifiers appear in a comment,
+/// a metadata event and a usage-only event, never in the caller protocol's
+/// delta or completion shapes.
+fn chat_sse_tool_like_metadata(comment_id: &str, metadata_id: &str, usage_id: &str) -> String {
+    let metadata = json!({
+        "id": "chatcmpl-tool-like",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [],
+        "metadata": {
+            "provider": "mock",
+            "tool_calls": [{
+                "id": metadata_id,
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": "{}"}
+            }]
+        }
+    });
+    let usage = json!({
+        "id": "chatcmpl-tool-like",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "tool_calls": [{"id": usage_id}]
+    });
+    let text = json!({
+        "id": "chatcmpl-tool-like",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": "ok"}, "finish_reason": Value::Null}]
+    });
+    let stop = json!({
+        "id": "chatcmpl-tool-like",
+        "object": "chat.completion.chunk",
+        "model": "upstream-stream",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    });
+    format!(
+        ": keep-alive tool_calls {comment_id}\n\nevent: response.metadata\ndata: {metadata}\n\ndata: {usage}\n\ndata: {text}\n\ndata: {stop}\n\ndata: [DONE]\n\n"
+    )
+}
+
+/// Tool-call-like identifiers that appear only in comment, metadata and
+/// usage-only events create no tool evidence: the stream completes without a
+/// caller tool call and a later matching continuation follows the ordinary
+/// rotation instead of being held on that candidate.
+#[tokio::test]
+async fn tool_like_identifiers_in_metadata_and_usage_events_create_no_hold() {
+    let _home = temp_home("pool-stream-tool-like-metadata");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-tool-like-{tag}");
+    let session = format!("sess-stream-tool-like-{tag}");
+    let comment_id = format!("call_comment_{tag}");
+    let metadata_id = format!("call_metadata_{tag}");
+    let usage_id = format!("call_usage_{tag}");
+    let (url_a, log_a) = spawn_mock_upstream({
+        let comment_id = comment_id.clone();
+        let metadata_id = metadata_id.clone();
+        let usage_id = usage_id.clone();
+        move |_| {
+            MockReply::Stream(chat_sse_tool_like_metadata(
+                &comment_id,
+                &metadata_id,
+                &usage_id,
+            ))
+        }
+    })
+    .await;
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-tool-like-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": weather_tools(),
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the metadata-only stream must complete: {text}");
+    assert!(
+        client_stream_completed(path, &text),
+        "the metadata-only stream must end with [DONE]: {text}"
+    );
+    assert!(
+        client_chat_tool_ids(&text).is_empty(),
+        "tool-like identifiers outside the caller tool shapes must not surface a tool call: {text}"
+    );
+    assert!(
+        with_results(&log_a, 0).is_some(),
+        "the metadata-only stream must be served by the first candidate"
+    );
+
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": comment_id.clone(), "type": "function", "function": {"name": "get_weather", "arguments": "{}"}},
+                    {"id": metadata_id.clone(), "type": "function", "function": {"name": "get_weather", "arguments": "{}"}},
+                    {"id": usage_id.clone(), "type": "function", "function": {"name": "get_weather", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": comment_id, "content": "sunny"},
+                {"role": "tool", "tool_call_id": metadata_id, "content": "sunny"},
+                {"role": "tool", "tool_call_id": usage_id, "content": "sunny"},
+            ],
+            "tools": weather_tools(),
+            "stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "the would-be continuation must be served: {text}");
+    assert!(
+        find_request(&log_b, |captured| tool_result_count(captured) > 0).is_some()
+            && find_request(&log_a, |captured| tool_result_count(captured) > 0).is_none(),
+        "a metadata-only stream must not hold the next matching request on the first candidate"
     );
 
     stop_server().await.expect("stop the listener");
