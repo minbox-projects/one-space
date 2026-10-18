@@ -23,17 +23,23 @@ Both bodies keep the same English structural elements: the `# Agent Note:` prefi
 
 ## Maintenance and lifecycle
 
-Every non-mechanical change adds or updates at least one relevant note triplet in the same change. This includes behavior, architecture, contracts across files, processes, testing strategy, configuration and persistent formats. Purely mechanical or local edits that change none of these may be exempt.
+A note is required only for a lasting decision rationale that code, tests and existing documentation cannot adequately explain, such as the considered alternatives, ownership, guarantees, data semantics or reintroduction conditions. Behavior changes, file counts and added tests are insufficient on their own to require a note. Local, mechanical, UI, copy and formatting changes without such lasting rationale are exempt.
 
 Planning schedules record maintenance. Major unimplemented work belongs in proposed. The change delivering a decision moves its note to implemented and rewrites the body to describe delivered facts using Decision and Consequences; changing only Status is insufficient. Rejected proposals move to rejected with their reason. Move or rewrite the triplet as a whole and re-record it. Semantic review verifies actual delivery and sufficient, truthful rationale; structural validation alone cannot prove these.
 
-Keep implemented facts such as paths, symbols, defaults and implementation structure current with code in the same change. Rewrite current facts rather than appending a running log. A changed decision or rationale requires a new note.
+Keep implemented facts such as paths, symbols, defaults and implementation structure current with code in the same change. Rewrite current facts rather than appending a running log. Reuse the existing note that owns the same decision instead of duplicating it; record only a changed recorded decision or its lasting rationale as a new note linked to the prior one.
+
+A note stays self-contained after its plan is gone: a note body describes the delivered result, decision or behavior in durable project terms such as behavior, paths, symbols, guarantees, ownership and validation evidence, and never anchors to transient plan-internal identifiers such as task IDs, step numbers, phase numbers, `REQ`/`AC` IDs or plan directory names. The workspace cross-repository plain plan-ID note reference is the only sanctioned exception.
+
+An existing active note that still carries such an identifier is cleaned by rewriting the anchor into a durable description while preserving its decision, alternatives, consequences and evidence claims; both language sides change together and the pair is re-recorded. Cleanup happens when the note is next maintained or in an authorized bounded cleanup pass. Archived notes are sealed and never cleaned.
 
 For every new note, search related active notes within an authorized scope and assess full, partial or no supersession. Partial supersession retains and cross-links the records. Full consolidation may delete the old active note only after the current owner preserves all unique rationale, alternatives, consequences, verification requirements and known coverage gaps, and repairs inbound links. Alternatively retain history under the archive policy. Removing only part of an implementation must not be described as removing the entire capability.
 
 ## Archive policy
 
-Archive based on future guidance value, never age, length or quotas. Keep implemented notes that still explain alternatives, ownership, important guarantees, data semantics or conditions for reintroduction. Only implemented notes may be archived. Reject obsolete proposals instead.
+Archive based on future guidance value, never age, length or quotas. Keep implemented notes that still explain alternatives, ownership, important guarantees, data semantics or conditions for reintroduction. Archive only a completed implemented decision with little future guidance but historical decision value. Only implemented notes may be archived. Reject obsolete proposals instead.
+
+Retention is a decision, not a default. Keep an implemented record active while its alternatives, ownership, important guarantees, data semantics or reintroduction conditions still guide future work; archive one whose future guidance is spent but whose historical decision value remains; and delete an active implemented record that only describes small UI adjustments or purely mechanical changes without lasting decision value. A small bug fix, performance change, new capability or substantive behavior decision never qualifies for deletion merely because its implementation is small. Retain a rejected record only while it prevents a plausible, meaningful mistake. An authorized deletion removes the complete triplet and repairs inbound links, and existing supersession preservation and the frozen-archive prohibitions below keep applying.
 
 Archiving may only move a complete triplet, insert the archive date in both bodies and repair active inbound links; it must not rewrite the decision. Once sealed, do not modify, move, delete or reorder archived triplets. Historical outbound links are not current link-validity gates and must not be repaired by rewriting sealed history.
 
