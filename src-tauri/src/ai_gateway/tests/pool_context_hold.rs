@@ -18,6 +18,7 @@ use super::{
     call_gateway, free_port, pool_key, pool_provider, spawn_mock_upstream, temp_home,
     write_raw_gateway_config, Captured, CapturedLog, MockReply,
 };
+use crate::ai_gateway::model_pools::cool_pool_candidate;
 use crate::ai_gateway::pool_context_hold::{CallerHistory, HoldScope, HoldStore};
 use crate::ai_gateway::runtime_http::{read_http_request, start_server, stop_server};
 use crate::ai_gateway::{
@@ -4579,4 +4580,608 @@ async fn tool_like_identifiers_in_metadata_and_usage_events_create_no_hold() {
     );
 
     stop_server().await.expect("stop the listener");
+}
+
+// ---------------------------------------------------------------------------
+// Responses-to-Chat adapter continuity and continuity-invalidation guards
+// ---------------------------------------------------------------------------
+
+/// One Chat user message with plain text content.
+fn user_message(content: &str) -> Value {
+    json!({"role": "user", "content": content})
+}
+
+/// One Chat assistant message carrying a single weather function call.
+fn assistant_call_message(call_id: &str) -> Value {
+    json!({"role": "assistant", "content": null, "tool_calls": [{
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"},
+    }]})
+}
+
+/// One Chat tool result for a call identity.
+fn tool_result_message(call_id: &str) -> Value {
+    json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"})
+}
+
+/// A Chat caller history from explicit messages and an explicit tool surface.
+fn chat_history_with_tools(messages: Vec<Value>, tools: Value) -> CallerHistory {
+    CallerHistory::parse(
+        "/v1/chat/completions",
+        &json!({"messages": messages, "tools": tools}),
+    )
+    .expect("a Chat history carrying a messages array must parse")
+}
+
+/// The Responses-shaped tool surface a weather function call needs.
+fn responses_tools() -> Value {
+    json!([{
+        "type": "function",
+        "name": "get_weather",
+        "description": "weather",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"]
+        }
+    }])
+}
+
+/// One Responses user input item.
+fn responses_user_item(text: &str) -> Value {
+    json!({"role": "user", "content": [{"type": "input_text", "text": text}]})
+}
+
+/// One Responses `function_call` input item for a call identity.
+fn responses_function_call_item(call_id: &str) -> Value {
+    json!({
+        "type": "function_call",
+        "call_id": call_id,
+        "name": "get_weather",
+        "arguments": "{\"city\":\"SF\"}",
+    })
+}
+
+/// One Responses `function_call_output` input item for a call identity.
+fn responses_function_call_output_item(call_id: &str) -> Value {
+    json!({"type": "function_call_output", "call_id": call_id, "output": "sunny"})
+}
+
+/// A Responses caller history from explicit input items, instructions and tools.
+fn responses_history_with_context(
+    input: Vec<Value>,
+    instructions: Value,
+    tools: Value,
+) -> CallerHistory {
+    CallerHistory::parse(
+        "/v1/responses",
+        &json!({"input": input, "instructions": instructions, "tools": tools}),
+    )
+    .expect("a Responses history carrying an input array must parse")
+}
+
+/// A streamed Responses function-call chain whose candidates speak Chat
+/// Completions keeps its continuity through the Responses-to-Chat adapter: each
+/// continuation prefers the candidate that actually delivered the converted
+/// tool call, the client-visible Responses call identity stays stable, and the
+/// converted stream still ends with the Responses completion framing.
+#[tokio::test]
+async fn responses_stream_through_a_chat_upstream_prefers_the_delivering_candidate() {
+    let _home = temp_home("pool-stream-responses-to-chat");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-stream-r2c-{tag}");
+    let session = format!("sess-stream-r2c-{tag}");
+    let counter_a = Arc::new(AtomicUsize::new(0));
+    let counter_b = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_mock_upstream(move |_| {
+        let n = counter_a.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_a_{n}")))
+    })
+    .await;
+    let (url_b, log_b) = spawn_mock_upstream(move |_| {
+        let n = counter_b.fetch_add(1, Ordering::SeqCst) + 1;
+        MockReply::Stream(chat_sse_tool_call(&format!("call_b_{n}")))
+    })
+    .await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-stream-r2c-{tag}"),
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/responses";
+    let mut input = vec![responses_user_item("weather?")];
+    let mut call_ids: Vec<String> = Vec::new();
+    for round in 0..3 {
+        let body = json!({
+            "model": alias,
+            "input": input.clone(),
+            "tools": responses_tools(),
+            "stream": true,
+        });
+        let (status, text) =
+            post_json(port, path, "Bearer local-key", Some(&session), None, body).await;
+        assert_eq!(status, 200, "round {round} must be served: {text}");
+        assert!(
+            text.contains(&format!("\"model\":\"{alias}\"")),
+            "round {round} must keep the public alias on the converted stream: {text}"
+        );
+        assert!(
+            client_stream_completed(path, &text),
+            "round {round} must complete with response.completed: {text}"
+        );
+        let ids = client_responses_call_ids(&text);
+        let call_id = ids.first().cloned().unwrap_or_else(|| {
+            panic!("round {round} must expose a converted Responses function call: {text}")
+        });
+        call_ids.push(call_id.clone());
+        input.push(responses_function_call_item(&call_id));
+        input.push(responses_function_call_output_item(&call_id));
+    }
+
+    for results in 1..=2usize {
+        assert!(
+            with_results(&log_a, results).is_some(),
+            "converted continuation {results} must attempt the delivering candidate"
+        );
+        assert!(
+            with_results(&log_b, results).is_none(),
+            "converted continuation {results} must not rotate to the sibling"
+        );
+    }
+    let continuation = with_results(&log_a, 1)
+        .expect("the first converted continuation must reach the delivering candidate");
+    assert!(
+        String::from_utf8_lossy(&continuation.body).contains(&call_ids[0]),
+        "the forwarded continuation must retain the client-visible Responses call identity"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// A would-be continuation whose history no longer preserves the retained
+/// messages structurally — an earlier retained message rewritten or removed —
+/// follows the ordinary weighted rotation and cannot inherit the hold.
+#[tokio::test]
+async fn a_changed_or_truncated_retained_prefix_does_not_inherit_the_hold() {
+    let fixture = isolated_hold("prefix");
+    let retained_call = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+    let retained = chat_history_with_tools(
+        vec![user_message("keep?"), user_message("weather?")],
+        weather_tools(),
+    );
+    let rewritten = chat_history_with_tools(
+        vec![
+            user_message("changed?"),
+            assistant_call_message(&retained_call),
+            tool_result_message(&retained_call),
+        ],
+        weather_tools(),
+    );
+    let truncated = chat_history_with_tools(
+        vec![
+            user_message("weather?"),
+            assistant_call_message(&retained_call),
+            tool_result_message(&retained_call),
+        ],
+        weather_tools(),
+    );
+
+    for (label, caller) in [("rewritten", &rewritten), ("truncated", &truncated)] {
+        let scope = fixture.scope(0);
+        let mut store = HoldStore::default();
+        let admission = store.admit(&scope, t0);
+        store.record(
+            &scope,
+            admission,
+            &retained,
+            &fixture.identity,
+            &fixture.endpoint,
+            std::slice::from_ref(&retained_call),
+            t0,
+        );
+        let mut ordered = fixture.ranked();
+        store.prefer(
+            &fixture.config,
+            &scope,
+            caller,
+            &mut ordered,
+            t0 + Duration::from_secs(1),
+        );
+        assert_eq!(
+            ordered[0].id, fixture.other.id,
+            "a {label} retained prefix must not inherit the hold"
+        );
+    }
+}
+
+/// The same retained history with a changed instruction or tool context follows
+/// the ordinary weighted rotation and cannot inherit the hold, for both ingress
+/// protocols that carry that context.
+#[tokio::test]
+async fn a_changed_instruction_or_tool_context_does_not_inherit_the_hold() {
+    let fixture = isolated_hold("context");
+    let retained_call = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+
+    let retained_chat = chat_history_with_tools(vec![user_message("weather?")], weather_tools());
+    let changed_tools = chat_history_with_tools(
+        vec![
+            user_message("weather?"),
+            assistant_call_message(&retained_call),
+            tool_result_message(&retained_call),
+        ],
+        json!([{"type": "function", "function": {"name": "get_time"}}]),
+    );
+
+    let retained_responses = responses_history_with_context(
+        vec![responses_user_item("weather?")],
+        json!("Be brief."),
+        responses_tools(),
+    );
+    let changed_instructions = responses_history_with_context(
+        vec![
+            responses_user_item("weather?"),
+            responses_function_call_item(&retained_call),
+            responses_function_call_output_item(&retained_call),
+        ],
+        json!("Be verbose."),
+        responses_tools(),
+    );
+
+    let cases: [(&str, &CallerHistory, &CallerHistory); 2] = [
+        ("changed tool", &retained_chat, &changed_tools),
+        (
+            "changed instruction",
+            &retained_responses,
+            &changed_instructions,
+        ),
+    ];
+    for (label, retained, caller) in cases {
+        let scope = fixture.scope(0);
+        let mut store = HoldStore::default();
+        let admission = store.admit(&scope, t0);
+        store.record(
+            &scope,
+            admission,
+            retained,
+            &fixture.identity,
+            &fixture.endpoint,
+            std::slice::from_ref(&retained_call),
+            t0,
+        );
+        let mut ordered = fixture.ranked();
+        store.prefer(
+            &fixture.config,
+            &scope,
+            caller,
+            &mut ordered,
+            t0 + Duration::from_secs(1),
+        );
+        assert_eq!(
+            ordered[0].id, fixture.other.id,
+            "a {label} context must not inherit the hold"
+        );
+    }
+}
+
+/// A tool result referencing a call identity the preceding response never
+/// reported follows the ordinary weighted rotation and cannot inherit the hold.
+#[tokio::test]
+async fn an_unknown_call_identity_does_not_inherit_the_hold() {
+    let fixture = isolated_hold("unknown-call");
+    let scope = fixture.scope(0);
+    let retained_call = format!("call-known-{}", fixture.pool_id);
+    let unknown_call = format!("call-unknown-{}", fixture.pool_id);
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&retained_call),
+        t0,
+    );
+
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &unknown_call),
+        &mut ordered,
+        t0 + Duration::from_secs(1),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "a result for an unreported call identity must not inherit the hold"
+    );
+}
+
+/// A held candidate whose mapping is disabled is not preferred; the request
+/// keeps the ordinary ranked order and never escapes the pool.
+#[tokio::test]
+async fn a_disabled_mapping_is_not_preferred() {
+    let mut fixture = isolated_hold("disabled-mapping");
+    let scope = fixture.scope(0);
+    let call_id = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(store.entries.len(), 1, "the completed hold must be retained");
+
+    // The held candidate's mapping row is no longer enabled.
+    fixture.config.providers[0].mappings[0].enabled = false;
+
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + Duration::from_secs(1),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "a held candidate with a disabled mapping must not be preferred"
+    );
+    assert_eq!(
+        ordered[1].id, fixture.held.id,
+        "the ineligible held candidate must keep its relative position"
+    );
+}
+
+/// A held candidate whose provider has no usable enabled key is not preferred;
+/// the remaining healthy candidate serves and the pool never escapes.
+#[tokio::test]
+async fn a_candidate_without_a_usable_enabled_key_is_not_preferred() {
+    let mut fixture = isolated_hold("no-usable-key");
+    let scope = fixture.scope(0);
+    let call_id = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(store.entries.len(), 1, "the completed hold must be retained");
+
+    // The held candidate's key pool carries no usable enabled key.
+    fixture.config.providers[0].keys.clear();
+
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + Duration::from_secs(1),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "a held candidate without a usable enabled key must not be preferred"
+    );
+}
+
+/// A held candidate that is cooling is not preferred; the remaining healthy
+/// candidate serves and the pool never escapes.
+#[tokio::test]
+async fn a_cooling_candidate_is_not_preferred() {
+    let fixture = isolated_hold("cooling");
+    let scope = fixture.scope(0);
+    let call_id = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(store.entries.len(), 1, "the completed hold must be retained");
+
+    // Cool the held candidate well beyond the assertion's real-time window.
+    cool_pool_candidate(&fixture.identity, Some(Duration::from_secs(60)));
+
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + Duration::from_secs(1),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "a cooling held candidate must not be preferred"
+    );
+}
+
+/// A held candidate whose resolved source endpoint changed is not preferred:
+/// the preference is invalidated by the changed source mapping.
+#[tokio::test]
+async fn a_changed_source_endpoint_is_not_preferred() {
+    let mut fixture = isolated_hold("changed-endpoint");
+    let scope = fixture.scope(0);
+    let call_id = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(store.entries.len(), 1, "the completed hold must be retained");
+
+    // The held source now resolves to a different endpoint.
+    fixture.config.providers[0].base_url = format!("https://changed-{}.test/v1", fixture.pool_id);
+
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + Duration::from_secs(1),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "a held candidate whose source endpoint changed must not be preferred"
+    );
+}
+
+/// A held candidate whose mapping resolves to a different effective protocol is
+/// not preferred: the changed source mapping invalidates the preference.
+#[tokio::test]
+async fn a_changed_source_protocol_is_not_preferred() {
+    let mut fixture = isolated_hold("changed-protocol");
+    let scope = fixture.scope(0);
+    let call_id = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(store.entries.len(), 1, "the completed hold must be retained");
+
+    // The held source mapping now resolves to a different upstream protocol.
+    fixture.config.providers[0].mappings[0].protocol = Some(UpstreamProtocol::Responses);
+
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + Duration::from_secs(1),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "a held candidate whose source protocol changed must not be preferred"
+    );
+}
+
+/// A matching continuation attempt whose outcome is never delivered back to the
+/// store must not extend a completed hold's idle lifetime: a hold last
+/// successfully continued at `t0` is gone once more than 30 minutes have passed
+/// without another successful continuation, even if a matching attempt was made
+/// in between.
+#[tokio::test]
+async fn a_matching_attempt_without_a_delivered_outcome_does_not_extend_the_idle_lifetime() {
+    let fixture = isolated_hold("failed-refresh");
+    let scope = fixture.scope(0);
+    let call_id = format!("call-{}", fixture.pool_id);
+    let t0 = Instant::now();
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, t0);
+    store.record(
+        &scope,
+        admission,
+        &chat_caller("weather?"),
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        t0,
+    );
+    assert_eq!(store.entries.len(), 1, "the completed hold must be retained");
+
+    // A matching continuation is attempted 20 minutes after the last successful
+    // one, but its outcome is never delivered here: no completed hold is
+    // published or refreshed by that attempt.
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + Duration::from_secs(20 * 60),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.held.id,
+        "the matching attempt must still be preferred while the hold is live"
+    );
+
+    // 31 minutes after the last successful continuation the hold must be gone,
+    // so the same matching request observes the ordinary ranked order.
+    let mut ordered = fixture.ranked();
+    store.prefer(
+        &fixture.config,
+        &scope,
+        &chat_continuation("weather?", &call_id),
+        &mut ordered,
+        t0 + Duration::from_secs(31 * 60),
+    );
+    assert_eq!(
+        ordered[0].id, fixture.other.id,
+        "an attempt whose outcome was never delivered must not refresh the idle lifetime"
+    );
+    assert!(
+        store.entries.is_empty(),
+        "a hold idle for more than 30 minutes without a successful continuation must be gone"
+    );
 }

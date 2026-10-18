@@ -305,11 +305,10 @@ impl HoldStore {
             let candidate = ordered.remove(index);
             ordered.insert(0, candidate);
         }
-        // Refresh recency only after a real continuation match, so unrelated
-        // scope traffic never extends an idle hold's lifetime.
-        if let Some(entry) = self.entries.get_mut(scope) {
-            entry.last_used = now;
-        }
+        // Recency is deliberately not refreshed by a matching attempt: `last_used`
+        // moves only when `record` stores a delivered successful continuation, so
+        // idle expiry and least-recently-used eviction track delivered successes
+        // rather than attempts whose outcome was never delivered.
     }
 
     /// Publish, replace or close the continuation preference after a delivered
