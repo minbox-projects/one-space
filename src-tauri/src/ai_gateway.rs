@@ -10,6 +10,7 @@ mod model_pools;
 mod openai_conversion;
 mod openai_sse;
 mod output_timing;
+mod pool_context_hold;
 mod provider_usage;
 mod quota;
 mod reasoning;

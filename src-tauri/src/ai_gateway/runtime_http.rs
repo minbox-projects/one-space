@@ -10,6 +10,7 @@ use super::forwarding::{forward_non_streaming_with_protocol, open_streaming_resp
 use super::model_pools::{
     cool_pool_candidate, failure_label, plan_pool_request, pool_candidate_scope_failure, PoolPlan,
 };
+use super::pool_context_hold;
 use super::anthropic::{
     convert_response, error_payload as anthropic_error_payload, is_conversion_path,
     is_messages_path, stream_error_event, validate_conversion_request,
@@ -40,7 +41,7 @@ use super::reasoning::{
 };
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPool,
-    PoolReasoningEffort, UpstreamProtocol,
+    PoolCandidateIdentity, PoolReasoningEffort, UpstreamProtocol,
 };
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -517,6 +518,14 @@ pub(in crate::ai_gateway) struct ForwardCapture {
     /// terminal log row when no upstream attempt completed. `None` for every
     /// path that stores its own per-attempt error text.
     pub(in crate::ai_gateway) message: Option<String>,
+    /// Transport-only identity of the served model-pool candidate, present only
+    /// on a completed attempt of a pool request. It feeds the same-turn
+    /// continuation preference and never reaches a response, the usage log or a
+    /// command payload.
+    pub(in crate::ai_gateway) pool_candidate: Option<PoolCandidateIdentity>,
+    /// The served candidate's resolved upstream base URL, so a changed endpoint
+    /// invalidates a retained continuation preference.
+    pub(in crate::ai_gateway) endpoint: String,
 }
 
 impl ForwardCapture {
@@ -1146,6 +1155,8 @@ async fn attempt_candidate(
                 upstream_model: model.to_string(),
                 protocol: upstream_protocol,
                 usage: usage.map(|canonical| canonical.tokens),
+                pool_candidate: provider.pool_candidate.clone(),
+                endpoint: provider.base_url.clone(),
                 ..Default::default()
             };
             if served {
@@ -3326,7 +3337,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         .await;
         return Ok(());
     }
-    let pool_ordered = match &pool_plan {
+    let mut pool_ordered = match &pool_plan {
         Some(PoolPlan::Ready { ordered, .. }) => Some(ordered.clone()),
         _ => None,
     };
@@ -3335,6 +3346,33 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         _ => None,
     };
     let is_pool = pool_ordered.is_some();
+
+    // Same-turn pool continuation preference: resolve this
+    // request's hold scope, admit it as the newest turn of that scope and move a
+    // currently healthy matching candidate to the front of the planned pool
+    // order. A request without a recognized scope, history or matching hold keeps
+    // the planned order unchanged; the probe position, candidate set and alias
+    // fencing are never touched.
+    let hold_scope = if is_pool {
+        pool_alias.and_then(|alias| {
+            pool_context_hold::resolve_scope(&request.headers, &config, alias, protocol)
+        })
+    } else {
+        None
+    };
+    let hold_admission = hold_scope.as_ref().map(pool_context_hold::admit);
+    let hold_history = if is_pool {
+        pool_context_hold::CallerHistory::parse(path, &body_value)
+    } else {
+        None
+    };
+    if let (Some(scope), Some(history), Some(ordered)) = (
+        hold_scope.as_ref(),
+        hold_history.as_ref(),
+        pool_ordered.as_mut(),
+    ) {
+        pool_context_hold::prefer(&config, scope, history, ordered);
+    }
 
     // The ordinary candidate set is only computed for non-pool requests; a pool
     // request routes exclusively through its resolved ordered candidates.
@@ -3470,6 +3508,10 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     // and borrowed by the forwarding future: dropping an in-flight attempt keeps
     // every entry that already completed (REQ-001).
     let mut attempts: Vec<AttemptLog> = Vec::new();
+    // Tool identities of a successfully delivered caller-protocol non-streaming
+    // response, captured before the bytes are written so a completed pool
+    // outcome can publish or close the same-turn continuation preference.
+    let mut served_tool_ids: Vec<String> = Vec::new();
     let forward = async {
         if wants_stream {
             if is_messages_path(path) {
@@ -3514,6 +3556,11 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             .await;
             let status = response.status;
             let capture = response.capture.take().unwrap_or_default();
+            if is_pool && capture.result() == UsageResult::Success {
+                if let Ok(value) = serde_json::from_slice::<Value>(&response.body) {
+                    served_tool_ids = pool_context_hold::tool_identities(path, &value);
+                }
+            }
             write_response(&mut writer, response).await?;
             Ok(ForwardCapture {
                 status,
@@ -3556,6 +3603,29 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                         bound_was_eligible,
                         served,
                     );
+            }
+            // Publish, replace or close the same-turn continuation preference
+            // only for a successfully delivered pool response. The admission
+            // token was captured when this request entered the scope, so a newer
+            // admitted turn in the same scope prevents a stale publication. A
+            // failed or undeliverable request reaches neither branch and never
+            // refreshes a completed hold.
+            if capture.result() == UsageResult::Success {
+                if let (Some(scope), Some(history), Some(admission), Some(identity)) = (
+                    hold_scope.as_ref(),
+                    hold_history.as_ref(),
+                    hold_admission,
+                    capture.pool_candidate.as_ref(),
+                ) {
+                    pool_context_hold::record(
+                        scope,
+                        admission,
+                        history,
+                        identity,
+                        &capture.endpoint,
+                        &served_tool_ids,
+                    );
+                }
             }
             if attempts.is_empty() {
                 // No upstream attempt completed, so the request's only row is
