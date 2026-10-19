@@ -420,6 +420,11 @@ type NativeTrayMenuItem =
   | Awaited<ReturnType<typeof PredefinedMenuItem.new>>
   | Awaited<ReturnType<typeof Submenu.new>>;
 
+type NativeTrayMenu = Awaited<ReturnType<typeof Menu.new>>;
+
+/** Every native resource the applier creates, in creation order. */
+type NativeTrayResource = NativeTrayMenuItem | NativeTrayMenu;
+
 async function createLeafItem(
   node: TrayMenuItem,
   onAction: TrayMenuActionHandler,
@@ -452,47 +457,88 @@ async function createLeafItem(
 async function buildNativeItems(
   nodes: TrayMenuNode[],
   onAction: TrayMenuActionHandler,
+  created: NativeTrayResource[],
 ): Promise<NativeTrayMenuItem[]> {
   const items: NativeTrayMenuItem[] = [];
   for (const node of nodes) {
     if (node.kind === "separator") {
-      items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+      const separatorItem = await PredefinedMenuItem.new({ item: "Separator" });
+      created.push(separatorItem);
+      items.push(separatorItem);
       continue;
     }
     if (node.submenu) {
-      items.push(
-        await Submenu.new({
-          id: node.id,
-          text: node.label,
-          enabled: node.enabled,
-          items: await buildNativeItems(node.submenu, onAction),
-        }),
+      const submenuItems = await buildNativeItems(
+        node.submenu,
+        onAction,
+        created,
       );
+      const submenu = await Submenu.new({
+        id: node.id,
+        text: node.label,
+        enabled: node.enabled,
+        items: submenuItems,
+      });
+      created.push(submenu);
+      items.push(submenu);
       continue;
     }
     const item = await createLeafItem(node, onAction);
-    if (item) items.push(item);
+    if (item) {
+      created.push(item);
+      items.push(item);
+    }
   }
   return items;
+}
+
+/**
+ * Release every JS-side native resource created for one menu. The native side
+ * keeps its own clone of anything it already holds (for example the menu
+ * currently attached to the tray), so closing a JavaScript handle frees the
+ * resource id without detaching the live menu or its item actions.
+ *
+ * Each release runs in its own async task, so a failing `close` neither skips
+ * nor rejects the remaining resources: `Promise.allSettled` settles them all.
+ */
+async function closeNativeResources(
+  resources: readonly NativeTrayResource[],
+): Promise<void> {
+  await Promise.allSettled(
+    resources.map(async (resource) => {
+      await resource.close();
+    }),
+  );
 }
 
 /**
  * Build the native tray menu from the pure model and attach it to the `main`
  * tray icon. Fails soft (`false`) when the Tauri menu/tray APIs are unavailable
  * so the app never crashes outside a Tauri runtime.
+ *
+ * Every native resource created for a call is tracked in one flat list and
+ * released once the attached menu no longer needs the JavaScript handles: on
+ * success after `setMenu` (the tray keeps its own native clone) and on any
+ * partial build, missing tray or failed attach. Without this the app leaks a
+ * full native menu tree on every rebuild.
  */
 export async function applyTrayMenu(
   model: TrayMenuNode[],
   onAction: TrayMenuActionHandler,
 ): Promise<boolean> {
+  const created: NativeTrayResource[] = [];
   try {
-    const items = await buildNativeItems(model, onAction);
+    const items = await buildNativeItems(model, onAction, created);
     const menu = await Menu.new({ items });
+    created.push(menu);
     const tray = await TrayIcon.getById("main");
     if (!tray) return false;
     await tray.setMenu(menu);
+    // The tray holds a native clone, so the JS-side handles can be released.
     return true;
   } catch {
     return false;
+  } finally {
+    await closeNativeResources(created);
   }
 }

@@ -1785,7 +1785,6 @@ fn handle_central_event(app: &AppHandle, event: BleCentralEvent) {
                     BleLockEvent::Advertisement { device_id, rssi },
                     now,
                 );
-                guard.last_status = None;
             }
             BleCentralEvent::ConnectionRead { device_id, rssi } => {
                 apply_reading(
@@ -1793,7 +1792,6 @@ fn handle_central_event(app: &AppHandle, event: BleCentralEvent) {
                     BleLockEvent::ConnectionRead { device_id, rssi },
                     now,
                 );
-                guard.last_status = None;
             }
             BleCentralEvent::Connected { .. } => {
                 guard.monitor.clear_last_error();
@@ -1875,7 +1873,8 @@ fn tick_once(app: &AppHandle) -> bool {
         let _ = guard.controller.poll_native_state();
         let screen_locked = guard.controller.snapshot().screen_locked;
         guard.monitor.set_screen_locked(screen_locked);
-        guard.last_status = None;
+        // No forced publish here: `publish_status` below emits only when the
+        // full snapshot actually changed, so a steady tick/RSSI keeps quiet.
         if desired_monitoring(&guard) && guard.config.mode == BleLockMode::Active {
             request_active_rssi = true;
         }

@@ -70,8 +70,17 @@ vi.mock("@tauri-apps/api/tray", () => ({
   TrayIcon: { getById: vi.fn(async () => null) },
 }));
 
+/**
+ * Render probe for an unrelated always-mounted view whose props stay identical,
+ * so an extra App render caused by an unchanged runtime event is observable.
+ */
+const launcherRenderHarness = vi.hoisted(() => ({ renders: 0 }));
+
 vi.mock("@/components/Launcher", () => ({
-  Launcher: () => <div data-testid="mock-launcher" />,
+  Launcher: () => {
+    launcherRenderHarness.renders += 1;
+    return <div data-testid="mock-launcher" />;
+  },
 }));
 
 const aboutModalHarness = vi.hoisted(() => ({
@@ -367,6 +376,7 @@ describe("App tray menu integration", () => {
     bleLockStatus = bleLockStatusFixture();
     bleLockLockNowError = null;
     aboutModalHarness.props.length = 0;
+    launcherRenderHarness.renders = 0;
 
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {},
@@ -1261,6 +1271,57 @@ describe("App tray menu integration", () => {
     );
   });
 
+  it("keeps the latest BLE configuration when a tray toggle follows a status event changing non-menu fields", async () => {
+    renderApp();
+    await waitForAppliedMenu();
+
+    // Wait until the shared runtime snapshot has reached the tray projection.
+    const nearLabel = String(
+      i18n.t("tray.bleLock.status", { status: i18n.t("bleLockPresence_near") }),
+    );
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-status")?.label).toBe(
+        nearLabel,
+      ),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // A tool-page status event changes the persisted device, mode and timing
+    // fields that the tray menu never displays. A subsequent tray toggle must
+    // still save the full latest configuration, not a stale pre-change snapshot.
+    const latestConfig = {
+      ...bleLockStatus.config,
+      device_id: "uuid-latest",
+      device_name: "Latest Fob",
+      mode: "passive",
+      lock_delay_secs: 25,
+      no_signal_timeout_secs: 45,
+    };
+    await triggerEvent("ble-lock-status-updated", {
+      ...bleLockStatus,
+      config: latestConfig,
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await fireTrayAction("ble-lock-wake-on-proximity");
+
+    const saveCalls = invokeMock.mock.calls.filter(
+      ([name]) => name === "ble_lock_save_config",
+    );
+    expect(saveCalls.length).toBeGreaterThan(0);
+    const savedConfig = (
+      saveCalls.at(-1)![1] as { config: typeof bleLockStatus.config }
+    ).config;
+    expect(savedConfig).toEqual({
+      ...latestConfig,
+      wake_on_proximity: true,
+    });
+  });
+
   it("surfaces a localized ble-lock failure instead of the raw error", async () => {
     bleLockLockNowError = { code: "native_action_unavailable" };
     renderApp();
@@ -1317,5 +1378,97 @@ describe("App tray menu integration", () => {
         String(name).startsWith("ble_lock_"),
       ),
     ).toHaveLength(0);
+  });
+
+  it("does not reapply the native menu or re-render unrelated views for an unchanged ble-lock snapshot, yet still reflects a real presence change", async () => {
+    renderApp();
+    await waitForAppliedMenu();
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-status")).toBeDefined(),
+    );
+
+    // Let the remaining mount-time queries (visibility, storage config) settle
+    // so their work cannot be mistaken for work triggered by the events below.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // A genuine presence change must still reach the native menu.
+    const nearLabel = String(
+      i18n.t("tray.bleLock.status", { status: i18n.t("bleLockPresence_near") }),
+    );
+    expect(findModelItem(latestModel(), "ble-lock-status")?.label).toBe(nearLabel);
+
+    await triggerEvent("ble-lock-status-updated", {
+      ...bleLockStatus,
+      presence: "away",
+    });
+
+    const awayLabel = String(
+      i18n.t("tray.bleLock.status", { status: i18n.t("bleLockPresence_away") }),
+    );
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-status")?.label).toBe(
+        awayLabel,
+      ),
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const menuApplies = trayHarness.applyTrayMenu.mock.calls.length;
+    const launcherRenders = launcherRenderHarness.renders;
+
+    // Re-publishing the same snapshot must not rebuild the native menu (which
+    // creates unmanaged native resources) nor re-render an unrelated view.
+    await triggerEvent("ble-lock-status-updated", {
+      ...bleLockStatus,
+      presence: "away",
+    });
+    await triggerEvent("ble-lock-status-updated", {
+      ...bleLockStatus,
+      presence: "away",
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(trayHarness.applyTrayMenu.mock.calls.length).toBe(menuApplies);
+    expect(launcherRenderHarness.renders).toBe(launcherRenders);
+  });
+
+  it("keeps the applied menu and unrelated views stable across consecutive RSSI-only ble-lock updates", async () => {
+    renderApp();
+    await waitForAppliedMenu();
+    await waitFor(() =>
+      expect(findModelItem(latestModel(), "ble-lock-status")).toBeDefined(),
+    );
+
+    // Let the remaining mount-time queries (visibility, storage config) settle
+    // so their work cannot be mistaken for work triggered by the events below.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // A moving RSSI with unchanged presence and config is normal background
+    // churn: only the reading changes, so neither the native menu nor an
+    // unrelated view may be rebuilt for it.
+    const menuApplies = trayHarness.applyTrayMenu.mock.calls.length;
+    const launcherRenders = launcherRenderHarness.renders;
+
+    const device = bleLockStatus.selected_device;
+    for (const rssi of [-58, -61, -63, -59, -60]) {
+      await triggerEvent("ble-lock-status-updated", {
+        ...bleLockStatus,
+        selected_device: { ...device, rssi },
+        averaged_rssi: rssi,
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    expect(trayHarness.applyTrayMenu.mock.calls.length).toBe(menuApplies);
+    expect(launcherRenderHarness.renders).toBe(launcherRenders);
   });
 });

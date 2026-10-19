@@ -942,3 +942,167 @@ describe("BLE Lock tray submenu", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Native resource lifecycle. Each `applyTrayMenu` call builds a fresh native
+// tree, so the applier must keep the number of still-alive Tauri resources
+// bounded instead of leaking the superseded (or never-attached) tree.
+// `close()` stands for deleting the JS-side Tauri resource; an attached menu is
+// kept alive by the native side's own clone, so closing a JS handle must not
+// detach it or break the actions of the menu currently on the tray.
+// ---------------------------------------------------------------------------
+
+interface TrackedResource {
+  kind: string;
+  rid: number;
+  closed: boolean;
+  close: () => Promise<void>;
+  options: NativeItemOptions;
+  [key: string]: unknown;
+}
+
+function createResourceTracker() {
+  let nextRid = 1;
+  const created: TrackedResource[] = [];
+  const live = new Set<TrackedResource>();
+
+  const make = (kind: string, options: NativeItemOptions = {}): TrackedResource => {
+    const resource: TrackedResource = {
+      kind,
+      rid: nextRid,
+      closed: false,
+      options,
+      close: async () => {
+        resource.closed = true;
+        live.delete(resource);
+      },
+    };
+    nextRid += 1;
+    for (const [key, value] of Object.entries(options)) {
+      resource[key] = value;
+    }
+    created.push(resource);
+    live.add(resource);
+    return resource;
+  };
+
+  return { created, live, make };
+}
+
+/** Leaf resources (those carrying an action) reachable through nested submenus. */
+function leavesOf(items: unknown): TrackedResource[] {
+  if (!Array.isArray(items)) return [];
+  const leaves: TrackedResource[] = [];
+  for (const entry of items as TrackedResource[]) {
+    if (entry.kind === "Submenu") {
+      leaves.push(...leavesOf(entry.items));
+    } else if (typeof entry.action === "function") {
+      leaves.push(entry);
+    }
+  }
+  return leaves;
+}
+
+describe("applyTrayMenu native resource lifecycle", () => {
+  let tracker: ReturnType<typeof createResourceTracker>;
+
+  function useTrackedNativeApi() {
+    tracker = createResourceTracker();
+    nativeMenuMocks.menuNew
+      .mockReset()
+      .mockImplementation(async (options: NativeItemOptions) =>
+        tracker.make("Menu", options ?? {}),
+      );
+    nativeMenuMocks.menuItemNew
+      .mockReset()
+      .mockImplementation(async (options: NativeItemOptions) =>
+        tracker.make("MenuItem", options ?? {}),
+      );
+    nativeMenuMocks.checkMenuItemNew
+      .mockReset()
+      .mockImplementation(async (options: NativeItemOptions) =>
+        tracker.make("CheckMenuItem", options ?? {}),
+      );
+    nativeMenuMocks.submenuNew
+      .mockReset()
+      .mockImplementation(async (options: NativeItemOptions) =>
+        tracker.make("Submenu", options ?? {}),
+      );
+    nativeMenuMocks.predefinedMenuItemNew
+      .mockReset()
+      .mockImplementation(async () => tracker.make("PredefinedMenuItem"));
+    nativeMenuMocks.trayGetById.mockReset().mockResolvedValue({
+      id: "main",
+      setMenu: nativeMenuMocks.traySetMenu,
+    });
+    nativeMenuMocks.traySetMenu.mockReset().mockResolvedValue(undefined);
+  }
+
+  beforeEach(() => {
+    useTrackedNativeApi();
+  });
+
+  it("bounds live native resources across repeated menu replacements", async () => {
+    const model = build();
+    const before = tracker.created.length;
+
+    await applyTrayMenu(model, vi.fn());
+    const perMenu = tracker.created.length - before;
+    expect(perMenu).toBeGreaterThan(0);
+
+    await applyTrayMenu(model, vi.fn());
+    await applyTrayMenu(model, vi.fn());
+
+    expect(tracker.created.length - before).toBe(perMenu * 3);
+    expect(tracker.live.size).toBeLessThanOrEqual(perMenu);
+  });
+
+  it("dispatches every action once through the callback of the attached menu", async () => {
+    const staleHandler = vi.fn();
+    const currentHandler = vi.fn();
+
+    await applyTrayMenu(build(), staleHandler);
+    await applyTrayMenu(build(), currentHandler);
+
+    const setMenuCalls = nativeMenuMocks.traySetMenu.mock.calls;
+    const attached = setMenuCalls[setMenuCalls.length - 1]?.[0] as TrackedResource;
+    const leaves = leavesOf(attached.items);
+    expect(leaves.length).toBeGreaterThan(0);
+
+    for (const leaf of leaves) {
+      currentHandler.mockClear();
+      staleHandler.mockClear();
+      (leaf.action as (id: string) => void)(leaf.id as string);
+      expect(currentHandler).toHaveBeenCalledTimes(1);
+      expect(currentHandler).toHaveBeenCalledWith(leaf.id);
+      expect(staleHandler).not.toHaveBeenCalled();
+    }
+  });
+
+  it("releases every created native resource when a nested build step fails", async () => {
+    nativeMenuMocks.submenuNew.mockImplementation(async () => {
+      throw new Error("native submenu rejected");
+    });
+
+    const applied = await applyTrayMenu(build(), vi.fn());
+
+    expect(applied).toBe(false);
+    expect(tracker.created.length).toBeGreaterThan(0);
+    expect(tracker.live.size).toBe(0);
+  });
+
+  it("releases every created native resource when the menu cannot be attached", async () => {
+    nativeMenuMocks.trayGetById.mockResolvedValue(null);
+    const withoutTray = await applyTrayMenu(build(), vi.fn());
+    expect(withoutTray).toBe(false);
+    expect(tracker.created.length).toBeGreaterThan(0);
+    expect(tracker.live.size).toBe(0);
+
+    useTrackedNativeApi();
+    nativeMenuMocks.traySetMenu.mockRejectedValue(new Error("set_menu failed"));
+    const rejectedSetMenu = await applyTrayMenu(build(), vi.fn());
+    expect(rejectedSetMenu).toBe(false);
+    expect(tracker.created.length).toBeGreaterThan(0);
+    expect(tracker.live.size).toBe(0);
+  });
+});
+
