@@ -772,3 +772,446 @@ async fn go_usage_cache_is_not_reused_across_a_binding_change() {
         "a binding change must neither reuse nor refetch the stale snapshot"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Step 5: matching in-flight Go-usage lookups share one network operation.
+//
+// The injected fetch closure is the only network boundary. These tests count
+// actual closure invocations and compare returned snapshots; they do not
+// inspect cache or flight-map internals. A semaphore parks a started fetch
+// until the test has observed the concurrent contender's decision, so the
+// assertions use operation counts rather than wall-clock ceilings.
+// ---------------------------------------------------------------------------
+
+struct GoUsageFlightControl {
+    calls: AtomicUsize,
+    arrived: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl GoUsageFlightControl {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            arrived: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        }
+    }
+
+    async fn wait_for_release(&self) {
+        let permit = self
+            .release
+            .acquire()
+            .await
+            .expect("Go usage flight release semaphore must stay open");
+        permit.forget();
+    }
+}
+
+fn go_usage_body(percent: f64) -> String {
+    format!(
+        r#"{{"usage":{{"rolling":{{"status":"ok","percent":{percent}}},"weekly":{{}},"monthly":{{}}}}}}"#
+    )
+}
+
+fn spawn_go_usage_lookup(
+    config: Arc<GatewayConfig>,
+    cache: Arc<Mutex<GoUsageCache>>,
+    control: Arc<GoUsageFlightControl>,
+    barrier: Arc<tokio::sync::Barrier>,
+    force_refresh: bool,
+    now_ms: u64,
+    outcome: Result<String, String>,
+) -> tokio::task::JoinHandle<Result<ProviderGoUsage, String>> {
+    tokio::spawn(async move {
+        barrier.wait().await;
+        provider_go_usage_with(
+            config.as_ref(),
+            "go-provider",
+            force_refresh,
+            now_ms,
+            cache.as_ref(),
+            move |_, _| {
+                let control = Arc::clone(&control);
+                async move {
+                    control.calls.fetch_add(1, Ordering::SeqCst);
+                    control.arrived.notify_one();
+                    control.wait_for_release().await;
+                    outcome
+                }
+            },
+        )
+        .await
+    })
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_matching_cold_go_usage_lookups_share_one_network_fetch() {
+    let config = Arc::new(config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go",
+        "opencode-go",
+    )));
+    let cache = Arc::new(Mutex::new(GoUsageCache::new()));
+    let control = Arc::new(GoUsageFlightControl::new());
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+    let first = spawn_go_usage_lookup(
+        Arc::clone(&config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        false,
+        1_000,
+        Ok(FIXTURE.to_string()),
+    );
+    let second = spawn_go_usage_lookup(
+        Arc::clone(&config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        false,
+        1_000,
+        Ok(FIXTURE.to_string()),
+    );
+
+    control.arrived.notified().await;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    let observed = control.calls.load(Ordering::SeqCst);
+    control.release.add_permits(8);
+
+    let first = first.await.expect("first Go usage task must not panic");
+    let second = second.await.expect("second Go usage task must not panic");
+    let first = first.expect("first concurrent Go usage lookup must succeed");
+    let second = second.expect("second concurrent Go usage lookup must succeed");
+    assert_eq!(first, expected_fixture());
+    assert_eq!(second, expected_fixture());
+    assert_eq!(
+        observed, 1,
+        "two concurrent matching cold Go usage lookups must invoke the network fetch once, observed {observed}"
+    );
+    assert_eq!(
+        control.calls.load(Ordering::SeqCst),
+        1,
+        "no later fetch may run for the same settled identity"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_matching_forced_go_usage_refreshes_join_one_flight() {
+    let config = Arc::new(config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go",
+        "opencode-go",
+    )));
+    let mut cache = GoUsageCache::new();
+    cache.store(
+        "go-provider",
+        SECRET_KEY,
+        "https://opencode.ai/zen/go",
+        1_000,
+        expected_fixture(),
+    );
+    let cache = Arc::new(Mutex::new(cache));
+    let control = Arc::new(GoUsageFlightControl::new());
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+    let first = spawn_go_usage_lookup(
+        Arc::clone(&config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        true,
+        1_001,
+        Ok(FIXTURE.to_string()),
+    );
+    let second = spawn_go_usage_lookup(
+        Arc::clone(&config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        true,
+        1_001,
+        Ok(FIXTURE.to_string()),
+    );
+
+    control.arrived.notified().await;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    let observed = control.calls.load(Ordering::SeqCst);
+    control.release.add_permits(8);
+
+    let first = first
+        .await
+        .expect("first forced Go usage task must not panic");
+    let second = second
+        .await
+        .expect("second forced Go usage task must not panic");
+    assert_eq!(
+        first.expect("first forced Go usage refresh must succeed"),
+        expected_fixture()
+    );
+    assert_eq!(
+        second.expect("second forced Go usage refresh must succeed"),
+        expected_fixture()
+    );
+    assert_eq!(
+        observed, 1,
+        "a forced Go usage refresh must bypass completed success but join a matching in-flight fetch, observed {observed}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_go_usage_lookups_with_distinct_base_urls_do_not_share() {
+    let cache = Arc::new(Mutex::new(GoUsageCache::new()));
+    let control = Arc::new(GoUsageFlightControl::new());
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_config = Arc::new(config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/first",
+        "opencode-go",
+    )));
+    let second_config = Arc::new(config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/second",
+        "opencode-go",
+    )));
+
+    let first = spawn_go_usage_lookup(
+        Arc::clone(&first_config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        false,
+        1_000,
+        Ok(go_usage_body(1.0)),
+    );
+    let second = spawn_go_usage_lookup(
+        Arc::clone(&second_config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        false,
+        1_000,
+        Ok(go_usage_body(2.0)),
+    );
+
+    control.arrived.notified().await;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    let observed = control.calls.load(Ordering::SeqCst);
+    control.release.add_permits(8);
+
+    let first = first
+        .await
+        .expect("first base-URL Go usage task must not panic")
+        .expect("first base-URL Go usage lookup must succeed");
+    let second = second
+        .await
+        .expect("second base-URL Go usage task must not panic")
+        .expect("second base-URL Go usage lookup must succeed");
+    assert_eq!(
+        observed, 2,
+        "different base URLs are different Go usage identities and must not share a fetch, observed {observed}"
+    );
+    assert_eq!(first.usage.rolling.percent, 1.0);
+    assert_eq!(second.usage.rolling.percent, 2.0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_go_usage_lookups_with_distinct_keys_do_not_share() {
+    let cache = Arc::new(Mutex::new(GoUsageCache::new()));
+    let control = Arc::new(GoUsageFlightControl::new());
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_config = Arc::new(config_with_provider(bound_go_provider(
+        "sk-first-go-source",
+        "https://opencode.ai/zen/go",
+        "opencode-go",
+    )));
+    let second_config = Arc::new(config_with_provider(bound_go_provider(
+        "sk-second-go-source",
+        "https://opencode.ai/zen/go",
+        "opencode-go",
+    )));
+
+    let first = spawn_go_usage_lookup(
+        Arc::clone(&first_config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        false,
+        1_000,
+        Ok(go_usage_body(3.0)),
+    );
+    let second = spawn_go_usage_lookup(
+        Arc::clone(&second_config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        false,
+        1_000,
+        Ok(go_usage_body(4.0)),
+    );
+
+    control.arrived.notified().await;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    let observed = control.calls.load(Ordering::SeqCst);
+    control.release.add_permits(8);
+
+    let first = first
+        .await
+        .expect("first key Go usage task must not panic")
+        .expect("first key Go usage lookup must succeed");
+    let second = second
+        .await
+        .expect("second key Go usage task must not panic")
+        .expect("second key Go usage lookup must succeed");
+    assert_eq!(
+        observed, 2,
+        "different pinned keys are different Go usage identities and must not share a fetch, observed {observed}"
+    );
+    assert_eq!(first.usage.rolling.percent, 3.0);
+    assert_eq!(second.usage.rolling.percent, 4.0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_go_usage_failure_settles_and_a_later_lookup_retries() {
+    let config = Arc::new(config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go",
+        "opencode-go",
+    )));
+    let cache = Arc::new(Mutex::new(GoUsageCache::new()));
+    let control = Arc::new(GoUsageFlightControl::new());
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+    let first = spawn_go_usage_lookup(
+        Arc::clone(&config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        false,
+        1_000,
+        Err("HTTP 503 Service Unavailable".to_string()),
+    );
+    let second = spawn_go_usage_lookup(
+        Arc::clone(&config),
+        Arc::clone(&cache),
+        Arc::clone(&control),
+        Arc::clone(&barrier),
+        false,
+        1_000,
+        Err("HTTP 503 Service Unavailable".to_string()),
+    );
+
+    control.arrived.notified().await;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    let concurrent_calls = control.calls.load(Ordering::SeqCst);
+    control.release.add_permits(8);
+
+    assert!(first
+        .await
+        .expect("first failed Go usage task must not panic")
+        .is_err());
+    assert!(second
+        .await
+        .expect("second failed Go usage task must not panic")
+        .is_err());
+
+    let retry_control = Arc::clone(&control);
+    let retry = provider_go_usage_with(
+        config.as_ref(),
+        "go-provider",
+        false,
+        1_001,
+        cache.as_ref(),
+        move |_, _| {
+            let control = Arc::clone(&retry_control);
+            async move {
+                control.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(FIXTURE.to_string())
+            }
+        },
+    )
+    .await
+    .expect("a settled failed Go usage flight must allow a later lookup to retry");
+    assert_eq!(retry, expected_fixture());
+
+    let total_calls = control.calls.load(Ordering::SeqCst);
+    assert!(
+        concurrent_calls == 1 && total_calls == 2,
+        "one matching failed Go usage flight must settle and allow one retry, concurrent={concurrent_calls}, total={total_calls}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_go_usage_owner_does_not_strand_a_later_lookup() {
+    let config = Arc::new(config_with_provider(bound_go_provider(
+        SECRET_KEY,
+        "https://opencode.ai/zen/go",
+        "opencode-go",
+    )));
+    let cache = Arc::new(Mutex::new(GoUsageCache::new()));
+    let control = Arc::new(GoUsageFlightControl::new());
+
+    let owner_config = Arc::clone(&config);
+    let owner_cache = Arc::clone(&cache);
+    let owner_control = Arc::clone(&control);
+    let owner = tokio::spawn(async move {
+        provider_go_usage_with(
+            owner_config.as_ref(),
+            "go-provider",
+            false,
+            1_000,
+            owner_cache.as_ref(),
+            move |_, _| {
+                let control = Arc::clone(&owner_control);
+                async move {
+                    control.calls.fetch_add(1, Ordering::SeqCst);
+                    control.arrived.notify_one();
+                    control.wait_for_release().await;
+                    Ok(FIXTURE.to_string())
+                }
+            },
+        )
+        .await
+    });
+
+    control.arrived.notified().await;
+    owner.abort();
+    assert!(owner.await.expect_err("owner task must be cancelled").is_cancelled());
+
+    let retry_control = Arc::clone(&control);
+    let retry = provider_go_usage_with(
+        config.as_ref(),
+        "go-provider",
+        false,
+        1_001,
+        cache.as_ref(),
+        move |_, _| {
+            let control = Arc::clone(&retry_control);
+            async move {
+                control.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(FIXTURE.to_string())
+            }
+        },
+    );
+    let retry = tokio::time::timeout(std::time::Duration::from_secs(2), retry)
+        .await
+        .expect("a cancelled Go usage flight must not strand a later lookup")
+        .expect("the later Go usage lookup must retry successfully");
+    assert_eq!(retry, expected_fixture());
+    assert_eq!(
+        control.calls.load(Ordering::SeqCst),
+        2,
+        "the cancelled Go usage fetch and one retry are the only network operations"
+    );
+}

@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::watch;
 
 pub(in crate::ai_gateway) const GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 pub(in crate::ai_gateway) const GO_USAGE_CACHE_TTL_MS: u64 = 300_000;
@@ -66,6 +67,16 @@ pub(in crate::ai_gateway) fn parse_go_usage(body: &str) -> Result<ProviderGoUsag
 pub(in crate::ai_gateway) struct GoUsageRequest {
     pub(in crate::ai_gateway) url: String,
     pub(in crate::ai_gateway) api_key: String,
+    pub(in crate::ai_gateway) policy: QuotaStrategy,
+}
+
+/// Stable name of the effective policy inside a source identity.
+fn go_usage_policy_identity(strategy: QuotaStrategy) -> &'static str {
+    match strategy {
+        QuotaStrategy::NoQuota => "none",
+        QuotaStrategy::Commandcode => "commandcode",
+        QuotaStrategy::OpencodeGo => "opencode_go",
+    }
 }
 
 /// Resolve the OpenCode Go usage request for a provider strictly from its
@@ -78,7 +89,8 @@ pub(in crate::ai_gateway) fn resolve_go_usage_request(
     config: &GatewayConfig,
     provider: &GatewayUpstreamProvider,
 ) -> Result<GoUsageRequest, String> {
-    if effective_quota_strategy(config, provider) != QuotaStrategy::OpencodeGo {
+    let policy = effective_quota_strategy(config, provider);
+    if policy != QuotaStrategy::OpencodeGo {
         return Err(
             "provider is not bound to an OpenCode Go quota policy; bind the OpenCode Go template to monitor usage"
                 .to_string(),
@@ -94,6 +106,7 @@ pub(in crate::ai_gateway) fn resolve_go_usage_request(
     Ok(GoUsageRequest {
         url: GO_USAGE_URL.to_string(),
         api_key,
+        policy,
     })
 }
 
@@ -108,14 +121,103 @@ struct CachedGoUsage {
     snapshot: ProviderGoUsage,
 }
 
+/// Exact source identity of one Go-usage lookup. Concurrent lookups may share a
+/// fetch only when the provider, pinned key, base URL and effective policy all
+/// match, so a rotated key or changed endpoint never receives another source's
+/// result.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct GoUsageSourceIdentity {
+    provider_id: String,
+    api_key: String,
+    base_url: String,
+    policy: &'static str,
+}
+
+/// One in-flight Go-usage fetch. The watch channel publishes the settled result
+/// to every follower. Its own keep-alive receiver keeps the channel open even
+/// when a follower subscribes only after the owner settled, so the published
+/// result can never be lost.
+struct GoUsageFlight {
+    tx: watch::Sender<Option<Result<ProviderGoUsage, String>>>,
+    _keepalive: watch::Receiver<Option<Result<ProviderGoUsage, String>>>,
+}
+
+/// Ownership token of one in-flight Go-usage fetch. Dropping it before
+/// completion (a cancelled caller) settles the flight with an error and removes
+/// only its own entry, so a replacement flight is never cleared.
+struct GoUsageFlightOwner<'a> {
+    cache: &'a Mutex<GoUsageCache>,
+    identity: GoUsageSourceIdentity,
+    flight: Arc<GoUsageFlight>,
+}
+
+impl GoUsageFlightOwner<'_> {
+    fn finish(self, result: Result<ProviderGoUsage, String>) {
+        let _ = self.flight.tx.send(Some(result));
+    }
+
+    fn clear(&self) {
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if cache
+            .flights
+            .get(&self.identity)
+            .is_some_and(|existing| Arc::ptr_eq(existing, &self.flight))
+        {
+            cache.flights.remove(&self.identity);
+        }
+    }
+}
+
+impl Drop for GoUsageFlightOwner<'_> {
+    fn drop(&mut self) {
+        let unfinished = self.flight.tx.borrow().is_none();
+        if unfinished {
+            let _ = self
+                .flight
+                .tx
+                .send(Some(Err("Go usage lookup was cancelled".to_string())));
+        }
+        self.clear();
+    }
+}
+
+/// Await and reuse the owner's in-flight result without another fetch.
+async fn wait_for_go_usage_flight(flight: Arc<GoUsageFlight>) -> Result<ProviderGoUsage, String> {
+    let mut rx = flight.tx.subscribe();
+    if let Some(result) = rx.borrow().clone() {
+        return result;
+    }
+    loop {
+        if rx.changed().await.is_err() {
+            return rx.borrow().clone().unwrap_or_else(|| {
+                Err("Go usage lookup ended without a result".to_string())
+            });
+        }
+        if let Some(result) = rx.borrow().clone() {
+            return result;
+        }
+    }
+}
+
+enum GoUsageStart<'a> {
+    Cached(ProviderGoUsage),
+    Join(Arc<GoUsageFlight>),
+    Own(GoUsageFlightOwner<'a>),
+}
+
 pub(in crate::ai_gateway) struct GoUsageCache {
     entries: HashMap<String, CachedGoUsage>,
+    flights: HashMap<GoUsageSourceIdentity, Arc<GoUsageFlight>>,
 }
 
 impl GoUsageCache {
     pub(in crate::ai_gateway) fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            flights: HashMap::new(),
         }
     }
 
@@ -175,36 +277,83 @@ where
         .iter()
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
-    let GoUsageRequest { url, api_key } = resolve_go_usage_request(config, provider)?;
+    let GoUsageRequest {
+        url,
+        api_key,
+        policy,
+    } = resolve_go_usage_request(config, provider)?;
+    let identity = GoUsageSourceIdentity {
+        provider_id: provider_id.to_string(),
+        api_key: api_key.clone(),
+        base_url: provider.base_url.clone(),
+        policy: go_usage_policy_identity(policy),
+    };
 
-    {
-        let cache = cache
+    let start = {
+        let mut guard = cache
             .lock()
             .map_err(|_| "Go usage cache is unavailable".to_string())?;
-        if let Some(snapshot) = cache.get_fresh(
+        if let Some(snapshot) = guard.get_fresh(
             provider_id,
             &api_key,
             &provider.base_url,
             now_ms,
             force_refresh,
         ) {
-            return Ok(snapshot);
+            GoUsageStart::Cached(snapshot)
+        } else if let Some(flight) = guard.flights.get(&identity) {
+            GoUsageStart::Join(Arc::clone(flight))
+        } else {
+            let (tx, keepalive) = watch::channel(None);
+            let flight = Arc::new(GoUsageFlight {
+                tx,
+                _keepalive: keepalive,
+            });
+            guard
+                .flights
+                .insert(identity.clone(), Arc::clone(&flight));
+            GoUsageStart::Own(GoUsageFlightOwner {
+                cache,
+                identity: identity.clone(),
+                flight,
+            })
         }
-    }
+    };
 
-    let body = fetch(url, api_key.clone()).await?;
-    let snapshot = parse_go_usage(&body)?;
-    cache
-        .lock()
-        .map_err(|_| "Go usage cache is unavailable".to_string())?
-        .store(
-            provider_id,
-            &api_key,
-            &provider.base_url,
-            now_ms,
-            snapshot.clone(),
-        );
-    Ok(snapshot)
+    let owner = match start {
+        GoUsageStart::Cached(snapshot) => return Ok(snapshot),
+        GoUsageStart::Join(flight) => return wait_for_go_usage_flight(flight).await,
+        GoUsageStart::Own(owner) => owner,
+    };
+
+    let result = match fetch(url, api_key.clone()).await {
+        Ok(body) => parse_go_usage(&body),
+        Err(error) => Err(error),
+    };
+    let result = match result {
+        Ok(snapshot) => {
+            let stored = cache
+                .lock()
+                .map_err(|_| "Go usage cache is unavailable".to_string())
+                .map(|mut cache| {
+                    cache.store(
+                        provider_id,
+                        &api_key,
+                        &provider.base_url,
+                        now_ms,
+                        snapshot.clone(),
+                    );
+                });
+            match stored {
+                Ok(()) => Ok(snapshot),
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    };
+
+    owner.finish(result.clone());
+    result
 }
 
 static GO_USAGE_CACHE: OnceLock<Mutex<GoUsageCache>> = OnceLock::new();
@@ -252,11 +401,22 @@ pub async fn ai_gateway_provider_go_usage(
     .await
 }
 
+static GO_USAGE_HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
+fn go_usage_http_client() -> Result<reqwest::Client, String> {
+    GO_USAGE_HTTP_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(GO_USAGE_REQUEST_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .clone()
+}
+
 async fn fetch_go_usage_body(url: String, api_key: String) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(GO_USAGE_REQUEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
+    let client = go_usage_http_client()
         .map_err(|_| format!("failed to prepare a request for {url}"))?;
     let response = client
         .get(&url)

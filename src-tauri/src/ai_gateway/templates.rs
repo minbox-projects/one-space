@@ -14,6 +14,7 @@ use super::types_config::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Raw template document shape, kept lenient so unknown protocol strings can be
@@ -202,9 +203,15 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
     Ok(templates)
 }
 
-/// Parse the in-app snapshot embedded at compile time.
+/// Parse the in-app snapshot embedded at compile time once per process. The
+/// embedded bytes are immutable, so every caller receives an independent clone
+/// of the same validated template list. Persisted template snapshots still take
+/// precedence wherever the effective template is resolved.
 pub fn builtin_templates() -> Result<Vec<ProviderTemplate>, String> {
-    parse_template_snapshot(include_str!("provider_templates.json"))
+    static BUILTIN_TEMPLATES: OnceLock<Result<Vec<ProviderTemplate>, String>> = OnceLock::new();
+    BUILTIN_TEMPLATES
+        .get_or_init(|| parse_template_snapshot(include_str!("provider_templates.json")))
+        .clone()
 }
 
 /// Resolve one built-in template by its id, naming the id in an actionable
@@ -1319,6 +1326,23 @@ fn join_commandcode_client_capabilities(
         .map_err(|error| format!("failed to encode the enriched model list: {error}"))
 }
 
+static TEMPLATE_MODELS_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
+/// Reuse one HTTP client for template model-list requests. The policy stays the
+/// existing 15-second timeout with the default redirect handling; only the
+/// client construction is shared.
+fn template_models_client() -> Result<reqwest::Client, String> {
+    TEMPLATE_MODELS_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(|error| format!("failed to prepare a model-list request: {error}"))
+}
+
 /// Fetch a template's model list from its configured `models_url` through
 /// `reqwest` with a 15-second timeout and no credentials, delegating the
 /// CommandCode client-catalog join to [`fetch_template_models_with`]. A blank
@@ -1327,10 +1351,7 @@ fn join_commandcode_client_capabilities(
 pub(in crate::ai_gateway) async fn fetch_template_models(
     template: &ProviderTemplate,
 ) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|error| format!("failed to prepare a model-list request: {error}"))?;
+    let client = template_models_client()?;
     fetch_template_models_with(template, move |url| {
         let client = client.clone();
         async move {
