@@ -225,6 +225,24 @@ pub(in crate::ai_gateway) fn start_template_op(template_id: &str) -> StartOutcom
     })
 }
 
+/// Emit one configuration-update event after an owned automatic template sync
+/// succeeded, so an open AI Gateway page reloads the persisted configuration and
+/// the refreshed template mappings. The supplied `AppHandle` is the emission
+/// route because the scheduler runs even when the gateway listener never
+/// captured a handle; in test builds the notification is also recorded on the
+/// existing configuration-event seam.
+fn notify_config_updated(app: Option<&AppHandle>) {
+    #[cfg(test)]
+    super::runtime_http::CONFIG_UPDATE_EVENTS.with(|events| {
+        events
+            .borrow_mut()
+            .push(super::AI_GATEWAY_CONFIG_UPDATED_EVENT.to_string())
+    });
+    if let Some(handle) = app {
+        let _ = handle.emit(super::AI_GATEWAY_CONFIG_UPDATED_EVENT, ());
+    }
+}
+
 /// Update the failure store from one completed owner result.
 fn finish_owner(
     owner: TemplateOpOwner,
@@ -274,6 +292,9 @@ pub(in crate::ai_gateway) async fn sync_template_automatic(
     match start_template_op(template_id) {
         StartOutcome::Owner(owner) => {
             let result = super::commands::execute_template_sync(app.clone(), template_id).await;
+            if result.is_ok() {
+                notify_config_updated(app.as_ref());
+            }
             finish_owner(owner, template_id, app.as_ref(), &result);
             AutomaticOutcome::Ran(result)
         }

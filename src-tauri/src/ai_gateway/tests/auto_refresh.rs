@@ -14,7 +14,9 @@
 //! failure store and the installed-scheduler singleton are never exercised
 //! concurrently.
 
-use super::temp_home;
+use super::{
+    clear_config_update_events, recorded_config_update_events, spawn_mock_upstream, temp_home,
+};
 use crate::ai_gateway::auto_refresh::{
     clear_template_failure, eligible_template_ids, failure_snapshot,
     install_scheduler_for_tests_with, request_rearm, reset_auto_refresh_for_tests, run_batch_with,
@@ -24,8 +26,10 @@ use crate::ai_gateway::auto_refresh::{
 };
 use crate::ai_gateway::templates::ProviderTemplateView;
 use crate::ai_gateway::types_config::{
-    GatewayConfig, ProviderTemplate, ProviderTemplateState, UpstreamProtocol,
+    GatewayConfig, GatewayUpstreamProvider, ModelMapping, ProviderTemplate, ProviderTemplateModel,
+    ProviderTemplateState, UpstreamProtocol,
 };
+use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -364,4 +368,110 @@ fn scheduler_installs_at_startup_exactly_once() {
         !scheduler_started(),
         "the trailing reset must leave no scheduler installed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Automatic refresh broadcast: a successful automatic template refresh must
+// publish the existing `ai-gateway-config-update` event, so an open AI Gateway
+// UI reloads the refreshed model mappings of the providers bound to that
+// template. The manual path reloads the frontend explicitly, which is why only
+// the automatic path kept stale mappings.
+// ---------------------------------------------------------------------------
+
+/// A successful automatic template sync broadcasts exactly one
+/// `ai-gateway-config-update` event after the refreshed mappings are
+/// persisted.
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_template_sync_broadcasts_config_update() {
+    let _home = super::temp_home("auto-refresh-config-update");
+    reset_auto_refresh_for_tests();
+    clear_config_update_events();
+
+    let (models_url, _log) = spawn_mock_upstream(|_| {
+        super::MockReply::Json(
+            200,
+            json!({"data": [{"id": "m1", "name": "M1"}, {"id": "m2", "name": "M2"}]}),
+        )
+    })
+    .await;
+
+    // One template whose model list is the mock upstream, and one provider
+    // bound to it whose single mapping is the model the upstream still lists.
+    let mut config = GatewayConfig::default();
+    config.provider_templates.push(ProviderTemplateState {
+        template_id: "t".to_string(),
+        template: Some(ProviderTemplate {
+            id: "t".to_string(),
+            name: "Template t".to_string(),
+            description: String::new(),
+            base_url: "https://sample.test/v1".to_string(),
+            protocol: UpstreamProtocol::ChatCompletions,
+            source: models_url.clone(),
+            models_url: Some(models_url.clone()),
+            models: vec![ProviderTemplateModel {
+                upstream_model: "m1".to_string(),
+                display_name: Some("M1".to_string()),
+                enabled: true,
+                ..ProviderTemplateModel::default()
+            }],
+            icon: None,
+            ..ProviderTemplate::default()
+        }),
+        synced_at: None,
+        source: None,
+    });
+    config.providers.push(GatewayUpstreamProvider {
+        id: "p1".to_string(),
+        name: "Provider One".to_string(),
+        base_url: "https://sample.test/v1".to_string(),
+        protocol: UpstreamProtocol::ChatCompletions,
+        template_id: Some("t".to_string()),
+        mappings: vec![ModelMapping {
+            local_model: "m1".to_string(),
+            upstream_model: "m1".to_string(),
+            enabled: true,
+            display_name: Some("M1".to_string()),
+            ..ModelMapping::default()
+        }],
+        ..GatewayUpstreamProvider::default()
+    });
+    crate::ai_gateway::storage::write_config(&config).expect("seed the encrypted gateway config");
+
+    let outcome = sync_template_automatic(None, "t").await;
+    let view = match outcome {
+        AutomaticOutcome::Ran(Ok(view)) => view,
+        AutomaticOutcome::Ran(Err(reason)) => {
+            panic!("the automatic template sync must succeed: {reason}")
+        }
+        AutomaticOutcome::Skipped => panic!("the automatic template sync must not be skipped"),
+    };
+    assert!(
+        view.template
+            .models
+            .iter()
+            .any(|model| model.upstream_model == "m2"),
+        "the refreshed template must publish the newly fetched model"
+    );
+
+    let persisted = crate::ai_gateway::storage::read_config().expect("read the persisted config");
+    let provider = persisted
+        .providers
+        .iter()
+        .find(|provider| provider.id == "p1")
+        .expect("the bound provider must persist");
+    assert!(
+        provider
+            .mappings
+            .iter()
+            .any(|mapping| mapping.upstream_model == "m2"),
+        "the persisted bound provider must gain the new mapping"
+    );
+
+    assert_eq!(
+        recorded_config_update_events(),
+        vec![crate::ai_gateway::AI_GATEWAY_CONFIG_UPDATED_EVENT.to_string()],
+        "a successful automatic template sync must broadcast exactly one config-update event"
+    );
+
+    clear_config_update_events();
 }
