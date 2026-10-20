@@ -1873,7 +1873,7 @@ async fn attempt_non_streaming_inner(
         }
     }
 
-    // Distinct last-stage fallback (REQ-002/REQ-003): one pass after every
+    // Distinct last-stage fallback: one pass after every
     // regular candidate, its finite retries and the regular probe are exhausted,
     // sharing this request's single key-probe allowance and never entering the
     // primary weighted order. It owns no delayed retry cycle, so a failed
