@@ -92,7 +92,8 @@ pub fn validate_template_auto_refresh_minutes(minutes: i64) -> Result<u32, Strin
 /// older or corrupted config falls back to the default.
 pub(in crate::ai_gateway) fn normalize_template_auto_refresh_minutes(minutes: u32) -> u32 {
     if minutes == 0
-        || (MIN_TEMPLATE_AUTO_REFRESH_MINUTES..=MAX_TEMPLATE_AUTO_REFRESH_MINUTES).contains(&minutes)
+        || (MIN_TEMPLATE_AUTO_REFRESH_MINUTES..=MAX_TEMPLATE_AUTO_REFRESH_MINUTES)
+            .contains(&minutes)
     {
         minutes
     } else {
@@ -493,8 +494,9 @@ impl PoolNativeReasoning {
                     "output_config": { "effort": value },
                     "thinking": { "type": "adaptive" },
                 })),
-                PoolReasoningProfile::AnthropicManualBudget
-                | PoolReasoningProfile::Unknown(_) => serde_json::Map::new(),
+                PoolReasoningProfile::AnthropicManualBudget | PoolReasoningProfile::Unknown(_) => {
+                    serde_json::Map::new()
+                }
             },
             PoolNativeAction::Budget { budget_tokens } => wire_object(json!({
                 "thinking": { "type": "enabled", "budget_tokens": budget_tokens },
@@ -756,6 +758,12 @@ impl Default for ModelPoolCandidate {
 /// preference or `auto`, where a missing persisted value reads as `auto`. It is
 /// always serialized so a legacy pool persists as `auto` without inferring a
 /// capability.
+///
+/// `fallback` is the optional last-stage source the pool may use after every
+/// regular candidate is exhausted. It references the same real provider mapping
+/// shape as a regular candidate, including the pool-local reasoning declaration
+/// and the inclusive 1..=100 weight whose stored default is 1, but it never
+/// enters primary scheduling. An absent member means no configured fallback.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelPool {
     pub id: String,
@@ -769,6 +777,8 @@ pub struct ModelPool {
     pub candidates: Vec<ModelPoolCandidate>,
     #[serde(default)]
     pub default_reasoning_effort: PoolDefaultReasoningEffort,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<ModelPoolCandidate>,
 }
 
 impl Default for ModelPool {
@@ -780,6 +790,7 @@ impl Default for ModelPool {
             enabled: true,
             candidates: Vec::new(),
             default_reasoning_effort: PoolDefaultReasoningEffort::Auto,
+            fallback: None,
         }
     }
 }

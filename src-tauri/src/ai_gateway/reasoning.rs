@@ -65,6 +65,16 @@ pub(in crate::ai_gateway) fn validate_pool_reasoning(
             })?;
         }
     }
+    if let Some(fallback) = pool.fallback.as_ref() {
+        if let Some(reasoning) = fallback.reasoning.as_ref() {
+            validate_candidate_reasoning(fallback, reasoning).map_err(|error| {
+                format!(
+                    "model pool fallback ('{} -> {}') reasoning policy is invalid: {error}",
+                    fallback.local_model, fallback.upstream_model
+                )
+            })?;
+        }
+    }
     validate_default_reasoning(config, existing, pool)
 }
 
@@ -86,7 +96,8 @@ fn validate_default_reasoning(
         ));
     }
     let currently_valid = pool_has_valid_effort_mapping(config, pool, effort);
-    if existing.and_then(|stored| concrete_default(&stored.default_reasoning_effort)) == Some(effort)
+    if existing.and_then(|stored| concrete_default(&stored.default_reasoning_effort))
+        == Some(effort)
     {
         // The default is retained. Its untouched declaration may survive an
         // unavailable source, but a declaration changed by this save still needs
@@ -109,9 +120,15 @@ fn validate_default_reasoning(
     Ok(())
 }
 
-/// Whether any candidate declares a mapping for `effort`.
+/// The configured source references whose declarations form the pool's static
+/// reasoning union: every regular candidate plus the optional fallback.
+fn configured_candidates(pool: &ModelPool) -> impl Iterator<Item = &ModelPoolCandidate> {
+    pool.candidates.iter().chain(pool.fallback.iter())
+}
+
+/// Whether any configured reference declares a mapping for `effort`.
 fn pool_declares_effort(pool: &ModelPool, effort: PoolReasoningEffort) -> bool {
-    pool.candidates.iter().any(|candidate| {
+    configured_candidates(pool).any(|candidate| {
         candidate.reasoning.as_ref().is_some_and(|reasoning| {
             reasoning
                 .mappings
@@ -121,24 +138,22 @@ fn pool_declares_effort(pool: &ModelPool, effort: PoolReasoningEffort) -> bool {
     })
 }
 
-/// Whether any candidate both declares a mapping for `effort` and currently
-/// resolves against the exact provider, full source pair and effective protocol.
+/// Whether any configured reference both declares a mapping for `effort` and
+/// currently resolves against the exact provider, full source pair and effective
+/// protocol.
 fn pool_has_valid_effort_mapping(
     config: &GatewayConfig,
     pool: &ModelPool,
     effort: PoolReasoningEffort,
 ) -> bool {
-    pool.candidates.iter().any(|candidate| {
+    configured_candidates(pool).any(|candidate| {
         super::model_pools::reference_resolves(config, candidate)
-            && candidate
-                .reasoning
-                .as_ref()
-                .is_some_and(|reasoning| {
-                    reasoning
-                        .mappings
-                        .iter()
-                        .any(|mapping| mapping.effort == effort)
-                })
+            && candidate.reasoning.as_ref().is_some_and(|reasoning| {
+                reasoning
+                    .mappings
+                    .iter()
+                    .any(|mapping| mapping.effort == effort)
+            })
     })
 }
 
@@ -161,9 +176,7 @@ fn effort_declarations(
     pool: &ModelPool,
     effort: PoolReasoningEffort,
 ) -> Vec<(String, PoolReasoningAction)> {
-    let mut declarations = pool
-        .candidates
-        .iter()
+    let mut declarations = configured_candidates(pool)
         .filter_map(|candidate| {
             let action = candidate
                 .reasoning
@@ -277,7 +290,7 @@ fn validate_candidate_reasoning(
                     let trimmed = value.trim();
                     if trimmed.is_empty() {
                         return Err(
-                            "a positive preference cannot map to a blank native value".to_string(),
+                            "a positive preference cannot map to a blank native value".to_string()
                         );
                     }
                     if trimmed.eq_ignore_ascii_case("none") {
@@ -817,7 +830,10 @@ pub(in crate::ai_gateway) fn candidate_serves_effort(
                     && trimmed != "enabled")
         }
         PoolReasoningAction::Budget { budget_tokens } => {
-            if !matches!(declared.profile, PoolReasoningProfile::AnthropicManualBudget) {
+            if !matches!(
+                declared.profile,
+                PoolReasoningProfile::AnthropicManualBudget
+            ) {
                 return false;
             }
             let Some(range) = declared.budget else {
@@ -832,17 +848,21 @@ pub(in crate::ai_gateway) fn candidate_serves_effort(
 }
 
 /// Derive one pool's static reasoning catalog from the current provider list.
+///
+/// The support set and coverage count the configured union of regular candidates
+/// and the optional fallback, while the regular candidate rows themselves remain
+/// regular-only. Static support never consults transient readiness.
 pub(in crate::ai_gateway) fn pool_reasoning_catalog(
     providers: &[GatewayUpstreamProvider],
     pool: &ModelPool,
 ) -> PoolReasoningCatalog {
-    let total_candidates = pool.candidates.len();
+    let configured: Vec<&ModelPoolCandidate> = configured_candidates(pool).collect();
+    let total_candidates = configured.len();
     let reasoning_coverage: Vec<PoolReasoningCoverage> = CANONICAL_POOL_EFFORTS
         .iter()
         .map(|effort| PoolReasoningCoverage {
             effort: effort.as_str().to_string(),
-            mapped_candidates: pool
-                .candidates
+            mapped_candidates: configured
                 .iter()
                 .filter(|candidate| candidate_serves_effort(providers, candidate, *effort))
                 .count(),

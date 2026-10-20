@@ -21,9 +21,10 @@
 //! Rust symbol. No real CLI file, terminal projection or user credential is
 //! read or written.
 
-use super::{gateway_config, isolated_temp_home};
+use super::{gateway_config, isolated_temp_home, write_raw_gateway_config};
 use crate::ai_gateway::commands::{
-    apply_terminal_sync_with_selection, terminal_targets_from, TerminalSyncProfile, UpsertFuture,
+    ai_gateway_model_pools_status, apply_terminal_sync_with_selection, terminal_targets_from,
+    TerminalSyncProfile, UpsertFuture,
 };
 use crate::ai_gateway::model_pools::cool_pool_candidate;
 use crate::ai_gateway::runtime_http::{local_model_names, models_payload};
@@ -505,6 +506,7 @@ fn reasoning_pool(
         enabled: true,
         candidates,
         default_reasoning_effort: default,
+        fallback: None,
     }
 }
 
@@ -976,5 +978,141 @@ fn pool_policy_edit_marks_opencode_pending_for_manual_sync() {
     assert!(
         opencode.pending_sync,
         "a pool reasoning policy edit must require the existing manual sync: {opencode:?}"
+    );
+}
+
+/// AC-005: a pool that configures one optional fallback exposes that fallback
+/// as a separate status member next to the regular-only candidate list, so the
+/// fallback's own readiness and reason never fold into the regular rows.
+#[test]
+fn pool_status_exposes_separate_fallback_status_field() {
+    let _home = isolated_temp_home("pool-terminal-fallback-status");
+    let mut raw = serde_json::to_value(gateway_config(19000)).expect("serialize the config");
+    raw["model_pools"] = json!([{
+        "id": "pool-status",
+        "name": "Status Pool",
+        "model": "status-model",
+        "enabled": true,
+        "candidates": [{
+            "provider_id": "g1",
+            "local_model": ORDINARY_LOCAL,
+            "upstream_model": ORDINARY_UPSTREAM,
+            "protocol": "chat_completions",
+            "weight": 1,
+        }],
+        "fallback": {
+            "provider_id": "g1",
+            "local_model": "ds",
+            "upstream_model": "deepseek-chat",
+            "protocol": "chat_completions",
+            "weight": 1,
+        },
+    }]);
+    write_raw_gateway_config(&raw);
+
+    let statuses = ai_gateway_model_pools_status().expect("pool status");
+    let value = serde_json::to_value(&statuses).expect("serialize pool status");
+    let entry = value
+        .as_array()
+        .expect("status array")
+        .iter()
+        .find(|pool| pool["id"] == "pool-status")
+        .unwrap_or_else(|| panic!("missing pool status row: {value}"))
+        .clone();
+
+    let fallback = &entry["fallback"];
+    assert_eq!(fallback["provider_id"], "g1", "{entry}");
+    assert_eq!(fallback["local_model"], "ds", "{entry}");
+    assert_eq!(fallback["upstream_model"], "deepseek-chat", "{entry}");
+    let candidates = entry["candidates"].as_array().expect("regular candidate rows");
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the regular candidate list must stay regular-only: {entry}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|row| row["local_model"] != "ds"),
+        "the fallback must not appear as a regular candidate: {entry}"
+    );
+}
+
+/// Boundary A RED (AC-005 / AC-009): a pool whose *fallback alone* declares a
+/// reasoning preference must advertise that preference in the discovery row and
+/// in the OpenCode payload's model variants, because both surfaces derive the
+/// static support from the configured union of regular candidates and the
+/// fallback. The regular source rows stay regular-only.
+#[tokio::test]
+async fn pool_fallback_only_support_reaches_discovery_and_opencode_payload() {
+    let _home = isolated_temp_home("pool-terminal-fallback-support");
+    let mut raw = serde_json::to_value(gateway_config(19000)).expect("serialize the config");
+    raw["model_pools"] = json!([{
+        "id": "pool-union",
+        "name": "Union Pool",
+        "model": "union-model",
+        "enabled": true,
+        "default_reasoning_effort": "auto",
+        "candidates": [{
+            "provider_id": "g1",
+            "local_model": ORDINARY_LOCAL,
+            "upstream_model": ORDINARY_UPSTREAM,
+            "protocol": "chat_completions",
+            "weight": 1,
+        }],
+        "fallback": {
+            "provider_id": "g1",
+            "local_model": "ds",
+            "upstream_model": "deepseek-chat",
+            "protocol": "chat_completions",
+            "weight": 1,
+            "reasoning": {
+                "profile": "openai_effort",
+                "values": ["high"],
+                "supports_disable": false,
+                "mappings": [
+                    {"effort": "high", "action": {"kind": "enum", "value": "high"}}
+                ],
+            },
+        },
+    }]);
+    write_raw_gateway_config(&raw);
+    let config = read_config().expect("read gateway config");
+
+    // The discovery row advertises the fallback's declaration.
+    let payload = models_payload(&config);
+    let row = discovered_pool(&payload, "union-model");
+    let (efforts, _, coverage) = reasoning_metadata(row);
+    assert_eq!(
+        efforts,
+        vec!["high"],
+        "the fallback-only declaration must be advertised: {row}"
+    );
+    let high = coverage
+        .iter()
+        .find(|(effort, _, _)| effort == "high")
+        .expect("high coverage row");
+    assert_eq!(high.1, 1, "the fallback's declaration counts once: {row}");
+    let sources = row["sources"].as_array().expect("pool sources");
+    assert_eq!(
+        sources.len(),
+        1,
+        "the discovery row must list only the regular sources: {row}"
+    );
+    assert!(
+        sources
+            .iter()
+            .all(|source| source["local_model"] != "ds"),
+        "the fallback must not be listed as a regular source: {row}"
+    );
+
+    // The OpenCode payload exposes the same support as selectable variants.
+    let payloads =
+        capture_payloads(&json!({ "providers": [] }), vec!["opencode".to_string()]).await;
+    let opencode = payload_for(&payloads, "opencode");
+    let model = &opencode["tool_config"]["models"]["union-model"];
+    assert_eq!(
+        model["variants"]["high"]["reasoningEffort"], "high",
+        "the OpenCode payload must expose the fallback-only effort: {model}"
     );
 }
