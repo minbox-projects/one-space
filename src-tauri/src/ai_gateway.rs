@@ -37,9 +37,11 @@ pub use provider_usage::*;
 pub use types_config::*;
 pub use usage_log::*;
 
-/// Tauri event emitted after a configuration write that flipped any mapping
-/// row's `auto_disabled` in either direction (REQ-005/AC-008). Consumed by the
-/// AI Gateway page listener; the name is the cross-stack contract.
+/// Tauri event telling an open AI Gateway page to reload the persisted
+/// configuration and template mappings after a backend configuration change,
+/// such as a mapping `auto_disabled` flip or a completed automatic
+/// provider-template sync. Consumed by the AI Gateway page listener; the name is
+/// the cross-stack contract.
 pub(in crate::ai_gateway) const AI_GATEWAY_CONFIG_UPDATED_EVENT: &str =
     "ai-gateway-config-update";
 
