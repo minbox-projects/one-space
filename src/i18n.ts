@@ -862,6 +862,11 @@ const resources = {
       aiGatewayModelPoolReasoningRuntimeReadyCount: "{{ready}}/{{total}} candidates ready",
       aiGatewayModelPoolReasoningActionBudget: "Budget",
       aiGatewayModelPoolReasoningActionDisable: "Disable",
+      aiGatewayModelPoolAutoBindingToastTitle: "Reasoning Binding",
+      aiGatewayModelPoolNoMatchingReasoningWarning:
+        "No matching reasoning levels found for {{model}}, skipped binding. Please configure manually.",
+      aiGatewayModelPoolMultipleNoMatchingReasoningWarning:
+        "{{count}} models have no matching reasoning levels ({{models}}), skipped binding. Please configure manually.",
       aiGatewayModelPoolErrorReasoningDefaultUnmapped:
         "Invalid model pool reasoning policy: the default preference needs at least one valid candidate mapping.",
       aiGatewayModelPoolsTab: "Model pools",
@@ -4755,6 +4760,11 @@ const resources = {
       aiGatewayModelPoolReasoningRuntimeReadyCount: "{{ready}}/{{total}} 个候选就绪",
       aiGatewayModelPoolReasoningActionBudget: "预算",
       aiGatewayModelPoolReasoningActionDisable: "禁用",
+      aiGatewayModelPoolAutoBindingToastTitle: "推理档位绑定",
+      aiGatewayModelPoolNoMatchingReasoningWarning:
+        "模型 {{model}} 未找到匹配的推理强度，已跳过绑定，请手动设置。",
+      aiGatewayModelPoolMultipleNoMatchingReasoningWarning:
+        "{{count}} 个模型未找到匹配的推理强度（{{models}}），已跳过绑定，请手动设置。",
       aiGatewayModelPoolErrorReasoningDefaultUnmapped:
         "模型池推理策略无效：默认偏好至少需要一个有效候选映射。",
       aiGatewayModelPoolsTab: "模型池",

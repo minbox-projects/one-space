@@ -1335,6 +1335,7 @@ export const CANONICAL_REASONING_EFFORTS = [
   "medium",
   "high",
   "xhigh",
+  "max",
   "none",
 ] as const;
 
@@ -1693,6 +1694,72 @@ export function selectPoolReasoningCoverageRow(
   }
   const advertised = rows.find((row) => supportedEfforts.includes(row.effort));
   return advertised ?? rows[0] ?? null;
+}
+
+/**
+ * Automatically maps a candidate model's native reasoning levels to the
+ * pool's unified canonical reasoning efforts (low, medium, high, xhigh, max, none).
+ * If the candidate model declares no native levels or none match the unified
+ * levels, it returns hasMatch = false and an empty mappings dictionary.
+ */
+export function autoBindCandidateReasoning(
+  candidate: Pick<
+    GatewayModelPoolCandidate,
+    "provider_id" | "local_model" | "upstream_model" | "protocol" | "reasoning"
+  >,
+  providers: GatewayUpstreamProvider[],
+): {
+  mappings: Record<string, string>;
+  hasMatch: boolean;
+} {
+  const provider = providers.find((item) => item.id === candidate.provider_id);
+  const mapping = (provider?.mappings ?? []).find(
+    (m) =>
+      m.local_model.trim() === candidate.local_model &&
+      m.upstream_model.trim() === candidate.upstream_model &&
+      (m.protocol ?? provider?.protocol ?? "chat_completions") === candidate.protocol,
+  );
+
+  const rawEfforts = [
+    ...(mapping?.reasoning_efforts ?? []),
+    ...(candidate.reasoning?.values ?? []),
+  ];
+  const nativeEfforts: string[] = [];
+  for (const v of rawEfforts) {
+    const trimmed = v.trim();
+    if (trimmed !== "" && !nativeEfforts.includes(trimmed)) {
+      nativeEfforts.push(trimmed);
+    }
+  }
+
+  const supportsDisable =
+    nativeEfforts.some((v) => v.toLowerCase() === "none") ||
+    candidate.reasoning?.supports_disable === true;
+
+  const positiveNativeEfforts = nativeEfforts.filter(
+    (v) => v.toLowerCase() !== "none",
+  );
+
+  const mappings: Record<string, string> = {};
+  for (const effort of CANONICAL_REASONING_EFFORTS) {
+    if (effort === "none") {
+      if (supportsDisable) {
+        mappings["none"] = "disable";
+      }
+    } else {
+      const matched = positiveNativeEfforts.find(
+        (v) => v.toLowerCase() === effort.toLowerCase(),
+      );
+      if (matched) {
+        mappings[effort] = `enum:${matched}`;
+      }
+    }
+  }
+
+  return {
+    mappings,
+    hasMatch: Object.keys(mappings).length > 0,
+  };
 }
 
 /**

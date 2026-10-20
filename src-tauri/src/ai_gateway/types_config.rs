@@ -530,6 +530,7 @@ pub enum PoolReasoningEffort {
     Medium,
     High,
     Xhigh,
+    Max,
     None,
 }
 
@@ -541,6 +542,7 @@ impl PoolReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
             Self::None => "none",
         }
     }
@@ -558,6 +560,7 @@ pub enum PoolDefaultReasoningEffort {
     Medium,
     High,
     Xhigh,
+    Max,
     None,
     Unknown(String),
 }
@@ -577,6 +580,7 @@ impl PoolDefaultReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
             Self::None => "none",
             Self::Unknown(raw) => raw.as_str(),
         }
@@ -604,6 +608,7 @@ impl<'de> Deserialize<'de> for PoolDefaultReasoningEffort {
             "medium" => Self::Medium,
             "high" => Self::High,
             "xhigh" => Self::Xhigh,
+            "max" => Self::Max,
             "none" => Self::None,
             _ => Self::Unknown(raw),
         })

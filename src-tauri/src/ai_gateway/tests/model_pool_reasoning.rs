@@ -3390,7 +3390,7 @@ fn pool_status_reports_static_reasoning_capability() {
                 .iter()
                 .map(|row| row["effort"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            vec!["low", "medium", "high", "xhigh", "none"],
+            vec!["low", "medium", "high", "xhigh", "max", "none"],
             "all five rows in canonical order: {entry}"
         );
         let high_row = coverage

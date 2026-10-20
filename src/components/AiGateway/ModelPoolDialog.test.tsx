@@ -1810,7 +1810,7 @@ describe("ModelPoolDialog 模型池推理绑定（binding）", () => {
       const editor = editorFor("p-a", "local-a1");
       expandPanel(editor);
 
-      for (const effort of ["low", "medium", "high", "xhigh", "none"]) {
+      for (const effort of ["low", "medium", "high", "xhigh", "max", "none"]) {
         expect(bindingSelect(editor, effort)).toBeInTheDocument();
       }
 
@@ -1865,6 +1865,8 @@ describe("ModelPoolDialog 模型池推理绑定（binding）", () => {
       expect(bound?.values).toEqual(["max"]);
       expect(bound?.mappings).toEqual([
         { effort: "medium", action: { kind: "enum", value: "max" } },
+        { effort: "max", action: { kind: "enum", value: "max" } },
+        { effort: "none", action: { kind: "disable" } },
       ]);
       // The untouched candidate stays unknown: no `reasoning` key is emitted.
       expect(candidateReasoning(pool, "local-b1")).toBeUndefined();
@@ -1983,6 +1985,7 @@ describe("ModelPoolDialog 模型池推理绑定（binding）", () => {
     expect(bound?.profile).toBe("openai_effort");
     expect(bound?.supports_disable).toBe(true);
     expect(bound?.mappings).toEqual([
+      { effort: "max", action: { kind: "enum", value: "max" } },
       { effort: "none", action: { kind: "disable" } },
     ]);
   });
@@ -2081,7 +2084,7 @@ describe("ModelPoolDialog 模型池推理绑定回归（无高级声明界面）
 
       // All five canonical preference selects exist and keep an explicit
       // unmapped option in the active locale.
-      for (const effort of ["low", "medium", "high", "xhigh", "none"]) {
+      for (const effort of ["low", "medium", "high", "xhigh", "max", "none"]) {
         const select = within(editor).getByTestId(
           `model-pool-reasoning-mapping-${effort}`,
         ) as HTMLSelectElement;
@@ -2125,10 +2128,169 @@ describe("ModelPoolDialog 模型池推理绑定回归（无高级声明界面）
       expect(reasoning.supports_disable).toBe(true);
       expect(reasoning.mappings).toEqual([
         { effort: "medium", action: { kind: "enum", value: "max" } },
+        { effort: "max", action: { kind: "enum", value: "max" } },
         { effort: "none", action: { kind: "disable" } },
       ]);
     },
   );
+});
+
+describe("ModelPoolDialog 添加到候选模型时的自动推理强度绑定与无匹配提示", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+    mockState.config = buildConfig([]);
+    mockState.statusPayload = [];
+    mockState.upsertError = null;
+    mockState.deleted = [];
+    installMock();
+  });
+
+  function autoBindProviders(): unknown[] {
+    return [
+      {
+        id: "p-auto",
+        name: "Provider Auto",
+        protocol: "chat_completions",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "m-matched",
+            upstream_model: "remote-matched",
+            reasoning_efforts: ["low", "max", "none"],
+          },
+          {
+            local_model: "m-unmatched",
+            upstream_model: "remote-unmatched",
+            reasoning_efforts: ["minimal", "ultra"],
+          },
+          {
+            local_model: "m-empty",
+            upstream_model: "remote-empty",
+            reasoning_efforts: [],
+          },
+        ],
+      },
+    ];
+  }
+
+  it("勾选具备匹配原生强度的模型时自动绑定对应统一档位（含 max）", async () => {
+    const user = userEvent.setup();
+    mockState.config = buildConfig([], autoBindProviders());
+    await openModelPoolDialog("Provider Auto");
+
+    // 勾选 m-matched 加入候选
+    fireEvent.click(screen.getByRole("checkbox", { name: /m-matched/i }));
+
+    const editor = screen.getByTestId(
+      "model-pool-reasoning-editor-p-auto-m-matched",
+    );
+    // 展开面板检查自动绑定状态
+    fireEvent.click(within(editor).getAllByRole("button")[0]);
+
+    const lowSelect = within(editor).getByTestId(
+      "model-pool-reasoning-mapping-low",
+    ) as HTMLSelectElement;
+    const maxSelect = within(editor).getByTestId(
+      "model-pool-reasoning-mapping-max",
+    ) as HTMLSelectElement;
+    const noneSelect = within(editor).getByTestId(
+      "model-pool-reasoning-mapping-none",
+    ) as HTMLSelectElement;
+    const mediumSelect = within(editor).getByTestId(
+      "model-pool-reasoning-mapping-medium",
+    ) as HTMLSelectElement;
+
+    expect(lowSelect.value).toBe("enum:low");
+    expect(maxSelect.value).toBe("enum:max");
+    expect(noneSelect.value).toBe("disable");
+    expect(mediumSelect.value).toBe("");
+
+    // 将默认偏好切换为已绑定的 max，然后保存
+    await user.selectOptions(screen.getByTestId("model-pool-reasoning-default"), "max");
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+
+    const pool = upsertCalls()[0];
+    const candidate = candidatesOf(pool).find(
+      (item) => item.local_model === "m-matched",
+    );
+    const reasoning = candidate?.reasoning as Record<string, unknown>;
+    expect(reasoning.values).toEqual(["low", "max"]);
+    expect(reasoning.supports_disable).toBe(true);
+    expect(reasoning.mappings).toEqual([
+      { effort: "low", action: { kind: "enum", value: "low" } },
+      { effort: "max", action: { kind: "enum", value: "max" } },
+      { effort: "none", action: { kind: "disable" } },
+    ]);
+  });
+
+  it("勾选未匹配到推理强度的模型时跳过绑定并弹出 Toast 警告提示", async () => {
+    mockState.config = buildConfig([], autoBindProviders());
+    await openModelPoolDialog("Provider Auto");
+
+    // 勾选未匹配模型 m-unmatched 加入候选
+    fireEvent.click(screen.getByRole("checkbox", { name: /m-unmatched/i }));
+
+    // 验证 Toast 警告出现
+    await waitFor(() => {
+      expect(
+        screen.getByText(/No matching reasoning levels found for m-unmatched/i),
+      ).toBeInTheDocument();
+    });
+
+    const editor = screen.getByTestId(
+      "model-pool-reasoning-editor-p-auto-m-unmatched",
+    );
+    fireEvent.click(within(editor).getAllByRole("button")[0]);
+
+    for (const effort of ["low", "medium", "high", "xhigh", "max", "none"]) {
+      const select = within(editor).getByTestId(
+        `model-pool-reasoning-mapping-${effort}`,
+      ) as HTMLSelectElement;
+      expect(select.value).toBe("");
+    }
+  });
+
+  it("全选筛选结果批量添加时，若有未匹配模型则弹出聚合 Toast 警告", async () => {
+    mockState.config = buildConfig([], autoBindProviders());
+    await openModelPoolDialog("Provider Auto");
+
+    // 点击全选筛选结果
+    const selectAllBtn = screen.getByText(/Select all \(3\)/i);
+    fireEvent.click(selectAllBtn);
+
+    // 验证聚合 Toast 警告出现
+    await waitFor(() => {
+      expect(
+        screen.getByText(/2 models have no matching reasoning levels/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("默认推理偏好支持选择 max 并保存", async () => {
+    const user = userEvent.setup();
+    mockState.config = buildConfig([], autoBindProviders());
+    await openModelPoolDialog("Provider Auto");
+
+    // 勾选 m-matched（其自动绑定了 max）
+    fireEvent.click(screen.getByRole("checkbox", { name: /m-matched/i }));
+
+    const defaultSelect = screen.getByTestId("model-pool-reasoning-default");
+    expect(
+      within(defaultSelect).getByRole("option", { name: "max" }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(defaultSelect, "max");
+    expect(defaultSelect).toHaveValue("max");
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+
+    const pool = upsertCalls()[0];
+    expect(pool.default_reasoning_effort).toBe("max");
+  });
 });
 
 

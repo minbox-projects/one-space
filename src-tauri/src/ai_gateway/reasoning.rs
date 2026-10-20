@@ -198,6 +198,7 @@ fn concrete_default(default: &PoolDefaultReasoningEffort) -> Option<PoolReasonin
         PoolDefaultReasoningEffort::Medium => Some(PoolReasoningEffort::Medium),
         PoolDefaultReasoningEffort::High => Some(PoolReasoningEffort::High),
         PoolDefaultReasoningEffort::Xhigh => Some(PoolReasoningEffort::Xhigh),
+        PoolDefaultReasoningEffort::Max => Some(PoolReasoningEffort::Max),
         PoolDefaultReasoningEffort::None => Some(PoolReasoningEffort::None),
         PoolDefaultReasoningEffort::Auto | PoolDefaultReasoningEffort::Unknown(_) => None,
     }
@@ -504,6 +505,7 @@ fn canonical_effort(value: &str, field: &str) -> Result<PoolReasoningEffort, Str
         "medium" => Ok(PoolReasoningEffort::Medium),
         "high" => Ok(PoolReasoningEffort::High),
         "xhigh" => Ok(PoolReasoningEffort::Xhigh),
+        "max" => Ok(PoolReasoningEffort::Max),
         "none" => Ok(PoolReasoningEffort::None),
         other => Err(field_error(
             field,
@@ -745,11 +747,12 @@ fn candidate_reason(candidate: &ModelPoolCandidate, message: &str) -> String {
 /// The canonical public pool preferences in canonical order. Every catalog
 /// surface (`reasoning_efforts`, coverage rows, OpenCode variants) derives its
 /// order from this list.
-pub(in crate::ai_gateway) const CANONICAL_POOL_EFFORTS: [PoolReasoningEffort; 5] = [
+pub(in crate::ai_gateway) const CANONICAL_POOL_EFFORTS: [PoolReasoningEffort; 6] = [
     PoolReasoningEffort::Low,
     PoolReasoningEffort::Medium,
     PoolReasoningEffort::High,
     PoolReasoningEffort::Xhigh,
+    PoolReasoningEffort::Max,
     PoolReasoningEffort::None,
 ];
 

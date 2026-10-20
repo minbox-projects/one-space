@@ -47,6 +47,8 @@ import {
   notifyTemplateAutoRefreshIntervalChanged,
   providerMarkedKeys,
   resolveAggregatedModelName,
+  autoBindCandidateReasoning,
+  CANONICAL_REASONING_EFFORTS,
   resolveAggregatedReasoningEfforts,
   resolveDefaultKeyId,
   subscribeTemplateAutoRefreshIntervalChanged,
@@ -2721,6 +2723,135 @@ describe("模型池推理映射有效性边界（Step 4 repair）", () => {
         { effort: "high", action: { kind: "budget", budget_tokens: 3072 } },
       ),
     ).toBe(false);
+  });
+});
+
+describe("模型池统一对外推理强度与自动绑定 (autoBindCandidateReasoning)", () => {
+  it("CANONICAL_REASONING_EFFORTS 包含 low, medium, high, xhigh, max, none", () => {
+    expect(CANONICAL_REASONING_EFFORTS).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "none",
+    ]);
+  });
+
+  const providers: GatewayUpstreamProvider[] = [
+    {
+      id: "p1",
+      name: "Provider 1",
+      protocol: "chat_completions",
+      mappings: [
+        {
+          local_model: "m-all",
+          upstream_model: "remote-all",
+          reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "none"],
+        },
+        {
+          local_model: "m-case",
+          upstream_model: "remote-case",
+          reasoning_efforts: ["LOW", "Medium", "MAX"],
+        },
+        {
+          local_model: "m-none-only",
+          upstream_model: "remote-none-only",
+          reasoning_efforts: ["none"],
+        },
+        {
+          local_model: "m-unmatched",
+          upstream_model: "remote-unmatched",
+          reasoning_efforts: ["minimal", "ultra", "thinking"],
+        },
+        {
+          local_model: "m-empty",
+          upstream_model: "remote-empty",
+          reasoning_efforts: [],
+        },
+      ],
+      keys: [],
+    },
+  ];
+
+  it("当模型声明包含全部标准档位时，自动绑定到所有对应档位", () => {
+    const candidate = {
+      provider_id: "p1",
+      local_model: "m-all",
+      upstream_model: "remote-all",
+      protocol: "chat_completions" as const,
+      weight: 1,
+    };
+    const result = autoBindCandidateReasoning(candidate, providers);
+    expect(result.hasMatch).toBe(true);
+    expect(result.mappings).toEqual({
+      low: "enum:low",
+      medium: "enum:medium",
+      high: "enum:high",
+      xhigh: "enum:xhigh",
+      max: "enum:max",
+      none: "disable",
+    });
+  });
+
+  it("支持不区分大小写匹配，并且绑定的 enum 值保留原生声明的原始大小写", () => {
+    const candidate = {
+      provider_id: "p1",
+      local_model: "m-case",
+      upstream_model: "remote-case",
+      protocol: "chat_completions" as const,
+      weight: 1,
+    };
+    const result = autoBindCandidateReasoning(candidate, providers);
+    expect(result.hasMatch).toBe(true);
+    expect(result.mappings).toEqual({
+      low: "enum:LOW",
+      medium: "enum:Medium",
+      max: "enum:MAX",
+    });
+    expect(result.mappings.high).toBeUndefined();
+    expect(result.mappings.none).toBeUndefined();
+  });
+
+  it("当模型仅支持 none（禁用）时，none 绑定为 disable", () => {
+    const candidate = {
+      provider_id: "p1",
+      local_model: "m-none-only",
+      upstream_model: "remote-none-only",
+      protocol: "chat_completions" as const,
+      weight: 1,
+    };
+    const result = autoBindCandidateReasoning(candidate, providers);
+    expect(result.hasMatch).toBe(true);
+    expect(result.mappings).toEqual({
+      none: "disable",
+    });
+  });
+
+  it("当模型原生声明了无法匹配的自定义档位时，hasMatch 为 false 且 mappings 为空", () => {
+    const candidate = {
+      provider_id: "p1",
+      local_model: "m-unmatched",
+      upstream_model: "remote-unmatched",
+      protocol: "chat_completions" as const,
+      weight: 1,
+    };
+    const result = autoBindCandidateReasoning(candidate, providers);
+    expect(result.hasMatch).toBe(false);
+    expect(result.mappings).toEqual({});
+  });
+
+  it("当模型未声明任何原生档位时，hasMatch 为 false 且 mappings 为空", () => {
+    const candidate = {
+      provider_id: "p1",
+      local_model: "m-empty",
+      upstream_model: "remote-empty",
+      protocol: "chat_completions" as const,
+      weight: 1,
+    };
+    const result = autoBindCandidateReasoning(candidate, providers);
+    expect(result.hasMatch).toBe(false);
+    expect(result.mappings).toEqual({});
   });
 });
 

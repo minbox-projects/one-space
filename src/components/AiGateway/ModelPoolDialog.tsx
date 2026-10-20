@@ -19,8 +19,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
+  autoBindCandidateReasoning,
   CANONICAL_REASONING_EFFORTS,
   MODEL_POOL_AVAILABILITY_LABEL_KEYS,
   modelPoolCandidateKey,
@@ -284,6 +286,7 @@ export function ModelPoolDialog({
   onSave,
 }: ModelPoolDialogProps) {
   const { t } = useTranslation();
+  const { pushToast } = useToast();
 
   // Seeded once per mount; the console remounts this dialog per open/target so
   // an in-flight runtime refresh can never overwrite an unsaved draft.
@@ -478,20 +481,6 @@ export function ModelPoolDialog({
       ).ready,
   ).length;
 
-  const ensureReasoningDrafts = (candidates: GatewayModelPoolCandidate[]) => {
-    setReasoningDrafts((previous) => {
-      let next = previous;
-      for (const candidate of candidates) {
-        const key = modelPoolCandidateKey(candidate);
-        if (next[key] === undefined) {
-          if (next === previous) next = { ...previous };
-          next[key] = reasoningDraftFrom(candidate.reasoning);
-        }
-      }
-      return next;
-    });
-  };
-
   const updateReasoning = (
     candidate: DraftCandidate,
     patch: Partial<ReasoningDraft>,
@@ -531,13 +520,65 @@ export function ModelPoolDialog({
       if (Object.keys(newWeights).length > 0) {
         setWeights((prev) => ({ ...prev, ...newWeights }));
       }
-      ensureReasoningDrafts(newItems);
+
+      // 对新增候选项进行自动绑定并统计未匹配模型
+      const draftsUpdate: Record<string, ReasoningDraft> = {};
+      const unmatchedNames: string[] = [];
+      for (const candidate of newItems) {
+        const key = candidate.key;
+        if (reasoningDrafts[key] === undefined) {
+          const hasStoredMappings =
+            (candidate.reasoning?.mappings ?? []).length > 0;
+          if (hasStoredMappings) {
+            draftsUpdate[key] = reasoningDraftFrom(candidate.reasoning);
+          } else {
+            const { mappings, hasMatch } = autoBindCandidateReasoning(
+              candidate,
+              providers,
+            );
+            draftsUpdate[key] = { mappings };
+            if (!hasMatch) {
+              unmatchedNames.push(candidate.local_model);
+            }
+          }
+        }
+      }
+
+      setReasoningDrafts((previous) => ({
+        ...previous,
+        ...draftsUpdate,
+      }));
+
+      if (unmatchedNames.length > 0) {
+        const message =
+          unmatchedNames.length === 1
+            ? t("aiGatewayModelPoolNoMatchingReasoningWarning", {
+                model: unmatchedNames[0],
+                defaultValue:
+                  "No matching reasoning levels found for {{model}}, skipped binding. Please configure manually.",
+              })
+            : t("aiGatewayModelPoolMultipleNoMatchingReasoningWarning", {
+                count: unmatchedNames.length,
+                models: unmatchedNames.join(", "),
+                defaultValue:
+                  "{{count}} models have no matching reasoning levels ({{models}}), skipped binding. Please configure manually.",
+              });
+        pushToast({
+          title: t(
+            "aiGatewayModelPoolAutoBindingToastTitle",
+            "Reasoning Binding",
+          ),
+          description: message,
+          kind: "warning",
+        });
+      }
     }
     setError(null);
   };
 
   const toggleCandidate = (candidate: GatewayModelPoolCandidate) => {
     const key = modelPoolCandidateKey(candidate);
+    const isAdding = !selected.some((item) => item.key === key);
     setSelected((previous) => {
       if (previous.some((item) => item.key === key)) {
         return previous.filter((item) => item.key !== key);
@@ -548,7 +589,44 @@ export function ModelPoolDialog({
       if (previous[key] !== undefined) return previous;
       return { ...previous, [key]: "1" };
     });
-    ensureReasoningDrafts([candidate]);
+
+    if (isAdding) {
+      const existingDraft = reasoningDrafts[key];
+      const hasStoredMappings =
+        (candidate.reasoning?.mappings ?? []).length > 0;
+      if (existingDraft === undefined) {
+        if (hasStoredMappings) {
+          setReasoningDrafts((previous) => ({
+            ...previous,
+            [key]: reasoningDraftFrom(candidate.reasoning),
+          }));
+        } else {
+          const { mappings, hasMatch } = autoBindCandidateReasoning(
+            candidate,
+            providers,
+          );
+          setReasoningDrafts((previous) => ({
+            ...previous,
+            [key]: { mappings },
+          }));
+          if (!hasMatch) {
+            pushToast({
+              title: t(
+                "aiGatewayModelPoolAutoBindingToastTitle",
+                "Reasoning Binding",
+              ),
+              description: t("aiGatewayModelPoolNoMatchingReasoningWarning", {
+                model: candidate.local_model,
+                defaultValue:
+                  "No matching reasoning levels found for {{model}}, skipped binding. Please configure manually.",
+              }),
+              kind: "warning",
+            });
+          }
+        }
+      }
+    }
+
     setError(null);
   };
 
@@ -673,7 +751,7 @@ export function ModelPoolDialog({
                 "Bind each pool level to a native level; only explicit bindings are saved.",
               )}
             </p>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
               {CANONICAL_REASONING_EFFORTS.map((effort) => {
                 const isNone = effort === "none";
                 const bindingOptions: Array<{ value: string; label: string }> =

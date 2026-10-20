@@ -441,7 +441,7 @@ fn terminal_targets_mark_opencode_pending_when_pool_membership_changes() {
 // an observable JSON mismatch after successful compilation (no absent import or
 // type is required).
 
-const CANONICAL_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "none"];
+const CANONICAL_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "none"];
 
 fn enum_action(value: &str) -> PoolReasoningAction {
     PoolReasoningAction::Enum {
