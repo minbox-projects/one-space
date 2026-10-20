@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-20-model-pool-default-fallback.md
+2026-10-20-model-pool-default-fallback.md: bbbbb1d6190718c14763b7753ffbd8ab295ab130
+2026-10-20-model-pool-default-fallback.zh.md: f59481edf7c0f16ba7d784504d2a3eada26c0272
