@@ -1449,6 +1449,7 @@
       ],
       "tests": [
         "src/App.runtimeOwnership.test.tsx",
+        "src/components/AiGateway/AiGateway.performance.test.tsx",
         "src/components/AiGateway/AiGateway.test.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.test.tsx",
         "src/components/AiGateway/MappingPriceEditor.test.tsx",
@@ -2384,6 +2385,7 @@
       "depends_on": [],
       "read_scope": [
         "src/App.runtimeOwnership.test.tsx",
+        "src/components/AiGateway/AiGateway.performance.test.tsx",
         "src/components/AiGateway/AiGateway.test.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.test.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.tsx",
@@ -4029,6 +4031,7 @@
         "src-tauri/src/ai_gateway/tests/claude_terminal_sync.rs",
         "src-tauri/src/ai_gateway/tests/daily_reset.rs",
         "src-tauri/src/ai_gateway/tests/deepseek_cache.rs",
+        "src-tauri/src/ai_gateway/tests/gateway_performance.rs",
         "src-tauri/src/ai_gateway/tests/go_usage.rs",
         "src-tauri/src/ai_gateway/tests/migration.rs",
         "src-tauri/src/ai_gateway/tests/model_pool_reasoning.rs",
@@ -4875,6 +4878,7 @@
         "src-tauri/src/ai_gateway/tests/claude_terminal_sync.rs",
         "src-tauri/src/ai_gateway/tests/daily_reset.rs",
         "src-tauri/src/ai_gateway/tests/deepseek_cache.rs",
+        "src-tauri/src/ai_gateway/tests/gateway_performance.rs",
         "src-tauri/src/ai_gateway/tests/go_usage.rs",
         "src-tauri/src/ai_gateway/tests/migration.rs",
         "src-tauri/src/ai_gateway/tests/model_pool_reasoning.rs",
@@ -5113,7 +5117,7 @@
       ],
       "module_root": "documentation",
       "owner_role": "documentation-maintainer",
-      "responsibility": "使用手册、CLI / MCP / Skills 文档与应用内 Documentation 页面",
+      "responsibility": "使用手册、CLI / MCP / Skills 文档、AI 网关性能基线与设计报告，以及应用内 Documentation 页面",
       "entries": [
         "docs/USAGE.md"
       ],
@@ -5121,6 +5125,7 @@
         "docs/CLI.md",
         "docs/MCP.md",
         "docs/SKILLS.md",
+        "docs/ai-gateway-performance-baseline.json",
         "docs/ai-provider-refactor.md",
         "docs/ai-terminal-env-refactor.md",
         "docs/claude-multi-profile.md",
@@ -5137,6 +5142,7 @@
         "docs/CLI.md",
         "docs/MCP.md",
         "docs/SKILLS.md",
+        "docs/ai-gateway-performance-baseline.json",
         "docs/ai-provider-refactor.md",
         "docs/ai-terminal-env-refactor.md",
         "docs/claude-multi-profile.md",
@@ -5157,7 +5163,7 @@
       ],
       "module_root": "tooling",
       "owner_role": "backend",
-      "responsibility": "CLI 能力矩阵校验与网关脱敏校验脚本；`tools/measure-core-workflows.mjs` 用 node 内置模块运行 `core_workflows_perf` ignored 测试并解析 `CWF_METRIC` 行（cold + 5 warm，环境与维度，harness vs 原始 wall，缺失如实 not_measured）；`tools/diagnose-deepseek-cache.mjs`（临时、按需）用 Node 内置模块提供 `observe`（回环绑定并将字节原样转发到命令行给定的回环网关，只观察选中会话与模型的 `/v1/chat/completions` 与 `/chat/completions`，元数据白名单 JSONL 输出）与 `compare`（六个 `CACHE_DIAG_*` 环境变量、256 KiB 公开合成前缀、每条路径 2 轮 × 10（2 warmup + 8 测量）、最多 40 次 POST 无重试、输出元数据 `comparison` JSON、绝不自我证明账户等价）",
+      "responsibility": "CLI 能力矩阵校验与网关脱敏校验脚本；`tools/measure-core-workflows.mjs` 用 node 内置模块运行 `core_workflows_perf` ignored 测试并解析 `CWF_METRIC` 行（cold + 5 warm，环境与维度，harness vs 原始 wall，缺失如实 not_measured）；`tools/diagnose-deepseek-cache.mjs`（临时、按需）用 Node 内置模块提供 `observe`（回环绑定并将字节原样转发到命令行给定的回环网关，只观察选中会话与模型的 `/v1/chat/completions` 与 `/chat/completions`，元数据白名单 JSONL 输出）与 `compare`（六个 `CACHE_DIAG_*` 环境变量、256 KiB 公开合成前缀、每条路径 2 轮 × 10（2 warmup + 8 测量）、最多 40 次 POST 无重试、输出元数据 `comparison` JSON、绝不自我证明账户等价）；`tools/measure-ai-gateway.mjs`（仅 Node 内置模块）按 44 个固定 request/query/management 用例与 6 个 UI 用例产出 `--phase baseline` / `--phase final --baseline <path>` 单份 JSON，区分进程冷/热、业务与 harness wall、实际 worker CPU/RSS，缺失或畸形指标使报告 `incomplete` 并以非零退出，行为回归见 `tools/measure-ai-gateway.test.mjs`",
       "entries": [
         "tools/check-cli-matrix.sh"
       ],
@@ -5165,6 +5171,8 @@
         "tools/check-cli-matrix.test.sh",
         "tools/check-ai-gateway-redaction.sh",
         "tools/measure-core-workflows.mjs",
+        "tools/measure-ai-gateway.mjs",
+        "tools/measure-ai-gateway.test.mjs",
         "tools/diagnose-deepseek-cache.mjs",
         "tools/diagnose-deepseek-cache.test.mjs"
       ],
@@ -5176,6 +5184,8 @@
         "tools/check-cli-matrix.test.sh",
         "tools/check-ai-gateway-redaction.sh",
         "tools/measure-core-workflows.mjs",
+        "tools/measure-ai-gateway.mjs",
+        "tools/measure-ai-gateway.test.mjs",
         "tools/diagnose-deepseek-cache.mjs",
         "tools/diagnose-deepseek-cache.test.mjs"
       ],

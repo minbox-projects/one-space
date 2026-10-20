@@ -53,7 +53,7 @@
 | backup-backend | backend | src-tauri/src/backup.rs | 配置与数据备份、恢复 | ai-workflow context locate --feature backup-backend --verify |
 | cli-tooling-backend | backend | src-tauri/src/cli_probe.rs | CLI 探测、更新检查、版本检测、git 命令与托管资源 | ai-workflow context locate --feature cli-tooling-backend --verify |
 | app-runtime-backend | backend | src-tauri/src/lib.rs | Tauri 应用启动、CLI 入口、运行时服务（含进程级系统恢复信号：`SYSTEM_RESUME_GRACE_SECS = 60` 的 `mark_system_resume` / `system_resume_grace_active( | ai-workflow context locate --feature app-runtime-backend --verify |
-| documentation | documentation-maintainer | docs/USAGE.md | 使用手册、CLI / MCP / Skills 文档与应用内 Documentation 页面 | ai-workflow context locate --feature documentation --verify |
+| documentation | documentation-maintainer | docs/USAGE.md | 使用手册、CLI / MCP / Skills 文档、AI 网关性能基线与设计报告，以及应用内 Documentation 页面 | ai-workflow context locate --feature documentation --verify |
 | cli-matrix-check | backend | tools/check-cli-matrix.sh | CLI 能力矩阵校验与网关脱敏校验脚本；`tools/measure-core-workflows.mjs` 用 node 内置模块运行 `core_workflows_perf` ignored 测试并解析 `CWF_METRIC` 行（ | ai-workflow context locate --feature cli-matrix-check --verify |
 | ble-lock | frontend | src/components/BleLockTool.tsx | 低功耗蓝牙（BLE）锁屏工具箱（id `ble-lock`，别名 `ble-lock`）：只监测一个以 CoreBluetooth UUID 标识的设备（不解码 MAC、不推断距离），主动连接读 RSSI（默认）或被动广播两种模式；以解锁/ | ai-workflow context locate --feature ble-lock --verify |
 | ble-lock-backend | backend | src-tauri/src/ble_lock.rs | BLE 锁屏后端（Rust）：`src-tauri/src/ble_lock.rs` 只声明 `mod config/state/central` 并 re-export 三个子模块公共类型；`config.rs` 严格校验并原子落盘当前  | ai-workflow context locate --feature ble-lock-backend --verify |

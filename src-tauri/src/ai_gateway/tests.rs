@@ -32,6 +32,7 @@ mod migration;
 mod routing_hardening;
 mod auto_refresh;
 mod performance;
+mod gateway_performance;
 mod runtime_lifecycle;
 mod usage_store;
 mod attempt_policy;
