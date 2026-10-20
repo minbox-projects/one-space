@@ -17,6 +17,10 @@ pub struct AiSession {
     pub created_at: u64,
 }
 
+pub const fn default_is_main_agent() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct HistorySessionEntry {
     pub tool: String,
@@ -26,6 +30,8 @@ pub struct HistorySessionEntry {
     pub model_name: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    #[serde(default = "default_is_main_agent")]
+    pub is_main_agent: bool,
 }
 
 pub fn collect_history_sessions_for_tool(

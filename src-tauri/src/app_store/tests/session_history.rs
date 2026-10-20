@@ -17,6 +17,7 @@ fn history_entry(
         model_name: model_name.map(|value| value.to_string()),
         created_at_ms,
         updated_at_ms,
+        is_main_agent: true,
     }
 }
 
@@ -43,6 +44,7 @@ pub(super) fn session_record(
         status: status.to_string(),
         favorited_at: None,
         provider_id: None,
+        is_main_agent: true,
     }
 }
 
@@ -544,4 +546,70 @@ fn sessions_cache_returns_error_and_no_stale_value_on_decrypt_failure() {
             "a failed decrypt must not fall back to the stale cached snapshot"
         );
     });
+}
+
+#[test]
+fn history_sync_tracks_and_merges_main_agent_status() {
+    let mut state = SessionsState::default();
+    let mut main_entry = history_entry(
+        "opencode",
+        "ses_main",
+        "Main Orchestrator",
+        "/tmp/main-test",
+        Some("gpt-4o"),
+        1_700_000_000,
+        1_700_001_000,
+    );
+    main_entry.is_main_agent = true;
+
+    let mut sub_entry = history_entry(
+        "opencode",
+        "ses_sub",
+        "Subagent Task (@worker subagent)",
+        "/tmp/main-test",
+        Some("gpt-4o"),
+        1_700_000_200,
+        1_700_000_900,
+    );
+    sub_entry.is_main_agent = false;
+
+    let outcome = apply_history_entries_to_sessions_state(
+        &mut state,
+        "opencode",
+        vec![main_entry, sub_entry],
+        1_700_002_000,
+    );
+    assert!(outcome.persisted);
+    assert_eq!(state.sessions.len(), 2);
+
+    let main_session = state.sessions.iter().find(|s| s.tool_session_id == "ses_main").unwrap();
+    assert!(main_session.is_main_agent);
+
+    let sub_session = state.sessions.iter().find(|s| s.tool_session_id == "ses_sub").unwrap();
+    assert!(!sub_session.is_main_agent);
+
+    let legacy_main = session_to_legacy(main_session);
+    assert_eq!(legacy_main.get("is_main_agent").and_then(|v| v.as_bool()), Some(true));
+
+    let legacy_sub = session_to_legacy(sub_session);
+    assert_eq!(legacy_sub.get("is_main_agent").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn normalize_sessions_state_marks_opencode_subagents() {
+    let mut state = SessionsState::default();
+    let mut record = session_record(
+        "legacy-sub",
+        "opencode",
+        "/tmp/test",
+        1_700_000_000,
+        "active",
+    );
+    record.name = "Refactor components (@ui subagent)".to_string();
+    record.is_main_agent = true;
+    state.sessions.push(record);
+
+    let changed = normalize_sessions_state(&mut state);
+    assert!(changed);
+    assert!(!state.sessions[0].is_main_agent);
 }

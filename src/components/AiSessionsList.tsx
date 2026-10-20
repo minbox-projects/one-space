@@ -1,13 +1,16 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AlertCircle,
+  Bot,
   Check,
   Copy,
   Edit2,
   FolderOpen,
   Loader2,
   Play,
+  RotateCcw,
+  Search,
   Star,
   Terminal,
   Trash2,
@@ -23,6 +26,7 @@ export interface AiSessionsQueryState {
   toolFilter: string;
   modelFilter: string;
   nameFilter: string;
+  mainAgentOnly?: boolean;
 }
 
 const AI_MODEL_OPTIONS: Array<{ id: AiModelId; name: string }> = [
@@ -63,6 +67,7 @@ export function AiSessionsList({
   const [internalToolFilter, setInternalToolFilter] = useState<string>('all');
   const [internalModelFilter, setInternalModelFilter] = useState<string>('all');
   const [internalNameFilter, setInternalNameFilter] = useState('');
+  const [internalMainAgentOnly, setInternalMainAgentOnly] = useState<boolean>(true);
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
@@ -74,6 +79,9 @@ export function AiSessionsList({
   const toolFilter = isControlledQuery ? queryState!.toolFilter : internalToolFilter;
   const modelFilter = isControlledQuery ? queryState!.modelFilter : internalModelFilter;
   const nameFilter = isControlledQuery ? queryState!.nameFilter : internalNameFilter;
+  const mainAgentOnly = isControlledQuery
+    ? (queryState!.mainAgentOnly ?? true)
+    : internalMainAgentOnly;
 
   const updateQueryState = useCallback(
     (patch: Partial<AiSessionsQueryState>) => {
@@ -89,6 +97,9 @@ export function AiSessionsList({
       }
       if (patch.nameFilter !== undefined) {
         setInternalNameFilter(patch.nameFilter);
+      }
+      if (patch.mainAgentOnly !== undefined) {
+        setInternalMainAgentOnly(patch.mainAgentOnly);
       }
     },
     [isControlledQuery, onQueryChange, queryState],
@@ -148,6 +159,10 @@ export function AiSessionsList({
       }
 
       return sessions.filter((session) => {
+        if (mainAgentOnly && session.is_main_agent === false) {
+          return false;
+        }
+
         const normalizedTool = session.model_type?.trim().toLowerCase() || '';
         const normalizedModel = session.model_name?.trim() || '';
         const displayName = getSessionDisplayName(session);
@@ -163,15 +178,87 @@ export function AiSessionsList({
           normalizedQuery &&
           !displayName.toLowerCase().includes(normalizedQuery) &&
           !normalizedModel.toLowerCase().includes(normalizedQuery) &&
-          !(session.working_dir || '').toLowerCase().includes(normalizedQuery)
+          !(session.working_dir || '').toLowerCase().includes(normalizedQuery) &&
+          !(session.tool_session_id || '').toLowerCase().includes(normalizedQuery)
         ) {
           return false;
         }
         return true;
       });
     },
-    [serverFiltered, sessions, toolFilter, modelFilter, nameFilter, getSessionDisplayName],
+    [serverFiltered, sessions, mainAgentOnly, toolFilter, modelFilter, nameFilter, getSessionDisplayName],
   );
+
+  const mainAgentsCount = useMemo(
+    () => sessions.filter((s) => s.is_main_agent !== false).length,
+    [sessions],
+  );
+
+  const isFiltered = Boolean(
+    nameFilter.trim() ||
+      toolFilter !== 'all' ||
+      modelFilter !== 'all' ||
+      !mainAgentOnly,
+  );
+
+  const handleResetFilters = useCallback(() => {
+    updateQueryState({
+      toolFilter: 'all',
+      modelFilter: 'all',
+      nameFilter: '',
+      mainAgentOnly: true,
+    });
+  }, [updateQueryState]);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(600);
+
+  const ITEM_HEIGHT = 104;
+  const OVERSCAN = 6;
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (el.clientHeight > 0) {
+      setViewportHeight(el.clientHeight);
+    }
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.height > 0) {
+          setViewportHeight(entry.contentRect.height);
+        }
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (containerRef.current && scrollTop > filteredSessions.length * ITEM_HEIGHT) {
+      containerRef.current.scrollTop = 0;
+      setScrollTop(0);
+    }
+  }, [filteredSessions.length, scrollTop]);
+
+  const totalCount = filteredSessions.length;
+  const startIndex = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN);
+  const endIndex = Math.min(totalCount, Math.ceil((scrollTop + viewportHeight) / ITEM_HEIGHT) + OVERSCAN);
+
+  const visibleSessions = useMemo(
+    () => filteredSessions.slice(startIndex, endIndex),
+    [filteredSessions, startIndex, endIndex],
+  );
+
+  const paddingTop = startIndex * ITEM_HEIGHT;
+  const paddingBottom = Math.max(0, (totalCount - endIndex) * ITEM_HEIGHT);
 
   const handleCopyValue = async (value: string, key: string, event: React.MouseEvent) => {
     event.stopPropagation();
@@ -205,40 +292,76 @@ export function AiSessionsList({
 
   return (
     <>
-      <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              {t('filterByTool', 'Tool')}
-            </label>
-            <div className="flex h-10 w-full items-center gap-2 rounded-md border border-input bg-background px-3">
-              <ToolIcon
-                tool={toolFilter === 'all' ? 'terminal' : toolFilter}
-                className="w-4 h-4 text-muted-foreground shrink-0"
-              />
-              <select
-                value={toolFilter}
-                onChange={(e) => updateQueryState({ toolFilter: e.target.value })}
-                className="h-full w-full bg-transparent text-sm outline-none"
+      <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* 综合搜索输入框 */}
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <input
+              type="text"
+              value={nameFilter}
+              onChange={(e) => updateQueryState({ nameFilter: e.target.value })}
+              placeholder={t('filterSessionsPlaceholder', 'Search sessions by name, path, ID or model...')}
+              className="flex h-9 w-full rounded-md border border-input bg-background pl-9 pr-8 py-1.5 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            {nameFilter ? (
+              <button
+                type="button"
+                onClick={() => updateQueryState({ nameFilter: '' })}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-0.5 rounded transition-colors"
+                title={t('clear', 'Clear')}
               >
-                <option value="all">{t('allTools', 'All tools')}</option>
-                {sessionToolOptions.map((tool) => (
-                  <option key={tool} value={tool}>
-                    {AI_MODEL_OPTIONS.find((item) => item.id === tool)?.name || tool}
-                  </option>
-                ))}
-              </select>
-            </div>
+                <X className="w-3.5 h-3.5" />
+              </button>
+            ) : null}
           </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              {t('filterByModel', 'Model')}
-            </label>
+          {/* 仅显示主代理筛选按钮 */}
+          <button
+            type="button"
+            onClick={() => updateQueryState({ mainAgentOnly: !mainAgentOnly })}
+            className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-md border text-xs font-medium transition-all ${
+              mainAgentOnly
+                ? 'bg-primary/10 border-primary/30 text-primary hover:bg-primary/15 shadow-xs'
+                : 'bg-background border-input text-muted-foreground hover:bg-muted hover:text-foreground'
+            }`}
+            title={mainAgentOnly ? t('showAllAgents', 'All sessions') : t('mainAgentOnly', 'Main agent only')}
+          >
+            <Bot className={`w-3.5 h-3.5 ${mainAgentOnly ? 'text-primary' : 'text-muted-foreground'}`} />
+            <span>{t('mainAgentOnly', 'Main agent only')}</span>
+            <span
+              className={`inline-block w-1.5 h-1.5 rounded-full transition-colors ${
+                mainAgentOnly ? 'bg-primary' : 'bg-muted-foreground/30'
+              }`}
+            />
+          </button>
+
+          {/* Tool 工具筛选 */}
+          <div className="flex h-9 items-center gap-1.5 rounded-md border border-input bg-background px-2.5 min-w-[130px]">
+            <ToolIcon
+              tool={toolFilter === 'all' ? 'terminal' : toolFilter}
+              className="w-3.5 h-3.5 text-muted-foreground shrink-0"
+            />
+            <select
+              value={toolFilter}
+              onChange={(e) => updateQueryState({ toolFilter: e.target.value })}
+              className="h-full w-full bg-transparent text-xs outline-none cursor-pointer"
+            >
+              <option value="all">{t('allTools', 'All tools')}</option>
+              {sessionToolOptions.map((tool) => (
+                <option key={tool} value={tool}>
+                  {AI_MODEL_OPTIONS.find((item) => item.id === tool)?.name || tool}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Model 模型筛选 */}
+          <div className="flex h-9 items-center rounded-md border border-input bg-background px-2.5 min-w-[130px]">
             <select
               value={modelFilter}
               onChange={(e) => updateQueryState({ modelFilter: e.target.value })}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              className="h-full w-full bg-transparent text-xs outline-none cursor-pointer"
             >
               <option value="all">{t('allModels', 'All models')}</option>
               {sessionModelOptions.map((model) => (
@@ -249,30 +372,39 @@ export function AiSessionsList({
             </select>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              {t('filterByName', 'Name')}
-            </label>
-            <input
-              type="text"
-              value={nameFilter}
-              onChange={(e) => updateQueryState({ nameFilter: e.target.value })}
-              placeholder={t('filterSessionsByName', 'Filter sessions by name...')}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-            />
-          </div>
+          {/* 重置筛选 */}
+          {isFiltered && (
+            <button
+              type="button"
+              onClick={handleResetFilters}
+              className="inline-flex items-center gap-1 h-9 px-2.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
+              title={t('clearFilters', 'Reset filters')}
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>{t('clearFilters', 'Reset')}</span>
+            </button>
+          )}
         </div>
 
-        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-          <span>
-            {t('sessionFilterSummary', {
-              defaultValue: 'Showing {{visible}} of {{total}} sessions',
-              visible: filteredSessions.length,
-              total: totalSessions ?? sessions.length,
-            })}
-          </span>
+        {/* 状态与统计行 */}
+        <div className="flex items-center justify-between gap-3 pt-1 text-xs text-muted-foreground border-t border-border/40">
+          <div className="flex items-center gap-2">
+            <span>
+              {t('sessionFilterSummary', {
+                defaultValue: 'Showing {{visible}} of {{total}} sessions',
+                visible: filteredSessions.length,
+                total: totalSessions ?? sessions.length,
+              })}
+            </span>
+            <span className="text-muted-foreground/60">
+              {t('mainAgentsCountSummary', {
+                defaultValue: '({{count}} main)',
+                count: mainAgentsCount,
+              })}
+            </span>
+          </div>
           {loading && (
-            <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-1.5 text-primary">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               {t('loading', 'Loading...')}
             </span>
@@ -280,7 +412,11 @@ export function AiSessionsList({
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto rounded-xl border bg-card text-card-foreground shadow-sm">
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-auto rounded-xl border bg-card text-card-foreground shadow-sm"
+      >
         {loading && sessions.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
             <Loader2 className="w-8 h-8 mb-3 animate-spin" />
@@ -301,8 +437,14 @@ export function AiSessionsList({
             </p>
           </div>
         ) : (
-          <div className="divide-y divide-border">
-            {filteredSessions.map((session) => {
+          <div
+            className="divide-y divide-border"
+            style={{
+              paddingTop: `${paddingTop}px`,
+              paddingBottom: `${paddingBottom}px`,
+            }}
+          >
+            {visibleSessions.map((session) => {
               const canResume = Boolean(
                 session.tool_session_id &&
                   session.status !== 'unbound' &&
@@ -321,7 +463,7 @@ export function AiSessionsList({
                 <div
                   key={session.id}
                   className="p-4 hover:bg-muted/30 transition-colors group/copy"
-                  style={{ contentVisibility: 'auto', containIntrinsicSize: '108px' }}
+                  style={{ minHeight: `${ITEM_HEIGHT}px` }}
                 >
                   <div className="flex items-center gap-3">
                     <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
@@ -419,6 +561,11 @@ export function AiSessionsList({
                             {displayModelName ? (
                               <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-[11px] font-mono shrink-0">
                                 {displayModelName}
+                              </span>
+                            ) : null}
+                            {session.is_main_agent === false ? (
+                              <span className="px-1.5 py-0.5 rounded bg-muted/80 text-muted-foreground text-[10px] uppercase font-semibold shrink-0 tracking-wide border border-border/50">
+                                Subagent
                               </span>
                             ) : null}
                             <button

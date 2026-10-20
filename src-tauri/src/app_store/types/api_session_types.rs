@@ -14,7 +14,7 @@ pub(in crate::app_store) const HISTORY_SYNC_TOOLS: [&str; 4] =
     ["claude", "codex", "antigravity", "opencode"];
 pub(in crate::app_store) const HISTORY_SYNC_BASE_PARSER_VERSION: u32 = 1;
 pub(in crate::app_store) const CODEX_HISTORY_TITLE_PARSER_VERSION: u32 = 2;
-pub(in crate::app_store) const OPENCODE_HISTORY_PROJECT_FALLBACK_VERSION: u32 = 2;
+pub(in crate::app_store) const OPENCODE_HISTORY_PROJECT_FALLBACK_VERSION: u32 = 3;
 pub(in crate::app_store) const HISTORY_BIND_WINDOW_SECS: u64 = 15 * 60;
 pub(in crate::app_store) const LAUNCHER_EXPORT_VERSION: u32 = 1;
 pub(in crate::app_store) const PROVIDERS_EXPORT_VERSION: u32 = 1;
@@ -95,6 +95,10 @@ pub(in crate::app_store) fn now_ts() -> u64 {
 
 pub(in crate::app_store) fn default_session_name_source() -> String {
     "manual".to_string()
+}
+
+pub(in crate::app_store) const fn default_session_is_main_agent() -> bool {
+    true
 }
 
 pub(in crate::app_store) fn required_history_parser_version(tool: &str) -> u32 {

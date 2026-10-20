@@ -298,6 +298,7 @@ pub(in crate::ai_sessions) fn read_codex_history_session_file(
             updated_at_ms
         },
         updated_at_ms,
+        is_main_agent: true,
     })
 }
 
@@ -492,6 +493,7 @@ pub(in crate::ai_sessions) fn read_claude_project_file(
         model_name,
         created_at_ms,
         updated_at_ms,
+        is_main_agent: true,
     })
 }
 
@@ -819,6 +821,7 @@ pub(in crate::ai_sessions) fn read_antigravity_history_file(
         model_name,
         created_at_ms: start_ms,
         updated_at_ms,
+        is_main_agent: true,
     })
 }
 
@@ -919,7 +922,8 @@ pub(in crate::ai_sessions) fn collect_opencode_history_sessions_from_sources(
                         FROM session_message m
                         WHERE m.session_id = s.id
                         ORDER BY m.time_created DESC
-                        LIMIT 1) as model_id
+                        LIMIT 1) as model_id,
+                        s.parent_id
                 FROM session_v2 s
                 WHERE s.time_archived IS NULL
                 ORDER BY s.time_updated DESC
@@ -938,7 +942,8 @@ pub(in crate::ai_sessions) fn collect_opencode_history_sessions_from_sources(
                         FROM message m
                         WHERE m.session_id = s.id
                         ORDER BY m.time_created DESC
-                        LIMIT 1) as model_id
+                        LIMIT 1) as model_id,
+                       s.parent_id
                 FROM session s
                 WHERE s.time_archived IS NULL
                 ORDER BY s.time_updated DESC
@@ -1007,6 +1012,7 @@ fn collect_opencode_sessions_from_db_query(
             row.get::<_, i64>(3)?,
             row.get::<_, i64>(4)?,
             row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6).unwrap_or(None),
         ))
     }) else {
         return Vec::new();
@@ -1014,7 +1020,7 @@ fn collect_opencode_sessions_from_db_query(
 
     let mut out = Vec::new();
     for row_result in rows.flatten() {
-        let (session_id, title, directory, time_created, time_updated, model_id) = row_result;
+        let (session_id, title, directory, time_created, time_updated, model_id, parent_id) = row_result;
         if let Some(min) = min_updated_at_ms {
             if time_updated < min {
                 continue;
@@ -1030,14 +1036,24 @@ fn collect_opencode_sessions_from_db_query(
             continue;
         }
 
+        let has_parent = parent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .is_some();
+        let title_trimmed = title.trim().to_string();
+        let title_lower = title_trimmed.to_lowercase();
+        let is_main_agent = !has_parent && !title_lower.contains("(@") && !title_lower.contains("subagent");
+
         out.push(HistorySessionEntry {
             tool: "opencode".to_string(),
             tool_session_id: session_id,
-            title: title.trim().to_string(),
+            title: title_trimmed,
             working_dir,
             model_name: model_id.filter(|m| !m.trim().is_empty()),
             created_at_ms: time_created,
             updated_at_ms: time_updated,
+            is_main_agent,
         });
     }
 
@@ -1228,6 +1244,15 @@ fn read_opencode_history_file_from_source(
         })
         .unwrap_or_else(|| fallback_history_title("opencode", &session_id));
     let model_name = read_opencode_model_name(messages_root.join(&session_id));
+    let parent_id = value
+        .get("parentID")
+        .or_else(|| value.get("parentId"))
+        .or_else(|| value.get("parent_id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let title_lower = title.to_lowercase();
+    let is_main_agent = parent_id.is_none() && !title_lower.contains("(@") && !title_lower.contains("subagent");
 
     Some(HistorySessionEntry {
         tool: "opencode".to_string(),
@@ -1237,6 +1262,7 @@ fn read_opencode_history_file_from_source(
         model_name,
         created_at_ms,
         updated_at_ms,
+        is_main_agent,
     })
 }
 
