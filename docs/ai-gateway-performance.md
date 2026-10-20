@@ -8,12 +8,12 @@ The final run completed the fixed inventory of 44 request, query and management 
 
 | Gate | Target | Final result | Status |
 | --- | --- | --- | --- |
-| Local request processing | Median business time down at least 20% | 85.81% lower (`forwarding_chat_stream_64_c1`, 27.2953125 ms to 3.872021 ms) | PASS |
-| Database querying | Median business time down at least 20% | 72.02% lower (`usage_stats_1k`, 0.5727085 ms to 0.160229 ms) | PASS |
+| Local request processing | Median business time down at least 20% | 85.56% lower (`forwarding_chat_stream_64_c1`, 27.2953125 ms to 3.9410835 ms) | PASS |
+| Database querying | Median business time down at least 20% | 69.25% lower (`usage_stats_1k`, 0.5727085 ms to 0.176104 ms) | PASS |
 | UI duplicate work | Exact duplicate count down at least 50% | 100% lower (`ui_usage_ticks_visible`, `request_logs_calls` 30 to 0) | PASS |
-| Tail latency | Final P95 minus baseline P95 at most `max(10% of baseline P95, 1 ms)` | Every case inside the bound | PASS |
-| Worker peak RSS | Increase at most `max(10% of baseline RSS, 8 MiB)` | Frontend aggregate +20.32% (2,440,085,504 B versus 2,230,794,649.6 B bound) | FAIL, accepted bounded deviation |
-| Worker CPU | Recorded separately, no substitute estimate | Rust 927,480 ms to 502,850 ms; frontend 57,645.321 ms to 45,094.001 ms | Recorded |
+| Tail latency | Final P95 minus baseline P95 at most `max(10% of baseline P95, 1 ms)` | Every case inside the bound, including `forwarding_chat_sync_32k_c32` at 36.65475 ms versus 39.4042913 ms | PASS |
+| Worker peak RSS | Increase at most `max(10% of baseline RSS, 8 MiB)` | Frontend aggregate +10.94% (2,249,867,264 B versus 2,230,794,649.6 B bound) | FAIL, accepted bounded deviation |
+| Worker CPU | Recorded separately, no substitute estimate | Rust 927,480 ms to 508,060 ms; frontend 57,645.321 ms to 46,159.194 ms | Recorded |
 
 The final report status is `incomplete` with exit code 1. The only recorded failure is the frontend aggregate peak-RSS gate. The request, query, UI and P95 gates passed. The RSS target is not claimed as met, and the threshold was not lowered.
 
@@ -45,7 +45,7 @@ All fixtures are synthetic and local. Upstreams are local mock servers. No live 
 - **Worker CPU and RSS:** the Rust scope is the aggregate of the 44 test worker processes, including preparation. The frontend scope is the Vitest worker, including preparation. These are the actual measured worker scopes, not an invented hot-path slice.
 - **Frontend timing:** the frontend runs in jsdom. Its elapsed timings are proxy measurements only. They are neither native GUI timings nor UI acceptance evidence; the UI gate uses deterministic duplicate-work counters.
 
-Final timings were 14,928.753 ms build, 485,982.107 ms Rust worker wall, 37,851.091 ms frontend wall and 539,230.374 ms harness. Baseline timings were 712.468 ms build, 923,312.384 ms Rust worker wall, 50,561.226 ms frontend wall and 974,983.704 ms harness.
+Final timings were 12,659.81 ms build, 491,763.653 ms Rust worker wall, 38,615.317 ms frontend wall and 543,353.007 ms harness. Baseline timings were 712.468 ms build, 923,312.384 ms Rust worker wall, 50,561.226 ms frontend wall and 974,983.704 ms harness.
 
 ## Environment and source revisions
 
@@ -61,10 +61,10 @@ Final timings were 14,928.753 ms build, 485,982.107 ms Rust worker wall, 37,851.
 | Build profile | test |
 | Resource measurement | `/usr/bin/time -l` |
 | Baseline source revision | `32a4c2f2f4ad05522cb0036a6cfe482c56969fa7` |
-| Final source revision | `2fa9656e6edd7f09ed2ec87ee77546e5ae104d25` |
+| Final source revision | `0aad087a761240ca0b2d7d2884c0aba49ddd3ebf` |
 | Attribution comparison BASE | `855baa46b0cf24d2271fc2d47fa8d37ad782a169` |
 
-Both the baseline and final JSON record the source revision as supplied by the environment. The frozen baseline JSON remains byte-identical to its delivered form. The final JSON is a byte-preserving copy of the final runner stdout, including its `incomplete` status; the runner exited 1.
+Both the baseline and final JSON record the source revision as supplied by the environment. The frozen baseline JSON remains byte-identical to its delivered form. The final JSON is a byte-preserving copy of the representative merged-tree runner stdout (3,046,694 bytes, SHA-256 `023e1c778144c870e99bb028a6bb202d5b7c143a7812fd5ce25b12807911743c`), including its `incomplete` status; the runner exited 1.
 
 ## Exact commands
 
@@ -77,8 +77,8 @@ node tools/measure-ai-gateway.mjs --phase baseline
 Official final measurement, with an isolated target directory and the final revision supplied to the runner:
 
 ```bash
-CARGO_TARGET_DIR=.agw-final-target \
-AI_GATEWAY_MEASUREMENT_REVISION=2fa9656e6edd7f09ed2ec87ee77546e5ae104d25 \
+CARGO_TARGET_DIR=.agw-final-target-merged \
+AI_GATEWAY_MEASUREMENT_REVISION=0aad087a761240ca0b2d7d2884c0aba49ddd3ebf \
 node tools/measure-ai-gateway.mjs --phase final \
   --baseline docs/ai-gateway-performance-baseline.json \
   --timeout-ms 3600000
@@ -102,12 +102,12 @@ Baseline and final values are medians over the 1 cold plus 5 warm passes unless 
 
 | Case | P50 baseline to final | P95 baseline to final | Throughput baseline to final | Recorded counters |
 | --- | --- | --- | --- | --- |
-| `config_status_models_large` | 4.7472495 to 4.6955625 ms | 5.820084 to 5.516459 ms | 319.534 to 366.496 | 100 status reads, 100 model-payload builds, 10,000 models advertised |
-| `routing_large` | 3.7124585 to 2.124146 ms | 4.784583 to 3.423417 ms | 259.980 to 424.438 | 200 requests, 1 candidate call |
-| `forwarding_chat_stream_64_c1` | 27.2953125 to 3.872021 ms | 30.253458 to 5.109417 ms | 36.934 to 248.923 | 200 requests, 1,000 events, 64-byte fragments |
-| `usage_stats_1k` | 0.5727085 to 0.160229 ms | 4.261667 to 3.007542 ms | 858.110 to 1,562.036 | 200 range queries, 11,952 model rows returned |
-| `usage_log_append_10000x3` | 0.7853545 to 0.467125 ms | 1.342583 to 0.633791 ms | 1,200.400 to 2,020.560 | 10,000 requests, 3 attempts each, 30,000 rows, 10,000 transactions, 1 database open |
-| `provider_history_3650` | 3.6184375 to 3.0569375 ms | 4.734417 to 3.240875 ms | 259.217 to 322.134 | 200 history queries, 730,000 calendar cells |
+| `config_status_models_large` | 4.7472495 to 4.650479 ms | 5.820084 to 5.401625 ms | 319.534 to 378.501 | 100 status reads, 100 model-payload builds, 10,000 models advertised |
+| `routing_large` | 3.7124585 to 2.155 ms | 4.784583 to 3.21025 ms | 259.980 to 436.008 | 200 requests, 1 candidate call |
+| `forwarding_chat_stream_64_c1` | 27.2953125 to 3.9410835 ms | 30.253458 to 5.16725 ms | 36.934 to 249.254 | 200 requests, 1,000 events, 64-byte fragments |
+| `usage_stats_1k` | 0.5727085 to 0.176104 ms | 4.261667 to 3.346584 ms | 858.110 to 1,391.588 | 200 range queries, 11,952 model rows returned |
+| `usage_log_append_10000x3` | 0.7853545 to 0.482958 ms | 1.342583 to 0.655209 ms | 1,200.400 to 1,961.099 | 10,000 requests, 3 attempts each, 30,000 rows, 10,000 transactions, 1 database open |
+| `provider_history_3650` | 3.6184375 to 3.0656045 ms | 4.734417 to 3.263625 ms | 259.217 to 322.231 | 200 history queries, 730,000 calendar cells |
 
 The UI duplicate-work case `ui_usage_ticks_visible` ran 30 five-second ticks. Its `request_logs_calls` counter moved from 30 to 0, `invoke_calls` moved from 120 to 90, and the case remained a jsdom proxy measurement. The 3,650-day history case rendered all 3,650 dates with 8 unavailable rows in both languages.
 
@@ -140,9 +140,8 @@ The migration suite passed all 30 tests on the identical rerun. Its first invoca
 | Check | Command | Exit | Result |
 | --- | --- | --- | --- |
 | Final measurement | Fixed runner command above | 1 | `incomplete`, sole failure `rss_regression:frontend` |
-| Gateway behavior | `cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway:: -- --test-threads=1` | 0 | 1,036 passed, 0 failed, 46 ignored, 642 filtered |
-| Frontend behavior | `npm test -- src/components/AiGateway src/lib/aiGateway.test.ts src/lib/runtimeStatus.test.ts src/App.runtimeOwnership.test.tsx` | 0 | 27 files, 752 tests passed |
-| Focused command wrapper | `npm test -- src/lib/aiGateway.test.ts` | 0 | 136 tests passed |
+| Gateway behavior | `cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway:: -- --test-threads=1` | 0 | 1,074 passed, 0 failed, 46 ignored, 646 filtered |
+| Frontend behavior | `npm test -- src/components/AiGateway src/lib/aiGateway.test.ts src/lib/runtimeStatus.test.ts src/App.runtimeOwnership.test.tsx` | 0 | 27 files, 770 tests passed |
 | Production build | `npm run build` | 0 | 2,669 modules transformed |
 | Changed frontend lint | `npx --no-install eslint <18 changed paths>` | 0 | 0 errors, 44 warnings |
 | Redaction | `bash tools/check-ai-gateway-redaction.sh` | 1 | Not PASS; same single known finding as baseline |
@@ -157,8 +156,8 @@ Revert the cohesive code commits for the affected gateway paths and restart the 
 
 ## Accepted bounded RSS deviation
 
-> Accepted bounded deviation: the official final measurement remains `incomplete` with exit 1 because the frontend aggregate peak-RSS gate failed (2,440,085,504 B versus the 2,230,794,649.6 B bound, +20.32% over the 2,027,995,136 B frozen baseline). The user accepted this bounded deviation on the attribution evidence: three same-session full-file pairs measured +12.74%, +7.54% and +10.08% against the current BASE (bound +10%; one below and two marginal), the same BASE code measured +10.50% to +12.98% against the frozen baseline JSON, isolated per-case final peaks were lower (all tabs -3.68%, visible ticks -2.83%, 3,650-day calendar -8.07%), the repeated concurrency case stayed inside its P95 bound in 3/3 runs, and the direct-mock control was not degraded. No reproducible product regression attributable to the change was established. The RSS target is not claimed as met, and the threshold was not lowered.
+> Accepted bounded deviation: the representative merged-tree measurement remains `incomplete` with exit 1 because the frontend aggregate peak-RSS gate failed (2,249,867,264 B versus the 2,230,794,649.6 B bound, +10.94% over the 2,027,995,136 B frozen baseline, 19,072,614.4 B over the bound). The user accepted this bounded deviation on the merged controlled attribution evidence: two same-session full-file pairs measured +15.594% and +18.336% against the current BASE (bound +10%; both over), the repeated concurrency case stayed inside its P95 bound in 3/3 runs and below the baseline, and the direct-mock control was not elevated. The official merged2 deviation is smaller than the earlier pre-merge +20.32% that informed the acceptance. No reproducible product regression attributable to the change was established. The RSS target is not met, the threshold was not lowered, and no acceptance PASS is claimed.
 
-The repeated concurrency case was `forwarding_chat_sync_32k_c32`. Its three final P95 values were 36.708750 ms (+2.475%), 39.202417 ms (+9.436%) and 30.108875 ms (-15.949%) against the 35.822083 ms baseline and the 39.4042913 ms bound. The direct-mock stream control measured a final median of 2.467187 ms and 2.574500 ms across two runs, against a 22.057104 ms baseline, with P95 of 3.146959 ms and 4.578958 ms against 27.217666 ms. The control is not degraded.
+The repeated concurrency case was `forwarding_chat_sync_32k_c32`. The official merged2 P95 was 36.65475 ms against the 35.822083 ms baseline and the 39.4042913 ms bound, so it passed. Three controlled merged-tree runs measured P95 at 30.953042 ms, 31.693458 ms and 31.783500 ms, all inside the bound and below the baseline. The direct-mock stream control measured P95 of 2.938500 ms and 2.956250 ms across two runs, against a 27.217666 ms baseline. The control is not elevated.
 
-The earlier investigation runs that reported a zero-test replacement, additional P95 failures or higher aggregate RSS are not the official artifact. They remain investigation evidence only and are not used to claim acceptance.
+The earlier pre-merge run (+20.32% RSS) and the first merged run (+39.7% RSS with a c32 outlier) are investigation history only. They are not the official artifact, are not used in the official table, and are not used to claim acceptance.
