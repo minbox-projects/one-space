@@ -502,3 +502,234 @@ fn service_provider_import_rejects_old_core_provider_payload() {
         assert_eq!(err.code, "invalid_payload");
     });
 }
+
+#[test]
+fn opencode_shared_sync_preserves_local_key_in_projected_config() {
+    with_temp_dir("opencode-shared-sync-preserve-local-key", |home| {
+        const LOCAL_KEY: &str = "SAFE_FIXTURE_LOCAL_API_KEY";
+        const PROVIDER_KEY: &str = "gateway";
+        let provider_id = "11111111-1111-4111-8111-111111111111";
+
+        let mut tool_config = Map::new();
+        tool_config.insert(
+            "options".to_string(),
+            json!({
+                "apiKey": LOCAL_KEY,
+                "baseURL": "https://local.example.com/v1",
+            }),
+        );
+        tool_config.insert(
+            "models".to_string(),
+            json!({ "local-model": { "name": "Local Model" } }),
+        );
+
+        let local = ServiceProvidersState {
+            active: HashMap::from([("opencode".to_string(), provider_id.to_string())]),
+            active_opencode: vec![],
+            providers: vec![ServiceProviderRecord {
+                id: provider_id.to_string(),
+                name: "OpenCode Gateway".to_string(),
+                tool: "opencode".to_string(),
+                api_key: LOCAL_KEY.to_string(),
+                code: Some("opencode-gateway".to_string()),
+                provider_key: Some(PROVIDER_KEY.to_string()),
+                env_managed: Some(true),
+                base_url: Some("https://local.example.com/v1".to_string()),
+                tool_config,
+                ..ServiceProviderRecord::default()
+            }],
+        };
+        save_service_providers_internal(&local).expect("save local providers");
+
+        let shared_path = home.join("shared-providers.json");
+        export_local_providers_to_shared(&shared_path).expect("export local providers to shared");
+
+        let exported: ServiceProvidersState =
+            StorageEngine::read_json(&shared_path).expect("read exported shared providers");
+        let exported_provider = &exported.providers[0];
+        assert!(
+            exported_provider.api_key.is_empty(),
+            "the shared export must not carry the canonical api key"
+        );
+        assert_eq!(
+            exported_provider.tool_config["options"]["apiKey"],
+            json!("$APIKEY"),
+            "the shared export must redact the nested opencode api key"
+        );
+
+        // The remote device updated the shared copy with non-sensitive values only.
+        let mut remote = exported.clone();
+        remote.providers[0].base_url = Some("https://shared.example.com/v1".to_string());
+        remote.providers[0].tool_config["options"]["baseURL"] =
+            json!("https://shared.example.com/v1");
+        remote.providers[0].tool_config["models"] =
+            json!({ "shared-model": { "name": "Shared Model" } });
+        StorageEngine::write_json(&shared_path, &remote).expect("write remote shared providers");
+
+        import_shared_service_providers_to_local(&shared_path).expect("import shared providers");
+
+        let updated = load_service_providers_state().expect("load updated providers");
+        let provider = updated
+            .providers
+            .iter()
+            .find(|provider| provider.provider_key.as_deref() == Some(PROVIDER_KEY))
+            .expect("imported opencode provider");
+
+        assert_eq!(
+            provider.api_key, LOCAL_KEY,
+            "import must keep the canonical local api key"
+        );
+        assert_eq!(
+            provider.tool_config["options"]["apiKey"],
+            json!(LOCAL_KEY),
+            "import must not overwrite the local nested opencode api key with the shared placeholder"
+        );
+        assert_eq!(
+            provider.base_url.as_deref(),
+            Some("https://shared.example.com/v1"),
+            "import must keep the shared endpoint update"
+        );
+        assert_eq!(
+            provider.tool_config["options"]["baseURL"],
+            json!("https://shared.example.com/v1"),
+            "import must keep the shared nested endpoint update"
+        );
+        assert_eq!(
+            provider.tool_config["models"]["shared-model"]["name"],
+            json!("Shared Model"),
+            "import must keep the shared model update"
+        );
+
+        apply_projection(provider).expect("apply opencode projection");
+
+        let opencode_path = home.join(".config").join("opencode").join("opencode.json");
+        let written: Value = serde_json::from_str(
+            &fs::read_to_string(&opencode_path).expect("read projected opencode config"),
+        )
+        .expect("parse projected opencode config");
+        assert_eq!(
+            written["provider"][PROVIDER_KEY]["options"]["apiKey"],
+            json!(LOCAL_KEY),
+            "opencode.json must carry the real local api key instead of a shared placeholder"
+        );
+    });
+}
+
+#[test]
+fn opencode_projection_uses_canonical_key_when_nested_key_is_stale() {
+    with_temp_dir("opencode-projection-canonical-key-recovery", |home| {
+        const CANONICAL_KEY: &str = "SAFE_FIXTURE_CANONICAL_API_KEY";
+        const PROVIDER_KEY: &str = "gateway";
+        const BASE_URL: &str = "https://gateway.example.com/v1";
+
+        // (case label, canonical api key, stored nested api key, expected written api key)
+        let cases: Vec<(&str, &str, &str, &str)> = vec![
+            ("empty nested key", CANONICAL_KEY, "", CANONICAL_KEY),
+            ("shared placeholder nested key", CANONICAL_KEY, "$APIKEY", CANONICAL_KEY),
+            ("redacted nested key", CANONICAL_KEY, "********", CANONICAL_KEY),
+            (
+                "stale nested key",
+                CANONICAL_KEY,
+                "SAFE_FIXTURE_STALE_API_KEY",
+                CANONICAL_KEY,
+            ),
+            (
+                "missing canonical key keeps a valid nested key",
+                "",
+                "SAFE_FIXTURE_LEGACY_NESTED_API_KEY",
+                "SAFE_FIXTURE_LEGACY_NESTED_API_KEY",
+            ),
+        ];
+
+        for (label, canonical_key, nested_key, expected_key) in cases {
+            let opencode_path = home.join(".config").join("opencode").join("opencode.json");
+            write_test_file(
+                &opencode_path,
+                &json!({
+                    "$schema": "https://opencode.ai/config.json",
+                    "theme": "opencode-dark",
+                    "model": "keep-global-model",
+                    "provider": {
+                        "other": {
+                            "name": "Other Provider",
+                            "options": { "apiKey": "SAFE_FIXTURE_OTHER_API_KEY" }
+                        }
+                    }
+                })
+                .to_string(),
+            );
+
+            let mut tool_config = Map::new();
+            tool_config.insert(
+                "options".to_string(),
+                json!({ "apiKey": nested_key, "baseURL": BASE_URL }),
+            );
+            tool_config.insert(
+                "models".to_string(),
+                json!({ "gateway-model": { "name": "Gateway Model" } }),
+            );
+            let provider = ServiceProviderRecord {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                name: "OpenCode Gateway".to_string(),
+                tool: "opencode".to_string(),
+                api_key: canonical_key.to_string(),
+                code: Some("opencode-gateway".to_string()),
+                provider_key: Some(PROVIDER_KEY.to_string()),
+                env_managed: Some(true),
+                base_url: Some(BASE_URL.to_string()),
+                tool_config,
+                ..ServiceProviderRecord::default()
+            };
+
+            apply_projection(&provider).expect("apply opencode projection");
+
+            let written: Value = serde_json::from_str(
+                &fs::read_to_string(&opencode_path).expect("read projected opencode config"),
+            )
+            .expect("parse projected opencode config");
+
+            assert_eq!(
+                written["provider"][PROVIDER_KEY]["options"]["apiKey"],
+                json!(expected_key),
+                "case `{}`: the projected opencode api key must come from the canonical api key",
+                label
+            );
+            assert_eq!(
+                written["provider"][PROVIDER_KEY]["options"]["baseURL"],
+                json!(BASE_URL),
+                "case `{}`: the projected endpoint must stay untouched",
+                label
+            );
+            assert_eq!(
+                written["provider"][PROVIDER_KEY]["models"]["gateway-model"]["name"],
+                json!("Gateway Model"),
+                "case `{}`: the projected models must stay untouched",
+                label
+            );
+            assert_eq!(
+                written["provider"]["other"]["name"],
+                json!("Other Provider"),
+                "case `{}`: an unrelated opencode provider must stay untouched",
+                label
+            );
+            assert_eq!(
+                written["provider"]["other"]["options"]["apiKey"],
+                json!("SAFE_FIXTURE_OTHER_API_KEY"),
+                "case `{}`: an unrelated opencode provider credential must stay untouched",
+                label
+            );
+            assert_eq!(
+                written["theme"],
+                json!("opencode-dark"),
+                "case `{}`: unrelated global opencode settings must stay untouched",
+                label
+            );
+            assert_eq!(
+                written["model"],
+                json!("keep-global-model"),
+                "case `{}`: the global opencode model must stay untouched",
+                label
+            );
+        }
+    });
+}
