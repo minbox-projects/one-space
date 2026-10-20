@@ -390,6 +390,15 @@ fn build_gateway_provider_with_pools(
                     variant.insert("reasoningEffort".to_string(), Value::String(effort.clone()));
                     variants.insert(effort.clone(), Value::Object(variant));
                 }
+                // OpenCode replays non-empty reasoning by default but omits the
+                // field for tool turns without reasoning; interleaved makes the
+                // empty string explicit.
+                let mut interleaved = Map::new();
+                interleaved.insert(
+                    "field".to_string(),
+                    Value::String("reasoning_content".to_string()),
+                );
+                model.insert("interleaved".to_string(), Value::Object(interleaved));
                 model.insert("reasoning".to_string(), Value::Bool(true));
                 model.insert("variants".to_string(), Value::Object(variants));
             }
