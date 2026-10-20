@@ -1557,6 +1557,119 @@ fn observer_recognizes_a_final_unterminated_event_at_finish() {
     );
 }
 
+/// AC-003: once the first meaningful output is known, later upstream events --
+/// whether they remain in the same received feed or arrive in later fragments --
+/// must not be framed merely to observe timing again. `framed_event_count` is a
+/// test-only seam: it counts every complete event the observer extracts for
+/// observation, including events that carry no meaningful output and whether or
+/// not they are eventually parsed. The event that establishes the first
+/// observation still counts; every later one must not.
+#[test]
+fn observer_stops_framing_after_first_meaningful_output() {
+    let base = std::time::Instant::now();
+    let started = tokio::time::Instant::from_std(base);
+
+    let mut observer = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
+    observer.feed_at(
+        &chat_event(json!({"role": "assistant"})),
+        instant(base, Duration::from_millis(50)),
+    );
+    let framed_before_first = observer.framed_event_count();
+    assert_eq!(
+        framed_before_first, 1,
+        "the role-only event is framed before any meaningful output is known"
+    );
+
+    // The first meaningful event and one later event share a single feed.
+    let same_feed = [
+        chat_event(json!({"content": "first"})),
+        chat_event(json!({"content": "later in the same feed"})),
+    ]
+    .concat();
+    observer.feed_at(&same_feed, instant(base, Duration::from_millis(120)));
+    assert_eq!(observer.first_token_ms(), Some(120.0));
+    assert_eq!(
+        observer.framed_event_count(),
+        framed_before_first + 1,
+        "the event that establishes first output must be framed, but the event \
+         remaining in the same feed must not be"
+    );
+
+    // Later fragments must not resume framing either.
+    for index in 0..4 {
+        observer.feed_at(
+            &chat_event(json!({"content": format!("later fragment {index}")})),
+            instant(base, Duration::from_millis(200 + index * 100)),
+        );
+    }
+    assert_eq!(
+        observer.framed_event_count(),
+        framed_before_first + 1,
+        "no later fragment may be framed after the first meaningful output"
+    );
+
+    observer.finish_at(instant(base, Duration::from_millis(1_000)));
+    assert_eq!(
+        observer.timing(Some(50)),
+        (Some(120.0), Some(50.0)),
+        "the first-output instant and the whole-attempt rate must keep their \
+         public meaning"
+    );
+}
+
+/// AC-003: preserving the observable timing boundary while raw bytes arrive.
+/// The earliest meaningful instant wins even when more events share the feed and
+/// later fragments continue; a multibyte UTF-8 character split across chunks is
+/// only meaningful once the completing chunk produces a valid event.
+#[test]
+fn observer_keeps_earliest_output_across_shared_feed_and_split_utf8() {
+    let base = std::time::Instant::now();
+    let started = tokio::time::Instant::from_std(base);
+
+    let mut shared = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
+    let feed = [
+        chat_event(json!({"role": "assistant"})),
+        chat_event(json!({"content": "first"})),
+        chat_event(json!({"content": "second"})),
+    ]
+    .concat();
+    shared.feed_at(&feed, instant(base, Duration::from_millis(120)));
+    shared.feed_at(
+        &chat_event(json!({"content": "later fragment"})),
+        instant(base, Duration::from_millis(300)),
+    );
+    shared.finish_at(instant(base, Duration::from_millis(1_000)));
+    assert_eq!(
+        shared.timing(Some(50)),
+        (Some(120.0), Some(50.0)),
+        "events after the first in one feed and later fragments must not move \
+         the first-output instant"
+    );
+
+    let mut split = OutputTimingObserver::new(UpstreamProtocol::ChatCompletions, started);
+    let event = chat_event(json!({"content": "é"}));
+    let byte = event
+        .iter()
+        .position(|value| *value == 0xC3)
+        .expect("the UTF-8 event carries a multibyte character");
+    split.feed_at(&event[..=byte], instant(base, Duration::from_millis(100)));
+    assert_eq!(
+        split.first_token_ms(),
+        None,
+        "a chunk ending mid-UTF-8 must not produce an event or an observation"
+    );
+    split.feed_at(
+        &event[byte + 1..],
+        instant(base, Duration::from_millis(250)),
+    );
+    split.finish_at(instant(base, Duration::from_millis(500)));
+    assert_eq!(
+        split.timing(Some(50)),
+        (Some(250.0), Some(100.0)),
+        "the chunk that completes the UTF-8 event is the observation instant"
+    );
+}
+
 #[test]
 fn observer_excludes_metadata_error_completion_and_identifier_only_events() {
     let base = std::time::Instant::now();

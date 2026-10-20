@@ -36,6 +36,8 @@ pub(in crate::ai_gateway) struct OutputTimingObserver {
     buffer: Vec<u8>,
     first_output_at: Option<Instant>,
     finished_at: Option<Instant>,
+    #[cfg(test)]
+    framed_events: usize,
 }
 
 impl OutputTimingObserver {
@@ -47,36 +49,67 @@ impl OutputTimingObserver {
             buffer: Vec::new(),
             first_output_at: None,
             finished_at: None,
+            #[cfg(test)]
+            framed_events: 0,
         }
     }
 
     /// Feed one raw upstream chunk with its monotonic receipt instant. Complete
     /// SSE events (LF or CRLF, multiline data, possibly fragmented) are
     /// recognized incrementally; the receipt instant of the chunk that completes
-    /// the first meaningful event becomes the first-output observation.
+    /// the first meaningful event becomes the first-output observation. Once
+    /// that observation is known, later bytes are neither buffered nor framed,
+    /// so only the whole-attempt end instant is still recorded.
     pub(in crate::ai_gateway) fn feed_at(&mut self, chunk: &[u8], received_at: Instant) {
+        if self.first_output_at.is_some() {
+            return;
+        }
         self.buffer.extend_from_slice(chunk);
-        while let Some(end) = event_end(&self.buffer) {
+        while self.first_output_at.is_none() {
+            let Some(end) = event_end(&self.buffer) else {
+                break;
+            };
             let event: Vec<u8> = self.buffer.drain(..end).collect();
+            #[cfg(test)]
+            {
+                self.framed_events += 1;
+            }
             self.observe_event(&event, received_at);
         }
-        if self.buffer.len() > MAX_BUFFER_BYTES {
+        if self.first_output_at.is_some() {
+            self.buffer.clear();
+        } else if self.buffer.len() > MAX_BUFFER_BYTES {
             self.buffer.clear();
         }
     }
 
     /// Finish the attempt at `ended_at`. A final meaningful event that arrived
     /// without the usual blank-line terminator is recognized here, and the end
-    /// instant closes the whole-attempt window. The first call wins, so an end
-    /// observed while forwarding is not overwritten by later bookkeeping.
+    /// instant closes the whole-attempt window. After the first meaningful
+    /// output is known there is nothing left to observe, so the retained buffer
+    /// is dropped without framing. The first call wins, so an end observed while
+    /// forwarding is not overwritten by later bookkeeping.
     pub(in crate::ai_gateway) fn finish_at(&mut self, ended_at: Instant) {
         if self.finished_at.is_none() {
             self.finished_at = Some(ended_at);
         }
-        if !self.buffer.is_empty() {
+        if self.first_output_at.is_none() && !self.buffer.is_empty() {
             let event = std::mem::take(&mut self.buffer);
+            #[cfg(test)]
+            {
+                self.framed_events += 1;
+            }
             self.observe_event(&event, ended_at);
         }
+        self.buffer.clear();
+    }
+
+    /// Test-only count of every event the observer has extracted for
+    /// observation, including events that carry no meaningful output and events
+    /// that are not parsed after the first meaningful output is known.
+    #[cfg(test)]
+    pub(in crate::ai_gateway) fn framed_event_count(&self) -> usize {
+        self.framed_events
     }
 
     /// Measured first-token latency in milliseconds, unrounded. `Some(0.0)` is a
