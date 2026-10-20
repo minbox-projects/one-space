@@ -1018,6 +1018,22 @@ pub struct UsageProviderRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageProviderModelRow {
+    pub local_model: String,
+    #[serde(flatten)]
+    pub metrics: UsageMetrics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageProviderStatsRow {
+    pub provider_id: String,
+    pub provider_name: String,
+    #[serde(flatten)]
+    pub metrics: UsageMetrics,
+    pub models: Vec<UsageProviderModelRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageModelRow {
     pub local_model: String,
     #[serde(flatten)]
@@ -1042,6 +1058,8 @@ pub struct UsageStats {
     pub totals: UsageMetrics,
     pub buckets: Vec<UsageBucketRow>,
     pub models: Vec<UsageModelRow>,
+    #[serde(default)]
+    pub providers: Vec<UsageProviderStatsRow>,
     #[serde(default)]
     pub unpriced_items: Vec<UnpricedUsageItem>,
 }
@@ -2150,6 +2168,49 @@ impl UsageLogStore {
             });
         }
 
+        let mut provider_summary_statement = connection
+            .prepare(&format!(
+                "SELECT provider_id, provider_name, {}
+                 FROM usage_logs{provider_where}
+                 GROUP BY provider_id, provider_name
+                 ORDER BY COALESCE(SUM(total_tokens), 0) DESC, provider_name ASC",
+                metric_columns()
+            ))
+            .map_err(|error| error.to_string())?;
+        let provider_summary_rows = provider_summary_statement
+            .query_map(params_from_iter(params.iter()), |row| {
+                let provider_id = row.get::<_, String>(0)?;
+                let provider_name = row.get::<_, String>(1)?;
+                Ok((provider_id, provider_name, metrics_from_row(row, 2)?))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+
+        let mut providers = Vec::new();
+        for (provider_id, provider_name, metrics) in provider_summary_rows {
+            let mut provider_models: Vec<UsageProviderModelRow> = provider_rows
+                .iter()
+                .filter(|(_, pid, _, _)| pid == &provider_id)
+                .map(|(model, _, _, metrics)| UsageProviderModelRow {
+                    local_model: model.clone(),
+                    metrics: *metrics,
+                })
+                .collect();
+            provider_models.sort_by(|a, b| {
+                b.metrics
+                    .total_tokens
+                    .cmp(&a.metrics.total_tokens)
+                    .then_with(|| a.local_model.cmp(&b.local_model))
+            });
+            providers.push(UsageProviderStatsRow {
+                provider_id,
+                provider_name,
+                metrics,
+                models: provider_models,
+            });
+        }
+
         let mut unpriced_items = Vec::new();
         if totals.unpriced_count > 0 {
             let mut unpriced_statement = connection
@@ -2181,6 +2242,7 @@ impl UsageLogStore {
             totals,
             buckets,
             models,
+            providers,
             unpriced_items,
         })
     }

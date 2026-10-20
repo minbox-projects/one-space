@@ -2742,6 +2742,9 @@ describe("模型池统一对外推理强度与自动绑定 (autoBindCandidateRea
     {
       id: "p1",
       name: "Provider 1",
+      base_url: "https://example.com",
+      default_model: null,
+      enabled: true,
       protocol: "chat_completions",
       mappings: [
         {
@@ -2770,7 +2773,6 @@ describe("模型池统一对外推理强度与自动绑定 (autoBindCandidateRea
           reasoning_efforts: [],
         },
       ],
-      keys: [],
     },
   ];
 

@@ -16,14 +16,17 @@ import {
   Sparkles,
 } from "lucide-react";
 import {
+  aiGatewayGetConfig,
   aiGatewayUsageStats,
   formatGatewayTokens,
   formatUsageAmount,
   formatUsageRowAmount,
   USAGE_RANGE_KEYS,
+  type GatewayUpstreamProvider,
   type UnpricedUsageItem,
   type UsageBucket,
   type UsageMetrics,
+  type UsageProviderModelBreakdown,
   type UsageRangeKey,
   type UsageStats,
 } from "@/lib/aiGateway";
@@ -84,11 +87,17 @@ function UsageAnalysisRow({
   metrics,
   indent = false,
   sharePercent,
+  badge,
+  testId,
+  cacheHitTestId,
 }: {
   label: string;
   metrics: UsageMetrics;
   indent?: boolean;
   sharePercent?: number;
+  badge?: React.ReactNode;
+  testId?: string;
+  cacheHitTestId?: string;
 }) {
   const { t } = useTranslation();
   const cacheHitText = formatCacheHitRate(metrics.cache_hit_rate_percent);
@@ -100,11 +109,14 @@ function UsageAnalysisRow({
   return (
     <tr
       className="border-t"
-      data-testid={indent ? "ai-gateway-usage-provider-row" : "ai-gateway-usage-model-row"}
+      data-testid={testId ?? (indent ? "ai-gateway-usage-provider-row" : "ai-gateway-usage-model-row")}
     >
       <td className={`px-3 py-2 ${indent ? "pl-8 text-muted-foreground" : "font-medium"}`}>
         <div className="flex items-center justify-between gap-3">
-          <span className="truncate">{label}</span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="truncate">{label}</span>
+            {badge}
+          </div>
           {sharePercent !== undefined && (
             <div
               className="flex items-center shrink-0"
@@ -144,7 +156,12 @@ function UsageAnalysisRow({
             ? `${formatGatewayTokens(metrics.cache_hit_tokens)} / ${formatGatewayTokens(metrics.cache_eligible_tokens)}`
             : undefined
         }
-        data-testid={indent ? "ai-gateway-usage-provider-cache-hit" : "ai-gateway-usage-model-cache-hit"}
+        data-testid={
+          cacheHitTestId ??
+          (indent
+            ? "ai-gateway-usage-provider-cache-hit"
+            : "ai-gateway-usage-model-cache-hit")
+        }
       >
         <span className="font-medium">{cacheHitText}</span>
         <span className="ml-1 text-[10px] text-muted-foreground">{coverageText}</span>
@@ -154,16 +171,39 @@ function UsageAnalysisRow({
   );
 }
 
-export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
+export function UsageStatsPanel({
+  isActive = true,
+  providers: initialProviders,
+}: {
+  isActive?: boolean;
+  providers?: GatewayUpstreamProvider[];
+}) {
   const { t } = useTranslation();
   const [range, setRange] = useState<UsageRangeKey>("today");
   const [trendMetric, setTrendMetric] = useState<TrendMetric>("tokens");
+  const [analysisDimension, setAnalysisDimension] = useState<"model" | "provider">("model");
+  const [showDeletedProviders, setShowDeletedProviders] = useState(false);
+  const [activeProviders, setActiveProviders] = useState<GatewayUpstreamProvider[]>(
+    initialProviders ?? [],
+  );
   const [showBucketTable, setShowBucketTable] = useState(true);
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const requestSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (initialProviders !== undefined) {
+      setActiveProviders(initialProviders);
+    } else {
+      void aiGatewayGetConfig()
+        .then((cfg) => {
+          if (cfg?.providers) setActiveProviders(cfg.providers);
+        })
+        .catch(() => {});
+    }
+  }, [initialProviders]);
 
   const load = useCallback(
     async (options?: { refresh?: boolean }) => {
@@ -271,6 +311,93 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
     }
     return items;
   }, [stats]);
+
+  const configuredProviderIds = useMemo(() => {
+    return new Set(
+      activeProviders
+        .map((p) => p.id)
+        .filter((id) => Boolean(id && id.trim())),
+    );
+  }, [activeProviders]);
+
+  const allProviders = useMemo(() => {
+    if (!stats) return [];
+
+    if (stats.providers && stats.providers.length > 0) {
+      return stats.providers.map((p) => ({
+        ...p,
+        isDeleted: !configuredProviderIds.has(p.provider_id),
+      }));
+    }
+
+    const providerMap = new Map<
+      string,
+      {
+        provider_id: string;
+        provider_name: string;
+        metrics: UsageMetrics;
+        models: UsageProviderModelBreakdown[];
+      }
+    >();
+
+    for (const model of stats.models) {
+      for (const p of model.providers) {
+        if (!p.provider_id || !p.provider_id.trim()) continue;
+        const existing = providerMap.get(p.provider_id);
+        if (!existing) {
+          providerMap.set(p.provider_id, {
+            provider_id: p.provider_id,
+            provider_name: p.provider_name || p.provider_id,
+            metrics: { ...p },
+            models: [{ local_model: model.local_model, ...p }],
+          });
+        } else {
+          existing.metrics.request_count += p.request_count;
+          existing.metrics.input_tokens += p.input_tokens;
+          existing.metrics.cache_read_tokens += p.cache_read_tokens;
+          existing.metrics.cache_write_tokens += p.cache_write_tokens;
+          existing.metrics.output_tokens += p.output_tokens;
+          existing.metrics.total_tokens += p.total_tokens;
+          existing.metrics.amount += p.amount;
+          existing.metrics.unpriced_count += p.unpriced_count;
+          existing.metrics.cache_hit_tokens += p.cache_hit_tokens;
+          existing.metrics.cache_eligible_tokens += p.cache_eligible_tokens;
+          existing.metrics.cache_rate_eligible_count += p.cache_rate_eligible_count;
+          existing.metrics.successful_request_count += p.successful_request_count;
+          if (existing.metrics.cache_eligible_tokens > 0) {
+            existing.metrics.cache_hit_rate_percent =
+              (existing.metrics.cache_hit_tokens * 100) /
+              existing.metrics.cache_eligible_tokens;
+          } else {
+            existing.metrics.cache_hit_rate_percent = null;
+          }
+          existing.models.push({
+            local_model: model.local_model,
+            ...p,
+          });
+        }
+      }
+    }
+
+    return Array.from(providerMap.values())
+      .map((item) => ({
+        ...item.metrics,
+        provider_id: item.provider_id,
+        provider_name: item.provider_name,
+        models: item.models.sort(
+          (a, b) => b.total_tokens - a.total_tokens,
+        ),
+        isDeleted: !configuredProviderIds.has(item.provider_id),
+      }))
+      .sort((a, b) => b.total_tokens - a.total_tokens);
+  }, [stats, configuredProviderIds]);
+
+  const filteredProviders = useMemo(() => {
+    if (showDeletedProviders) {
+      return allProviders;
+    }
+    return allProviders.filter((p) => !p.isDeleted);
+  }, [allProviders, showDeletedProviders]);
 
   return (
     <div className="rounded-2xl border bg-card p-5" data-testid="ai-gateway-usage-stats">
@@ -735,84 +862,235 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
             </div>
           ) : null}
 
-          {/* 模型用量分析（含占比 Share % 可视化） */}
+          {/* 用量分析（支持按模型 / 按服务商维度切换） */}
           <div>
-            <h3 className="mb-2 text-sm font-semibold">
-              {t("aiGatewayUsageAnalysis", "Usage analysis")}
-            </h3>
-            <div className="overflow-x-auto rounded-lg border">
-              <table
-                className="w-full text-left text-xs"
-                data-testid="ai-gateway-usage-models"
-              >
-                <thead className="bg-muted/50 text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">
-                      {t("aiGatewayUsageModelColumn", "Model")}
-                    </th>
-                    <th className="px-3 py-2 text-right font-medium">
-                      {t("aiGatewayUsageRequests", "Requests")}
-                    </th>
-                    <th className="px-3 py-2 text-right font-medium">
-                      {t("aiGatewayUsageInput", "Input")}
-                    </th>
-                    <th className="px-3 py-2 text-right font-medium">
-                      {t("aiGatewayUsageCacheRead", "Cache read")}
-                    </th>
-                    <th className="px-3 py-2 text-right font-medium">
-                      {t("aiGatewayUsageCacheWrite", "Cache write")}
-                    </th>
-                    <th className="px-3 py-2 text-right font-medium">
-                      {t("aiGatewayUsageOutput", "Output")}
-                    </th>
-                    <th className="px-3 py-2 text-right font-medium">
-                      {t("aiGatewayUsageCacheHit", "Token Cache Hit Rate")}
-                    </th>
-                    <th className="px-3 py-2 text-right font-medium">
-                      {t("aiGatewayUsageCostColumn", "Cost ($)")}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.models.map((model) => {
-                    const modelShare =
-                      stats.total_tokens > 0
-                        ? (model.total_tokens / stats.total_tokens) * 100
-                        : 0;
-                    return (
-                      <Fragment key={model.local_model}>
-                        <UsageAnalysisRow
-                          label={model.local_model}
-                          metrics={model}
-                          sharePercent={modelShare}
-                        />
-                        {model.providers
-                          .filter(
-                            (provider) =>
-                              provider.provider_id.trim() !== "" &&
-                              provider.provider_name.trim() !== "",
-                          )
-                          .map((provider) => {
-                            const providerShare =
-                              model.total_tokens > 0
-                                ? (provider.total_tokens / model.total_tokens) * 100
-                                : 0;
-                            return (
-                              <UsageAnalysisRow
-                                key={`${model.local_model}-${provider.provider_id}`}
-                                label={provider.provider_name}
-                                metrics={provider}
-                                indent
-                                sharePercent={providerShare}
-                              />
-                            );
-                          })}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="text-sm font-semibold">
+                {t("aiGatewayUsageAnalysis", "Usage analysis")}
+              </h3>
+              <div className="flex flex-wrap items-center gap-3">
+                <div
+                  className="inline-flex rounded-lg border bg-muted/50 p-0.5 text-xs"
+                  role="group"
+                  aria-label={t("aiGatewayUsageAnalysis", "Usage analysis")}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setAnalysisDimension("model")}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                      analysisDimension === "model"
+                        ? "bg-background text-foreground shadow-xs font-semibold"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                    data-testid="ai-gateway-usage-dimension-model"
+                  >
+                    {t("aiGatewayUsageDimensionModel", "Model")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAnalysisDimension("provider")}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition-all ${
+                      analysisDimension === "provider"
+                        ? "bg-background text-foreground shadow-xs font-semibold"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                    data-testid="ai-gateway-usage-dimension-provider"
+                  >
+                    {t("aiGatewayUsageDimensionProvider", "Provider")}
+                  </button>
+                </div>
+
+                {analysisDimension === "provider" && (
+                  <label
+                    className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground select-none hover:text-foreground transition-colors"
+                    data-testid="ai-gateway-usage-toggle-deleted-providers"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showDeletedProviders}
+                      onChange={(e) => setShowDeletedProviders(e.target.checked)}
+                      className="h-3.5 w-3.5 rounded border-muted-foreground/30 text-primary focus:ring-primary/20 accent-primary"
+                    />
+                    <span>
+                      {t("aiGatewayUsageShowDeletedProviders", "Show deleted providers")}
+                    </span>
+                  </label>
+                )}
+              </div>
             </div>
+
+            {analysisDimension === "model" ? (
+              <div className="overflow-x-auto rounded-lg border">
+                <table
+                  className="w-full text-left text-xs"
+                  data-testid="ai-gateway-usage-models"
+                >
+                  <thead className="bg-muted/50 text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">
+                        {t("aiGatewayUsageModelColumn", "Model")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageRequests", "Requests")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageInput", "Input")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageCacheRead", "Cache read")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageCacheWrite", "Cache write")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageOutput", "Output")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageCacheHit", "Token Cache Hit Rate")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageCostColumn", "Cost ($)")}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.models.map((model) => {
+                      const modelShare =
+                        stats.total_tokens > 0
+                          ? (model.total_tokens / stats.total_tokens) * 100
+                          : 0;
+                      return (
+                        <Fragment key={model.local_model}>
+                          <UsageAnalysisRow
+                            label={model.local_model}
+                            metrics={model}
+                            sharePercent={modelShare}
+                          />
+                          {model.providers
+                            .filter(
+                              (provider) =>
+                                provider.provider_id.trim() !== "" &&
+                                provider.provider_name.trim() !== "",
+                            )
+                            .map((provider) => {
+                              const providerShare =
+                                model.total_tokens > 0
+                                  ? (provider.total_tokens / model.total_tokens) * 100
+                                  : 0;
+                              return (
+                                <UsageAnalysisRow
+                                  key={`${model.local_model}-${provider.provider_id}`}
+                                  label={provider.provider_name}
+                                  metrics={provider}
+                                  indent
+                                  sharePercent={providerShare}
+                                />
+                              );
+                            })}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : filteredProviders.length === 0 ? (
+              <p
+                className="rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground"
+                data-testid="ai-gateway-usage-providers-empty"
+              >
+                {t(
+                  "aiGatewayUsageEmptyProviders",
+                  "No provider usage records in this range.",
+                )}
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border">
+                <table
+                  className="w-full text-left text-xs"
+                  data-testid="ai-gateway-usage-providers-table"
+                >
+                  <thead className="bg-muted/50 text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">
+                        {t("aiGatewayUsageProviderColumn", "Provider")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageRequests", "Requests")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageInput", "Input")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageCacheRead", "Cache read")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageCacheWrite", "Cache write")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageOutput", "Output")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageCacheHit", "Token Cache Hit Rate")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageCostColumn", "Cost ($)")}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredProviders.map((provider) => {
+                      const providerShare =
+                        stats.total_tokens > 0
+                          ? (provider.total_tokens / stats.total_tokens) * 100
+                          : 0;
+                      return (
+                        <Fragment key={provider.provider_id}>
+                          <UsageAnalysisRow
+                            label={provider.provider_name}
+                            metrics={provider}
+                            sharePercent={providerShare}
+                            testId="ai-gateway-usage-provider-dim-row"
+                            cacheHitTestId="ai-gateway-usage-provider-dim-cache-hit"
+                            badge={
+                              provider.isDeleted ? (
+                                <span
+                                  className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 shrink-0"
+                                  data-testid="ai-gateway-usage-provider-deleted-badge"
+                                >
+                                  {t(
+                                    "aiGatewayProviderHistoryDeletedTag",
+                                    "Deleted",
+                                  )}
+                                </span>
+                              ) : null
+                            }
+                          />
+                          {provider.models
+                            .filter((m) => m.local_model.trim() !== "")
+                            .map((model) => {
+                              const modelShare =
+                                provider.total_tokens > 0
+                                  ? (model.total_tokens / provider.total_tokens) * 100
+                                  : 0;
+                              return (
+                                <UsageAnalysisRow
+                                  key={`${provider.provider_id}-${model.local_model}`}
+                                  label={model.local_model}
+                                  metrics={model}
+                                  indent
+                                  sharePercent={modelShare}
+                                  testId="ai-gateway-usage-provider-dim-model-row"
+                                  cacheHitTestId="ai-gateway-usage-provider-dim-model-cache-hit"
+                                />
+                              );
+                            })}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -12499,6 +12499,30 @@ fn usage_store_stats_aggregates_models_providers_and_utc8_buckets() {
     assert_eq!(stats.buckets[0].label, "2026-09-15");
     assert_eq!(stats.buckets[1].label, "2026-09-16");
 
+    assert_eq!(stats.providers.len(), 2, "two distinct providers across range");
+    let prov_one = stats
+        .providers
+        .iter()
+        .find(|row| row.provider_id == "p1")
+        .expect("provider one in stats.providers");
+    assert_eq!(prov_one.provider_name, "Provider One");
+    assert_eq!(prov_one.metrics.request_count, 3);
+    assert_eq!(prov_one.metrics.total_tokens, (10 + 5) + 100 + (1 + 1));
+    assert_eq!(prov_one.models.len(), 2);
+    assert_eq!(prov_one.models[0].local_model, "local-a");
+    assert_eq!(prov_one.models[1].local_model, "local-b");
+
+    let prov_two = stats
+        .providers
+        .iter()
+        .find(|row| row.provider_id == "p2")
+        .expect("provider two in stats.providers");
+    assert_eq!(prov_two.provider_name, "Provider Two");
+    assert_eq!(prov_two.metrics.request_count, 1);
+    assert_eq!(prov_two.metrics.total_tokens, 20 + 10);
+    assert_eq!(prov_two.models.len(), 1);
+    assert_eq!(prov_two.models[0].local_model, "local-a");
+
     // Single-day range buckets by UTC+8 hour.
     let single = store
         .usage_stats(

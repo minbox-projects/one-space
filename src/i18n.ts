@@ -998,6 +998,11 @@ const resources = {
       aiGatewayUsageCacheHit: "Token Cache Hit Rate",
       aiGatewayUsageCostColumn: "Cost ($)",
       aiGatewayUsageModelColumn: "Model",
+      aiGatewayUsageDimensionModel: "Model",
+      aiGatewayUsageDimensionProvider: "Provider",
+      aiGatewayUsageShowDeletedProviders: "Show deleted providers",
+      aiGatewayUsageProviderColumn: "Provider",
+      aiGatewayUsageEmptyProviders: "No provider usage records in this range.",
       aiGatewayProviderHistorySubTab: "Provider history",
       aiGatewayProviderHistoryDesc:
         "Inspect one provider's daily usage through today, with retained-history coverage.",
@@ -4892,6 +4897,11 @@ const resources = {
       aiGatewayUsageCacheHit: "Token 缓存命中率",
       aiGatewayUsageCostColumn: "花费（$）",
       aiGatewayUsageModelColumn: "模型",
+      aiGatewayUsageDimensionModel: "按模型",
+      aiGatewayUsageDimensionProvider: "按服务商",
+      aiGatewayUsageShowDeletedProviders: "显示已删除服务商",
+      aiGatewayUsageProviderColumn: "服务商",
+      aiGatewayUsageEmptyProviders: "该范围内暂无服务商用量记录。",
       aiGatewayProviderHistorySubTab: "服务商历史",
       aiGatewayProviderHistoryDesc:
         "查看单个服务商截至今日的每日用量，并标明留存历史的覆盖范围。",

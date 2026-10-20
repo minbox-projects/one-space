@@ -639,6 +639,16 @@ export interface UsageProviderBreakdown extends UsageMetrics {
   provider_name: string;
 }
 
+export interface UsageProviderModelBreakdown extends UsageMetrics {
+  local_model: string;
+}
+
+export interface UsageProviderStatsRow extends UsageMetrics {
+  provider_id: string;
+  provider_name: string;
+  models: UsageProviderModelBreakdown[];
+}
+
 export interface UsageModelBreakdown extends UsageMetrics {
   local_model: string;
   providers: UsageProviderBreakdown[];
@@ -656,6 +666,7 @@ export interface UsageStats extends UsageMetrics {
   granularity: "hour" | "day";
   buckets: UsageBucket[];
   models: UsageModelBreakdown[];
+  providers?: UsageProviderStatsRow[];
   unpriced_items?: UnpricedUsageItem[];
 }
 

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import i18n from "@/i18n";
 import { UsageStatsPanel } from "@/components/AiGateway/UsageStatsPanel";
-import type { UsageStats } from "@/lib/aiGateway";
+import type { GatewayUpstreamProvider, UsageStats } from "@/lib/aiGateway";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -1360,6 +1360,284 @@ describe("UsageStatsPanel", () => {
     );
     expect(providerRows).toHaveLength(1);
     expect(providerRows[0]).toHaveTextContent("Provider A");
+  });
+
+  it("支持在按模型与按服务商之间切换，按服务商默认仅展示上游服务商列表中的服务商", async () => {
+    const user = userEvent.setup();
+    const mockProviders: GatewayUpstreamProvider[] = [
+      {
+        id: "active-provider-1",
+        name: "Active Provider One",
+        base_url: "https://example.com",
+        default_model: null,
+        mappings: [],
+        enabled: true,
+      },
+      {
+        id: "active-provider-2",
+        name: "Active Provider Two",
+        base_url: "https://example.com",
+        default_model: null,
+        mappings: [],
+        enabled: true,
+      },
+    ];
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_gateway_usage_stats") {
+        return metrics({
+          request_count: 30,
+          total_tokens: 3000,
+          models: [
+            {
+              local_model: "gpt-4o",
+              request_count: 20,
+              input_tokens: 1000,
+              cache_read_tokens: 0,
+              cache_write_tokens: 0,
+              output_tokens: 1000,
+              total_tokens: 2000,
+              amount: 0.05,
+              unpriced_count: 0,
+              ...cacheAccounting({ successful_request_count: 20 }),
+              providers: [
+                {
+                  provider_id: "active-provider-1",
+                  provider_name: "Active Provider One",
+                  request_count: 20,
+                  input_tokens: 1000,
+                  cache_read_tokens: 0,
+                  cache_write_tokens: 0,
+                  output_tokens: 1000,
+                  total_tokens: 2000,
+                  amount: 0.05,
+                  unpriced_count: 0,
+                  ...cacheAccounting({ successful_request_count: 20 }),
+                },
+              ],
+            },
+            {
+              local_model: "claude-3-5-sonnet",
+              request_count: 10,
+              input_tokens: 500,
+              cache_read_tokens: 0,
+              cache_write_tokens: 0,
+              output_tokens: 500,
+              total_tokens: 1000,
+              amount: 0.03,
+              unpriced_count: 0,
+              ...cacheAccounting({ successful_request_count: 10 }),
+              providers: [
+                {
+                  provider_id: "deleted-provider",
+                  provider_name: "Deleted Provider History",
+                  request_count: 10,
+                  input_tokens: 500,
+                  cache_read_tokens: 0,
+                  cache_write_tokens: 0,
+                  output_tokens: 500,
+                  total_tokens: 1000,
+                  amount: 0.03,
+                  unpriced_count: 0,
+                  ...cacheAccounting({ successful_request_count: 10 }),
+                },
+              ],
+            },
+          ],
+          providers: [
+            {
+              provider_id: "active-provider-1",
+              provider_name: "Active Provider One",
+              request_count: 20,
+              input_tokens: 1000,
+              cache_read_tokens: 0,
+              cache_write_tokens: 0,
+              output_tokens: 1000,
+              total_tokens: 2000,
+              amount: 0.05,
+              unpriced_count: 0,
+              ...cacheAccounting({ successful_request_count: 20 }),
+              models: [
+                {
+                  local_model: "gpt-4o",
+                  request_count: 20,
+                  input_tokens: 1000,
+                  cache_read_tokens: 0,
+                  cache_write_tokens: 0,
+                  output_tokens: 1000,
+                  total_tokens: 2000,
+                  amount: 0.05,
+                  unpriced_count: 0,
+                  ...cacheAccounting({ successful_request_count: 20 }),
+                },
+              ],
+            },
+            {
+              provider_id: "deleted-provider",
+              provider_name: "Deleted Provider History",
+              request_count: 10,
+              input_tokens: 500,
+              cache_read_tokens: 0,
+              cache_write_tokens: 0,
+              output_tokens: 500,
+              total_tokens: 1000,
+              amount: 0.03,
+              unpriced_count: 0,
+              ...cacheAccounting({ successful_request_count: 10 }),
+              models: [
+                {
+                  local_model: "claude-3-5-sonnet",
+                  request_count: 10,
+                  input_tokens: 500,
+                  cache_read_tokens: 0,
+                  cache_write_tokens: 0,
+                  output_tokens: 500,
+                  total_tokens: 1000,
+                  amount: 0.03,
+                  unpriced_count: 0,
+                  ...cacheAccounting({ successful_request_count: 10 }),
+                },
+              ],
+            },
+          ],
+        });
+      }
+      return null;
+    });
+
+    renderWithProviders(<UsageStatsPanel providers={mockProviders} />);
+
+    // 默认展示模型表格，复选框不存在
+    expect(await screen.findByTestId("ai-gateway-usage-models")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-usage-toggle-deleted-providers"),
+    ).not.toBeInTheDocument();
+
+    // 切换到服务商维度
+    const providerDimBtn = screen.getByTestId("ai-gateway-usage-dimension-provider");
+    await user.click(providerDimBtn);
+
+    // 服务商表格展示，模型表格隐藏
+    expect(screen.queryByTestId("ai-gateway-usage-models")).not.toBeInTheDocument();
+    const providerTable = await screen.findByTestId("ai-gateway-usage-providers-table");
+    expect(providerTable).toBeInTheDocument();
+
+    // 复选框出现且默认未勾选
+    const toggleLabel = screen.getByTestId("ai-gateway-usage-toggle-deleted-providers");
+    expect(toggleLabel).toBeInTheDocument();
+    const checkbox = within(toggleLabel).getByRole("checkbox");
+    expect(checkbox).not.toBeChecked();
+
+    // 默认仅展示 active-provider-1，不展示已删除服务商 deleted-provider
+    const initialRows = within(providerTable).getAllByTestId(
+      "ai-gateway-usage-provider-dim-row",
+    );
+    expect(initialRows).toHaveLength(1);
+    expect(initialRows[0]).toHaveTextContent("Active Provider One");
+    expect(within(providerTable).queryByText("Deleted Provider History")).not.toBeInTheDocument();
+    expect(
+      within(providerTable).queryByTestId("ai-gateway-usage-provider-deleted-badge"),
+    ).not.toBeInTheDocument();
+
+    // 服务商下展开展示模型行
+    const modelRow = within(providerTable).getByTestId(
+      "ai-gateway-usage-provider-dim-model-row",
+    );
+    expect(modelRow).toHaveTextContent("gpt-4o");
+
+    // 勾选复选框：新增显示已删除服务商
+    await user.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    const afterCheckedRows = within(providerTable).getAllByTestId(
+      "ai-gateway-usage-provider-dim-row",
+    );
+    expect(afterCheckedRows).toHaveLength(2);
+    expect(within(providerTable).getByText("Deleted Provider History")).toBeInTheDocument();
+
+    // 已删除服务商展示 Deleted 徽章
+    const deletedBadge = within(providerTable).getByTestId(
+      "ai-gateway-usage-provider-deleted-badge",
+    );
+    expect(deletedBadge).toHaveTextContent("Deleted");
+
+    // 再次取消勾选：已删除服务商隐藏
+    await user.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+    expect(within(providerTable).queryByText("Deleted Provider History")).not.toBeInTheDocument();
+  });
+
+  it("中文环境下服务商维度文案与已删除标签正确展示", async () => {
+    const user = userEvent.setup();
+    await i18n.changeLanguage("zh");
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "ai_gateway_usage_stats") {
+        return metrics({
+          request_count: 10,
+          total_tokens: 1000,
+          models: [
+            {
+              local_model: "gpt-4o",
+              request_count: 10,
+              input_tokens: 500,
+              cache_read_tokens: 0,
+              cache_write_tokens: 0,
+              output_tokens: 500,
+              total_tokens: 1000,
+              amount: 0.02,
+              unpriced_count: 0,
+              ...cacheAccounting({ successful_request_count: 10 }),
+              providers: [
+                {
+                  provider_id: "del-p",
+                  provider_name: "已删除的老服务商",
+                  request_count: 10,
+                  input_tokens: 500,
+                  cache_read_tokens: 0,
+                  cache_write_tokens: 0,
+                  output_tokens: 500,
+                  total_tokens: 1000,
+                  amount: 0.02,
+                  unpriced_count: 0,
+                  ...cacheAccounting({ successful_request_count: 10 }),
+                },
+              ],
+            },
+          ],
+        });
+      }
+      return null;
+    });
+
+    renderWithProviders(<UsageStatsPanel providers={[]} />);
+
+    // 切换到按服务商
+    const providerDimBtn = await screen.findByTestId("ai-gateway-usage-dimension-provider");
+    expect(providerDimBtn).toHaveTextContent("按服务商");
+    expect(screen.getByTestId("ai-gateway-usage-dimension-model")).toHaveTextContent("按模型");
+    await user.click(providerDimBtn);
+
+    // 未勾选已删除时，由于 activeProviders 为空，展示空提示
+    expect(
+      screen.getByTestId("ai-gateway-usage-providers-empty"),
+    ).toHaveTextContent("该范围内暂无服务商用量记录。");
+
+    // 复选框中文展示
+    const toggleLabel = screen.getByTestId("ai-gateway-usage-toggle-deleted-providers");
+    expect(toggleLabel).toHaveTextContent("显示已删除服务商");
+
+    // 勾选显示已删除服务商
+    await user.click(within(toggleLabel).getByRole("checkbox"));
+
+    const providerTable = await screen.findByTestId("ai-gateway-usage-providers-table");
+    expect(providerTable).toBeInTheDocument();
+    expect(within(providerTable).getByText("已删除的老服务商")).toBeInTheDocument();
+
+    const deletedBadge = within(providerTable).getByTestId(
+      "ai-gateway-usage-provider-deleted-badge",
+    );
+    expect(deletedBadge).toHaveTextContent("已删除");
   });
 });
 

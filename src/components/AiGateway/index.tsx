@@ -1614,7 +1614,10 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           </div>
 
           <div className={usageSubTab === "stats" ? "block" : "hidden"}>
-            <UsageStatsPanel isActive={activeTab === "usage" && usageSubTab === "stats"} />
+            <UsageStatsPanel
+              isActive={activeTab === "usage" && usageSubTab === "stats"}
+              providers={config.providers}
+            />
           </div>
 
           <div className={usageSubTab === "logs" ? "block" : "hidden"}>
