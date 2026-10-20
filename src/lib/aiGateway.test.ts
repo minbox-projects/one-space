@@ -61,7 +61,9 @@ import {
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
   type ModelPrice,
+  type UsageLogsPage,
   type UsageMetrics,
+  type UsageStats,
 } from "@/lib/aiGateway";
 // Namespace import for the Step 2 latency helpers: the module is always loaded,
 // so a missing named export fails only its own callable assertion instead of
@@ -691,6 +693,16 @@ describe("usageStatusTranslationKey 状态展示", () => {
 });
 
 describe("用量与日志命令封装", () => {
+  function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
   beforeEach(() => {
     resetTauriMocks();
   });
@@ -746,6 +758,84 @@ describe("用量与日志命令封装", () => {
       provider: null,
       page: 1,
     });
+  });
+
+  it("等价的在途用量读取共享一次查询，不同范围与已结算结果保持隔离", async () => {
+    const pendingToday = deferred<UsageStats>();
+    const todayResult = { request_count: 1 } as UsageStats;
+    const weekResult = { request_count: 2 } as UsageStats;
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command !== "ai_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return args?.range === "today"
+        ? pendingToday.promise
+        : Promise.resolve(weekResult);
+    });
+    const usageCallsFor = (range: string) =>
+      invokeMock.mock.calls.filter(
+        ([command, args]) =>
+          command === "ai_gateway_usage_stats" &&
+          (args as Record<string, unknown> | undefined)?.range === range,
+      ).length;
+
+    const first = aiGatewayUsageStats("today");
+    const second = aiGatewayUsageStats("today");
+    const otherRange = aiGatewayUsageStats("7d");
+
+    expect(usageCallsFor("today")).toBe(1);
+    expect(usageCallsFor("7d")).toBe(1);
+
+    pendingToday.resolve(todayResult);
+    await expect(first).resolves.toBe(todayResult);
+    await expect(second).resolves.toBe(todayResult);
+    await expect(otherRange).resolves.toBe(weekResult);
+
+    // A settled result is not a TTL cache: the next explicit read queries again.
+    await expect(aiGatewayUsageStats("today")).resolves.toBe(todayResult);
+    expect(usageCallsFor("today")).toBe(2);
+  });
+
+  it("并发请求日志按完整参数共享在途读取，失败后释放以允许重试", async () => {
+    const pending = deferred<UsageLogsPage>();
+    const pageOne = { page: 1, records: [] } as unknown as UsageLogsPage;
+    const pageTwo = { page: 2, records: [] } as unknown as UsageLogsPage;
+    let attempts = 0;
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      attempts += 1;
+      if (attempts === 1) {
+        return Promise.reject(new Error("first attempt failed"));
+      }
+      if (attempts === 2) {
+        return pending.promise;
+      }
+      return Promise.resolve(args?.page === 2 ? pageTwo : pageOne);
+    });
+
+    await expect(
+      aiGatewayRequestLogs({ range: "today", page: 1 }),
+    ).rejects.toThrow("first attempt failed");
+
+    // The rejected flight must be removed, so these two equivalent calls share
+    // the next attempt instead of being permanently poisoned.
+    const first = aiGatewayRequestLogs({ range: "today", page: 1 });
+    const second = aiGatewayRequestLogs({ range: "today", page: 1 });
+    const differentPage = aiGatewayRequestLogs({ range: "today", page: 2 });
+    expect(attempts).toBe(3);
+
+    pending.resolve(pageOne);
+    await expect(first).resolves.toBe(pageOne);
+    await expect(second).resolves.toBe(pageOne);
+    await expect(differentPage).resolves.toBe(pageTwo);
+
+    // Settled reads are not cached.
+    await expect(
+      aiGatewayRequestLogs({ range: "today", page: 2 }),
+    ).resolves.toBe(pageTwo);
+    expect(attempts).toBe(4);
   });
 });
 
@@ -2742,6 +2832,9 @@ describe("模型池统一对外推理强度与自动绑定 (autoBindCandidateRea
     {
       id: "p1",
       name: "Provider 1",
+      base_url: "https://upstream.example",
+      default_model: null,
+      enabled: true,
       protocol: "chat_completions",
       mappings: [
         {
@@ -2770,7 +2863,6 @@ describe("模型池统一对外推理强度与自动绑定 (autoBindCandidateRea
           reasoning_efforts: [],
         },
       ],
-      keys: [],
     },
   ];
 

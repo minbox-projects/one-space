@@ -1,6 +1,16 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import i18n from "@/i18n";
 import {
   AlertCircle,
   ArrowDown,
@@ -38,6 +48,18 @@ import {
 } from "@/lib/aiGateway";
 import { errorToMessage } from "@/lib/messages";
 import { RANGE_LABEL_FALLBACKS, RANGE_LABEL_KEYS } from "./gatewayShared";
+
+const countFormatters = new Map<string, Intl.NumberFormat>();
+
+function formatCount(value: number): string {
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  let formatter = countFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale);
+    countFormatters.set(locale, formatter);
+  }
+  return formatter.format(value);
+}
 
 const STATUS_FALLBACKS: Record<UsageLogResult, string> = {
   success: "Success",
@@ -418,7 +440,7 @@ function isDayString(value: string | null | undefined): boolean {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
 }
 
-export function UsageLogsPanel({
+function UsageLogsPanelComponent({
   isActive = true,
   focusModel = null,
   focusToken = 0,
@@ -532,7 +554,9 @@ export function UsageLogsPanel({
         if (appliedProviderId) {
           query.providerId = appliedProviderId;
         }
-        const next = await aiGatewayRequestLogs(query);
+        const next = await aiGatewayRequestLogs(query, {
+          fresh: Boolean(options?.refresh),
+        });
         if (requestSeqRef.current !== seq) return;
         const clamped = clampUsagePage(next.page, next.total_pages);
         if (clamped !== next.page) {
@@ -1100,10 +1124,10 @@ export function UsageLogsPanel({
                       {formatUsageGroupLabel(groupBy, group.group)}
                     </td>
                     <td className="px-3 py-2 text-left whitespace-nowrap">
-                      {new Intl.NumberFormat().format(group.request_count)}
+                      {formatCount(group.request_count)}
                     </td>
                     <td className="px-3 py-2 text-left whitespace-nowrap">
-                      {new Intl.NumberFormat().format(group.error_count)}
+                      {formatCount(group.error_count)}
                     </td>
                     <td className="px-3 py-2 text-left whitespace-nowrap">
                       {formatUtc8DateTime(group.last_request_at_ms) ?? "—"}
@@ -1443,8 +1467,8 @@ export function UsageLogsPanel({
                         const cacheTokens = item.cache_read_tokens + item.cache_write_tokens;
                         const showAbove = index >= 4 && index >= records.length - 3;
                         const tooltipClass = showAbove ? "bottom-full mb-1.5" : "top-full mt-1.5";
-                        const inputFormatted = new Intl.NumberFormat().format(item.input_tokens);
-                        const outputFormatted = new Intl.NumberFormat().format(item.output_tokens);
+                        const inputFormatted = formatCount(item.input_tokens);
+                        const outputFormatted = formatCount(item.output_tokens);
                         const cacheFormatted = formatCacheTokensK(cacheTokens);
                         return (
                           <div className="flex flex-col gap-0.5">
@@ -1486,7 +1510,7 @@ export function UsageLogsPanel({
                             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground whitespace-nowrap">
                               <span
                                 className="inline-flex items-center gap-0.5"
-                                title={`${t("aiGatewayLogsTokensCache", "Cache")}: ${new Intl.NumberFormat().format(cacheTokens)}`}
+                                title={`${t("aiGatewayLogsTokensCache", "Cache")}: ${formatCount(cacheTokens)}`}
                               >
                                 <Zap
                                   className="h-3 w-3 text-amber-500/80 shrink-0"
@@ -1538,7 +1562,7 @@ export function UsageLogsPanel({
                                         {t("aiGatewayLogsTokensCache", "Cache")}:
                                       </span>
                                       <span className="font-mono font-medium">
-                                        {new Intl.NumberFormat().format(cacheTokens)}
+                                        {formatCount(cacheTokens)}
                                       </span>
                                     </div>
                                     {(item.cache_read_tokens > 0 || item.cache_write_tokens > 0) && (
@@ -1548,7 +1572,7 @@ export function UsageLogsPanel({
                                             {t("aiGatewayLogsTokensCacheRead", "Cache read")}:
                                           </span>
                                           <span className="font-mono">
-                                            {new Intl.NumberFormat().format(item.cache_read_tokens)}
+                                            {formatCount(item.cache_read_tokens)}
                                           </span>
                                         </div>
                                         <div className="flex items-center justify-between gap-3">
@@ -1556,7 +1580,7 @@ export function UsageLogsPanel({
                                             {t("aiGatewayLogsTokensCacheWrite", "Cache write")}:
                                           </span>
                                           <span className="font-mono">
-                                            {new Intl.NumberFormat().format(item.cache_write_tokens)}
+                                            {formatCount(item.cache_write_tokens)}
                                           </span>
                                         </div>
                                       </div>
@@ -1567,7 +1591,7 @@ export function UsageLogsPanel({
                                         {t("aiGatewayLogsTokensTotal", "Total")}:
                                       </span>
                                       <span className="font-mono">
-                                        {new Intl.NumberFormat().format(item.total_tokens)}
+                                        {formatCount(item.total_tokens)}
                                       </span>
                                     </div>
                                   </div>
@@ -1592,7 +1616,7 @@ export function UsageLogsPanel({
               {t(
                 "aiGatewayLogsTotalCount",
                 "Total {{total}} requests",
-                { total: new Intl.NumberFormat().format(pageData.total) },
+                { total: formatCount(pageData.total) },
               )}
             </span>
             <div className="flex items-center gap-2">
@@ -1626,3 +1650,5 @@ export function UsageLogsPanel({
     </div>
   );
 }
+
+export const UsageLogsPanel = memo(UsageLogsPanelComponent);

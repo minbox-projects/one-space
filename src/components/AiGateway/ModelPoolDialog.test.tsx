@@ -148,11 +148,20 @@ function installMock() {
   });
 }
 
+/** Open the Model pools tab in the active locale so its panel mounts. */
+function openModelPoolsTab() {
+  fireEvent.click(
+    screen.getByRole("tab", {
+      name: new RegExp(`^${i18n.t("aiGatewayModelPoolsTab")}`),
+    }),
+  );
+}
+
 /** Open the Model pools tab, then click the Create-model-pool button. */
 async function openModelPoolDialog(firstProviderName = "Provider A") {
   renderWithProviders(<AiGateway />);
   await screen.findByText(firstProviderName);
-  fireEvent.click(screen.getByRole("tab", { name: /Model pools/i }));
+  openModelPoolsTab();
   fireEvent.click(screen.getByTestId("ai-gateway-add-model-pool"));
   return screen.getByTestId("model-pool-dialog");
 }
@@ -373,6 +382,7 @@ describe("ModelPoolDialog", () => {
 
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
+    openModelPoolsTab();
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-existing"));
 
     const selected = screen.getByTestId("model-pool-selected-list");
@@ -511,6 +521,8 @@ describe("ModelPoolDialog", () => {
     ];
 
     renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    openModelPoolsTab();
     await waitFor(() =>
       expect(screen.getByTestId("ai-gateway-model-pool-pool-saved")).toBeInTheDocument(),
     );
@@ -669,6 +681,8 @@ describe("ModelPoolDialog", () => {
     } as unknown as GatewayConfig;
 
     renderWithProviders(<AiGateway />);
+    await screen.findByText("Provider A");
+    openModelPoolsTab();
     await waitFor(() =>
       expect(screen.getByTestId("ai-gateway-model-pool-pool-1")).toBeInTheDocument(),
     );
@@ -867,6 +881,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
 
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
+    openModelPoolsTab();
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-legacy"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
@@ -905,6 +920,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
 
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
+    openModelPoolsTab();
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-declared"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
@@ -968,6 +984,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
 
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
+    openModelPoolsTab();
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-unknown"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
@@ -1016,6 +1033,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
 
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
+    openModelPoolsTab();
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-switch"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
@@ -1066,6 +1084,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
 
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
+    openModelPoolsTab();
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-guard"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
@@ -1265,6 +1284,7 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
     mockState.config = buildConfig([pool], providers);
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
+    openModelPoolsTab();
     fireEvent.click(screen.getByTestId(`ai-gateway-model-pool-edit-${pool.id}`));
     await screen.findByTestId("model-pool-dialog");
   }
@@ -1926,6 +1946,7 @@ describe("ModelPoolDialog 模型池推理绑定（binding）", () => {
     mockState.config = buildConfig([pool], bindProviders);
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
+    openModelPoolsTab();
     fireEvent.click(
       screen.getByTestId("ai-gateway-model-pool-edit-pool-bind-edit"),
     );

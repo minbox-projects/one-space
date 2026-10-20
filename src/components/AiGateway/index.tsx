@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
@@ -17,7 +17,7 @@ import {
 import { useToast } from "@/components/ToastProvider";
 import { useConfirmDialog } from "@/components/ConfirmDialogProvider";
 import { errorToMessage } from "@/lib/messages";
-import { publishRuntimeStatus } from "@/lib/runtimeStatus";
+import { publishRuntimeStatus, useAppVisibility } from "@/lib/runtimeStatus";
 import { useVisibleInterval } from "@/toolbox/useVisibleInterval";
 import {
   AI_GATEWAY_CONFIG_UPDATED_EVENT,
@@ -131,6 +131,12 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const iconClassName = "bg-primary/10 text-primary";
 
   const [activeTab, setActiveTab] = useState<AiGatewayTab>("providers");
+  const [visitedTabs, setVisitedTabs] = useState<
+    ReadonlySet<AiGatewayTab>
+  >(() => new Set<AiGatewayTab>(["providers"]));
+  const [visitedUsageSubTabs, setVisitedUsageSubTabs] = useState<
+    ReadonlySet<UsageSubTab>
+  >(() => new Set<UsageSubTab>());
   const [config, setConfig] = useState<GatewayConfig | null>(null);
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [targets, setTargets] = useState<GatewayTerminalTarget[]>([]);
@@ -178,10 +184,101 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const [usageFocusDay, setUsageFocusDay] = useState<string | null>(null);
   const [usageFocusToken, setUsageFocusToken] = useState(0);
 
+  const isTauri = "__TAURI_INTERNALS__" in window;
+  const appVisible = useAppVisibility();
+  const pageVisible = isVisible && appVisible;
+
+  // Page data generations: a hidden view, a newer configuration read or a
+  // newer request supersedes every earlier reply so it can neither apply nor
+  // restore an obsolete view.
+  const configGenerationRef = useRef(0);
+  const todaySeqRef = useRef(0);
+  const statusSeqRef = useRef(0);
+  const poolSeqRef = useRef(0);
+  const configInFlightRef = useRef(false);
+  const configPendingRef = useRef(false);
+  const isVisibleRef = useRef(pageVisible);
+  const previousVisibleRef = useRef(pageVisible);
+  const hasLoadedRef = useRef(false);
+  const visibilityCatchUpSkipRef = useRef(0);
+
+  useEffect(() => {
+    isVisibleRef.current = pageVisible;
+  }, [pageVisible]);
+
+  const selectTab = useCallback((tab: AiGatewayTab) => {
+    setActiveTab(tab);
+    setVisitedTabs((previous) => {
+      if (previous.has(tab)) return previous;
+      const next = new Set(previous);
+      next.add(tab);
+      return next;
+    });
+  }, []);
+
+  const selectUsageSubTab = useCallback((tab: UsageSubTab) => {
+    setUsageSubTab(tab);
+    setVisitedUsageSubTabs((previous) => {
+      if (previous.has(tab)) return previous;
+      const next = new Set(previous);
+      next.add(tab);
+      return next;
+    });
+  }, []);
+
+  const navigateToProviders = useCallback(
+    () => selectTab("providers"),
+    [selectTab],
+  );
+  const navigateToModelPools = useCallback(
+    () => selectTab("model-pools"),
+    [selectTab],
+  );
+
+  useEffect(() => {
+    if (activeTab !== "usage") return;
+    setVisitedUsageSubTabs((previous) => {
+      if (previous.has(usageSubTab)) return previous;
+      const next = new Set(previous);
+      next.add(usageSubTab);
+      return next;
+    });
+  }, [activeTab, usageSubTab]);
+
+  const applyTodayStats = useCallback((next: UsageStats | null) => {
+    setTodayStats(next);
+    setTodayFailedRequests(
+      next
+        ? Math.max(0, next.request_count - next.successful_request_count)
+        : 0,
+    );
+  }, []);
+
+  const applyConfigMutation = useCallback((next: GatewayConfig) => {
+    configGenerationRef.current += 1;
+    statusSeqRef.current += 1;
+    poolSeqRef.current += 1;
+    setConfig(next);
+  }, []);
+
   const allTemplatesExpanded = useMemo(() => {
     if (templates.length === 0) return false;
     return templates.every((view) => Boolean(templateExpandedIds[view.template.id]));
   }, [templates, templateExpandedIds]);
+
+  // Tab counts are derived from the loaded configuration only; header/status
+  // refreshes must not repeat the aggregation or pool filtering work.
+  const modelPoolsForView = useMemo(() => readModelPools(config), [config]);
+  const aggregatedModelCount = useMemo(
+    () => aggregateModels(config?.providers ?? []).length,
+    [config],
+  );
+  const modelListTabCount = useMemo(
+    () =>
+      aggregatedModelCount +
+      modelPoolsForView.filter((pool) => pool.enabled).length,
+    [aggregatedModelCount, modelPoolsForView],
+  );
 
   const handleToggleTemplateExpand = useCallback((templateId: string) => {
     setTemplateExpandedIds((prev) => ({
@@ -201,8 +298,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       setTemplateExpandedIds(next);
     }
   }, [allTemplatesExpanded, templates]);
-
-  const isTauri = "__TAURI_INTERNALS__" in window;
 
   const load = useCallback(async () => {
     if (!isTauri) {
@@ -237,14 +332,20 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
 
     setLoadError(null);
     setTemplatesLoadError(null);
+    const configGeneration = ++configGenerationRef.current;
+    const todaySeq = ++todaySeqRef.current;
+    const statusSeq = ++statusSeqRef.current;
+    const poolSeq = ++poolSeqRef.current;
     const templatesPromise = aiGatewayProviderTemplates()
       .then((value) => ({ ok: true as const, value: value ?? [] }))
       .catch((err: unknown) => ({ ok: false as const, error: err }));
-    const statsPromise = aiGatewayUsageStats("today").catch(() => null);
-    const logsPromise = aiGatewayRequestLogs({
-      range: "today",
-      groupBy: "day",
-    }).catch(() => null);
+    const statsPromise = aiGatewayUsageStats("today", { fresh: true }).catch(
+      () => null,
+    );
+    const logsPromise = aiGatewayRequestLogs(
+      { range: "today" },
+      { fresh: true },
+    ).catch(() => null);
     try {
       const [
         nextConfig,
@@ -263,17 +364,31 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         statsPromise,
         logsPromise,
       ]);
+      if (configGeneration !== configGenerationRef.current) return;
       setConfig(nextConfig);
-      setStatus(nextStatus);
-      publishRuntimeStatus("gateway", nextStatus);
       setTargets(nextTargets ?? []);
-      setPoolStatuses(nextPoolStatuses ?? []);
-      setTodayStats(nextTodayStats);
-      const failedCount = (nextTodayLogs?.groups ?? []).reduce(
-        (acc, g) => acc + (g.error_count || 0),
-        0,
-      );
-      setTodayFailedRequests(failedCount);
+      if (statusSeq === statusSeqRef.current) {
+        setStatus(nextStatus);
+        publishRuntimeStatus("gateway", nextStatus);
+      }
+      if (poolSeq === poolSeqRef.current) {
+        setPoolStatuses(nextPoolStatuses ?? []);
+      }
+      if (todaySeq === todaySeqRef.current) {
+        // Today's failure count always comes from the same statistics snapshot.
+        // The plain log read only covers the degraded case where that snapshot
+        // is unavailable; it never contributes a failure count alongside stats.
+        if (nextTodayStats) {
+          applyTodayStats(nextTodayStats);
+        } else {
+          const fallbackFailures = (nextTodayLogs?.groups ?? []).reduce(
+            (total, group) => total + (group.error_count || 0),
+            0,
+          );
+          setTodayStats(null);
+          setTodayFailedRequests(fallbackFailures);
+        }
+      }
       if (templatesResult.ok) {
         setTemplates(templatesResult.value);
       } else {
@@ -282,6 +397,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         setTemplatesLoadError(errorToMessage(templatesResult.error));
       }
     } catch (err) {
+      if (configGeneration !== configGenerationRef.current) return;
       const msg = errorToMessage(err);
       setLoadError(msg);
       pushToast({
@@ -290,48 +406,110 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         kind: "error",
       });
     }
-  }, [isTauri, pushToast, t]);
+  }, [applyTodayStats, isTauri, pushToast, t]);
 
-  // Configuration-update broadcast (REQ-004 / AC-004): refresh only the data the
-  // configuration change can affect — config, runtime status counters, terminal
-  // targets and templates. Usage stats/logs are intentionally left untouched so
-  // the visible freshness poll stays authoritative.
-  const loadConfigScoped = useCallback(async () => {
-    if (!isTauri) return;
-    setLoadError(null);
-    setTemplatesLoadError(null);
-    try {
-      const templatesPromise = aiGatewayProviderTemplates()
-        .then((value) => ({ ok: true as const, value: value ?? [] }))
-        .catch((err: unknown) => ({ ok: false as const, error: err }));
-      const [nextConfig, nextStatus, nextTargets, nextPoolStatuses, templatesResult] =
-        await Promise.all([
+  // Configuration-update broadcast: refresh only the data a configuration
+  // change can affect (config, runtime status counters, terminal targets,
+  // templates and pool statuses). Usage stats and request logs stay on the
+  // visible freshness path. A burst starts at most one current read plus one
+  // follow-up, and a hidden page only records that work is pending.
+  const runConfigScoped = useCallback(
+    async (allowFollowUp: boolean) => {
+      if (!isTauri) return;
+      const configGeneration = ++configGenerationRef.current;
+      const statusSeq = ++statusSeqRef.current;
+      const poolSeq = ++poolSeqRef.current;
+      setLoadError(null);
+      setTemplatesLoadError(null);
+      try {
+        const templatesPromise = aiGatewayProviderTemplates()
+          .then((value) => ({ ok: true as const, value: value ?? [] }))
+          .catch((err: unknown) => ({ ok: false as const, error: err }));
+        const [
+          nextConfig,
+          nextStatus,
+          nextTargets,
+          nextPoolStatuses,
+          templatesResult,
+        ] = await Promise.all([
           aiGatewayGetConfig(),
           aiGatewayStatus(),
           aiGatewayTerminalTargets(),
           aiGatewayModelPoolsStatus().catch(() => [] as GatewayModelPoolStatus[]),
           templatesPromise,
         ]);
-      setConfig(nextConfig);
-      setStatus(nextStatus);
-      publishRuntimeStatus("gateway", nextStatus);
-      setTargets(nextTargets ?? []);
-      setPoolStatuses(nextPoolStatuses ?? []);
-      if (templatesResult.ok) {
-        setTemplates(templatesResult.value);
-      } else {
-        setTemplates([]);
-        setTemplatesLoadError(errorToMessage(templatesResult.error));
+        if (configGeneration !== configGenerationRef.current) return;
+        setConfig(nextConfig);
+        setTargets(nextTargets ?? []);
+        if (statusSeq === statusSeqRef.current) {
+          setStatus(nextStatus);
+          publishRuntimeStatus("gateway", nextStatus);
+        }
+        if (poolSeq === poolSeqRef.current) {
+          setPoolStatuses(nextPoolStatuses ?? []);
+        }
+        if (templatesResult.ok) {
+          setTemplates(templatesResult.value);
+        } else {
+          setTemplates([]);
+          setTemplatesLoadError(errorToMessage(templatesResult.error));
+        }
+      } catch (err) {
+        if (configGeneration !== configGenerationRef.current) return;
+        setLoadError(errorToMessage(err));
+      } finally {
+        configInFlightRef.current = false;
+        if (
+          allowFollowUp &&
+          configPendingRef.current &&
+          isVisibleRef.current &&
+          configGeneration === configGenerationRef.current
+        ) {
+          configPendingRef.current = false;
+          void runConfigScoped(false);
+        } else {
+          configPendingRef.current = false;
+        }
       }
-    } catch (err) {
-      setLoadError(errorToMessage(err));
+    },
+    [isTauri],
+  );
+
+  const loadConfigScoped = useCallback(() => {
+    if (!isTauri) return;
+    if (!isVisibleRef.current || configInFlightRef.current) {
+      configPendingRef.current = true;
+      return;
     }
-  }, [isTauri]);
+    configInFlightRef.current = true;
+    configPendingRef.current = false;
+    void runConfigScoped(true);
+  }, [isTauri, runConfigScoped]);
 
   useEffect(() => {
-    if (!isVisible) return;
-    void load();
-  }, [isVisible, load]);
+    const wasVisible = previousVisibleRef.current;
+    previousVisibleRef.current = pageVisible;
+    if (!pageVisible) {
+      // A hidden page stops page reads and invalidates every earlier reply.
+      configGenerationRef.current += 1;
+      todaySeqRef.current += 1;
+      statusSeqRef.current += 1;
+      poolSeqRef.current += 1;
+      return;
+    }
+    if (!hasLoadedRef.current) {
+      hasLoadedRef.current = true;
+      if (!wasVisible) visibilityCatchUpSkipRef.current += 1;
+      void load();
+      return;
+    }
+    if (!wasVisible) {
+      // The visible catch-up is one coherent page read; the interval's own
+      // catch-up callback is consumed by refreshTodayUsage below.
+      visibilityCatchUpSkipRef.current += 1;
+      void load();
+    }
+  }, [load, pageVisible]);
 
   // 订阅后端的运行时状态广播：结算翻转 auto_disabled 后刷新受影响的配置数据，使
   // 服务商卡片、模型列表与运行时状态卡无需切页或重启即可反映新状态。用量统计与
@@ -425,30 +603,31 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const refreshTodayUsage = useCallback(
     async (silent = true) => {
       if (!isTauri) return;
+      if (visibilityCatchUpSkipRef.current > 0) {
+        // The visible transition already performed one coherent page read.
+        visibilityCatchUpSkipRef.current -= 1;
+        return;
+      }
+      const todaySeq = ++todaySeqRef.current;
+      const statusSeq = ++statusSeqRef.current;
+      const poolSeq = ++poolSeqRef.current;
       if (!silent) {
         setRefreshingToday(true);
       }
       try {
-        const [nextTodayStats, nextTodayLogs, nextStatus, nextPoolStatuses] =
-          await Promise.all([
-            aiGatewayUsageStats("today").catch(() => null),
-            aiGatewayRequestLogs({ range: "today", groupBy: "day" }).catch(
-              () => null,
-            ),
-            aiGatewayStatus().catch(() => null),
-            aiGatewayModelPoolsStatus().catch(() => null),
-          ]);
-        setTodayStats(nextTodayStats);
-        const failedCount = (nextTodayLogs?.groups ?? []).reduce(
-          (acc, g) => acc + (g.error_count || 0),
-          0,
-        );
-        setTodayFailedRequests(failedCount);
-        if (nextStatus) {
+        const [nextTodayStats, nextStatus, nextPoolStatuses] = await Promise.all([
+          aiGatewayUsageStats("today", { fresh: !silent }).catch(() => null),
+          aiGatewayStatus().catch(() => null),
+          aiGatewayModelPoolsStatus().catch(() => null),
+        ]);
+        if (todaySeq === todaySeqRef.current) {
+          applyTodayStats(nextTodayStats);
+        }
+        if (nextStatus && statusSeq === statusSeqRef.current) {
           setStatus(nextStatus);
           publishRuntimeStatus("gateway", nextStatus);
         }
-        if (nextPoolStatuses) {
+        if (nextPoolStatuses && poolSeq === poolSeqRef.current) {
           setPoolStatuses(nextPoolStatuses);
         }
       } catch {
@@ -459,7 +638,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
         }
       }
     },
-    [isTauri],
+    [applyTodayStats, isTauri],
   );
 
   const handleManualRefresh = useCallback(async () => {
@@ -467,7 +646,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   }, [refreshTodayUsage]);
 
   useEffect(() => {
-    if (!isVisible) return;
+    if (!pageVisible) return;
     const handleFocus = () => {
       void refreshTodayUsage(true);
     };
@@ -475,7 +654,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     return () => {
       window.removeEventListener("focus", handleFocus);
     };
-  }, [isVisible, refreshTodayUsage]);
+  }, [pageVisible, refreshTodayUsage]);
 
   // 今日用量新鲜度轮询：仅在页签可见且网关运行时按间隔刷新；原生窗口或文档
   // 隐藏时暂停，hidden -> visible 时恰好追赶一次。
@@ -484,16 +663,23 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       void refreshTodayUsage(true);
     },
     5000,
-    isVisible && Boolean(status?.running),
+    pageVisible && Boolean(status?.running),
   );
 
   const applyConfig = useCallback(async (next: GatewayConfig) => {
+    // A user mutation supersedes every page read that started before it.
+    const configGeneration = ++configGenerationRef.current;
+    const statusSeq = ++statusSeqRef.current;
     setConfig(next);
     const [nextStatus, nextTargets] = await Promise.all([
+
       aiGatewayStatus(),
       aiGatewayTerminalTargets(),
     ]);
-    setStatus(nextStatus);
+    if (configGeneration !== configGenerationRef.current) return;
+    if (statusSeq === statusSeqRef.current) {
+      setStatus(nextStatus);
+    }
     setTargets(nextTargets);
   }, []);
 
@@ -569,7 +755,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           ? await aiGatewayStop()
           : await aiGatewayStart();
         setStatus(nextStatus);
-        setConfig(await aiGatewayGetConfig());
+        applyConfigMutation(await aiGatewayGetConfig());
         await emit(AI_GATEWAY_STATUS_UPDATED_EVENT).catch(() => {});
         void refreshTodayUsage(true);
       },
@@ -675,7 +861,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     return runAction(
       async () => {
         const next = await aiGatewayUpsertProvider(draft, prices);
-        setConfig(next);
+        applyConfigMutation(next);
         const saved = draft.id
           ? next.providers.find((provider) => provider.id === draft.id) ?? null
           : null;
@@ -754,7 +940,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
   const handleSavePool = async (pool: GatewayModelPool) => {
     // A rejected write propagates to the dialog, which keeps the draft visible.
     const next = await aiGatewayUpsertModelPool(pool);
-    setConfig(next);
+    applyConfigMutation(next);
     await refreshPoolStatuses();
     pushToast({
       title: t("aiGatewayModelPoolSaved", "Model pool saved: {{name}}", {
@@ -786,49 +972,48 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     setUsageFocusDay(null);
     setUsageFocusModel(model);
     setUsageFocusToken((token) => token + 1);
-    setUsageSubTab("logs");
-    setActiveTab("usage");
+    selectUsageSubTab("logs");
+    selectTab("usage");
   };
 
   // A Provider history daily row opens the existing request-log view focused on
   // one exact provider ID and UTC+8 day; the alias focus is cleared so the
   // recorded-name/model/status selections cannot compete.
-  const handleOpenProviderDay = (request: {
-    providerId: string;
-    providerName?: string;
-    day: string;
-  }) => {
-    setUsageFocusModel(null);
-    setUsageFocusProviderId(request.providerId);
-    setUsageFocusProviderName(request.providerName ?? null);
-    setUsageFocusDay(request.day);
-    setUsageFocusToken((token) => token + 1);
-    setUsageSubTab("logs");
-    setActiveTab("usage");
-  };
+  const handleOpenProviderDay = useCallback(
+    (request: { providerId: string; providerName?: string; day: string }) => {
+      setUsageFocusModel(null);
+      setUsageFocusProviderId(request.providerId);
+      setUsageFocusProviderName(request.providerName ?? null);
+      setUsageFocusDay(request.day);
+      setUsageFocusToken((token) => token + 1);
+      selectUsageSubTab("logs");
+      selectTab("usage");
+    },
+    [selectTab, selectUsageSubTab],
+  );
 
   // Returning restores the Provider history subtab; its mounted selection is
   // retained, and the one-shot provider/day focus is released so later ordinary
   // request-log browsing starts from the quick range again.
-  const handleReturnToProviderHistory = () => {
+  const handleReturnToProviderHistory = useCallback(() => {
     setUsageFocusModel(null);
     setUsageFocusProviderId(null);
     setUsageFocusProviderName(null);
     setUsageFocusDay(null);
     setUsageFocusToken((token) => token + 1);
-    setUsageSubTab("history");
-  };
+    selectUsageSubTab("history");
+  }, [selectUsageSubTab]);
 
   // Clearing the exact provider/day focus stays in the request-log view and
   // releases the one-shot focus (and any stale alias), so the retained quick
   // range applies again on the next ordinary request.
-  const handleClearProviderDayFocus = () => {
+  const handleClearProviderDayFocus = useCallback(() => {
     setUsageFocusModel(null);
     setUsageFocusProviderId(null);
     setUsageFocusProviderName(null);
     setUsageFocusDay(null);
     setUsageFocusToken((token) => token + 1);
-  };
+  }, []);
 
   const syncEditingProvider = (
     next: GatewayConfig,
@@ -1289,15 +1474,13 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
       id: "model-pools",
       label: t("aiGatewayModelPoolsTab", "Model pools"),
       icon: Layers,
-      count: readModelPools(config).length,
+      count: modelPoolsForView.length,
     },
     {
       id: "models",
       label: t("aiGatewayModelListTab", "Model list"),
       icon: Sparkles,
-      count:
-        aggregateModels(config.providers).length +
-        readModelPools(config).filter((pool) => pool.enabled).length,
+      count: modelListTabCount,
     },
     {
       id: "keys",
@@ -1359,7 +1542,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           todayStats={todayStats}
           todayFailedRequests={todayFailedRequests}
           refreshing={refreshingToday}
-          onSelectTab={setActiveTab}
+          onSelectTab={selectTab}
           onStart={handleToggleService}
           onStop={handleToggleService}
           onCopyAddress={() => void handleCopyAddress()}
@@ -1382,7 +1565,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
                 type="button"
                 role="tab"
                 aria-selected={isActive}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => selectTab(tab.id)}
                 className={`group inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-xs font-medium transition-all ${
                   isActive
                     ? "bg-background text-foreground font-semibold shadow-xs ring-1 ring-border/80 dark:ring-border"
@@ -1457,38 +1640,43 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           aria-label={t("aiGatewayModelPoolsTab", "Model pools")}
           className={activeTab === "model-pools" ? "block" : "hidden"}
         >
-          <ModelPoolListPanel
-            modelPools={readModelPools(config)}
-            providers={config.providers}
-            poolStatuses={poolStatuses}
-            busy={busy}
-            onAddPool={() => handleOpenNewPool()}
-            onTogglePoolEnabled={(poolId, enabled) => {
-              const pool = readModelPools(config).find(
-                (item) => item.id === poolId,
-              );
-              if (pool) void handleTogglePoolEnabled(pool, enabled);
-            }}
-            onEditPool={(pool) => handleOpenEditPool(pool)}
-            onDeletePool={(poolId) => void handleDeletePool(poolId)}
-            onOpenPoolLogs={(model) => handleOpenPoolLogs(model)}
-          />
+          {visitedTabs.has("model-pools") ? (
+            <ModelPoolListPanel
+              modelPools={modelPoolsForView}
+              providers={config.providers}
+              poolStatuses={poolStatuses}
+              busy={busy}
+              isActive={activeTab === "model-pools"}
+              onAddPool={() => handleOpenNewPool()}
+              onTogglePoolEnabled={(poolId, enabled) => {
+                const pool = modelPoolsForView.find(
+                  (item) => item.id === poolId,
+                );
+                if (pool) void handleTogglePoolEnabled(pool, enabled);
+              }}
+              onEditPool={(pool) => handleOpenEditPool(pool)}
+              onDeletePool={(poolId) => void handleDeletePool(poolId)}
+              onOpenPoolLogs={(model) => handleOpenPoolLogs(model)}
+            />
+          ) : null}
         </div>
 
-        {/* Tab 2: 模型列表（面板常驻以保留搜索状态） */}
+        {/* Tab 2: 模型列表（首次访问后才挂载以保留搜索状态） */}
         <div
           role="tabpanel"
           aria-label={t("aiGatewayModelListTab", "Model list")}
           className={activeTab === "models" ? "block" : "hidden"}
         >
-          <ModelListPanel
-            providers={config.providers}
-            modelPools={readModelPools(config)}
-            port={config.port}
-            isActive={activeTab === "models"}
-            onNavigateProviders={() => setActiveTab("providers")}
-            onNavigatePools={() => setActiveTab("model-pools")}
-          />
+          {visitedTabs.has("models") ? (
+            <ModelListPanel
+              providers={config.providers}
+              modelPools={modelPoolsForView}
+              port={config.port}
+              isActive={activeTab === "models"}
+              onNavigateProviders={navigateToProviders}
+              onNavigatePools={navigateToModelPools}
+            />
+          ) : null}
         </div>
 
         {/* Tab 3: 本地密钥 */}
@@ -1516,18 +1704,23 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           aria-label={t("aiGatewayTerminalSync", "AI terminal integration")}
           className={activeTab === "terminals" ? "block" : "hidden"}
         >
-          <TerminalSyncPanel
-            targets={targets}
-            config={config}
-            gatewayRunning={Boolean(status?.running)}
-            onStartGateway={handleToggleService}
-            startingGateway={busy}
-            syncingTools={syncingTools}
-            onConfigureTool={(tool, claudeModels) =>
-              handleConfigureTool(tool, claudeModels)
-            }
-            onSyncTool={(tool, claudeModels) => handleSyncTool(tool, claudeModels)}
-          />
+          {visitedTabs.has("terminals") ? (
+            <TerminalSyncPanel
+              targets={targets}
+              config={config}
+              gatewayRunning={Boolean(status?.running)}
+              onStartGateway={handleToggleService}
+              startingGateway={busy}
+              syncingTools={syncingTools}
+              isActive={activeTab === "terminals"}
+              onConfigureTool={(tool, claudeModels) =>
+                handleConfigureTool(tool, claudeModels)
+              }
+              onSyncTool={(tool, claudeModels) =>
+                handleSyncTool(tool, claudeModels)
+              }
+            />
+          ) : null}
         </div>
 
         {/* Tab 5: 用量与日志 */}
@@ -1567,7 +1760,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
                 type="button"
                 role="tab"
                 aria-selected={usageSubTab === "stats"}
-                onClick={() => setUsageSubTab("stats")}
+                onClick={() => selectUsageSubTab("stats")}
                 data-testid="ai-gateway-subtab-usage-stats"
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-all ${
                   usageSubTab === "stats"
@@ -1582,7 +1775,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
                 type="button"
                 role="tab"
                 aria-selected={usageSubTab === "logs"}
-                onClick={() => setUsageSubTab("logs")}
+                onClick={() => selectUsageSubTab("logs")}
                 data-testid="ai-gateway-subtab-usage-logs"
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-all ${
                   usageSubTab === "logs"
@@ -1597,7 +1790,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
                 type="button"
                 role="tab"
                 aria-selected={usageSubTab === "history"}
-                onClick={() => setUsageSubTab("history")}
+                onClick={() => selectUsageSubTab("history")}
                 data-testid="ai-gateway-subtab-usage-history"
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-all ${
                   usageSubTab === "history"
@@ -1614,10 +1807,17 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           </div>
 
           <div className={usageSubTab === "stats" ? "block" : "hidden"}>
-            <UsageStatsPanel isActive={activeTab === "usage" && usageSubTab === "stats"} />
+            {visitedUsageSubTabs.has("stats") ||
+            (activeTab === "usage" && usageSubTab === "stats") ? (
+              <UsageStatsPanel
+                isActive={activeTab === "usage" && usageSubTab === "stats"}
+              />
+            ) : null}
           </div>
 
           <div className={usageSubTab === "logs" ? "block" : "hidden"}>
+            {visitedUsageSubTabs.has("logs") ||
+            (activeTab === "usage" && usageSubTab === "logs") ? (
             <UsageLogsPanel
               isActive={activeTab === "usage" && usageSubTab === "logs"}
               focusModel={usageFocusModel}
@@ -1628,15 +1828,19 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
               onReturnToProviderHistory={handleReturnToProviderHistory}
               onClearProviderDayFocus={handleClearProviderDayFocus}
             />
+            ) : null}
           </div>
 
           <div className={usageSubTab === "history" ? "block" : "hidden"}>
+            {visitedUsageSubTabs.has("history") ||
+            (activeTab === "usage" && usageSubTab === "history") ? (
             <ProviderUsageHistoryPanel
               isActive={activeTab === "usage" && usageSubTab === "history"}
               onOpenDay={handleOpenProviderDay}
               providers={config.providers}
               templates={templates}
             />
+            ) : null}
           </div>
         </div>
 

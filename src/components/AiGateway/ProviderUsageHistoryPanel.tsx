@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 import {
   Activity,
   AlertCircle,
@@ -72,10 +80,18 @@ const COVERAGE_LABEL_FALLBACKS = {
   unavailable: "Unavailable",
 } as const;
 
+const countFormatters = new Map<string, Intl.NumberFormat>();
+
 /** Additive counts render as grouped numbers; an unavailable day is `—`. */
 function formatCount(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
-  return new Intl.NumberFormat().format(value);
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  let formatter = countFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale);
+    countFormatters.set(locale, formatter);
+  }
+  return formatter.format(value);
 }
 
 /**
@@ -88,7 +104,7 @@ function formatAmount(amount: number | null | undefined): string {
   return formatted.replace(/\.?0+$/, "") || "0";
 }
 
-export function ProviderUsageHistoryPanel({
+function ProviderUsageHistoryPanelComponent({
   isActive = true,
   onOpenDay,
   providers,
@@ -870,3 +886,5 @@ export function ProviderUsageHistoryPanel({
     </div>
   );
 }
+
+export const ProviderUsageHistoryPanel = memo(ProviderUsageHistoryPanelComponent);

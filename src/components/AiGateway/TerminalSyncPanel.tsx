@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
@@ -30,6 +30,7 @@ type TerminalSyncPanelProps = {
   gatewayRunning?: boolean;
   onStartGateway?: () => void;
   startingGateway?: boolean;
+  isActive?: boolean;
   onConfigureTool: (tool: string, claudeModels?: ClaudeModelSelection) => void;
   onSyncTool: (tool: string, claudeModels?: ClaudeModelSelection) => void;
 };
@@ -56,13 +57,14 @@ function validSavedClaudeSelection(
   return values.every((value) => candidates.has(value)) ? saved : null;
 }
 
-export function TerminalSyncPanel({
+function TerminalSyncPanelComponent({
   targets,
   config,
   syncingTools,
   gatewayRunning,
   onStartGateway,
   startingGateway,
+  isActive = true,
   onConfigureTool,
   onSyncTool,
 }: TerminalSyncPanelProps) {
@@ -83,13 +85,15 @@ export function TerminalSyncPanel({
   // Candidate local ids a native Messages upstream can serve, derived from the
   // aggregated enabled mappings so the dialog never offers unsupported models.
   const claudeCandidateModels = useMemo(
-    () =>
-      aggregateModels(config.providers)
+    () => {
+      if (!isActive) return [];
+      return aggregateModels(config.providers)
         .filter((entry) =>
           entry.providers.some((p) => p.endpoint === "anthropic_messages"),
         )
-        .map((entry) => entry.model),
-    [config.providers],
+        .map((entry) => entry.model);
+    },
+    [config.providers, isActive],
   );
 
   const claudeTarget = supportedTargets.find((target) => target.tool === "claude");
@@ -137,6 +141,9 @@ export function TerminalSyncPanel({
     if (claudeDialogAction === "sync") onSyncTool("claude", selection);
     else onConfigureTool("claude", selection);
   };
+
+  // While inactive the visited panel stays mounted (CSS-hidden by its tab
+  // container) for its dialog/FAQ state; candidate aggregation is skipped.
 
   return (
     <div className="space-y-3.5">
@@ -472,3 +479,5 @@ export function TerminalSyncPanel({
     </div>
   );
 }
+
+export const TerminalSyncPanel = memo(TerminalSyncPanelComponent);

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Check,
@@ -73,7 +73,7 @@ type ModelListPanelProps = {
 
 export type ModelTypeFilter = "all" | "pools" | "providers";
 
-export function ModelListPanel({
+function ModelListPanelComponent({
   providers,
   modelPools = [],
   port = AI_GATEWAY_DEFAULT_PORT,
@@ -91,11 +91,13 @@ export function ModelListPanel({
 
   const providerNameById = useMemo(() => {
     const map = new Map<string, string>();
+    if (!isActive) return map;
     for (const provider of providers) map.set(provider.id, provider.name);
     return map;
-  }, [providers]);
+  }, [isActive, providers]);
 
   const rows = useMemo(() => {
+    if (!isActive) return [];
     const aggregateRows = aggregateModels(providers).map((entry) => ({
       entry,
       name: resolveAggregatedModelName(entry),
@@ -154,7 +156,7 @@ export function ModelListPanel({
     return [...aggregateRows, ...poolRows].sort((a, b) =>
       a.entry.model.localeCompare(b.entry.model),
     );
-  }, [modelPools, providerNameById, providers]);
+  }, [isActive, modelPools, providerNameById, providers]);
 
   const totalPoolsCount = useMemo(
     () => rows.filter(({ pool }) => Boolean(pool)).length,
@@ -219,6 +221,7 @@ export function ModelListPanel({
   // 多条件过滤
   const normalizedQuery = query.trim().toLowerCase();
   const visibleRows = useMemo(() => {
+    if (!isActive) return [];
     let result = rows;
 
     if (normalizedQuery) {
@@ -248,7 +251,7 @@ export function ModelListPanel({
     }
 
     return result;
-  }, [normalizedQuery, protocolFilter, providerFilter, rows, typeFilter]);
+  }, [isActive, normalizedQuery, protocolFilter, providerFilter, rows, typeFilter]);
 
   const visiblePoolRows = useMemo(
     () => visibleRows.filter(({ pool }) => Boolean(pool)),
@@ -566,7 +569,9 @@ export function ModelListPanel({
     );
   };
 
-  if (!isActive) return null;
+  // While inactive the visited panel stays mounted (CSS-hidden by its tab
+  // container) for filter state, but the rows above are already empty so the
+  // large table is not rebuilt.
 
   return (
     <div className="space-y-4" data-testid="ai-gateway-model-list">
@@ -983,3 +988,5 @@ export function ModelListPanel({
     </div>
   );
 }
+
+export const ModelListPanel = memo(ModelListPanelComponent);

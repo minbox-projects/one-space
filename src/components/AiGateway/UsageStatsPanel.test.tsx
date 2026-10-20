@@ -1,6 +1,7 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { UsageStatsPanel } from "@/components/AiGateway/UsageStatsPanel";
 import type { UsageStats } from "@/lib/aiGateway";
@@ -54,10 +55,45 @@ function formatCount(value: number) {
   return new Intl.NumberFormat().format(value);
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
+ * A visited-then-inactive panel inside a parent that re-renders for a reason
+ * unrelated to usage data. Only the panel itself may construct formatters here.
+ */
+function InactivePanelHost() {
+  const [active, setActive] = useState(true);
+  const [tick, setTick] = useState(0);
+  return (
+    <div>
+      <button type="button" onClick={() => setActive((value) => !value)}>
+        toggle-active
+      </button>
+      <button type="button" onClick={() => setTick((value) => value + 1)}>
+        unrelated-rerender
+      </button>
+      <span data-testid="inactive-host-tick">{tick}</span>
+      <UsageStatsPanel isActive={active} />
+    </div>
+  );
+}
+
 describe("UsageStatsPanel", () => {
   beforeEach(async () => {
     resetTauriMocks();
     await i18n.changeLanguage("en");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("默认今日并在切范围时按 range 重新取数，卡片展示 Tokens/请求数/花费", async () => {
@@ -1360,6 +1396,82 @@ describe("UsageStatsPanel", () => {
     );
     expect(providerRows).toHaveLength(1);
     expect(providerRows[0]).toHaveTextContent("Provider A");
+  });
+
+  it("被取代的范围响应最后返回时不能覆盖当前范围的数据", async () => {
+    const first = deferred<UsageStats>();
+    const second = deferred<UsageStats>();
+    let calls = 0;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      calls += 1;
+      return calls === 1 ? first.promise : second.promise;
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(<UsageStatsPanel />);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_gateway_usage_stats", {
+        range: "today",
+      }),
+    );
+
+    await user.click(screen.getByTestId("ai-gateway-usage-range-trigger"));
+    await user.click(screen.getByRole("option", { name: "7d" }));
+    await waitFor(() => expect(calls).toBe(2));
+
+    await act(async () => {
+      second.resolve(metrics({ request_count: 2 }));
+    });
+    const requestsCard = await screen.findByTestId(
+      "ai-gateway-usage-card-requests",
+    );
+    await waitFor(() =>
+      expect(within(requestsCard).getByText("2")).toBeInTheDocument(),
+    );
+
+    // The superseded today response resolves last and must be ignored.
+    await act(async () => {
+      first.resolve(metrics({ request_count: 1 }));
+    });
+    await waitFor(() =>
+      expect(within(requestsCard).getByText("2")).toBeInTheDocument(),
+    );
+    expect(within(requestsCard).queryByText("1")).not.toBeInTheDocument();
+  });
+
+  it("已访问但未激活时，无关父级重渲染不重复构造数字格式化器", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_usage_stats") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return metrics({
+        request_count: 1_234_567,
+        total_tokens: 1_234_567,
+        input_tokens: 2_345,
+        output_tokens: 3_456,
+        cache_read_tokens: 4_567,
+        amount: 12.3456,
+      });
+    });
+
+    renderWithProviders(<InactivePanelHost />);
+    await screen.findByTestId("ai-gateway-usage-card-requests");
+
+    fireEvent.click(screen.getByRole("button", { name: "toggle-active" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const formatterSpy = vi.spyOn(Intl, "NumberFormat");
+    fireEvent.click(screen.getByRole("button", { name: "unrelated-rerender" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(formatterSpy).not.toHaveBeenCalled();
   });
 });
 

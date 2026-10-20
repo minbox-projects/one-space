@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Filter, Layers, Plus, RotateCcw } from "lucide-react";
 import type {
@@ -15,6 +15,7 @@ export type ModelPoolListPanelProps = {
   providers: GatewayUpstreamProvider[];
   poolStatuses?: GatewayModelPoolStatus[];
   busy?: boolean;
+  isActive?: boolean;
   onAddPool?: () => void;
   onTogglePoolEnabled?: (poolId: string, enabled: boolean) => void;
   onEditPool?: (pool: GatewayModelPool) => void;
@@ -22,11 +23,12 @@ export type ModelPoolListPanelProps = {
   onOpenPoolLogs?: (model: string) => void;
 };
 
-export function ModelPoolListPanel({
+function ModelPoolListPanelComponent({
   modelPools,
   providers,
   poolStatuses = [],
   busy = false,
+  isActive = true,
   onAddPool,
   onTogglePoolEnabled,
   onEditPool,
@@ -37,6 +39,7 @@ export function ModelPoolListPanel({
   const [statusFilter, setStatusFilter] = useState<ModelPoolStatusFilter>("all");
 
   const poolCounts = useMemo(() => {
+    if (!isActive) return { all: 0, enabled: 0, disabled: 0 };
     let enabled = 0;
     let disabled = 0;
     for (const pool of modelPools) {
@@ -51,15 +54,19 @@ export function ModelPoolListPanel({
       enabled,
       disabled,
     };
-  }, [modelPools]);
+  }, [isActive, modelPools]);
 
   const filteredModelPools = useMemo(() => {
+    if (!isActive) return [];
     return modelPools.filter((pool) => {
       if (statusFilter === "enabled" && !pool.enabled) return false;
       if (statusFilter === "disabled" && pool.enabled) return false;
       return true;
     });
-  }, [modelPools, statusFilter]);
+  }, [isActive, modelPools, statusFilter]);
+
+  // While inactive the visited panel stays mounted (CSS-hidden by its tab
+  // container) for its filter state; the card grid above is empty and cheap.
 
   return (
     <section className="space-y-4" data-testid="ai-gateway-model-pools-panel">
@@ -273,3 +280,5 @@ export function ModelPoolListPanel({
     </section>
   );
 }
+
+export const ModelPoolListPanel = memo(ModelPoolListPanelComponent);

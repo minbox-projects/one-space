@@ -1220,14 +1220,56 @@ export function usageStatusTranslationKey(result: UsageLogResult): string {
   }
 }
 
+type InFlightRead<T> = { promise: Promise<T> };
+
+const usageStatsInFlight = new Map<string, InFlightRead<UsageStats>>();
+const requestLogsInFlight = new Map<string, InFlightRead<UsageLogsPage>>();
+
+/**
+ * Join an equivalent in-flight read for the same complete parameter set.
+ * Settled results are never cached: the entry is removed as soon as this exact
+ * source promise settles, and failure releases the slot for a later retry.
+ */
+function shareInFlight<T>(
+  inFlight: Map<string, InFlightRead<T>>,
+  key: string,
+  read: () => Promise<T>,
+): Promise<T> {
+  const existing = inFlight.get(key);
+  if (existing) return existing.promise;
+  const entry = {} as InFlightRead<T>;
+  entry.promise = read().then(
+    (value) => {
+      if (inFlight.get(key) === entry) inFlight.delete(key);
+      return value;
+    },
+    (error: unknown) => {
+      if (inFlight.get(key) === entry) inFlight.delete(key);
+      throw error;
+    },
+  );
+  inFlight.set(key, entry);
+  return entry.promise;
+}
+
+type GatewayFreshReadOptions = { fresh?: boolean };
+
 /** Card totals, time buckets and model/provider breakdown for a quick range. */
-export function aiGatewayUsageStats(range: UsageRangeKey) {
-  return invoke<UsageStats>("ai_gateway_usage_stats", { range });
+export function aiGatewayUsageStats(
+  range: UsageRangeKey,
+  options: GatewayFreshReadOptions = {},
+) {
+  const read = () => invoke<UsageStats>("ai_gateway_usage_stats", { range });
+  if (options.fresh) return read();
+  return shareInFlight(usageStatsInFlight, JSON.stringify([range]), read);
 }
 
 /** Paged request logs, optionally grouped by model, provider or UTC+8 day. */
-export function aiGatewayRequestLogs(query: UsageLogsQuery) {
-  return invoke<UsageLogsPage>("ai_gateway_request_logs", {
+export function aiGatewayRequestLogs(
+  query: UsageLogsQuery,
+  options: GatewayFreshReadOptions = {},
+) {
+  const payload = {
     range: query.range,
     groupBy: query.groupBy ?? null,
     status: query.status ?? null,
@@ -1240,7 +1282,21 @@ export function aiGatewayRequestLogs(query: UsageLogsQuery) {
       ? { providerId: query.providerId }
       : {}),
     ...(query.day !== undefined && query.day !== null ? { day: query.day } : {}),
-  });
+  };
+  const read = () =>
+    invoke<UsageLogsPage>("ai_gateway_request_logs", payload);
+  if (options.fresh) return read();
+  const key = JSON.stringify([
+    query.range,
+    query.groupBy ?? null,
+    query.status ?? null,
+    query.model ?? null,
+    query.provider ?? null,
+    query.page ?? 1,
+    query.providerId ?? null,
+    query.day ?? null,
+  ]);
+  return shareInFlight(requestLogsInFlight, key, read);
 }
 
 /**

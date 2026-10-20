@@ -182,6 +182,7 @@ function installMock() {
 async function renderConsole() {
   renderWithProviders(<AiGateway />);
   await screen.findByText("Provider A");
+  fireEvent.click(screen.getByRole("tab", { name: /Model pools/i }));
   return screen.getByTestId(`ai-gateway-model-pool-${POOL_ID}`);
 }
 
@@ -274,20 +275,6 @@ describe("ModelPoolCard", () => {
       invokeMock.mock.calls.filter(
         ([command]) => command === "ai_gateway_request_logs",
       );
-
-    // Preserve the required mount-dashboard guard: the initial load keeps its
-    // today/day, unfiltered request (the same contract pinned in AiGateway.test).
-    expect(requestLogsCalls()).toContainEqual([
-      "ai_gateway_request_logs",
-      {
-        range: "today",
-        groupBy: "day",
-        status: null,
-        model: null,
-        provider: null,
-        page: 1,
-      },
-    ]);
 
     // Only inspect the request(s) produced BY THE CLICK, so the earlier
     // dashboard request can never satisfy the assertion.

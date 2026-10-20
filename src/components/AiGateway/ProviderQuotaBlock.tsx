@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 import { RotateCcw } from "lucide-react";
 import {
   aiGatewayProviderQuota,
@@ -27,10 +28,16 @@ type QuotaState =
   | { status: "success"; quota: ProviderQuota }
   | { status: "error"; reason: string };
 
+const capFormatters = new Map<string, Intl.NumberFormat>();
+
 function formatCap(cap: number): string {
-  return `$${new Intl.NumberFormat(undefined, {
-    maximumFractionDigits: 2,
-  }).format(cap)}`;
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  let formatter = capFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
+    capFormatters.set(locale, formatter);
+  }
+  return `$${formatter.format(cap)}`;
 }
 
 function formatQuotaError(

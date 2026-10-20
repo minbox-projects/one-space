@@ -68,6 +68,13 @@ function makeStatus(overrides: Partial<GatewayStatus> = {}): GatewayStatus {
   };
 }
 
+async function visitTerminalTab() {
+  const tab = await screen.findByRole("tab", {
+    name: /AI terminal integration/i,
+  });
+  fireEvent.click(tab);
+}
+
 function openCodeTarget(
   overrides: Partial<GatewayTerminalTarget> = {},
 ): GatewayTerminalTarget {
@@ -308,6 +315,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     // Step 4 adds Claude as a supported terminal target while Antigravity
@@ -359,6 +367,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("Claude Code");
 
     const claudeRow = within(screen.getByTestId("ai-gateway-target-claude"));
@@ -407,6 +416,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     const openRow = within(screen.getByTestId("ai-gateway-target-opencode"));
@@ -457,6 +467,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     const openRow = within(screen.getByTestId("ai-gateway-target-opencode"));
@@ -500,6 +511,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     const openRow = within(screen.getByTestId("ai-gateway-target-opencode"));
@@ -547,6 +559,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     const openRow = within(screen.getByTestId("ai-gateway-target-opencode"));
@@ -580,6 +593,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     expect(screen.getByTestId("ai-gateway-default-key-required")).toHaveTextContent(
@@ -644,6 +658,7 @@ describe("AiGateway", () => {
     });
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     // Pending status comes from the backend target payload, not local re-derivation.
@@ -686,6 +701,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     const panel = within(screen.getByTestId("ai-gateway-terminals"));
@@ -736,6 +752,7 @@ describe("AiGateway", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     const openCodeSyncedEl = screen.getByTestId("ai-gateway-target-synced-opencode");
@@ -1475,6 +1492,310 @@ describe("AiGateway", () => {
     const modelsTab = screen.getByRole("tab", { name: /Model list|模型列表/i });
     expect(modelsTab).toHaveAttribute("aria-selected", "true");
     expect(screen.getByTestId("ai-gateway-model-list")).toBeInTheDocument();
+  });
+
+  it("今日失败数取自已加载的统计总量，手动刷新取得新数据", async () => {
+    const store: Store = {
+      config: makeConfig({ providers: [makeProvider({ id: "p1", name: "Upstream A" })] }),
+      status: makeStatus({ running: true, provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+    const base = invokeMock.getMockImplementation()!;
+    let stats = emptyUsageStats({
+      request_count: 5,
+      successful_request_count: 3,
+    });
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "ai_gateway_usage_stats") return stats;
+      return base(command, args);
+    });
+
+    renderWithProviders(<AiGateway />);
+    const requestsCard = await screen.findByTestId("ai-gateway-metric-requests");
+    expect(within(requestsCard).getByText("5")).toBeInTheDocument();
+    expect(
+      within(requestsCard).getByTestId("ai-gateway-today-failed-requests"),
+    ).toHaveTextContent("2 failed");
+
+    const statsCalls = () =>
+      invokeMock.mock.calls.filter(
+        ([command]) => command === "ai_gateway_usage_stats",
+      ).length;
+    expect(statsCalls()).toBe(1);
+
+    stats = emptyUsageStats({
+      request_count: 8,
+      successful_request_count: 5,
+    });
+    fireEvent.click(screen.getByTestId("ai-gateway-refresh-btn"));
+    await waitFor(() =>
+      expect(within(requestsCard).getByText("8")).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(
+        within(requestsCard).getByTestId("ai-gateway-today-failed-requests"),
+      ).toHaveTextContent("3 failed"),
+    );
+    expect(statsCalls()).toBe(2);
+  });
+
+  it("头部今日用量刷新不额外发起分组日志查询", async () => {
+    const store: Store = {
+      config: makeConfig({ providers: [makeProvider({ id: "p1", name: "Upstream A" })] }),
+      status: makeStatus({ running: true, provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+    const base = invokeMock.getMockImplementation()!;
+    let stats = emptyUsageStats({
+      request_count: 5,
+      successful_request_count: 3,
+    });
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "ai_gateway_usage_stats") return stats;
+      if (command === "ai_gateway_request_logs") {
+        return usageLogsPage({
+          group_by: "day",
+          records: [],
+          groups: [
+            {
+              group: "2026-09-17",
+              request_count: 9,
+              error_count: 9,
+              last_request_at_ms: 1_700_000_000_000,
+            },
+          ],
+        });
+      }
+      return base(command, args);
+    });
+
+    const groupedLogCalls = () =>
+      invokeMock.mock.calls.filter(
+        ([command, args]) =>
+          command === "ai_gateway_request_logs" &&
+          (args as Record<string, unknown> | undefined)?.groupBy === "day",
+      ).length;
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-metric-requests");
+    expect(groupedLogCalls()).toBe(0);
+
+    stats = emptyUsageStats({
+      request_count: 8,
+      successful_request_count: 5,
+    });
+    fireEvent.click(screen.getByTestId("ai-gateway-refresh-btn"));
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(
+          ([command]) => command === "ai_gateway_usage_stats",
+        ).length,
+      ).toBe(2),
+    );
+    expect(groupedLogCalls()).toBe(0);
+  });
+
+  it("首次访问前不构造用量统计、请求日志与历史面板，访问后才挂载", async () => {
+    const store: Store = {
+      config: makeConfig({ providers: [makeProvider({ id: "p1", name: "Upstream A" })] }),
+      status: makeStatus({ running: true, provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    expect(screen.queryByTestId("ai-gateway-usage-stats")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-usage-logs")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-provider-usage-history"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Usage & Logs/i }));
+    expect(await screen.findByTestId("ai-gateway-usage-stats")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-usage-logs")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-provider-usage-history"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("ai-gateway-subtab-usage-logs"));
+    expect(await screen.findByTestId("ai-gateway-usage-logs")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("ai-gateway-subtab-usage-history"));
+    expect(
+      await screen.findByTestId("ai-gateway-provider-usage-history"),
+    ).toBeInTheDocument();
+  });
+
+  it("未访问的模型列表、模型池与终端页签不构造面板，首次访问后保持挂载", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            id: "p1",
+            name: "Upstream A",
+            mappings: [
+              {
+                local_model: "gpt-4o",
+                upstream_model: "gpt-4o-2024",
+                enabled: true,
+              },
+            ],
+          }),
+        ],
+        model_pools: [modelPoolFixture()],
+      }),
+      status: makeStatus({ running: true, provider_count: 1 }),
+      targets: [openCodeTarget()],
+    };
+    mockStore(store);
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    // 默认服务商页签正常构造。
+    expect(screen.getByTestId("ai-gateway-providers")).toBeInTheDocument();
+    // 未访问的重面板不在 DOM 中构造。
+    expect(screen.queryByTestId("ai-gateway-model-list")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ai-gateway-model-pools-panel"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-terminals")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Model pools/i }));
+    expect(
+      await screen.findByTestId("ai-gateway-model-pools-panel"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-model-list")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-terminals")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Model list/i }));
+    expect(await screen.findByTestId("ai-gateway-model-list")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-gateway-terminals")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("tab", { name: /AI terminal integration/i }),
+    );
+    expect(await screen.findByTestId("ai-gateway-terminals")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Upstream providers/i }));
+    // 已访问面板保持挂载，状态得以保留。
+    expect(
+      screen.getByTestId("ai-gateway-model-pools-panel"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-model-list")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-terminals")).toBeInTheDocument();
+  });
+
+  it("已访问面板在头部刷新与配置事件后保留筛选状态", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [
+          makeProvider({
+            id: "p1",
+            name: "Upstream A",
+            mappings: [
+              {
+                local_model: "gpt-4o",
+                upstream_model: "gpt-4o-2024",
+                enabled: true,
+              },
+            ],
+          }),
+        ],
+      }),
+      status: makeStatus({ running: true, provider_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const configUpdateHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (
+            eventName: string,
+            handler: (event: unknown) => void,
+          ) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === AI_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configUpdateHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    fireEvent.click(screen.getByRole("tab", { name: /Model list/i }));
+    const search = await screen.findByTestId("ai-gateway-model-list-search");
+    fireEvent.change(search, { target: { value: "gpt" } });
+    expect(screen.getAllByTestId("ai-gateway-model-list-row")).toHaveLength(1);
+
+    // 面板转到后台，头部刷新与配置事件都不应重建它或清空筛选。
+    fireEvent.click(screen.getByRole("tab", { name: /Upstream providers/i }));
+    fireEvent.click(screen.getByTestId("ai-gateway-refresh-btn"));
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(
+          ([command]) => command === "ai_gateway_usage_stats",
+        ).length,
+      ).toBeGreaterThan(0),
+    );
+
+    store.config = makeConfig({
+      providers: [
+        makeProvider({
+          id: "p1",
+          name: "Upstream A",
+          mappings: [
+            {
+              local_model: "gpt-4o",
+              upstream_model: "gpt-4o-2024",
+              enabled: true,
+            },
+          ],
+        }),
+        makeProvider({
+          id: "p2",
+          name: "Upstream B",
+          mappings: [
+            {
+              local_model: "claude-3-7-sonnet",
+              upstream_model: "claude-3-7",
+              enabled: true,
+            },
+          ],
+        }),
+      ],
+    });
+    await act(async () => {
+      for (const handler of configUpdateHandlers) {
+        handler({ payload: undefined });
+      }
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-providers")).toHaveTextContent(
+        "Upstream B",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /Model list/i }));
+    const list = await screen.findByTestId("ai-gateway-model-list");
+    expect(within(list).getByTestId("ai-gateway-model-list-search")).toHaveValue(
+      "gpt",
+    );
+    const rows = within(list).getAllByTestId("ai-gateway-model-list-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveAttribute("data-model", "gpt-4o");
   });
 
   it("点击聚合模型指标卡切换到模型列表Tab并列出有效模型及其上游服务商映射", async () => {
@@ -2383,7 +2704,7 @@ describe("AiGateway", () => {
     );
   });
 
-  it("首屏今日统计与今日分组日志使用 range=today 选择器", async () => {
+  it("首屏今日统计使用 range=today 且头部不发起分组日志查询", async () => {
     const store: Store = {
       config: makeConfig(),
       status: makeStatus({ running: true }),
@@ -2398,14 +2719,15 @@ describe("AiGateway", () => {
         range: "today",
       }),
     );
-    expect(invokeMock).toHaveBeenCalledWith("ai_gateway_request_logs", {
-      range: "today",
-      groupBy: "day",
-      status: null,
-      model: null,
-      provider: null,
-      page: 1,
-    });
+    // Today's failure count comes from that statistics snapshot; the header
+    // must not issue its own day-grouped request-log query.
+    expect(
+      invokeMock.mock.calls.filter(
+        ([command, args]) =>
+          command === "ai_gateway_request_logs" &&
+          (args as Record<string, unknown> | undefined)?.groupBy === "day",
+      ),
+    ).toHaveLength(0);
   });
 });
 
@@ -3163,6 +3485,398 @@ describe("AiGateway 配置更新事件实时刷新", () => {
     expect(invokeCount("ai_gateway_usage_stats")).toBeGreaterThan(usageBeforePoll);
   });
 
+  it("配置事件突发只触发当前刷新加至多一次追并，且不重读用量或日志", async () => {
+    vi.useFakeTimers();
+    const store: Store = {
+      config: makeConfig({
+        providers: [makeProvider({ id: "p1", name: "Upstream A" })],
+      }),
+      status: makeStatus({ running: false }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const configUpdateHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (
+            eventName: string,
+            handler: (event: unknown) => void,
+          ) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === AI_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configUpdateHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    const flushAsyncWork = async () => {
+      await act(async () => {
+        for (let index = 0; index < 16; index += 1) {
+          await Promise.resolve();
+        }
+      });
+    };
+
+    renderWithProviders(<AiGateway />);
+    await flushAsyncWork();
+    await flushAsyncWork();
+    expect(configUpdateHandlers.length).toBeGreaterThan(0);
+
+    const invokeCount = (command: string) =>
+      invokeMock.mock.calls.filter((call) => call[0] === command).length;
+    const configBefore = invokeCount("ai_gateway_get_config");
+    const usageBefore = invokeCount("ai_gateway_usage_stats");
+    const logsBefore = invokeCount("ai_gateway_request_logs");
+
+    await act(async () => {
+      for (let index = 0; index < 5; index += 1) {
+        for (const handler of configUpdateHandlers) {
+          handler({ payload: undefined });
+        }
+      }
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    await flushAsyncWork();
+
+    const configReads = invokeCount("ai_gateway_get_config") - configBefore;
+    expect(configReads).toBeGreaterThanOrEqual(1);
+    expect(configReads).toBeLessThanOrEqual(2);
+    expect(invokeCount("ai_gateway_usage_stats")).toBe(usageBefore);
+    expect(invokeCount("ai_gateway_request_logs")).toBe(logsBefore);
+  });
+
+  it("隐藏时消费配置与鉴权通知但不发起页面读取", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [makeProvider({ id: "p1", name: "Upstream A" })],
+      }),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const configUpdateHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (
+            eventName: string,
+            handler: (event: unknown) => void,
+          ) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === AI_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configUpdateHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    function Host() {
+      const [visible, setVisible] = useState(true);
+      return (
+        <>
+          <button type="button" onClick={() => setVisible(false)}>
+            hide
+          </button>
+          <AiGateway isVisible={visible} />
+        </>
+      );
+    }
+
+    const flushAsyncWork = async () => {
+      await act(async () => {
+        for (let index = 0; index < 16; index += 1) {
+          await Promise.resolve();
+        }
+      });
+    };
+
+    renderWithProviders(<Host />);
+    await screen.findByText("Upstream A");
+    await flushAsyncWork();
+    expect(configUpdateHandlers.length).toBeGreaterThan(0);
+
+    const pageReadCommands = [
+      "ai_gateway_get_config",
+      "ai_gateway_status",
+      "ai_gateway_terminal_targets",
+      "ai_gateway_provider_templates",
+      "ai_gateway_model_pools_status",
+      "ai_gateway_usage_stats",
+      "ai_gateway_request_logs",
+    ];
+    const invokeCount = (command: string) =>
+      invokeMock.mock.calls.filter((call) => call[0] === command).length;
+    const pageReadCounts = () =>
+      Object.fromEntries(
+        pageReadCommands.map((command) => [command, invokeCount(command)]),
+      );
+
+    await act(async () => {
+      setNativeWindowVisible(false);
+      fireEvent.click(screen.getByRole("button", { name: "hide" }));
+    });
+    await flushAsyncWork();
+    const hiddenBaseline = pageReadCounts();
+
+    await act(async () => {
+      for (let index = 0; index < 5; index += 1) {
+        for (const handler of configUpdateHandlers) {
+          handler({ payload: undefined });
+        }
+      }
+      for (let index = 0; index < 16; index += 1) {
+        await Promise.resolve();
+      }
+    });
+    await flushAsyncWork();
+
+    expect(pageReadCounts()).toEqual(hiddenBaseline);
+
+    const authCall = listenMock.mock.calls.find(
+      ([eventName]) => eventName === AI_GATEWAY_KEY_AUTH_FAILED_EVENT,
+    );
+    expect(
+      authCall,
+      "AiGateway 隐藏时仍须订阅鉴权失败通知",
+    ).toBeDefined();
+
+    vi.useFakeTimers();
+    act(() => {
+      (
+        authCall![1] as (event: {
+          payload: GatewayKeyAuthFailedEvent;
+        }) => void
+      )({
+        payload: {
+          provider_id: "p1",
+          provider_name: "Upstream A",
+          key_id: "k1",
+          key_name: "sk-secret",
+          reason: "invalid api key",
+          marked_at: 1_700_000_000,
+        },
+      });
+      vi.advanceTimersByTime(AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS);
+    });
+
+    expect(
+      screen.getAllByText(i18n.t("aiGatewayKeyAuthFailedToastTitle")),
+    ).toHaveLength(1);
+    expect(pageReadCounts()).toEqual(hiddenBaseline);
+    vi.useRealTimers();
+  });
+
+  it("恢复可见时只执行一次连贯追赶", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [makeProvider({ id: "p1", name: "Upstream A" })],
+      }),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    function Host() {
+      const [visible, setVisible] = useState(true);
+      return (
+        <>
+          <button type="button" onClick={() => setVisible(false)}>
+            hide
+          </button>
+          <button type="button" onClick={() => setVisible(true)}>
+            show
+          </button>
+          <AiGateway isVisible={visible} />
+        </>
+      );
+    }
+
+    const flushAsyncWork = async () => {
+      await act(async () => {
+        for (let index = 0; index < 16; index += 1) {
+          await Promise.resolve();
+        }
+      });
+    };
+
+    renderWithProviders(<Host />);
+    await screen.findByText("Upstream A");
+    await flushAsyncWork();
+
+    const pageReadCommands = [
+      "ai_gateway_get_config",
+      "ai_gateway_status",
+      "ai_gateway_terminal_targets",
+      "ai_gateway_provider_templates",
+      "ai_gateway_model_pools_status",
+      "ai_gateway_usage_stats",
+      "ai_gateway_request_logs",
+    ];
+    const invokeCount = (command: string) =>
+      invokeMock.mock.calls.filter((call) => call[0] === command).length;
+    const pageReadCounts = () =>
+      Object.fromEntries(
+        pageReadCommands.map((command) => [command, invokeCount(command)]),
+      );
+
+    await act(async () => {
+      setNativeWindowVisible(false);
+      fireEvent.click(screen.getByRole("button", { name: "hide" }));
+    });
+    await flushAsyncWork();
+    const hiddenBaseline = pageReadCounts();
+
+    await act(async () => {
+      setNativeWindowVisible(true);
+      fireEvent.click(screen.getByRole("button", { name: "show" }));
+    });
+    await waitFor(() => {
+      for (const command of pageReadCommands) {
+        expect(invokeCount(command)).toBeGreaterThanOrEqual(
+          (hiddenBaseline as Record<string, number>)[command] + 1,
+        );
+      }
+    });
+    await flushAsyncWork();
+
+    const resumed = pageReadCounts();
+    for (const command of pageReadCommands) {
+      expect(
+        (resumed as Record<string, number>)[command] -
+          (hiddenBaseline as Record<string, number>)[command],
+        `${command} must run exactly once for the visible catch-up`,
+      ).toBe(1);
+    }
+  });
+
+  it("可见性变化取代旧配置请求后，迟到响应不能覆盖当前数据", async () => {
+    const store: Store = {
+      config: makeConfig({
+        providers: [makeProvider({ id: "p1", name: "Current A" })],
+      }),
+      status: makeStatus({ running: true }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const configUpdateHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (
+            eventName: string,
+            handler: (event: unknown) => void,
+          ) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === AI_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configUpdateHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    function Host() {
+      const [visible, setVisible] = useState(true);
+      return (
+        <>
+          <button type="button" onClick={() => setVisible(false)}>
+            hide
+          </button>
+          <button type="button" onClick={() => setVisible(true)}>
+            show
+          </button>
+          <AiGateway isVisible={visible} />
+        </>
+      );
+    }
+
+    const flushAsyncWork = async () => {
+      await act(async () => {
+        for (let index = 0; index < 16; index += 1) {
+          await Promise.resolve();
+        }
+      });
+    };
+
+    renderWithProviders(<Host />);
+    await screen.findByText("Current A");
+    await flushAsyncWork();
+    expect(configUpdateHandlers.length).toBeGreaterThan(0);
+
+    const staleReply = deferredPromise<GatewayConfig>();
+    const originalInvoke = invokeMock.getMockImplementation()!;
+    let staleRequestStarted = false;
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_gateway_get_config" && !staleRequestStarted) {
+          staleRequestStarted = true;
+          return staleReply.promise;
+        }
+        return originalInvoke(command, args);
+      },
+    );
+
+    await act(async () => {
+      for (const handler of configUpdateHandlers) {
+        handler({ payload: undefined });
+      }
+      await Promise.resolve();
+    });
+    expect(staleRequestStarted).toBe(true);
+
+    await act(async () => {
+      setNativeWindowVisible(false);
+      fireEvent.click(screen.getByRole("button", { name: "hide" }));
+    });
+    await flushAsyncWork();
+
+    store.config = makeConfig({
+      providers: [makeProvider({ id: "p1", name: "Fresh A" })],
+    });
+
+    await act(async () => {
+      setNativeWindowVisible(true);
+      fireEvent.click(screen.getByRole("button", { name: "show" }));
+    });
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("ai-gateway-providers")).getByText("Fresh A"),
+      ).toBeInTheDocument(),
+    );
+
+    await act(async () => {
+      staleReply.resolve(
+        makeConfig({
+          providers: [makeProvider({ id: "p1", name: "Stale A" })],
+        }),
+      );
+      for (let index = 0; index < 16; index += 1) {
+        await Promise.resolve();
+      }
+    });
+    await flushAsyncWork();
+
+    const currentProvider = screen.getByTestId("ai-gateway-provider-p1");
+    expect(currentProvider).toHaveTextContent("Fresh A");
+    expect(currentProvider).not.toHaveTextContent("Stale A");
+  });
+
   it("pauses today-usage polling while hidden and catches up exactly once on show", async () => {
     vi.useFakeTimers();
     const store: Store = {
@@ -3554,6 +4268,7 @@ describe("AiGateway 操作提示与实际操作相符", () => {
     mockStore(store);
 
     renderWithProviders(<AiGateway />);
+    await visitTerminalTab();
     await screen.findByText("OpenCode");
 
     const openRow = within(screen.getByTestId("ai-gateway-target-opencode"));
@@ -4042,6 +4757,12 @@ describe("AiGateway model pool integration", () => {
 
     renderWithProviders(<AiGateway />);
     await screen.findByText("Upstream A");
+
+    fireEvent.click(
+      screen.getByRole("tab", {
+        name: new RegExp(`^${i18n.t("aiGatewayModelPoolsTab")}`),
+      }),
+    );
 
     expect(screen.getByText("Free Modle")).toBeInTheDocument();
     expect(screen.getByText("free-model")).toBeInTheDocument();

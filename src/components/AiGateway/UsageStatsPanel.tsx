@@ -1,5 +1,14 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 import {
   Activity,
   ArrowDownLeft,
@@ -31,8 +40,16 @@ import { errorToMessage } from "@/lib/messages";
 import { SelectDropdown } from "./SelectDropdown";
 import { RANGE_LABEL_FALLBACKS, RANGE_LABEL_KEYS } from "./gatewayShared";
 
+const countFormatters = new Map<string, Intl.NumberFormat>();
+
 function formatCount(value: number): string {
-  return new Intl.NumberFormat().format(value);
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  let formatter = countFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale);
+    countFormatters.set(locale, formatter);
+  }
+  return formatter.format(value);
 }
 
 /** Render the backend-owned rate as-is; a missing (null) rate shows an em dash. */
@@ -154,7 +171,7 @@ function UsageAnalysisRow({
   );
 }
 
-export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
+function UsageStatsPanelComponent({ isActive = true }: { isActive?: boolean }) {
   const { t } = useTranslation();
   const [range, setRange] = useState<UsageRangeKey>("today");
   const [trendMetric, setTrendMetric] = useState<TrendMetric>("tokens");
@@ -173,7 +190,9 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
       if (options?.refresh) setRefreshing(true);
       else setLoading(true);
       try {
-        const next = await aiGatewayUsageStats(range);
+        const next = await aiGatewayUsageStats(range, {
+          fresh: Boolean(options?.refresh),
+        });
         if (requestSeqRef.current !== seq) return;
         setStats(next);
       } catch (err) {
@@ -192,6 +211,11 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
   useEffect(() => {
     if (!isActive) return;
     void load();
+    // Deactivation supersedes the in-flight range read so a hidden panel can
+    // never commit its snapshot after the user moved on.
+    return () => {
+      requestSeqRef.current += 1;
+    };
   }, [isActive, load]);
 
   const buckets = useMemo(() => (stats ? selectBuckets(stats) : []), [stats]);
@@ -819,4 +843,6 @@ export function UsageStatsPanel({ isActive = true }: { isActive?: boolean }) {
     </div>
   );
 }
+
+export const UsageStatsPanel = memo(UsageStatsPanelComponent);
 
