@@ -137,14 +137,14 @@ function UsageAnalysisRow({
         </div>
       </td>
       <td className="px-3 py-2 text-right">{formatCount(metrics.request_count)}</td>
+      <td className="px-3 py-2 text-right" title={formatCount(metrics.total_tokens)}>
+        {formatGatewayTokens(metrics.total_tokens)}
+      </td>
       <td className="px-3 py-2 text-right" title={formatCount(metrics.input_tokens)}>
         {formatGatewayTokens(metrics.input_tokens)}
       </td>
       <td className="px-3 py-2 text-right" title={formatCount(metrics.cache_read_tokens)}>
         {formatGatewayTokens(metrics.cache_read_tokens)}
-      </td>
-      <td className="px-3 py-2 text-right" title={formatCount(metrics.cache_write_tokens)}>
-        {formatGatewayTokens(metrics.cache_write_tokens)}
       </td>
       <td className="px-3 py-2 text-right" title={formatCount(metrics.output_tokens)}>
         {formatGatewayTokens(metrics.output_tokens)}
@@ -934,13 +934,13 @@ export function UsageStatsPanel({
                         {t("aiGatewayUsageRequests", "Requests")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageTokens", "Tokens")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
                         {t("aiGatewayUsageInput", "Input")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
                         {t("aiGatewayUsageCacheRead", "Cache read")}
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        {t("aiGatewayUsageCacheWrite", "Cache write")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
                         {t("aiGatewayUsageOutput", "Output")}
@@ -1018,13 +1018,13 @@ export function UsageStatsPanel({
                         {t("aiGatewayUsageRequests", "Requests")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
+                        {t("aiGatewayUsageTokens", "Tokens")}
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
                         {t("aiGatewayUsageInput", "Input")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
                         {t("aiGatewayUsageCacheRead", "Cache read")}
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        {t("aiGatewayUsageCacheWrite", "Cache write")}
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
                         {t("aiGatewayUsageOutput", "Output")}

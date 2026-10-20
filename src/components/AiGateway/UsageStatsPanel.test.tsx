@@ -674,16 +674,28 @@ describe("UsageStatsPanel", () => {
 
     // 模型分析表格
     const modelTable = screen.getByTestId("ai-gateway-usage-models");
+    const modelHeaders = within(modelTable).getAllByRole("columnheader");
+    expect(modelHeaders.map((h) => h.textContent?.trim())).toEqual([
+      "Model",
+      "Requests",
+      "Tokens",
+      "Input",
+      "Cache read",
+      "Output",
+      "Token Cache Hit Rate",
+      "Cost ($)",
+    ]);
+
     const modelRow = within(modelTable).getByTestId("ai-gateway-usage-model-row");
     const modelCells = within(modelRow).getAllByRole("cell");
-    // [0]=Label, [1]=Requests, [2]=Input, [3]=CacheRead, [4]=CacheWrite, [5]=Output, [6]=Cost
+    // [0]=Label, [1]=Requests, [2]=Tokens, [3]=Input, [4]=CacheRead, [5]=Output, [6]=CacheHit, [7]=Cost
     expect(modelCells[1]).toHaveTextContent("50"); // 请求数不带 token转换
-    expect(modelCells[2]).toHaveTextContent("12万");
-    expect(modelCells[2]).toHaveAttribute("title", "120,000");
-    expect(modelCells[3]).toHaveTextContent("3.5万");
-    expect(modelCells[3]).toHaveAttribute("title", "35,000");
-    expect(modelCells[4]).toHaveTextContent("1亿");
-    expect(modelCells[4]).toHaveAttribute("title", "100,000,000");
+    expect(modelCells[2]).toHaveTextContent("1.5千万"); // Tokens
+    expect(modelCells[2]).toHaveAttribute("title", "15,200,000");
+    expect(modelCells[3]).toHaveTextContent("12万");
+    expect(modelCells[3]).toHaveAttribute("title", "120,000");
+    expect(modelCells[4]).toHaveTextContent("3.5万");
+    expect(modelCells[4]).toHaveAttribute("title", "35,000");
     expect(modelCells[5]).toHaveTextContent("800");
     expect(modelCells[5]).toHaveAttribute("title", "800");
   });
@@ -1633,6 +1645,26 @@ describe("UsageStatsPanel", () => {
     const providerTable = await screen.findByTestId("ai-gateway-usage-providers-table");
     expect(providerTable).toBeInTheDocument();
     expect(within(providerTable).getByText("已删除的老服务商")).toBeInTheDocument();
+
+    const providerHeaders = within(providerTable).getAllByRole("columnheader");
+    expect(providerHeaders.map((h) => h.textContent?.trim())).toEqual([
+      "服务商",
+      "请求数",
+      "Tokens",
+      "输入",
+      "缓存（读）",
+      "输出",
+      "Token 缓存命中率",
+      "花费（$）",
+    ]);
+
+    const providerRow = within(providerTable).getByTestId("ai-gateway-usage-provider-dim-row");
+    const providerCells = within(providerRow).getAllByRole("cell");
+    expect(providerCells[1]).toHaveTextContent("10"); // 请求数
+    expect(providerCells[2]).toHaveTextContent("1,000"); // Tokens
+    expect(providerCells[3]).toHaveTextContent("500"); // 输入
+    expect(providerCells[4]).toHaveTextContent("0"); // 缓存(读)
+    expect(providerCells[5]).toHaveTextContent("500"); // 输出
 
     const deletedBadge = within(providerTable).getByTestId(
       "ai-gateway-usage-provider-deleted-badge",
