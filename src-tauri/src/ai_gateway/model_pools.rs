@@ -109,6 +109,33 @@ fn pool_cooldown() -> &'static Mutex<HashMap<PoolCandidateKey, Instant>> {
     POOL_COOLDOWN.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Test-only thread-local count of deep `GatewayUpstreamProvider` copies made
+/// while preparing and ordering pool candidates. Shared/`Arc` references never
+/// increment it.
+#[cfg(test)]
+thread_local! {
+    static POOL_PROVIDER_DEEP_COPIES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_pool_provider_copy() {
+    POOL_PROVIDER_DEEP_COPIES.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+/// Reset the test-only pool provider deep-copy counter on this thread.
+#[cfg(test)]
+pub(in crate::ai_gateway) fn reset_pool_provider_copy_count() {
+    POOL_PROVIDER_DEEP_COPIES.with(|count| count.set(0));
+}
+
+/// The number of deep `GatewayUpstreamProvider` copies made while planning a pool
+/// request on this thread since the last reset.
+#[cfg(test)]
+pub(in crate::ai_gateway) fn pool_provider_copy_count() -> usize {
+    POOL_PROVIDER_DEEP_COPIES.with(|count| count.get())
+}
+
 /// The plan for one request whose model is a current or retired pool alias.
 pub(in crate::ai_gateway) enum PoolPlan {
     /// The pool has at least one usable selected candidate (or an eligible
@@ -223,7 +250,18 @@ fn resolve_candidate(
                         availability = "mapping_unavailable";
                         reason = Some("mapping protocol changed".to_string());
                     } else {
-                        prepared = Some(prepare_provider(provider, alias, mapping, &identity, candidate.weight));
+                        // Only a candidate that can actually be selected or probed
+                        // needs its one-mapping routing view. Disabled sources stay
+                        // borrowed so their count never scales with the stored set.
+                        if provider.enabled && mapping.enabled {
+                            prepared = Some(prepare_provider(
+                                provider,
+                                alias,
+                                mapping,
+                                &identity,
+                                candidate.weight,
+                            ));
+                        }
                         if !provider.enabled {
                             availability = "source_disabled";
                             reason = Some("source provider disabled".to_string());
@@ -285,6 +323,8 @@ fn prepare_provider(
     weight: u32,
 ) -> GatewayUpstreamProvider {
     let mut prepared = provider.clone();
+    #[cfg(test)]
+    note_pool_provider_copy();
     let mut row = mapping.clone();
     row.local_model = alias.to_string();
     row.protocol = Some(identity.protocol);
@@ -448,12 +488,11 @@ pub(in crate::ai_gateway) fn plan_pool_request(
     // Healthy candidates: usable key, enabled provider/mapping, supported
     // protocol, not cooling and able to serve the resolved preference. Only
     // these consume a primary SWRR slot.
-    let healthy: Vec<ResolvedCandidate> = resolved
+    let healthy: Vec<&ResolvedCandidate> = resolved
         .iter()
         .filter(|candidate| {
             candidate.available && candidate.prepared.is_some() && candidate.native.is_some()
         })
-        .cloned()
         .collect();
     let mut ordered = pool_weighted_order(&healthy, &pool.id, protocol.endpoint_path());
     // A selected mapping whose only usable-key state is an eligible quota-key
@@ -471,7 +510,10 @@ pub(in crate::ai_gateway) fn plan_pool_request(
             continue;
         };
         if find_key_probe_candidate(prepared, now).is_some() {
-            ordered.push(prepared.clone());
+            let cloned = prepared.clone();
+            #[cfg(test)]
+            note_pool_provider_copy();
+            ordered.push(cloned);
         }
     }
     // At most one half-open probe (mapping or, only when no mapping probe is
@@ -544,7 +586,7 @@ fn pool_unavailable_message(alias: &str, resolved: &[ResolvedCandidate]) -> Stri
 /// returned primary candidate is first, followed by the remaining candidates in
 /// descending updated current-weight order.
 fn pool_weighted_order(
-    candidates: &[ResolvedCandidate],
+    candidates: &[&ResolvedCandidate],
     pool_id: &str,
     ingress: &'static str,
 ) -> Vec<GatewayUpstreamProvider> {
@@ -552,7 +594,14 @@ fn pool_weighted_order(
         return Vec::new();
     }
     if candidates.len() == 1 {
-        return candidates[0].prepared.clone().into_iter().collect();
+        let prepared = candidates[0].prepared.clone();
+        #[cfg(test)]
+        {
+            if prepared.is_some() {
+                note_pool_provider_copy();
+            }
+        }
+        return prepared.into_iter().collect();
     }
     let keys: Vec<PoolSchedulerKey> = candidates
         .iter()
@@ -602,10 +651,14 @@ fn pool_weighted_order(
 
     let mut ordered: Vec<GatewayUpstreamProvider> = Vec::with_capacity(candidates.len());
     if let Some(primary) = candidates[best_idx].prepared.clone() {
+        #[cfg(test)]
+        note_pool_provider_copy();
         ordered.push(primary);
     }
     for idx in remaining {
         if let Some(prepared) = candidates[idx].prepared.clone() {
+            #[cfg(test)]
+            note_pool_provider_copy();
             ordered.push(prepared);
         }
     }

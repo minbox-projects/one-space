@@ -22,7 +22,7 @@ use super::selection::{
     register_mapping_failure, register_mapping_success, select_usable_key, FailureClass,
     MappingTarget,
 };
-use super::storage::{modify_config, read_config};
+use super::storage::{modify_config, read_config_shared};
 use super::usage_log::sanitize_error_text;
 use super::{now_ts, GatewayConfig, GatewayUpstreamProvider, KeyFailureKind};
 use std::collections::{HashMap, HashSet};
@@ -759,7 +759,7 @@ pub(in crate::ai_gateway) fn sanitize_provider_error_text(
 /// an earlier attempt in this same request is visible to the next attempt
 /// instead of freezing the request-start marks for the whole request.
 pub(in crate::ai_gateway) fn sync_key_runtime_marks(provider: &mut GatewayUpstreamProvider) {
-    let Ok(latest) = read_config() else {
+    let Ok(latest) = read_config_shared() else {
         return;
     };
     let Some(stored) = latest

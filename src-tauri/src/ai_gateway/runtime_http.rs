@@ -28,7 +28,7 @@ use super::selection::{
     try_acquire_probe_guard, weighted_candidates, FailureClass, ModelResolution, ProbeCandidate,
     ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
 };
-use super::storage::{local_base_url, read_config};
+use super::storage::{local_base_url, read_config_shared};
 use super::usage_log::{
     compute_cost_at_time_with_breakdown, extract_upstream_error_text, match_price_for_provider,
     normalize_retention_days, now_millis, parse_usage_from_response, CanonicalUsage,
@@ -286,7 +286,7 @@ pub(in crate::ai_gateway) async fn start_server(
     // Store the handle before the early-return path so a restart always
     // refreshes (or clears) the process-wide slot (REQ-005).
     capture_app_handle(app);
-    let config = read_config()?;
+    let config = read_config_shared()?;
     let mut guard = state_lock().lock().await;
     if let Some(running) = guard.as_ref() {
         if running.port == config.port {
@@ -319,7 +319,7 @@ pub(in crate::ai_gateway) async fn start_server(
 }
 
 pub(in crate::ai_gateway) async fn stop_server() -> Result<GatewayStatus, String> {
-    let config = read_config();
+    let config = read_config_shared();
     let mut guard = state_lock().lock().await;
     let running_port = guard.as_ref().map(|running| running.port);
     if let Some(mut running) = guard.take() {
@@ -360,7 +360,7 @@ pub(in crate::ai_gateway) fn stop_server_now() {
 }
 
 pub(in crate::ai_gateway) fn server_status() -> Result<GatewayStatus, String> {
-    let config = read_config()?;
+    let config = read_config_shared()?;
     let running = state_lock()
         .try_lock()
         .map(|guard| guard.is_some())
@@ -371,7 +371,7 @@ pub(in crate::ai_gateway) fn server_status() -> Result<GatewayStatus, String> {
 pub(in crate::ai_gateway) async fn autostart(
     app: Option<tauri::AppHandle>,
 ) -> Result<GatewayStatus, String> {
-    let config = read_config()?;
+    let config = read_config_shared()?;
     if config.enabled {
         start_server(app).await
     } else {
@@ -3083,7 +3083,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     let suppress_transport_failures =
         crate::app_runtime::system_resume_grace_active(SystemTime::now());
 
-    let config = match read_config() {
+    let config = match read_config_shared() {
         Ok(config) => config,
         Err(error) => {
             // The route is known from the request line even when the

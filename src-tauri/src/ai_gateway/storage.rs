@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub(in crate::ai_gateway) fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
@@ -67,10 +67,29 @@ struct CachedConfig {
     path: PathBuf,
     len: u64,
     modified: Option<std::time::SystemTime>,
-    config: GatewayConfig,
+    config: Arc<GatewayConfig>,
 }
 
 static CONFIG_READ_CACHE: Mutex<Vec<CachedConfig>> = Mutex::new(Vec::new());
+
+/// Test-only process-global count of owned `GatewayConfig` values deep-cloned
+/// from the shared read path. Shared/`Arc` handoffs never increment it.
+#[cfg(test)]
+static CONFIG_CACHE_DEEP_CLONES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Reset the test-only read-cache deep-copy counter.
+#[cfg(test)]
+pub(in crate::ai_gateway) fn reset_config_cache_deep_clone_count() {
+    CONFIG_CACHE_DEEP_CLONES.store(0, Ordering::Relaxed);
+}
+
+/// The number of owned `GatewayConfig` values deep-cloned from the shared read
+/// path since the last reset.
+#[cfg(test)]
+pub(in crate::ai_gateway) fn config_cache_deep_clone_count() -> usize {
+    CONFIG_CACHE_DEEP_CLONES.load(Ordering::Relaxed)
+}
 
 /// The identity a read cache is keyed by: byte length plus modification time.
 fn file_identity(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
@@ -78,8 +97,9 @@ fn file_identity(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
     Some((metadata.len(), metadata.modified().ok()))
 }
 
-/// Return the cached configuration when the file identity still matches.
-fn cached_config(path: &Path) -> Option<GatewayConfig> {
+/// Return the cached configuration when the file identity still matches. The
+/// caller shares the cached value instead of cloning it.
+fn cached_config(path: &Path) -> Option<Arc<GatewayConfig>> {
     let (len, modified) = file_identity(path)?;
     let cache = CONFIG_READ_CACHE
         .lock()
@@ -87,7 +107,16 @@ fn cached_config(path: &Path) -> Option<GatewayConfig> {
     cache
         .iter()
         .find(|entry| entry.path == path && entry.len == len && entry.modified == modified)
-        .map(|entry| entry.config.clone())
+        .map(|entry| Arc::clone(&entry.config))
+}
+
+/// Return an owned copy for a caller that must mutate its configuration. This is
+/// the only in-process path that deep-clones a cached configuration.
+fn owned_cached_config(path: &Path) -> Option<GatewayConfig> {
+    let config = cached_config(path)?;
+    #[cfg(test)]
+    CONFIG_CACHE_DEEP_CLONES.fetch_add(1, Ordering::Relaxed);
+    Some((*config).clone())
 }
 
 /// Publish `config` into the read cache under the file's current identity.
@@ -100,7 +129,7 @@ fn store_cached_config(path: &Path, config: &GatewayConfig) {
         invalidate_cached_config(path);
         return;
     };
-    store_cached_config_at(path, identity, config);
+    store_cached_config_at(path, identity, Arc::new(config.clone()));
 }
 
 /// Publish `config` into the read cache under a caller-supplied identity.
@@ -113,7 +142,7 @@ fn store_cached_config(path: &Path, config: &GatewayConfig) {
 fn store_cached_config_at(
     path: &Path,
     identity: (u64, Option<std::time::SystemTime>),
-    config: &GatewayConfig,
+    config: Arc<GatewayConfig>,
 ) {
     let (len, modified) = identity;
     let mut cache = CONFIG_READ_CACHE
@@ -124,7 +153,7 @@ fn store_cached_config_at(
         path: path.to_path_buf(),
         len,
         modified,
-        config: config.clone(),
+        config,
     });
 }
 
@@ -136,7 +165,7 @@ fn invalidate_cached_config(path: &Path) {
     cache.retain(|entry| entry.path != path);
 }
 
-fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
+fn read_config_file_shared(path: &PathBuf) -> Result<Option<Arc<GatewayConfig>>, String> {
     if !path.exists() {
         invalidate_cached_config(path);
         return Ok(None);
@@ -165,6 +194,7 @@ fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
             invalidate_cached_config(path);
             return Ok(None);
         };
+        let latest = Arc::new(latest);
         if still_needs_migration {
             // Best-effort: a failed rewrite keeps the previous complete bytes
             // on disk and the next read retries the migration.
@@ -174,8 +204,9 @@ fn read_config_file(path: &PathBuf) -> Result<Option<GatewayConfig>, String> {
         }
         return Ok(Some(latest));
     }
+    let config = Arc::new(config);
     match identity {
-        Some(identity) => store_cached_config_at(path, identity, &config),
+        Some(identity) => store_cached_config_at(path, identity, Arc::clone(&config)),
         None => invalidate_cached_config(path),
     }
     Ok(Some(config))
@@ -309,11 +340,29 @@ fn scope_model_prices(config: &mut GatewayConfig) {
     });
 }
 
-pub(in crate::ai_gateway) fn read_config() -> Result<GatewayConfig, String> {
+/// Read the configuration as a shared immutable value. Read-only consumers use
+/// this so an unchanged warm configuration is handed out without a deep copy.
+pub(in crate::ai_gateway) fn read_config_shared() -> Result<Arc<GatewayConfig>, String> {
     let path = config_path()?;
-    if let Some(config) = read_config_file(&path)? {
+    if let Some(config) = read_config_file_shared(&path)? {
         migrate_legacy_files();
         return Ok(config);
+    }
+    Ok(Arc::new(GatewayConfig::default()))
+}
+
+/// Read an owned configuration for callers that need ownership of the value.
+pub(in crate::ai_gateway) fn read_config() -> Result<GatewayConfig, String> {
+    let path = config_path()?;
+    if let Some(config) = owned_cached_config(&path) {
+        migrate_legacy_files();
+        return Ok(config);
+    }
+    if let Some(config) = read_config_file_shared(&path)? {
+        migrate_legacy_files();
+        #[cfg(test)]
+        CONFIG_CACHE_DEEP_CLONES.fetch_add(1, Ordering::Relaxed);
+        return Ok((*config).clone());
     }
     Ok(GatewayConfig::default())
 }
@@ -362,7 +411,7 @@ fn persisted_provider_ids(path: &Path) -> HashSet<String> {
 /// or candidates can be pruned; a missing or unreadable file yields no pools.
 fn persisted_model_pools(path: &Path) -> Vec<ModelPool> {
     if let Some(config) = cached_config(path) {
-        return config.model_pools;
+        return config.model_pools.clone();
     }
     match read_config_locked(path) {
         Ok(Some((config, _))) => config.model_pools,
@@ -463,7 +512,7 @@ pub(in crate::ai_gateway) fn modify_config<T>(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = config_path()?;
-    let (mut config, needs_migration) = match cached_config(&path) {
+    let (mut config, needs_migration) = match owned_cached_config(&path) {
         // A cache hit is always an already-migrated normalized configuration.
         Some(config) => (config, false),
         None => read_config_locked(&path)?.unwrap_or((GatewayConfig::default(), false)),

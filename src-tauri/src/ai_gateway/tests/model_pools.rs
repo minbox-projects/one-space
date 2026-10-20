@@ -21,9 +21,12 @@ use super::{
     spawn_mock_upstream, temp_home, wait_for_usage_logs, write_raw_gateway_config, Captured,
     CapturedLog, MockReply,
 };
+use crate::ai_gateway::model_pools::{plan_pool_request, PoolPlan};
+use crate::ai_gateway::reasoning::{PoolOutputCap, PoolReasoningRequest};
 use crate::ai_gateway::runtime_http::{start_server, stop_server};
 use crate::ai_gateway::{
-    GatewayConfig, GatewayUpstreamProvider, ModelPool, GATEWAY_CONFIG_SCHEMA_VERSION, UsageResult,
+    GatewayConfig, GatewayUpstreamProvider, ModelPool, UpstreamProtocol,
+    GATEWAY_CONFIG_SCHEMA_VERSION, UsageResult,
 };
 use serde_json::{json, Value};
 
@@ -2400,5 +2403,104 @@ async fn pool_reasoning_compatible_probe_serves_and_incompatible_candidate_is_ex
     assert!(
         failures.is_empty(),
         "compatible probe selection mismatches: {failures:#?}"
+    );
+}
+
+/// AC-002: planning a pool request must not copy one whole provider for every
+/// stored candidate when only one candidate can serve. The same one usable
+/// candidate is planned from a pool with two stored candidates and from a pool
+/// with twelve; the copied-provider count must not grow with the stored set.
+///
+/// The test-only counter increments for deep `GatewayUpstreamProvider` copies
+/// made by pool planning, never for shared/`Arc` references.
+#[test]
+fn pool_planning_provider_copies_do_not_scale_with_stored_candidates() {
+    let request = PoolReasoningRequest {
+        requested: None,
+        cap: PoolOutputCap {
+            field: "max_tokens",
+            tokens: 4096,
+        },
+    };
+
+    let copies_for = |stored_candidates: usize| -> usize {
+        let tag = tag();
+        let provider_id = format!("p-copy-{tag}");
+        let alias = format!("alias-copy-{tag}");
+        let mappings: Vec<Value> = (0..stored_candidates)
+            .map(|index| {
+                let mut row = provider_mapping(
+                    &format!("local-copy-{tag}-{index}"),
+                    &format!("remote-copy-{tag}-{index}"),
+                    "chat_completions",
+                );
+                if index != 0 {
+                    row["enabled"] = json!(false);
+                }
+                row
+            })
+            .collect();
+        let provider_value = pool_provider(
+            &provider_id,
+            "Copy Provider",
+            "https://copy.example.invalid/v1",
+            vec![pool_key("copy-key", "Copy Key", "sk-copy", true)],
+            mappings,
+        );
+        let provider: GatewayUpstreamProvider =
+            serde_json::from_value(provider_value).expect("copy provider fixture");
+        let candidates: Vec<Value> = (0..stored_candidates)
+            .map(|index| {
+                pool_candidate(
+                    &provider_id,
+                    &format!("local-copy-{tag}-{index}"),
+                    &format!("remote-copy-{tag}-{index}"),
+                    "chat_completions",
+                    Some(1),
+                )
+            })
+            .collect();
+        let pool: ModelPool = serde_json::from_value(json!({
+            "id": format!("pool-copy-{tag}"),
+            "name": "Copy Pool",
+            "model": alias,
+            "enabled": true,
+            "candidates": candidates,
+        }))
+        .expect("copy pool fixture");
+        let config = GatewayConfig {
+            providers: vec![provider],
+            model_pools: vec![pool],
+            ..Default::default()
+        };
+
+        crate::ai_gateway::model_pools::reset_pool_provider_copy_count();
+        match plan_pool_request(
+            &config,
+            &alias,
+            UpstreamProtocol::ChatCompletions,
+            &request,
+            crate::ai_gateway::now_ts(),
+        )
+        .expect("a current pool alias must be planned")
+        {
+            PoolPlan::Ready { ordered, .. } => {
+                assert_eq!(
+                    ordered.len(),
+                    1,
+                    "only the single enabled mapping may serve the request"
+                );
+            }
+            _ => panic!("the pool with one usable candidate must be ready"),
+        }
+        crate::ai_gateway::model_pools::pool_provider_copy_count()
+    };
+
+    let two = copies_for(2);
+    let twelve = copies_for(12);
+    assert_eq!(
+        twelve, two,
+        "pool planning must not copy one whole provider per stored candidate: \
+         two stored copied {two}, twelve stored copied {twelve}"
     );
 }

@@ -5185,3 +5185,49 @@ async fn a_matching_attempt_without_a_delivered_outcome_does_not_extend_the_idle
         "a hold idle for more than 30 minutes without a successful continuation must be gone"
     );
 }
+
+/// AC-002: retaining one delivered continuation must not deep-copy the caller
+/// history twice. Parsing the request history and then storing the hold may
+/// each need the value once, but a redundant clone is unnecessary work that
+/// grows with the conversation.
+///
+/// The test-only counter increments for each deep `Value` copy of the history
+/// in `CallerHistory::parse` and in `HoldStore::record`, never for shared
+/// references.
+#[test]
+fn recording_a_delivered_hold_copies_the_history_at_most_once() {
+    let fixture = isolated_hold("history-copy");
+    let scope = fixture.scope(0);
+    let messages: Vec<Value> = (0..2_000)
+        .map(|index| json!({"role": "user", "content": format!("filler-{index}")}))
+        .collect();
+    let body = json!({"messages": messages, "tools": weather_tools()});
+
+    crate::ai_gateway::pool_context_hold::reset_history_deep_copy_count();
+    let caller = CallerHistory::parse("/v1/chat/completions", &body)
+        .expect("a Chat history carrying a messages array must parse");
+    let now = Instant::now();
+    let mut store = HoldStore::default();
+    let admission = store.admit(&scope, now);
+    let call_id = format!("call-{}", fixture.pool_id);
+    store.record(
+        &scope,
+        admission,
+        &caller,
+        &fixture.identity,
+        &fixture.endpoint,
+        std::slice::from_ref(&call_id),
+        now,
+    );
+    assert_eq!(
+        store.entries.len(),
+        1,
+        "the delivered tool call must retain one hold"
+    );
+
+    let copies = crate::ai_gateway::pool_context_hold::history_deep_copy_count();
+    assert!(
+        copies <= 1,
+        "retaining one delivered hold must copy the history at most once; observed {copies}"
+    );
+}

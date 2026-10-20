@@ -26,7 +26,7 @@ use super::{now_ts, GatewayConfig, GatewayUpstreamProvider, PoolCandidateIdentit
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -135,8 +135,34 @@ impl HoldScope {
 /// The caller-protocol request facts a continuation is compared against: the
 /// caller's own history plus the instruction/tool context it was sent with.
 pub(in crate::ai_gateway) struct CallerHistory {
-    history: Value,
+    history: Arc<Value>,
     context: Value,
+}
+
+/// Test-only thread-local count of deep `Value` copies of caller history made
+/// while parsing a request. Recording a hold shares the parsed history.
+#[cfg(test)]
+thread_local! {
+    static HISTORY_DEEP_COPIES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_history_deep_copy() {
+    HISTORY_DEEP_COPIES.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+/// Reset the test-only history deep-copy counter on this thread.
+#[cfg(test)]
+pub(in crate::ai_gateway) fn reset_history_deep_copy_count() {
+    HISTORY_DEEP_COPIES.with(|count| count.set(0));
+}
+
+/// The number of deep history `Value` copies made while parsing on this thread
+/// since the last reset. A delivered hold shares the parsed value.
+#[cfg(test)]
+pub(in crate::ai_gateway) fn history_deep_copy_count() -> usize {
+    HISTORY_DEEP_COPIES.with(|count| count.get())
 }
 
 impl CallerHistory {
@@ -158,8 +184,11 @@ impl CallerHistory {
                 context.insert("instructions".to_string(), instructions.clone());
             }
         }
+        let history = Arc::new(Value::Array(array.clone()));
+        #[cfg(test)]
+        note_history_deep_copy();
         Some(Self {
-            history: Value::Array(array.clone()),
+            history,
             context: Value::Object(context),
         })
     }
@@ -169,7 +198,7 @@ impl CallerHistory {
 /// identities that a later continuation must match, plus the exact candidate
 /// identity and resolved endpoint that delivered it.
 pub(in crate::ai_gateway) struct HoldEntry {
-    history: Value,
+    history: Arc<Value>,
     context: Value,
     tool_ids: Vec<String>,
     identity: CandidateIdentity,
@@ -289,7 +318,12 @@ impl HoldStore {
         };
         let identity = entry.identity.clone();
         let endpoint = entry.endpoint.clone();
-        if !is_continuation(&entry.history, &entry.context, &entry.tool_ids, caller) {
+        if !is_continuation(
+            entry.history.as_ref(),
+            &entry.context,
+            &entry.tool_ids,
+            caller,
+        ) {
             return;
         }
         if !candidate_is_currently_healthy(config, &identity, &endpoint) {
@@ -343,7 +377,7 @@ impl HoldStore {
             return;
         }
         let entry = HoldEntry {
-            history: caller.history.clone(),
+            history: Arc::clone(&caller.history),
             context: caller.context.clone(),
             tool_ids: tool_ids.to_vec(),
             identity,
@@ -815,7 +849,7 @@ fn entry_bytes(
     endpoint: &str,
     tool_ids: &[String],
 ) -> usize {
-    let history = serde_json::to_vec(&caller.history)
+    let history = serde_json::to_vec(caller.history.as_ref())
         .map(|bytes| bytes.len())
         .unwrap_or(0);
     let context = serde_json::to_vec(&caller.context)

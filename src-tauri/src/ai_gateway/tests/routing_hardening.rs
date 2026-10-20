@@ -1198,3 +1198,288 @@ async fn cooled_anthropic_probe_reaches_upstream_once_with_a_converted_body() {
 
     stop_server().await.expect("stop the listener");
 }
+
+// ===========================================================================
+// Hot-read copy work and attempt-boundary freshness
+// ===========================================================================
+
+/// A warm fixed-size configuration with four providers, twenty mappings each
+/// and two keys per provider, matching the documented configuration/discovery
+/// workload shape without adding a benchmark case.
+fn hot_read_config(port: u16) -> Value {
+    let providers: Vec<Value> = (0..4)
+        .map(|provider_index| {
+            let mappings: Vec<Value> = (0..20)
+                .map(|mapping_index| {
+                    serde_json::to_value(mapping(
+                        &format!("local-{provider_index}-{mapping_index}"),
+                        &format!("remote-{provider_index}-{mapping_index}"),
+                        None,
+                    ))
+                    .expect("hot-read mapping value")
+                })
+                .collect();
+            json!({
+                "id": format!("hot-provider-{provider_index}"),
+                "name": format!("Hot Provider {provider_index}"),
+                "base_url": format!("https://hot-{provider_index}.example.invalid/v1"),
+                "protocol": "chat_completions",
+                "enabled": true,
+                "keys": [
+                    pool_key(
+                        &format!("hot-key-{provider_index}-a"),
+                        "Key A",
+                        &format!("sk-hot-{provider_index}-a"),
+                        true,
+                    ),
+                    pool_key(
+                        &format!("hot-key-{provider_index}-b"),
+                        "Key B",
+                        &format!("sk-hot-{provider_index}-b"),
+                        true,
+                    ),
+                ],
+                "mappings": mappings,
+            })
+        })
+        .collect();
+    json!({
+        "schema_version": GATEWAY_CONFIG_SCHEMA_VERSION,
+        "port": port,
+        "enabled": true,
+        "keys": [{
+            "id": "k-local",
+            "label": "Local",
+            "value": "local-key",
+            "enabled": true,
+            "created_at": 1,
+        }],
+        "providers": providers,
+        "model_prices": [],
+    })
+}
+
+/// AC-002: repeated warm read-only hot requests share the cached configuration
+/// instead of deep-cloning the whole value per request. The counter increments
+/// only for an owned `GatewayConfig` copy handed out by the read cache; an
+/// `Arc`/shared handoff must not increment it.
+#[tokio::test]
+async fn warm_hot_requests_do_not_deep_clone_the_cached_configuration() {
+    let _home = temp_home("step2-hot-config-no-deep-clone");
+    let port = free_port().await;
+    write_raw_gateway_config(&hot_read_config(port));
+    start_server(None).await.expect("start the listener");
+    let headers = [("authorization", "Bearer local-key")];
+
+    // Warm the read cache and the model discovery path once, then measure only
+    // repeated hot reads with unchanged file identity.
+    let (status, _content_type, text) =
+        call_gateway(port, "GET", "/v1/models", &headers, None).await;
+    assert_eq!(status, 200, "the warm-up model read must succeed: {text}");
+    crate::ai_gateway::storage::reset_config_cache_deep_clone_count();
+
+    let requests = 8usize;
+    for index in 0..requests {
+        let (status, _content_type, text) =
+            call_gateway(port, "GET", "/v1/models", &headers, None).await;
+        assert_eq!(status, 200, "hot read {index} must succeed: {text}");
+    }
+
+    let copies = crate::ai_gateway::storage::config_cache_deep_clone_count();
+    assert_eq!(
+        copies, 0,
+        "a warm hot read must share the cached configuration, not deep-clone it \
+         ({copies} owned copies across {requests} requests)"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// AC-002: a direct on-disk configuration rewrite with a changed file identity
+/// must be observed by the next hot request even when an earlier request warmed
+/// the shared read cache.
+#[tokio::test]
+async fn hot_reads_observe_direct_configuration_file_identity_changes() {
+    let _home = temp_home("step2-hot-config-identity");
+    let port = free_port().await;
+    let path = config_path().expect("config path");
+    let config_with = |local_model: &str| {
+        json!({
+            "schema_version": GATEWAY_CONFIG_SCHEMA_VERSION,
+            "port": port,
+            "enabled": true,
+            "keys": [{
+                "id": "k-local",
+                "label": "Local",
+                "value": "local-key",
+                "enabled": true,
+                "created_at": 1,
+            }],
+            "providers": [{
+                "id": "identity-provider",
+                "name": "Identity Provider",
+                "base_url": "https://identity.example.invalid/v1",
+                "protocol": "chat_completions",
+                "enabled": true,
+                "keys": [pool_key(
+                    "identity-key",
+                    "Identity Key",
+                    "sk-identity",
+                    true,
+                )],
+                "mappings": [serde_json::to_value(mapping(local_model, "remote", None))
+                    .expect("identity mapping value")],
+            }],
+            "model_prices": [],
+        })
+    };
+    write_raw_gateway_config(&config_with("local-original"));
+    let original_mtime = fs::metadata(&path)
+        .expect("config metadata")
+        .modified()
+        .expect("config mtime");
+    start_server(None).await.expect("start the listener");
+    let headers = [("authorization", "Bearer local-key")];
+
+    let (status, _content_type, text) =
+        call_gateway(port, "GET", "/v1/models", &headers, None).await;
+    assert_eq!(status, 200, "the first model read must succeed: {text}");
+    let advertised: Value = serde_json::from_str(&text).expect("model discovery JSON");
+    let advertised_ids = |value: &Value| -> Vec<String> {
+        value["data"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| row["id"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert!(
+        advertised_ids(&advertised).contains(&"local-original".to_string()),
+        "the first read must advertise the original model: {advertised}"
+    );
+
+    write_raw_gateway_config(&config_with("local-rewritten"));
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open rewritten config")
+        .set_modified(original_mtime + Duration::from_secs(7200))
+        .expect("change config mtime");
+
+    let (status, _content_type, text) =
+        call_gateway(port, "GET", "/v1/models", &headers, None).await;
+    assert_eq!(status, 200, "the next model read must succeed: {text}");
+    let advertised: Value = serde_json::from_str(&text).expect("model discovery JSON");
+    let ids = advertised_ids(&advertised);
+    assert!(
+        ids.contains(&"local-rewritten".to_string()),
+        "the next hot read must observe the directly rewritten configuration: {advertised}"
+    );
+    assert!(
+        !ids.contains(&"local-original".to_string()),
+        "the next hot read must not serve the pre-rewrite configuration: {advertised}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// AC-002: a key-state publication that lands while one provider attempt is in
+/// flight must be observed by the request's next provider attempt. The first
+/// provider is held at the upstream; the test then marks the second provider's
+/// key authentication-failed, releases the first attempt with a 401, and
+/// requires the next attempt to skip that now-marked provider. A request-start
+/// snapshot frozen across attempts would reach the second upstream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn key_state_published_during_a_request_is_observed_by_the_next_attempt() {
+    let _home = temp_home("step2-key-state-between-attempts");
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (first_url, first_log) = {
+        let arrived = arrived.clone();
+        let release = release.clone();
+        spawn_mock_upstream(move |_| {
+            MockReply::Withhold(
+                arrived.clone(),
+                release.clone(),
+                401,
+                json!({"error": {"message": "invalid credential"}}),
+            )
+        })
+        .await
+    };
+    let (second_url, second_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "second-provider-served", "choices": []}))
+    })
+    .await;
+    let first = multi_key_provider("shared-first", &first_url, 1, vec![mapping_value()]);
+    let second = multi_key_provider("shared-second", &second_url, 1, vec![mapping_value()]);
+    let mut config = GatewayConfig::default();
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(first.clone());
+    config.providers.push(second.clone());
+    write_config(&config).expect("seed two-provider config");
+    let body = Arc::new(serde_json::to_vec(&json!({"model": "local-model"})).expect("body"));
+
+    let ordered = vec![first, second];
+    let attempt_body = body.clone();
+    let attempt = tokio::spawn(async move {
+        let mut attempts = Vec::new();
+        let response = attempt_non_streaming(
+            &ordered,
+            "/v1/chat/completions",
+            &attempt_body,
+            Some("local-model"),
+            &HashMap::new(),
+            false,
+            None,
+            &mut attempts,
+        )
+        .await;
+        (response, attempts.len())
+    });
+
+    arrived.notified().await;
+    crate::ai_gateway::attempt_policy::persist_key_runtime_state("shared-second", "key-1", |key| {
+        key.auto_marked = true;
+        key.failure_kind = Some(KeyFailureKind::Authentication);
+        key.marked_at = Some(crate::ai_gateway::now_ts());
+        key.reason = Some("published while the first attempt was in flight".to_string());
+    });
+    release.notify_one();
+
+    let (response, attempt_count) = attempt.await.expect("attempt task must not panic");
+    assert_eq!(
+        response.status, 502,
+        "the request must stop after the first provider fails because the second became marked"
+    );
+    assert_eq!(
+        attempt_count, 1,
+        "the next attempt must observe the published mark and not attempt the second provider"
+    );
+    assert_eq!(
+        first_log.lock().expect("first mock log").len(),
+        1,
+        "the first provider must be attempted exactly once"
+    );
+    assert_eq!(
+        second_log.lock().expect("second mock log").len(),
+        0,
+        "the newly marked second provider must not reach its upstream"
+    );
+
+    let stored = read_config().expect("configuration must stay readable");
+    let stored_provider = stored
+        .providers
+        .iter()
+        .find(|provider| provider.id == "shared-second")
+        .expect("the externally marked provider must persist");
+    let marked = &stored_provider.keys[0];
+    assert!(marked.auto_marked, "the published mark must persist");
+    assert_eq!(
+        marked.failure_kind,
+        Some(KeyFailureKind::Authentication),
+        "the published mark must keep its kind"
+    );
+}
