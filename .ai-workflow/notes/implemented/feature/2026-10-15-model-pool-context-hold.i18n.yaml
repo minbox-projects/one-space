@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-15-model-pool-context-hold.md
-2026-10-15-model-pool-context-hold.md: a8afdc249a17bc0c222d89e976d366b0f6f8c7f8
-2026-10-15-model-pool-context-hold.zh.md: 37f86bdf976bd23df556a68eeaa657ebc3cabd60
+2026-10-15-model-pool-context-hold.md: 5b70a3c95c6407cf199f0fa541d46ea5388b282d
+2026-10-15-model-pool-context-hold.zh.md: 3aed8c2897d6a3737ace94a35e15ea7723b174e6
