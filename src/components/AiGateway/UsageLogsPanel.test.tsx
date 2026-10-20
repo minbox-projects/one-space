@@ -3185,9 +3185,15 @@ describe("UsageLogsPanel 池尝试推理证据展示（Step 4）", () => {
       within(row).getByTestId("ai-gateway-logs-resolved-reasoning-effort"),
     ).toHaveTextContent("high");
 
+    const control = nativeControl(row);
+    expect(control).toHaveTextContent("Enum · high");
     const detail = nativeDetail(row);
     expect(detail).toHaveTextContent("chat_completions");
-    expect(detail).toHaveTextContent("enum");
+    expect(detail).toHaveTextContent(i18n.t("aiGatewayLogsReasoningProtocol"));
+    expect(detail).toHaveTextContent(i18n.t("aiGatewayLogsReasoningMode"));
+    expect(detail).toHaveTextContent("Enum");
+    expect(detail).toHaveTextContent(i18n.t("aiGatewayLogsReasoningNativeValue"));
+    expect(detail).not.toHaveTextContent(/\benum\b/);
     const parameters = within(row).getByTestId(
       "ai-gateway-logs-native-reasoning-parameters",
     );
@@ -3224,8 +3230,13 @@ describe("UsageLogsPanel 池尝试推理证据展示（Step 4）", () => {
     expect(
       within(row).getByTestId("ai-gateway-logs-resolved-reasoning-effort"),
     ).toHaveTextContent("auto");
+    const control = nativeControl(row);
+    expect(control).toHaveTextContent("Provider default");
     const detail = nativeDetail(row);
-    expect(detail).toHaveTextContent("provider_default");
+    expect(detail).toHaveTextContent(i18n.t("aiGatewayLogsReasoningMode"));
+    expect(detail).toHaveTextContent("Provider default");
+    expect(detail).not.toHaveTextContent("provider_default");
+    expect(row).not.toHaveTextContent("provider_default");
     expect(
       within(row).queryByTestId("ai-gateway-logs-native-reasoning-parameters"),
     ).not.toBeInTheDocument();
@@ -3309,6 +3320,7 @@ describe("UsageLogsPanel 池尝试推理证据展示（Step 4）", () => {
     const row = await screen.findByTestId("ai-gateway-logs-row");
 
     const control = nativeControl(row);
+    expect(control).toHaveTextContent("Budget · 2048");
     expectKeyboardFocusable(control);
 
     let reachedByKeyboard = false;
@@ -3323,7 +3335,56 @@ describe("UsageLogsPanel 池尝试推理证据展示（Step 4）", () => {
 
     const detail = nativeDetail(row);
     expect(control.closest("td")?.contains(detail)).toBe(true);
+    expect(detail).toHaveTextContent(
+      i18n.t("aiGatewayLogsReasoningBudgetTokens"),
+    );
+    expect(detail).toHaveTextContent("2048");
     expect(detail).toHaveTextContent("budget_tokens");
+  });
+
+  it("disable 与未知 mode 显示可读名称而不回退原始 token", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [
+          poolRecord({
+            timestamp_ms: Date.UTC(2026, 8, 17, 4, 0),
+            local_model: "disabled-pool",
+            resolved_reasoning_effort: "none",
+            native_reasoning: {
+              protocol: "responses",
+              mode: "disable",
+              parameters: {},
+            },
+          }),
+          poolRecord({
+            timestamp_ms: Date.UTC(2026, 8, 17, 3, 0),
+            local_model: "unknown-pool",
+            resolved_reasoning_effort: "auto",
+            native_reasoning: {
+              protocol: "responses",
+              mode: "experimental",
+              parameters: {},
+            },
+          }),
+        ],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+    const rows = screen.getAllByTestId("ai-gateway-logs-row");
+    expect(rows).toHaveLength(2);
+
+    expect(nativeControl(rows[0])).toHaveTextContent("Disabled");
+    expect(nativeControl(rows[0])).not.toHaveTextContent(/\bdisable\b/);
+    expect(nativeDetail(rows[0])).not.toHaveTextContent("disable");
+
+    expect(nativeControl(rows[1])).toHaveTextContent("Unknown");
+    expect(nativeControl(rows[1])).not.toHaveTextContent("experimental");
+    expect(nativeDetail(rows[1])).not.toHaveTextContent("experimental");
   });
 
   it("池行的请求徽章标题使用 aiGatewayLogsReasoningRequested，普通行保留 reasoningEffort", async () => {
