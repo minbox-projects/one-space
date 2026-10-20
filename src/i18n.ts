@@ -869,6 +869,11 @@ const resources = {
         "{{count}} models have no matching reasoning levels ({{models}}), skipped binding. Please configure manually.",
       aiGatewayModelPoolErrorReasoningDefaultUnmapped:
         "Invalid model pool reasoning policy: the default preference needs at least one valid candidate mapping.",
+      aiGatewayModelPoolFallbackLabel: "Default fallback model",
+      aiGatewayModelPoolFallbackNone: "No fallback (none)",
+      aiGatewayModelPoolFallbackHint:
+        "Used only after every regular candidate is exhausted; it never enters primary scheduling.",
+      aiGatewayModelPoolFallbackReason: "Fallback reason",
       aiGatewayModelPoolsTab: "Model pools",
       aiGatewayModelPoolsDesc:
         "Aggregate upstream models into unified public model pools with failover.",
@@ -4782,6 +4787,11 @@ const resources = {
         "{{count}} 个模型未找到匹配的推理强度（{{models}}），已跳过绑定，请手动设置。",
       aiGatewayModelPoolErrorReasoningDefaultUnmapped:
         "模型池推理策略无效：默认偏好至少需要一个有效候选映射。",
+      aiGatewayModelPoolFallbackLabel: "默认回退模型",
+      aiGatewayModelPoolFallbackNone: "无回退（none）",
+      aiGatewayModelPoolFallbackHint:
+        "仅在全部常规候选耗尽后使用；不会进入主调度。",
+      aiGatewayModelPoolFallbackReason: "回退原因",
       aiGatewayModelPoolsTab: "模型池",
       aiGatewayModelPoolsDesc:
         "聚合多个上游服务商的模型为统一的公共模型，提供智能路由与故障转移。",

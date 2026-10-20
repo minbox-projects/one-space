@@ -12,11 +12,14 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ToastProvider";
 import {
+  MODEL_POOL_AVAILABILITY_LABEL_KEYS,
+  resolveModelPoolCandidateState,
   selectPoolReasoningCoverageRow,
   type GatewayModelPool,
   type GatewayModelPoolStatus,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
+import { protocolShortLabel } from "./gatewayShared";
 
 type ModelPoolCardProps = {
   pool: GatewayModelPool;
@@ -31,6 +34,7 @@ type ModelPoolCardProps = {
 
 export function ModelPoolCard({
   pool,
+  providers = [],
   status = null,
   busy = false,
   onToggleEnabled,
@@ -87,6 +91,25 @@ export function ModelPoolCard({
 
   const candidateCount = pool.candidates.length;
   const sourceCount = new Set(pool.candidates.map((c) => c.provider_id)).size;
+
+  // The optional fallback is identified separately and never counted as a
+  // regular candidate or as part of regular readiness.
+  const fallback = pool.fallback ?? null;
+  const fallbackState = fallback
+    ? resolveModelPoolCandidateState(
+        fallback,
+        providers,
+        status?.fallback ?? null,
+      )
+    : null;
+  const fallbackLabelKey = fallbackState
+    ? MODEL_POOL_AVAILABILITY_LABEL_KEYS[fallbackState.availability]
+    : undefined;
+  const fallbackLabel = fallbackState
+    ? fallbackLabelKey
+      ? t(fallbackLabelKey)
+      : fallbackState.availability
+    : null;
 
   // Pool capability is read only from this pool's own status snapshot; source
   // metadata is never promoted into a pool reasoning variant.
@@ -259,6 +282,54 @@ export function ModelPoolCard({
             </div>
           </div>
         </div>
+
+        {fallback && fallbackState ? (
+          <div
+            data-testid={`ai-gateway-model-pool-fallback-${pool.id}`}
+            className="mt-2.5 space-y-1.5 rounded-lg border border-border/60 bg-muted/20 p-2"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <span className="text-[10px] font-medium text-muted-foreground">
+                {t(
+                  "aiGatewayModelPoolFallbackLabel",
+                  "Default fallback model",
+                )}
+              </span>
+              <span
+                className={`inline-flex items-center rounded px-1.5 py-0.2 text-[10px] font-medium ${
+                  fallbackState.ready
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                    : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                }`}
+              >
+                {fallbackLabel}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span className="font-medium text-foreground/85">
+                {fallbackState.provider_name ?? fallback.provider_id}
+              </span>
+              <span className="break-all font-medium text-foreground">
+                {fallback.local_model}
+              </span>
+              <span className="text-muted-foreground/60">→</span>
+              <code className="break-all rounded border border-border/40 bg-background px-1 py-0.2 font-mono text-[10px] text-foreground">
+                {fallback.upstream_model}
+              </code>
+              <span className="inline-flex items-center rounded bg-background px-1.5 py-0.2 text-[10px] text-muted-foreground">
+                {protocolShortLabel(fallback.protocol)}
+              </span>
+            </div>
+            {fallbackState.reason ? (
+              <div className="flex flex-wrap items-baseline gap-1 text-[10px] text-amber-700 dark:text-amber-400">
+                <span>
+                  {t("aiGatewayModelPoolFallbackReason", "Fallback reason")}:
+                </span>
+                <span className="break-words">{fallbackState.reason}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Pool-configured reasoning capability; nothing is inferred from sources */}
         {reasoningEfforts.length > 0 ||

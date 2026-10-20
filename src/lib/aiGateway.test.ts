@@ -57,6 +57,7 @@ import {
   type ClaudeModelSelection,
   type GatewayConfig,
   type GatewayKey,
+  type GatewayModelPool,
   type GatewayProviderKey,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
@@ -2854,6 +2855,132 @@ describe("模型池统一对外推理强度与自动绑定 (autoBindCandidateRea
     const result = autoBindCandidateReasoning(candidate, providers);
     expect(result.hasMatch).toBe(false);
     expect(result.mappings).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 2 (default fallback model): the shared static reasoning catalog spans
+// the configured union of the regular candidates and the optional fallback,
+// exactly like the backend catalog, while a pool without a fallback keeps its
+// previous regular-only catalog.
+//
+// AC-005 / REQ-003.
+// ---------------------------------------------------------------------------
+
+describe("模型池静态推理目录的常规与回退并集（default fallback）", () => {
+  const regularProvider = provider({
+    id: "p-a",
+    name: "Provider A",
+    protocol: "chat_completions",
+    mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
+  });
+
+  const fallbackProvider = provider({
+    id: "p-b",
+    name: "Provider B",
+    protocol: "chat_completions",
+    mappings: [{ local_model: "local-b1", upstream_model: "remote-b1" }],
+  });
+
+  const regularCandidate = {
+    provider_id: "p-a",
+    local_model: "local-a1",
+    upstream_model: "remote-a1",
+    protocol: "chat_completions" as const,
+    weight: 1,
+  };
+
+  const fallbackCandidate = {
+    provider_id: "p-b",
+    local_model: "local-b1",
+    upstream_model: "remote-b1",
+    protocol: "chat_completions" as const,
+    weight: 1,
+    reasoning: {
+      profile: "openai_effort",
+      values: ["high"],
+      mappings: [{ effort: "high", action: { kind: "enum", value: "high" } }],
+    },
+  };
+
+  /** A pool with one regular candidate and an optional configured fallback. */
+  function poolWith(overrides: Record<string, unknown>): GatewayModelPool {
+    return {
+      id: "pool-fallback",
+      name: "Pool One",
+      model: "pool-model",
+      enabled: true,
+      default_reasoning_effort: "high",
+      candidates: [regularCandidate],
+      ...overrides,
+    } as unknown as GatewayModelPool;
+  }
+
+  it("回退独有的档位出现在共享静态目录中，覆盖计数按常规与回退的并集统计", () => {
+    const catalog = aiGatewayModule.poolReasoningCatalog(
+      [regularProvider, fallbackProvider],
+      poolWith({ fallback: fallbackCandidate }),
+    );
+
+    // The fallback-only effort is advertised by the shared catalog.
+    expect(catalog.reasoning_efforts).toContain("high");
+    const row = catalog.reasoning_coverage.find(
+      (item) => item.effort === "high",
+    );
+    // One mapped candidate of the configured union (regular + fallback).
+    expect(row).toEqual({
+      effort: "high",
+      mapped_candidates: 1,
+      total_candidates: 2,
+    });
+  });
+
+  it("回退按自身协议与声明参与并集，不借用其它来源的档位", () => {
+    const anthropicProvider = provider({
+      id: "p-c",
+      name: "Provider C",
+      protocol: "anthropic_messages",
+      mappings: [{ local_model: "local-c1", upstream_model: "remote-c1" }],
+    });
+
+    const catalog = aiGatewayModule.poolReasoningCatalog(
+      [regularProvider, anthropicProvider],
+      poolWith({
+        fallback: {
+          provider_id: "p-c",
+          local_model: "local-c1",
+          upstream_model: "remote-c1",
+          protocol: "anthropic_messages",
+          weight: 1,
+          reasoning: {
+            profile: "anthropic_effort_inherit",
+            values: ["high"],
+            mappings: [
+              { effort: "high", action: { kind: "enum", value: "high" } },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(catalog.reasoning_efforts).toContain("high");
+  });
+
+  it("没有回退的池保持原有的常规候选静态目录", () => {
+    const catalog = aiGatewayModule.poolReasoningCatalog(
+      [regularProvider, fallbackProvider],
+      poolWith({}),
+    );
+
+    expect(catalog.reasoning_efforts).toEqual([]);
+    const row = catalog.reasoning_coverage.find(
+      (item) => item.effort === "high",
+    );
+    expect(row).toEqual({
+      effort: "high",
+      mapped_candidates: 0,
+      total_candidates: 1,
+    });
   });
 });
 

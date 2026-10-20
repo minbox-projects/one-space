@@ -267,6 +267,19 @@ function toDraft(candidate: GatewayModelPoolCandidate): DraftCandidate {
   return { ...candidate, key: modelPoolCandidateKey(candidate) };
 }
 
+/** One unambiguous provider -> source -> protocol label for a fallback choice. */
+function fallbackCandidateLabel(
+  providerName: string,
+  candidate: Pick<
+    GatewayModelPoolCandidate,
+    "local_model" | "upstream_model" | "protocol"
+  >,
+): string {
+  return `${providerName} · ${candidate.local_model} → ${candidate.upstream_model} · ${protocolShortLabel(
+    candidate.protocol,
+  )}`;
+}
+
 function parseWeight(value: string): number | null {
   const trimmed = value.trim();
   if (trimmed === "") return null;
@@ -299,6 +312,22 @@ export function ModelPoolDialog({
     const initial: Record<string, string> = {};
     for (const candidate of pool?.candidates ?? []) {
       initial[modelPoolCandidateKey(candidate)] = String(candidate.weight);
+    }
+    return initial;
+  });
+  // The optional last-stage fallback stays a separate selection: it never shares
+  // the regular candidates' weights or primary scheduling.
+  const [fallback, setFallback] = useState<DraftCandidate | null>(() =>
+    pool?.fallback ? toDraft(pool.fallback) : null,
+  );
+  const [fallbackReasoningDrafts, setFallbackReasoningDrafts] = useState<
+    Record<string, ReasoningDraft>
+  >(() => {
+    const initial: Record<string, ReasoningDraft> = {};
+    if (pool?.fallback) {
+      initial[modelPoolCandidateKey(pool.fallback)] = reasoningDraftFrom(
+        pool.fallback.reasoning,
+      );
     }
     return initial;
   });
@@ -413,6 +442,81 @@ export function ModelPoolDialog({
     [selected],
   );
 
+  const fallbackReasoningDraft = fallback
+    ? (fallbackReasoningDrafts[fallback.key] ??
+      reasoningDraftFrom(fallback.reasoning))
+    : null;
+
+  // The fallback offers only real provider mappings, never one already selected
+  // as a regular candidate. A saved reference whose source disappeared stays
+  // visible as its own option so it can be retained or explicitly cleared.
+  const fallbackOptions = useMemo(() => {
+    const options: Array<{
+      key: string;
+      candidate: DraftCandidate;
+      label: string;
+    }> = [];
+    const seen = new Set<string>();
+    for (const group of sourceGroups) {
+      for (const row of group.rows) {
+        if (selectedKeys.has(row.key) || seen.has(row.key)) continue;
+        const candidate =
+          fallback?.key === row.key ? fallback : toDraft(row.candidate);
+        seen.add(row.key);
+        options.push({
+          key: row.key,
+          candidate,
+          label: fallbackCandidateLabel(group.providerName, candidate),
+        });
+      }
+    }
+    if (fallback && !seen.has(fallback.key) && !selectedKeys.has(fallback.key)) {
+      const providerName =
+        activeProviders.find((provider) => provider.id === fallback.provider_id)
+          ?.name ??
+        (poolStatus?.fallback?.provider_id === fallback.provider_id
+          ? poolStatus.fallback.provider_name
+          : null) ??
+        fallback.provider_id;
+      options.push({
+        key: fallback.key,
+        candidate: fallback,
+        label: fallbackCandidateLabel(providerName, fallback),
+      });
+    }
+    return options;
+  }, [activeProviders, fallback, poolStatus, selectedKeys, sourceGroups]);
+
+  const selectFallback = (key: string) => {
+    setError(null);
+    if (!key) {
+      setFallback(null);
+      return;
+    }
+    const option = fallbackOptions.find((item) => item.key === key);
+    if (!option) return;
+    setFallback(option.candidate);
+    setFallbackReasoningDrafts((previous) =>
+      previous[key]
+        ? previous
+        : { ...previous, [key]: reasoningDraftFrom(option.candidate.reasoning) },
+    );
+  };
+
+  const updateFallbackReasoning = (
+    candidate: DraftCandidate,
+    patch: Partial<ReasoningDraft>,
+  ) => {
+    setFallbackReasoningDrafts((previous) => ({
+      ...previous,
+      [candidate.key]: {
+        ...(previous[candidate.key] ?? reasoningDraftFrom(candidate.reasoning)),
+        ...patch,
+      },
+    }));
+    setError(null);
+  };
+
   // 当前搜索过滤条件下的所有可见来源候选模型
   const filteredCandidates = useMemo(() => {
     const list: GatewayModelPoolCandidate[] = [];
@@ -440,6 +544,8 @@ export function ModelPoolDialog({
 
   // Live static coverage derived from the current binding drafts and the
   // current provider list; readiness stays a separate, key/health-aware count.
+  // The denominator spans the configured union of regular candidates and the
+  // optional fallback, while runtime readiness below remains regular-only.
   const draftReasoningCatalog = useMemo(() => {
     const candidates = selected.map((candidate) => {
       const draft =
@@ -452,6 +558,17 @@ export function ModelPoolDialog({
       );
       return { ...candidate, ...(reasoning ? { reasoning } : {}) };
     });
+    if (fallback && fallbackReasoningDraft) {
+      const reasoning = deriveReasoning(
+        fallback.reasoning,
+        fallbackReasoningDraft,
+        fallback.protocol,
+      );
+      candidates.push({
+        ...fallback,
+        ...(reasoning ? { reasoning } : {}),
+      });
+    }
     const coverage = CANONICAL_REASONING_EFFORTS.map((effort) => ({
       effort,
       mapped_candidates: candidates.filter((candidate) =>
@@ -465,7 +582,7 @@ export function ModelPoolDialog({
         .filter((row) => row.mapped_candidates > 0)
         .map((row) => row.effort),
     };
-  }, [providers, reasoningDrafts, selected]);
+  }, [fallback, fallbackReasoningDraft, providers, reasoningDrafts, selected]);
 
   const coverageRow = selectPoolReasoningCoverageRow(
     draftReasoningCatalog.coverage,
@@ -635,8 +752,16 @@ export function ModelPoolDialog({
     setError(null);
   };
 
-  const reasoningEditor = (candidate: DraftCandidate) => {
+  const reasoningEditor = (
+    candidate: DraftCandidate,
+    draftOverride?: ReasoningDraft,
+    update: (
+      candidate: DraftCandidate,
+      patch: Partial<ReasoningDraft>,
+    ) => void = updateReasoning,
+  ) => {
     const draft =
+      draftOverride ??
       reasoningDrafts[candidate.key] ??
       reasoningDraftFrom(candidate.reasoning);
     const base = candidate.reasoning ?? null;
@@ -662,7 +787,7 @@ export function ModelPoolDialog({
     const isExpanded = Boolean(expandedReasoning[candidate.key]);
 
     const updateBinding = (effort: string, option: string) => {
-      updateReasoning(candidate, {
+      update(candidate, {
         mappings: { ...draft.mappings, [effort]: option },
       });
     };
@@ -889,24 +1014,40 @@ export function ModelPoolDialog({
         ),
       };
     });
+    const fallbackDraftEntry =
+      fallback && fallbackReasoningDraft
+        ? {
+            candidate: fallback,
+            draft: fallbackReasoningDraft,
+            reasoning: deriveReasoning(
+              fallback.reasoning,
+              fallbackReasoningDraft,
+              fallback.protocol,
+            ),
+          }
+        : null;
+    const allDrafts = fallbackDraftEntry
+      ? [...selectedDrafts, fallbackDraftEntry]
+      : selectedDrafts;
     // A concrete default preference requires at least one currently valid
-    // candidate mapping; `auto` omits the controls. The same save may not delete
-    // the retained default's last declaration, while a retained, unchanged
-    // declaration may survive an unavailable source in an unrelated edit.
+    // candidate mapping across the configured union; `auto` omits the controls.
+    // The same save may not delete the retained default's last declaration,
+    // while a retained, unchanged declaration may survive an unavailable source
+    // in an unrelated edit.
     if (defaultEffort !== "auto") {
       const defaultUnmapped = () =>
         t(
           "aiGatewayModelPoolErrorReasoningDefaultUnmapped",
           "Invalid model pool reasoning policy: the default preference needs at least one valid candidate mapping.",
         );
-      const declaresDefault = selectedDrafts.some(({ draft }) =>
+      const declaresDefault = allDrafts.some(({ draft }) =>
         Boolean(draft.mappings[defaultEffort]),
       );
       if (!declaresDefault) {
         setError(defaultUnmapped());
         return;
       }
-      const currentlyValid = selectedDrafts.some(({ candidate, reasoning }) =>
+      const currentlyValid = allDrafts.some(({ candidate, reasoning }) =>
         modelPoolCandidateServesEffort(
           providers,
           {
@@ -925,18 +1066,22 @@ export function ModelPoolDialog({
         : null;
       const retained = pool != null && existingDefault === defaultEffort;
       const submittedSignature = effortDeclarationSignature(
-        selectedDrafts.map(({ candidate, draft }) => ({
+        allDrafts.map(({ candidate, draft }) => ({
           key: candidate.key,
           action: draft.mappings[defaultEffort]
             ? optionValueToAction(draft.mappings[defaultEffort])
             : null,
         })),
       );
+      const storedPoolCandidates = [
+        ...(pool?.candidates ?? []),
+        ...(pool?.fallback ? [pool.fallback] : []),
+      ];
       const declarationUnchanged =
         retained &&
         submittedSignature ===
           effortDeclarationSignature(
-            (pool?.candidates ?? []).map((stored) => {
+            storedPoolCandidates.map((stored) => {
               const mapping = (stored.reasoning?.mappings ?? []).find(
                 (item) => item.effort === defaultEffort,
               );
@@ -991,6 +1136,18 @@ export function ModelPoolDialog({
     }
     setError(null);
     setSaving(true);
+    const fallbackPayload: GatewayModelPoolCandidate | undefined = fallback
+      ? {
+          provider_id: fallback.provider_id,
+          local_model: fallback.local_model,
+          upstream_model: fallback.upstream_model,
+          protocol: fallback.protocol,
+          weight: fallback.weight,
+          ...(fallbackDraftEntry?.reasoning
+            ? { reasoning: fallbackDraftEntry.reasoning }
+            : {}),
+        }
+      : undefined;
     try {
       await onSave({
         id: pool?.id || newModelPoolId(),
@@ -999,6 +1156,7 @@ export function ModelPoolDialog({
         enabled: pool?.enabled ?? true,
         default_reasoning_effort: defaultEffort,
         candidates,
+        ...(fallbackPayload ? { fallback: fallbackPayload } : {}),
       });
       onOpenChange(false);
     } catch (err) {
@@ -1101,6 +1259,63 @@ export function ModelPoolDialog({
               ))}
             </select>
           </label>
+
+          {/* Optional last-stage fallback, separate from regular selection */}
+          <div className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3">
+            <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
+              <span>
+                {t(
+                  "aiGatewayModelPoolFallbackLabel",
+                  "Default fallback model",
+                )}
+              </span>
+              <select
+                data-testid="model-pool-fallback-select"
+                aria-label={t(
+                  "aiGatewayModelPoolFallbackLabel",
+                  "Default fallback model",
+                )}
+                value={fallback ? encodeURIComponent(fallback.key) : ""}
+                onChange={(event) =>
+                  selectFallback(
+                    event.target.value
+                      ? decodeURIComponent(event.target.value)
+                      : "",
+                  )
+                }
+                disabled={busy || saving}
+                className="h-9 rounded-lg border border-border/80 bg-background px-2 text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
+              >
+                <option value="">
+                  {t(
+                    "aiGatewayModelPoolFallbackNone",
+                    "No fallback (none)",
+                  )}
+                </option>
+                {fallbackOptions.map((option) => (
+                  <option
+                    key={option.key}
+                    value={encodeURIComponent(option.key)}
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              {t(
+                "aiGatewayModelPoolFallbackHint",
+                "Used only after every regular candidate is exhausted; it never enters primary scheduling.",
+              )}
+            </p>
+            {fallback && fallbackReasoningDraft
+              ? reasoningEditor(
+                  fallback,
+                  fallbackReasoningDraft,
+                  updateFallbackReasoning,
+                )
+              : null}
+          </div>
 
           {/* Live static coverage (config-derived) separated from runtime readiness */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
