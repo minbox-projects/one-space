@@ -1111,12 +1111,19 @@ pub(in crate::ai_gateway) const ELIGIBLE_ROW_SQL: &str = "result = 'success' \
     AND cache_accounting_valid = 1 \
     AND (input_tokens + cache_read_tokens + cache_write_tokens) > 0";
 
-/// SQL predicate selecting an unpriced billable row (REQ-003): a missing amount
-/// with a readable upstream model that is either successful or carries recorded
-/// total tokens. The metric projection and the migration backfill share it.
+/// SQL predicate selecting an unpriced billable row: a missing amount with a
+/// readable upstream model that is either successful or carries recorded total
+/// tokens. Free models are excluded because they are expected to have no
+/// configured price: an upstream id ending in `-free` or `:free`, or a local
+/// model using the `zen-free-<slug>` naming convention. Names that merely
+/// contain `free` and paid upstreams behind a free-sounding local alias stay
+/// unpriced. The metric projection and provider daily history share it.
 pub(in crate::ai_gateway) const UNPRICED_ROW_SQL: &str = "amount IS NULL \
     AND upstream_model <> '' \
-    AND (result = 'success' OR total_tokens > 0)";
+    AND (result = 'success' OR total_tokens > 0) \
+    AND lower(trim(upstream_model)) NOT LIKE '%-free' \
+    AND lower(trim(upstream_model)) NOT LIKE '%:free' \
+    AND lower(trim(local_model)) NOT LIKE 'zen-free-%'";
 
 /// The shared metric projection, in [`metrics_from_row`] order. The final four
 /// aggregates are the additive cache fields; the percentage is derived from the
@@ -2216,7 +2223,7 @@ impl UsageLogStore {
             let mut unpriced_statement = connection
                 .prepare(&format!(
                      "SELECT provider_id, provider_name, local_model, upstream_model, COUNT(*)
-                      FROM usage_logs{stats_where} AND amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0)
+                      FROM usage_logs{stats_where} AND {UNPRICED_ROW_SQL}
                      GROUP BY provider_id, provider_name, local_model, upstream_model
                      ORDER BY COUNT(*) DESC, provider_name ASC, local_model ASC"
                 ))
