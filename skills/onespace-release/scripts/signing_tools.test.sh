@@ -155,6 +155,29 @@ WORK_DIR="$(mktemp -d "${TMP_BASE%/}/onespace-signing-tools-test.XXXXXX")" \
   || fail "could not create a temporary workspace with mktemp -d"
 ok "temporary workspace: $WORK_DIR"
 
+# `security default-keychain` pads and quotes its output; the bootstrap must
+# strip that decoration before using the path. A stub `security` returns the
+# padded form for a nonexistent path, so the failure message proves the parse.
+FAKE_BIN="$WORK_DIR/fake-bin"
+mkdir -p "$FAKE_BIN" || fail "could not create the fake security bin directory"
+cat > "$FAKE_BIN/security" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "default-keychain" ]; then
+  printf '    "/nonexistent/onespace-default.keychain-db"\n'
+  exit 0
+fi
+exec /usr/bin/security "$@"
+EOF
+chmod +x "$FAKE_BIN/security" || fail "could not make the fake security stub executable"
+if DEFAULT_OUTPUT="$(PATH="$FAKE_BIN:$PATH" bash "$CREATE_SCRIPT" \
+    --output-dir "$WORK_DIR/output-default" </dev/null 2>&1)"; then
+  fail "the bootstrap must fail for a nonexistent default keychain, got: $DEFAULT_OUTPUT"
+fi
+printf '%s\n' "$DEFAULT_OUTPUT" \
+  | grep -F -q 'target keychain does not exist: /nonexistent/onespace-default.keychain-db' \
+  || fail "the bootstrap must strip the padding and quotes from the default keychain path, got: $DEFAULT_OUTPUT"
+ok "default keychain path is parsed without surrounding whitespace and quotes"
+
 PRIMARY_KEYCHAIN="$WORK_DIR/bootstrap.keychain-db"
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$PRIMARY_KEYCHAIN" </dev/null >/dev/null 2>&1 \
   || fail "could not create the throwaway keychain $PRIMARY_KEYCHAIN"
