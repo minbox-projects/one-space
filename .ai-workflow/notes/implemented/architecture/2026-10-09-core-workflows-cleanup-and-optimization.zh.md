@@ -40,7 +40,7 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 
 - 缓存用量来源收集：`src-tauri/src/ai_sessions/usage_cache.rs` 为四个工具提供两层缓存。第 1 层按请求窗口缓存一个工具的整份 `ToolScan`（30 秒，按解析出的来源根键控），并在整个收集期间持有该工具的互斥锁，使并发调用者合并为一次；第 2 层按路径+字节长度+mtime（绝不用哈希）备忘录化单个来源文件的解析记录，因此变更、截断或删除的文件只改变自身贡献，解析错误绝不缓存。`sessions_usage_clear_cache` 清空两层与额度缓存作为显式刷新旁路，`usage_collection_stats` 计数器（source_reads、parsed_entries、collection_calls、cache_hits）仅供测量。
 - 在安全处复用历史文件解析：`ai_sessions/history.rs` 用 `HistoryFileCache` 复用 claude/codex/antigravity 的 per-file 解析（按 path + metadata + dependencies 键），同时保留部分 JSONL 处理、v2 > v1 > JSON 来源优先级、手动名称、墓碑以及重叠游标/全量回填行为。OpenCode 历史刻意不按文件备忘录化，因为其解析依赖其他文件；`history_sync_stats` 为测量接缝。
-- 在复用连接上事务化写入网关日志：`src-tauri/src/ai_gateway/usage_store.rs` 按数据库路径（device + inode）复用一条写连接，缺失或被替换的数据库重开并在打开时初始化/迁移（不引入通用连接池）。`append_batch_with_accounting` 把单个请求的整批行放进一个显式事务，全部插入成功后才 commit，commit 后执行保留清理、仅在 commit 后递增写计数器；`runtime_http.rs` 在 `spawn_blocking` 上执行写入，日志失败与响应隔离。测试故障接缝 `inject_usage_log_insert_failure_at` / `clear_usage_log_insert_failure` 支撑回滚与隔离测试。
+- 在复用连接上事务化写入网关日志：`src-tauri/src/ai_gateway/usage_store.rs` 按数据库路径（device + inode）复用一条写连接，缺失或被替换的数据库重开并在打开时初始化/迁移（不引入通用连接池）。`append_batch_with_accounting` 把单个请求的整批行放进一个显式事务，全部插入成功后才 commit，commit 后执行保留清理、仅在 commit 后递增写计数器；`runtime_http.rs` 在 `spawn_blocking` 上执行写入，日志失败与响应隔离。测试故障接缝 `inject_usage_log_insert_failure_at` / `clear_usage_log_insert_failure` 支撑回滚与隔离测试。查询路径为每个数据库路径保留自己的可复用连接，按路径加锁、校验 device + inode、用 `prepare_cached` 复用语句、不缓存结果，且绝不在 SQL 期间持有全局锁；用量统计在一次分组扫描中合并模型聚合与服务商行，服务商历史在一个事务内读取 metadata 与汇总。[AI Gateway Avoids Redundant Configuration, History, Database and Stream Framing Work](2026-10-19-ai-gateway-performance.md) 拥有查询侧决策。
 - 测量而非断言：`tools/measure-core-workflows.mjs` 仅用 Node 内置模块运行 ignored 的 `core_workflows_perf` 测试，解析 `CWF_METRIC dataset=... phase=... wall_ms=... key=...` 行，采集 cold 加 5 次 warm，记录环境与数据集维度，并把 harness 计时与原始 wall 分开（缺失时如实 `not_measured`）。相关 ignored 用例为 `ai_sessions/performance_tests.rs`、`ai_gateway/tests/performance.rs` 与 SSH 缓存用例。
 - 为前端用量调用提供类型：`src/lib/aiUsage.ts` 提供用量 DTO 与 `sessionsUsageToolStats` / `sessionsUsageDayStats` / `sessionsUsageClearCache` / `sessionsAntigravityQuota` 封装，AiUsageStats 与 App 使用它们。手动刷新先清缓存再查询窗口与当日，四工具渐进渲染与逐工具失败隔离保持不变。
 
@@ -69,7 +69,7 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - 用内容哈希而非文件元数据缓存加密配置。拒绝原因：元数据身份（路径+长度+mtime）加 key generation 已能在真实变化时失效，无需对密钥做哈希或弱化密码学。
 - 用内容哈希缓存解析后的来源。拒绝原因：路径+长度+mtime 已能检测变更、截断与被替换的文件，无需对数据做哈希。
 - 按文件备忘录化 OpenCode 历史。拒绝原因：其解析依赖其他文件，按文件缓存会在文件间返回不一致结果；跨文件遍历保留。
-- 引入通用数据库连接池。拒绝原因：每个数据库路径一条写连接、在池锁下借出整个操作已足够，并避免池调优。
+- 引入通用数据库连接池。拒绝原因：每个数据库路径一条写连接与一条查询连接、各自在按路径的锁下借出整个操作已足够，并避免池调优。
 - 保留急切 `component` 并在调用点用 `React.lazy`。拒绝原因：描述符仍会把实现静态导入注册表与启动闭包。
 - 在 `App.tsx` 内选择快速入口。拒绝原因：App 仍会在决策前被导入并加载，因此快速窗口会拉入主 UI。
 - 用 feature flag 保留启发式推断。拒绝原因：没有受支持的工作流依赖被猜测的推理强度或借用的价格，flag 只会让含糊路径继续存在。
@@ -85,7 +85,7 @@ GUI 的会话创建与恢复，以及 `onespace ai` / `onespace resume` CLI 入�
 - OpenCode 在 GUI 与 CLI 列表中都可持有多个活动服务商；空集合保持为空，不回退到遗留单槽，而其他工具仍为单活动。
 - provider 与会话 DTO 及命令封装现位于 `src/lib/`，因此被触及的组件调用类型化封装，而非动态 `any` 解释。
 - 会话与服务商入口工作未完整或部分取代任何活动记录。[OpenCode Session Storage Compatibility](../bug-fix/2026-09-20-opencode-session-storage-compatibility.md) 仍约束历史来源选择，该行为未变；[AI Terminal Session Workflow Presets and Runs Are Removed Full-Stack](../simplification/2026-09-29-ai-session-workflow-presets-removal.md) 仍约束更早的预设移除。
-- 网关性能部分取代：[AI Gateway Hot Reads Share Immutable Configuration and Reuse Parsed State](2026-10-19-ai-gateway-performance.md) 部分取代本记录的配置重读与池/历史拷贝事实。尝试策略抽取、串行结算、不冻结的逐次尝试重读以及本记录的其他全部决策继续有效；重读现在经共享不可变配置执行，池规划与延续存储复用已解析值而不再深拷贝。本记录保留并交叉链接。
+- 网关性能部分取代：[AI Gateway Avoids Redundant Configuration, History, Database and Stream Framing Work](2026-10-19-ai-gateway-performance.md) 部分取代本记录的配置重读、池/历史拷贝与数据库查询侧事实。尝试策略抽取、串行结算、不冻结的逐次尝试重读、写连接、单请求事务、commit 后保留清理与日志失败隔离继续有效；重读现在经共享不可变配置执行，池规划与延续存储复用已解析值而不再深拷贝，查询读取复用各自的 prepared statements 与单次扫描聚合。本记录保留并交叉链接。
 - 自动模板刷新部分取代：[Provider Templates Refresh Automatically on a Persisted Interval](../feature/2026-09-23-template-auto-refresh.md)、[Template Auto Refresh Runs One Batch at App Start](../bug-fix/2026-09-29-template-autorefresh-startup-batch.md) 与 [Automatic Template Sync Notifies the Message Center on Real Mapping Changes](../feature/2026-09-24-ai-gateway-template-auto-sync-notification.md) 保留并交叉链接。它们的间隔、启动批次与 additions-only 决策继续有效，而本部分替换了前端调度器所有权、前端消息生成以及通知记录中已被拒绝的后端替代方案。没有记录被完整取代，因此没有任何记录被归档。
 - 自动模板刷新已验证证据：`cargo test --lib ai_gateway` 通过 627，其中 `tests/auto_refresh.rs`（启动恰好一次、仅合格模板、串行、tick 跳过、自动忙碌跳过并手动 follower 复用、失败快照事件、reset/re-arm）与 `tests/runtime_lifecycle.rs`（故障状态/重启，旧任务不能清理替换后的监听器）；`app_runtime` 通过 14、3 ignored；前端门禁通过 19 文件 513 测试，含 `AiGateway` 67、`ProviderTemplateSection` 18、hook 适配器 4 与 `App.runtimeOwnership` 1；`npm run build` 退出 0。
 - 自动模板刷新诚实限制：生产 `start_scheduler` 的 Wry 路径仅通过受控执行器的测试接缝覆盖；Windows 分支未在本 macOS 主机上做运行时测试；本次未重跑 release-profile 运行时 smoke。

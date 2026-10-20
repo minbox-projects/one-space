@@ -13,6 +13,7 @@ use chrono::{Datelike, Timelike};
 use rusqlite::{params_from_iter, Connection, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1164,6 +1165,31 @@ fn metrics_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<UsageMetri
     })
 }
 
+/// Add one aggregation's additive metrics into another. The cache percentage is
+/// derived from the summed components by [`derive_cache_rate`], never averaged.
+fn accumulate_metrics(total: &mut UsageMetrics, add: &UsageMetrics) {
+    total.request_count += add.request_count;
+    total.successful_request_count += add.successful_request_count;
+    total.input_tokens += add.input_tokens;
+    total.cache_read_tokens += add.cache_read_tokens;
+    total.cache_write_tokens += add.cache_write_tokens;
+    total.output_tokens += add.output_tokens;
+    total.total_tokens += add.total_tokens;
+    total.amount += add.amount;
+    total.unpriced_count += add.unpriced_count;
+    total.cache_hit_tokens += add.cache_hit_tokens;
+    total.cache_eligible_tokens += add.cache_eligible_tokens;
+    total.cache_rate_eligible_count += add.cache_rate_eligible_count;
+}
+
+fn derive_cache_rate(metrics: &mut UsageMetrics) {
+    metrics.cache_hit_rate_percent = if metrics.cache_eligible_tokens > 0 {
+        Some(metrics.cache_hit_tokens as f64 * 100.0 / metrics.cache_eligible_tokens as f64)
+    } else {
+        None
+    };
+}
+
 /// Reproject the whole-attempt average TPS from the persisted output count and
 /// total duration (REQ-003), without rewriting the database.
 ///
@@ -1632,18 +1658,22 @@ impl UsageLogStore {
         Ok(Self::at(path))
     }
 
-    /// Opens and migrates the owned database for a read, returning a fresh
-    /// connection (query connections stay separate from the cached writer).
+    /// Opens and migrates a fresh connection. Public reads reuse the
+    /// path-scoped query connection instead; this remains the explicit fixture
+    /// and inspection opener.
     pub(in crate::ai_gateway) fn open(&self) -> Result<Connection, String> {
         initialize_connection(&self.path)
     }
 
-    /// Borrows the path-scoped reusable write connection, initializing and
-    /// migrating the owned database only when it is actually opened or reopened
-    /// (REQ-005). Query helpers keep using [`Self::open`] so read connections
-    /// may stay separate.
-    fn write_connection(&self) -> Result<super::usage_store::WriteConnection, String> {
-        super::usage_store::write_connection(&self.path, initialize_connection)
+    /// Borrows the path-scoped reusable query connection, so schema and
+    /// migration initialization run only when the actual database is opened or
+    /// reopened. Public read methods use this boundary; written rows remain
+    /// visible because no query result is cached.
+    pub(in crate::ai_gateway) fn query_connection<T>(
+        &self,
+        use_connection: impl FnOnce(&super::usage_store::QueryConnection<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        super::usage_store::with_query_connection(&self.path, initialize_connection, use_connection)
     }
 
     /// Insert one record with the canonical request-log classification
@@ -1666,31 +1696,36 @@ impl UsageLogStore {
         accounting: UsageAccounting,
         retention_days: u32,
     ) -> Result<(), String> {
-        let mut connection = self.write_connection()?;
-        {
-            let transaction = connection
-                .transaction()
-                .map_err(|error| error.to_string())?;
-            {
-                let mut statement = transaction
-                    .prepare(INSERT_SQL)
-                    .map_err(|error| error.to_string())?;
-                insert_record(&mut statement, record, accounting)?;
-            }
-            let entry = UsageLogEntry {
-                record: record.clone(),
-                accounting,
-            };
-            super::provider_usage::apply_summary_contributions(
-                &transaction,
-                std::slice::from_ref(&entry),
-            )?;
-            transaction.commit().map_err(|error| error.to_string())?;
-        }
-        record_usage_log_row_written();
-        record_usage_log_transaction();
-        apply_retention(&connection, retention_days);
-        Ok(())
+        super::usage_store::with_write_connection(
+            &self.path,
+            initialize_connection,
+            |connection| {
+                {
+                    let transaction = connection
+                        .transaction()
+                        .map_err(|error| error.to_string())?;
+                    {
+                        let mut statement = transaction
+                            .prepare(INSERT_SQL)
+                            .map_err(|error| error.to_string())?;
+                        insert_record(&mut statement, record, accounting)?;
+                    }
+                    let entry = UsageLogEntry {
+                        record: record.clone(),
+                        accounting,
+                    };
+                    super::provider_usage::apply_summary_contributions(
+                        &transaction,
+                        std::slice::from_ref(&entry),
+                    )?;
+                    transaction.commit().map_err(|error| error.to_string())?;
+                }
+                record_usage_log_row_written();
+                record_usage_log_transaction();
+                apply_retention(connection, retention_days);
+                Ok(())
+            },
+        )
     }
 
     /// Insert every record of one request through a single connection, in slice
@@ -1724,63 +1759,73 @@ impl UsageLogStore {
         entries: &[UsageLogEntry],
         retention_days: u32,
     ) -> Result<(), String> {
-        let mut connection = self.write_connection()?;
-        if !entries.is_empty() {
-            {
-                let transaction = connection
-                    .transaction()
-                    .map_err(|error| error.to_string())?;
-                {
-                    let mut statement = transaction
-                        .prepare(INSERT_SQL)
-                        .map_err(|error| error.to_string())?;
-                    for (index, entry) in entries.iter().enumerate() {
-                        if usage_log_write_fault_should_fail(index) {
-                            return Err("injected usage log insert failure".to_string());
+        super::usage_store::with_write_connection(
+            &self.path,
+            initialize_connection,
+            |connection| {
+                if !entries.is_empty() {
+                    {
+                        let transaction = connection
+                            .transaction()
+                            .map_err(|error| error.to_string())?;
+                        {
+                            let mut statement = transaction
+                                .prepare(INSERT_SQL)
+                                .map_err(|error| error.to_string())?;
+                            for (index, entry) in entries.iter().enumerate() {
+                                if usage_log_write_fault_should_fail(index) {
+                                    return Err("injected usage log insert failure".to_string());
+                                }
+                                insert_record(&mut statement, &entry.record, entry.accounting)?;
+                            }
                         }
-                        insert_record(&mut statement, &entry.record, entry.accounting)?;
+                        // Detail rows and their eligible provider/day contributions
+                        // commit as one unit; a summary-update fault rolls the
+                        // details back too.
+                        super::provider_usage::apply_summary_contributions(
+                            &transaction,
+                            entries,
+                        )?;
+                        transaction.commit().map_err(|error| error.to_string())?;
+                    }
+                    record_usage_log_batch_write();
+                    record_usage_log_transaction();
+                    for _ in entries {
+                        record_usage_log_row_written();
                     }
                 }
-                // Detail rows and their eligible provider/day contributions commit
-                // as one unit; a summary-update fault rolls the details back too.
-                super::provider_usage::apply_summary_contributions(&transaction, entries)?;
-                transaction.commit().map_err(|error| error.to_string())?;
-            }
-            record_usage_log_batch_write();
-            record_usage_log_transaction();
-            for _ in entries {
-                record_usage_log_row_written();
-            }
-        }
-        apply_retention(&connection, retention_days);
-        Ok(())
+                apply_retention(connection, retention_days);
+                Ok(())
+            },
+        )
     }
 
     /// Test-only inspection helper: total row count.
     #[cfg(test)]
     pub(in crate::ai_gateway) fn count(&self) -> Result<u32, String> {
-        let connection = self.open()?;
-        let count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM usage_logs", [], |row| row.get(0))
-            .map_err(|error| error.to_string())?;
-        Ok(count as u32)
+        self.query_connection(|query| {
+            let count: i64 = query
+                .prepare("SELECT COUNT(*) FROM usage_logs")?
+                .query_row([], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            Ok(count as u32)
+        })
     }
 
     /// Test-only inspection helper: every row, newest first.
     #[cfg(test)]
     pub(in crate::ai_gateway) fn all_records(&self) -> Result<Vec<UsageLogRecord>, String> {
-        let connection = self.open()?;
-        let mut statement = connection
-            .prepare(&format!(
+        self.query_connection(|query| {
+            let mut statement = query.prepare(&format!(
                 "SELECT {RECORD_COLUMNS}
                  FROM usage_logs ORDER BY timestamp_ms DESC, id DESC"
-            ))
-            .map_err(|error| error.to_string())?;
-        let rows = statement
-            .query_map([], record_from_row)
-            .map_err(|error| error.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())
+            ))?;
+            let rows = statement
+                .query_map([], record_from_row)
+                .map_err(|error| error.to_string())?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())
+        })
     }
 
     /// Ungrouped page of records, newest first, 50 per page. `page` is clamped
@@ -1819,100 +1864,92 @@ impl UsageLogStore {
         provider_id: Option<&str>,
         page: u32,
     ) -> Result<UsageLogsPage, String> {
-        let connection = self.open()?;
-        let (where_sql, params) = bind_boundary(range, filter, false, provider_id);
-        let total: i64 = connection
-            .query_row(
-                &format!("SELECT COUNT(*) FROM usage_logs{where_sql}"),
-                params_from_iter(params.iter()),
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        let total = total as u32;
-        let total_pages = total.div_ceil(USAGE_LOG_PAGE_SIZE).max(1);
-        let page = page.max(1).min(total_pages);
-        let offset = (page - 1) * USAGE_LOG_PAGE_SIZE;
-        let mut statement = connection
-            .prepare(&format!(
+        self.query_connection(|query| {
+            let (where_sql, params) = bind_boundary(range, filter, false, provider_id);
+            let total: i64 = query
+                .prepare(&format!("SELECT COUNT(*) FROM usage_logs{where_sql}"))?
+                .query_row(params_from_iter(params.iter()), |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            let total = total as u32;
+            let total_pages = total.div_ceil(USAGE_LOG_PAGE_SIZE).max(1);
+            let page = page.max(1).min(total_pages);
+            let offset = (page - 1) * USAGE_LOG_PAGE_SIZE;
+            let mut statement = query.prepare(&format!(
                 "SELECT {RECORD_COLUMNS}
                  FROM usage_logs{where_sql}
                  ORDER BY timestamp_ms DESC, id DESC
                  LIMIT ? OFFSET ?"
-            ))
-            .map_err(|error| error.to_string())?;
-        let mut page_params = params;
-        page_params.push((USAGE_LOG_PAGE_SIZE as i64).into());
-        page_params.push((offset as i64).into());
-        let records = statement
-            .query_map(params_from_iter(page_params.iter()), record_from_row)
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
-        // The model facet spans the whole range and ignores the model filter, so
-        // the filter selector can offer in-range models absent from this page.
-        // It honors the active status and provider filters.
-        let model_facet_filter = LogFilter {
-            status: filter.status,
-            model: None,
-            provider: filter.provider.clone(),
-        };
-        let (model_facet_where_sql, model_facet_params) =
-            bind_boundary(range, &model_facet_filter, false, provider_id);
-        let model_facet_where = if model_facet_where_sql.is_empty() {
-            " WHERE local_model <> ''".to_string()
-        } else {
-            format!("{model_facet_where_sql} AND local_model <> ''")
-        };
-        let mut model_facet_statement = connection
-            .prepare(&format!(
+            ))?;
+            let mut page_params = params;
+            page_params.push((USAGE_LOG_PAGE_SIZE as i64).into());
+            page_params.push((offset as i64).into());
+            let records = statement
+                .query_map(params_from_iter(page_params.iter()), record_from_row)
+                .map_err(|error| error.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())?;
+            // The model facet spans the whole range and ignores the model filter,
+            // so the filter selector can offer in-range models absent from this
+            // page. It honors the active status and provider filters.
+            let model_facet_filter = LogFilter {
+                status: filter.status,
+                model: None,
+                provider: filter.provider.clone(),
+            };
+            let (model_facet_where_sql, model_facet_params) =
+                bind_boundary(range, &model_facet_filter, false, provider_id);
+            let model_facet_where = if model_facet_where_sql.is_empty() {
+                " WHERE local_model <> ''".to_string()
+            } else {
+                format!("{model_facet_where_sql} AND local_model <> ''")
+            };
+            let mut model_facet_statement = query.prepare(&format!(
                 "SELECT DISTINCT local_model FROM usage_logs{model_facet_where} ORDER BY local_model ASC"
-            ))
-            .map_err(|error| error.to_string())?;
-        let models = model_facet_statement
-            .query_map(params_from_iter(model_facet_params.iter()), |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
-        // The provider facet spans the whole range, ignores the provider filter
-        // itself so the selection can be changed without clearing it, and honors
-        // the active status and model filters. Blank names (the synthetic
-        // no-provider row) are excluded.
-        let provider_facet_filter = LogFilter {
-            status: filter.status,
-            model: filter.model.clone(),
-            provider: None,
-        };
-        let (provider_facet_where_sql, provider_facet_params) =
-            bind_boundary(range, &provider_facet_filter, false, provider_id);
-        let provider_facet_where = if provider_facet_where_sql.is_empty() {
-            " WHERE provider_name <> ''".to_string()
-        } else {
-            format!("{provider_facet_where_sql} AND provider_name <> ''")
-        };
-        let mut provider_facet_statement = connection
-            .prepare(&format!(
+            ))?;
+            let models = model_facet_statement
+                .query_map(params_from_iter(model_facet_params.iter()), |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())?;
+            // The provider facet spans the whole range, ignores the provider
+            // filter itself so the selection can be changed without clearing it,
+            // and honors the active status and model filters. Blank names (the
+            // synthetic no-provider row) are excluded.
+            let provider_facet_filter = LogFilter {
+                status: filter.status,
+                model: filter.model.clone(),
+                provider: None,
+            };
+            let (provider_facet_where_sql, provider_facet_params) =
+                bind_boundary(range, &provider_facet_filter, false, provider_id);
+            let provider_facet_where = if provider_facet_where_sql.is_empty() {
+                " WHERE provider_name <> ''".to_string()
+            } else {
+                format!("{provider_facet_where_sql} AND provider_name <> ''")
+            };
+            let mut provider_facet_statement = query.prepare(&format!(
                 "SELECT DISTINCT provider_name FROM usage_logs{provider_facet_where} ORDER BY provider_name ASC"
-            ))
-            .map_err(|error| error.to_string())?;
-        let providers = provider_facet_statement
-            .query_map(params_from_iter(provider_facet_params.iter()), |row| {
-                row.get::<_, String>(0)
+            ))?;
+            let providers = provider_facet_statement
+                .query_map(params_from_iter(provider_facet_params.iter()), |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())?;
+            Ok(UsageLogsPage {
+                page,
+                page_size: USAGE_LOG_PAGE_SIZE,
+                total,
+                total_pages,
+                group_by: None,
+                records,
+                groups: Vec::new(),
+                models,
+                providers,
             })
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
-        Ok(UsageLogsPage {
-            page,
-            page_size: USAGE_LOG_PAGE_SIZE,
-            total,
-            total_pages,
-            group_by: None,
-            records,
-            groups: Vec::new(),
-            models,
-            providers,
         })
     }
 
@@ -1949,101 +1986,102 @@ impl UsageLogStore {
         provider_id: Option<&str>,
         group_by: &str,
     ) -> Result<Vec<UsageLogGroupRow>, String> {
-        let connection = self.open()?;
-        let (where_sql, params) = bind_boundary(range, filter, true, provider_id);
-        let mut groups = Vec::new();
-        if group_by == "day" {
-            let sql = format!(
-                "SELECT ((timestamp_ms + 28800000) / 86400000) AS day_index,
-                        COUNT(*),
-                        COALESCE(SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END), 0),
-                        COALESCE(MAX(timestamp_ms), 0)
-                 FROM usage_logs{where_sql}
-                 GROUP BY day_index ORDER BY day_index ASC"
-            );
-            let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
-            let rows = statement
-                .query_map(params_from_iter(params.iter()), |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })
-                .map_err(|error| error.to_string())?;
-            for row in rows {
-                let (index, request_count, error_count, last_request_at_ms) =
-                    row.map_err(|error| error.to_string())?;
-                groups.push(UsageLogGroupRow {
-                    group: day_index_label(index),
-                    request_count: request_count as u32,
-                    error_count: error_count as u32,
-                    last_request_at_ms,
-                });
+        self.query_connection(|query| {
+            let (where_sql, params) = bind_boundary(range, filter, true, provider_id);
+            let mut groups = Vec::new();
+            if group_by == "day" {
+                let sql = format!(
+                    "SELECT ((timestamp_ms + 28800000) / 86400000) AS day_index,
+                            COUNT(*),
+                            COALESCE(SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END), 0),
+                            COALESCE(MAX(timestamp_ms), 0)
+                     FROM usage_logs{where_sql}
+                     GROUP BY day_index ORDER BY day_index ASC"
+                );
+                let mut statement = query.prepare(&sql)?;
+                let rows = statement
+                    .query_map(params_from_iter(params.iter()), |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })
+                    .map_err(|error| error.to_string())?;
+                for row in rows {
+                    let (index, request_count, error_count, last_request_at_ms) =
+                        row.map_err(|error| error.to_string())?;
+                    groups.push(UsageLogGroupRow {
+                        group: day_index_label(index),
+                        request_count: request_count as u32,
+                        error_count: error_count as u32,
+                        last_request_at_ms,
+                    });
+                }
+            } else if group_by == "provider" {
+                let sql = format!(
+                    "SELECT provider_name,
+                            COUNT(*),
+                            COALESCE(SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END), 0),
+                            COALESCE(MAX(timestamp_ms), 0)
+                     FROM usage_logs{where_sql}
+                     GROUP BY provider_name ORDER BY MAX(timestamp_ms) DESC, provider_name ASC"
+                );
+                let mut statement = query.prepare(&sql)?;
+                let rows = statement
+                    .query_map(params_from_iter(params.iter()), |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })
+                    .map_err(|error| error.to_string())?;
+                for row in rows {
+                    let (group, request_count, error_count, last_request_at_ms) =
+                        row.map_err(|error| error.to_string())?;
+                    groups.push(UsageLogGroupRow {
+                        group,
+                        request_count: request_count as u32,
+                        error_count: error_count as u32,
+                        last_request_at_ms,
+                    });
+                }
+            } else {
+                let sql = format!(
+                    "SELECT local_model,
+                            COUNT(*),
+                            COALESCE(SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END), 0),
+                            COALESCE(MAX(timestamp_ms), 0)
+                     FROM usage_logs{where_sql}
+                     GROUP BY local_model ORDER BY MAX(timestamp_ms) DESC, local_model ASC"
+                );
+                let mut statement = query.prepare(&sql)?;
+                let rows = statement
+                    .query_map(params_from_iter(params.iter()), |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })
+                    .map_err(|error| error.to_string())?;
+                for row in rows {
+                    let (group, request_count, error_count, last_request_at_ms) =
+                        row.map_err(|error| error.to_string())?;
+                    groups.push(UsageLogGroupRow {
+                        group,
+                        request_count: request_count as u32,
+                        error_count: error_count as u32,
+                        last_request_at_ms,
+                    });
+                }
             }
-        } else if group_by == "provider" {
-            let sql = format!(
-                "SELECT provider_name,
-                        COUNT(*),
-                        COALESCE(SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END), 0),
-                        COALESCE(MAX(timestamp_ms), 0)
-                 FROM usage_logs{where_sql}
-                 GROUP BY provider_name ORDER BY MAX(timestamp_ms) DESC, provider_name ASC"
-            );
-            let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
-            let rows = statement
-                .query_map(params_from_iter(params.iter()), |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })
-                .map_err(|error| error.to_string())?;
-            for row in rows {
-                let (group, request_count, error_count, last_request_at_ms) =
-                    row.map_err(|error| error.to_string())?;
-                groups.push(UsageLogGroupRow {
-                    group,
-                    request_count: request_count as u32,
-                    error_count: error_count as u32,
-                    last_request_at_ms,
-                });
-            }
-        } else {
-            let sql = format!(
-                "SELECT local_model,
-                        COUNT(*),
-                        COALESCE(SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END), 0),
-                        COALESCE(MAX(timestamp_ms), 0)
-                 FROM usage_logs{where_sql}
-                 GROUP BY local_model ORDER BY MAX(timestamp_ms) DESC, local_model ASC"
-            );
-            let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
-            let rows = statement
-                .query_map(params_from_iter(params.iter()), |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })
-                .map_err(|error| error.to_string())?;
-            for row in rows {
-                let (group, request_count, error_count, last_request_at_ms) =
-                    row.map_err(|error| error.to_string())?;
-                groups.push(UsageLogGroupRow {
-                    group,
-                    request_count: request_count as u32,
-                    error_count: error_count as u32,
-                    last_request_at_ms,
-                });
-            }
-        }
-        Ok(groups)
+            Ok(groups)
+        })
     }
 
     pub(in crate::ai_gateway) fn usage_stats(
@@ -2051,137 +2089,132 @@ impl UsageLogStore {
         range: &TimeRange,
         hour_buckets: bool,
     ) -> Result<UsageStats, String> {
-        let connection = self.open()?;
-        // Every aggregate below shares this one terminal-only filter.
-        let (stats_where, params) = bind(range, &LogFilter::default(), true);
-        // A failed attempt with no candidate provider (`provider_id = ''`) still
-        // counts toward totals/models, but must not leak a blank provider row.
-        let provider_where = format!("{stats_where} AND provider_id <> ''");
-        let totals: UsageMetrics = connection
-            .query_row(
-                &format!("SELECT {} FROM usage_logs{stats_where}", metric_columns()),
-                params_from_iter(params.iter()),
-                |row| metrics_from_row(row, 0),
-            )
-            .map_err(|error| error.to_string())?;
+        self.query_connection(|query| {
+            // Every aggregate below shares this one terminal-only filter.
+            let (stats_where, params) = bind(range, &LogFilter::default(), true);
+            let totals: UsageMetrics = query
+                .prepare(&format!("SELECT {} FROM usage_logs{stats_where}", metric_columns()))?
+                .query_row(params_from_iter(params.iter()), |row| {
+                    metrics_from_row(row, 0)
+                })
+                .map_err(|error| error.to_string())?;
 
-        let bucket_sql = if hour_buckets {
-            "((timestamp_ms + 28800000) / 3600000) % 24"
-        } else {
-            "((timestamp_ms + 28800000) / 86400000)"
-        };
-        let mut statement = connection
-            .prepare(&format!(
+            let bucket_sql = if hour_buckets {
+                "((timestamp_ms + 28800000) / 3600000) % 24"
+            } else {
+                "((timestamp_ms + 28800000) / 86400000)"
+            };
+            let mut statement = query.prepare(&format!(
                 "SELECT {bucket_sql} AS bucket_key, {}
                  FROM usage_logs{stats_where}
                  GROUP BY bucket_key ORDER BY bucket_key ASC",
                 metric_columns()
-            ))
-            .map_err(|error| error.to_string())?;
-        let mut buckets = Vec::new();
-        for row in statement
-            .query_map(params_from_iter(params.iter()), |row| {
-                let key = row.get::<_, i64>(0)?;
-                Ok((key, metrics_from_row(row, 1)?))
-            })
-            .map_err(|error| error.to_string())?
-        {
-            let (key, metrics) = row.map_err(|error| error.to_string())?;
-            let label = if hour_buckets {
-                format!("{key:02}:00")
-            } else {
-                day_index_label(key)
-            };
-            buckets.push(UsageBucketRow { label, metrics });
-        }
-
-        let mut model_statement = connection
-            .prepare(&format!(
-                "SELECT local_model, {}
-                 FROM usage_logs{stats_where}
-                 GROUP BY local_model ORDER BY COALESCE(SUM(total_tokens), 0) DESC, local_model ASC",
-                metric_columns()
-            ))
-            .map_err(|error| error.to_string())?;
-        let model_rows = model_statement
-            .query_map(params_from_iter(params.iter()), |row| {
-                let model = row.get::<_, String>(0)?;
-                Ok((model, metrics_from_row(row, 1)?))
-            })
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
-
-        let mut provider_statement = connection
-            .prepare(&format!(
-                "SELECT local_model, provider_id, provider_name, {}
-                 FROM usage_logs{provider_where}
-                 GROUP BY local_model, provider_id, provider_name
-                 ORDER BY local_model ASC, provider_name ASC",
-                metric_columns()
-            ))
-            .map_err(|error| error.to_string())?;
-        let provider_rows = provider_statement
-            .query_map(params_from_iter(params.iter()), |row| {
-                let model = row.get::<_, String>(0)?;
-                let provider_id = row.get::<_, String>(1)?;
-                let provider_name = row.get::<_, String>(2)?;
-                Ok((model, provider_id, provider_name, metrics_from_row(row, 3)?))
-            })
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
-
-        let mut models = Vec::new();
-        for (local_model, metrics) in model_rows {
-            let providers = provider_rows
-                .iter()
-                .filter(|(model, _, _, _)| model == &local_model)
-                .map(|(_, provider_id, provider_name, metrics)| UsageProviderRow {
-                    provider_id: provider_id.clone(),
-                    provider_name: provider_name.clone(),
-                    metrics: *metrics,
+            ))?;
+            let mut buckets = Vec::new();
+            for row in statement
+                .query_map(params_from_iter(params.iter()), |row| {
+                    let key = row.get::<_, i64>(0)?;
+                    Ok((key, metrics_from_row(row, 1)?))
                 })
-                .collect();
-            models.push(UsageModelRow {
-                local_model,
-                metrics,
-                providers,
-            });
-        }
+                .map_err(|error| error.to_string())?
+            {
+                let (key, metrics) = row.map_err(|error| error.to_string())?;
+                let label = if hour_buckets {
+                    format!("{key:02}:00")
+                } else {
+                    day_index_label(key)
+                };
+                buckets.push(UsageBucketRow { label, metrics });
+            }
 
-        let mut unpriced_items = Vec::new();
-        if totals.unpriced_count > 0 {
-            let mut unpriced_statement = connection
-                .prepare(&format!(
+            // One grouped scan produces both the model aggregates and the
+            // provider rows, replacing a second full scan plus a per-model scan
+            // of every provider row. Rows without a provider id still count
+            // toward their model but never become a blank provider row.
+            let mut grouped_statement = query.prepare(&format!(
+                "SELECT local_model, provider_id, provider_name, {}
+                 FROM usage_logs{stats_where}
+                 GROUP BY local_model, provider_id, provider_name
+                 ORDER BY local_model ASC, provider_name ASC, provider_id ASC",
+                metric_columns()
+            ))?;
+            let mut model_metrics: HashMap<String, UsageMetrics> = HashMap::new();
+            let mut providers_by_model: HashMap<String, Vec<UsageProviderRow>> = HashMap::new();
+            for row in grouped_statement
+                .query_map(params_from_iter(params.iter()), |row| {
+                    let model = row.get::<_, String>(0)?;
+                    let provider_id = row.get::<_, String>(1)?;
+                    let provider_name = row.get::<_, String>(2)?;
+                    Ok((model, provider_id, provider_name, metrics_from_row(row, 3)?))
+                })
+                .map_err(|error| error.to_string())?
+            {
+                let (model, provider_id, provider_name, metrics) =
+                    row.map_err(|error| error.to_string())?;
+                accumulate_metrics(model_metrics.entry(model.clone()).or_default(), &metrics);
+                if !provider_id.is_empty() {
+                    providers_by_model
+                        .entry(model)
+                        .or_default()
+                        .push(UsageProviderRow {
+                            provider_id,
+                            provider_name,
+                            metrics,
+                        });
+                }
+            }
+            let mut model_rows: Vec<(String, UsageMetrics)> = model_metrics.into_iter().collect();
+            // Preserve the existing presentation order: largest token total
+            // first, then the local model id.
+            model_rows.sort_by(|left, right| {
+                right
+                    .1
+                    .total_tokens
+                    .cmp(&left.1.total_tokens)
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+            let mut models = Vec::with_capacity(model_rows.len());
+            for (local_model, mut metrics) in model_rows {
+                derive_cache_rate(&mut metrics);
+                let providers = providers_by_model.remove(&local_model).unwrap_or_default();
+                models.push(UsageModelRow {
+                    local_model,
+                    metrics,
+                    providers,
+                });
+            }
+
+            let mut unpriced_items = Vec::new();
+            if totals.unpriced_count > 0 {
+                let mut unpriced_statement = query.prepare(&format!(
                      "SELECT provider_id, provider_name, local_model, upstream_model, COUNT(*)
                       FROM usage_logs{stats_where} AND amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0)
                      GROUP BY provider_id, provider_name, local_model, upstream_model
                      ORDER BY COUNT(*) DESC, provider_name ASC, local_model ASC"
-                ))
-                .map_err(|error| error.to_string())?;
-            for row in unpriced_statement
-                .query_map(params_from_iter(params.iter()), |row| {
-                    Ok(UnpricedUsageItem {
-                        provider_id: row.get(0)?,
-                        provider_name: row.get(1)?,
-                        local_model: row.get(2)?,
-                        upstream_model: row.get(3)?,
-                        count: row.get::<_, i64>(4)? as u32,
+                ))?;
+                for row in unpriced_statement
+                    .query_map(params_from_iter(params.iter()), |row| {
+                        Ok(UnpricedUsageItem {
+                            provider_id: row.get(0)?,
+                            provider_name: row.get(1)?,
+                            local_model: row.get(2)?,
+                            upstream_model: row.get(3)?,
+                            count: row.get::<_, i64>(4)? as u32,
+                        })
                     })
-                })
-                .map_err(|error| error.to_string())?
-            {
-                unpriced_items.push(row.map_err(|error| error.to_string())?);
+                    .map_err(|error| error.to_string())?
+                {
+                    unpriced_items.push(row.map_err(|error| error.to_string())?);
+                }
             }
-        }
 
-        Ok(UsageStats {
-            granularity: if hour_buckets { "hour" } else { "day" }.to_string(),
-            totals,
-            buckets,
-            models,
-            unpriced_items,
+            Ok(UsageStats {
+                granularity: if hour_buckets { "hour" } else { "day" }.to_string(),
+                totals,
+                buckets,
+                models,
+                unpriced_items,
+            })
         })
     }
 }

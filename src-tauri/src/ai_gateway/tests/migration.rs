@@ -7,7 +7,7 @@
 //! the only public read boundary, and on-disk shapes are inspected as
 //! `serde_json::Value` plus raw bytes.
 
-use super::{config_path, isolated_temp_home};
+use super::{config_path, isolated_temp_home, make_temp_dir};
 use crate::ai_gateway::migration::USAGE_DB_VERSION;
 use crate::ai_gateway::storage::read_config;
 use crate::ai_gateway::{
@@ -854,6 +854,117 @@ fn usage_store_first_open_deletes_legacy_cancelled_once() {
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// AC-004/AC-005: a query connection bound to a path must reopen a replaced
+/// legacy database and run the one-time version migration on that actual file.
+/// The fresh file's visible rows replace the old file's rows, its own cancelled
+/// row is removed exactly once, and `user_version` advances to 2. A later open
+/// must not delete newly inserted cancelled rows again.
+#[test]
+fn replaced_legacy_usage_database_is_reopened_and_migrated_by_queries() {
+    let dir = make_temp_dir("migration-query-reopen");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("ai_gateway_usage.db");
+    create_prev_version_usage_db(&path);
+    insert_raw_usage_row(
+        &path,
+        1_000,
+        "old-model",
+        "old-upstream",
+        "p-old",
+        "Old Provider",
+        "success",
+        Some(0.5),
+    );
+    insert_raw_usage_row(
+        &path,
+        2_000,
+        "old-cancelled",
+        "old-upstream",
+        "p-old",
+        "Old Provider",
+        "cancelled",
+        None,
+    );
+
+    let store = UsageLogStore::at(path.clone());
+    let first = store
+        .usage_stats(&TimeRange::default(), false)
+        .expect("first query migrates the original database");
+    assert_eq!(first.totals.request_count, 1);
+    assert_eq!(count_cancelled(&path), 0);
+
+    let replacement_dir = make_temp_dir("migration-query-reopen-replacement");
+    fs::create_dir_all(&replacement_dir).expect("create replacement dir");
+    let replacement_path = replacement_dir.join("ai_gateway_usage.db");
+    create_prev_version_usage_db(&replacement_path);
+    insert_raw_usage_row(
+        &replacement_path,
+        3_000,
+        "new-model",
+        "new-upstream",
+        "p-new",
+        "New Provider",
+        "success",
+        Some(0.75),
+    );
+    insert_raw_usage_row(
+        &replacement_path,
+        4_000,
+        "new-cancelled",
+        "new-upstream",
+        "p-new",
+        "New Provider",
+        "cancelled",
+        None,
+    );
+
+    fs::rename(&replacement_path, &path).expect("replace the usage database");
+    let second = store
+        .usage_stats(&TimeRange::default(), false)
+        .expect("query after replacement");
+    assert_eq!(second.totals.request_count, 1, "old rows must not survive");
+    assert_eq!(second.totals.total_tokens, 15, "the replacement rows must be read");
+    let page = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("log page after replacement");
+    assert_eq!(page.total, 1);
+    assert_eq!(page.records[0].local_model, "new-model");
+    assert_eq!(count_cancelled(&path), 0, "the replacement must be migrated");
+
+    let version: i64 = Connection::open(&path)
+        .expect("open replaced database")
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read user_version");
+    assert_eq!(
+        version, USAGE_DB_VERSION as i64,
+        "the replaced database must reach the current usage schema"
+    );
+
+    // The marker is already current for this file: a later cancelled row is not
+    // removed by a subsequent query.
+    insert_raw_usage_row(
+        &path,
+        5_000,
+        "late-cancelled",
+        "new-upstream",
+        "p-new",
+        "New Provider",
+        "cancelled",
+        None,
+    );
+    let _ = store
+        .usage_stats(&TimeRange::default(), false)
+        .expect("query after the one-time migration");
+    assert_eq!(
+        count_cancelled(&path),
+        1,
+        "a later open must not repeat the version-0 cancellation cleanup"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&replacement_dir);
 }
 
 // ---------------------------------------------------------------------------

@@ -566,61 +566,61 @@ impl UsageLogStore {
         &self,
         configured: &[(String, String)],
     ) -> Result<Vec<ProviderUsageIdentity>, String> {
-        let connection = self.open()?;
-        let mut historical: HashMap<String, String> = HashMap::new();
-        if has_table(&connection, "provider_daily_usage")? {
-            let mut statement = connection
-                .prepare(
+        self.query_connection(|query| {
+            let mut historical: HashMap<String, String> = HashMap::new();
+            if has_table(query.connection(), "provider_daily_usage")? {
+                let mut statement = query.prepare(
                     "SELECT provider_id, provider_name FROM provider_daily_usage \
                      ORDER BY last_request_at_ms ASC, day ASC",
-                )
-                .map_err(|error| error.to_string())?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(|error| error.to_string())?;
-            for row in rows {
-                let (provider_id, provider_name) = row.map_err(|error| error.to_string())?;
-                // A blank or whitespace-only id is never a selectable identity.
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|error| error.to_string())?;
+                for row in rows {
+                    let (provider_id, provider_name) =
+                        row.map_err(|error| error.to_string())?;
+                    // A blank or whitespace-only id is never a selectable identity.
+                    if provider_id.trim().is_empty() {
+                        continue;
+                    }
+                    // Ascending order leaves the latest recorded name per id, with
+                    // the day as a deterministic tie-break.
+                    historical.insert(provider_id, provider_name);
+                }
+            }
+            let mut identities = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for (provider_id, provider_name) in configured {
                 if provider_id.trim().is_empty() {
                     continue;
                 }
-                // Ascending order leaves the latest recorded name per id, with
-                // the day as a deterministic tie-break.
-                historical.insert(provider_id, provider_name);
+                if !seen.insert(provider_id.clone()) {
+                    continue;
+                }
+                identities.push(ProviderUsageIdentity {
+                    provider_id: provider_id.clone(),
+                    provider_name: provider_name.clone(),
+                    deleted: false,
+                    has_usage: historical.contains_key(provider_id),
+                });
             }
-        }
-        let mut identities = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        for (provider_id, provider_name) in configured {
-            if provider_id.trim().is_empty() {
-                continue;
+            let mut remaining: Vec<(String, String)> = historical
+                .into_iter()
+                .filter(|(provider_id, _)| !seen.contains(provider_id))
+                .collect();
+            remaining.sort_by(|left, right| left.0.cmp(&right.0));
+            for (provider_id, provider_name) in remaining {
+                identities.push(ProviderUsageIdentity {
+                    provider_id,
+                    provider_name,
+                    deleted: true,
+                    has_usage: true,
+                });
             }
-            if !seen.insert(provider_id.clone()) {
-                continue;
-            }
-            identities.push(ProviderUsageIdentity {
-                provider_id: provider_id.clone(),
-                provider_name: provider_name.clone(),
-                deleted: false,
-                has_usage: historical.contains_key(provider_id),
-            });
-        }
-        let mut remaining: Vec<(String, String)> = historical
-            .into_iter()
-            .filter(|(provider_id, _)| !seen.contains(provider_id))
-            .collect();
-        remaining.sort_by(|left, right| left.0.cmp(&right.0));
-        for (provider_id, provider_name) in remaining {
-            identities.push(ProviderUsageIdentity {
-                provider_id,
-                provider_name,
-                deleted: true,
-                has_usage: true,
-            });
-        }
-        Ok(identities)
+            Ok(identities)
+        })
     }
 
     /// One consistent read of the provider history: the full UTC+8 calendar from
@@ -636,111 +636,112 @@ impl UsageLogStore {
         if provider_id.trim().is_empty() {
             return Err("a provider id must be nonblank".to_string());
         }
-        let connection = self.open()?;
-        let transaction = connection
-            .unchecked_transaction()
-            .map_err(|error| error.to_string())?;
+        self.query_connection(|query| {
+            let connection = query.connection();
+            let transaction = connection
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
 
-        let continuity_start_day = if has_table(&transaction, "provider_usage_metadata")? {
-            transaction
-                .query_row(
+            let continuity_start_day = if has_table(&transaction, "provider_usage_metadata")? {
+                let mut statement = query.prepare_on(
+                    &transaction,
                     "SELECT value FROM provider_usage_metadata WHERE key = ?",
-                    [CONTINUITY_START_DAY_KEY],
-                    |row| row.get::<_, String>(0),
-                )
-                .ok()
-        } else {
-            None
-        };
+                )?;
+                statement
+                    .query_row([CONTINUITY_START_DAY_KEY], |row| row.get::<_, String>(0))
+                    .ok()
+            } else {
+                None
+            };
 
-        let mut summaries: HashMap<String, UsageMetrics> = HashMap::new();
-        if has_table(&transaction, "provider_daily_usage")? {
-            let mut statement = transaction
-                .prepare(
+            let mut summaries: HashMap<String, UsageMetrics> = HashMap::new();
+            if has_table(&transaction, "provider_daily_usage")? {
+                let mut statement = query.prepare_on(
+                    &transaction,
                     "SELECT day, request_count, successful_request_count, input_tokens, \
                             cache_read_tokens, cache_write_tokens, output_tokens, total_tokens, \
                             amount, unpriced_count, cache_hit_tokens, cache_eligible_tokens, \
                             cache_rate_eligible_count \
                      FROM provider_daily_usage WHERE provider_id = ? ORDER BY day ASC",
-                )
-                .map_err(|error| error.to_string())?;
-            let rows = statement
-                .query_map([provider_id], metrics_from_summary_row)
-                .map_err(|error| error.to_string())?;
-            for row in rows {
-                let (day, metrics) = row.map_err(|error| error.to_string())?;
-                summaries.insert(day, metrics);
+                )?;
+                let rows = statement
+                    .query_map([provider_id], metrics_from_summary_row)
+                    .map_err(|error| error.to_string())?;
+                for row in rows {
+                    let (day, metrics) = row.map_err(|error| error.to_string())?;
+                    summaries.insert(day, metrics);
+                }
             }
-        }
-        drop(transaction);
+            drop(transaction);
 
-        let mut available_days: Vec<String> = summaries.keys().cloned().collect();
-        available_days.sort();
-        let earliest_available_day = available_days.first().cloned();
+            let mut available_days: Vec<String> = summaries.keys().cloned().collect();
+            available_days.sort();
+            let earliest_available_day = available_days.first().cloned();
 
-        let Some(earliest_label) = earliest_available_day.clone() else {
-            return Ok(ProviderUsageHistory {
-                provider_id: provider_id.to_string(),
-                earliest_available_day: None,
-                continuity_start_day,
-                end_day: None,
-                cumulative: None,
-                days: Vec::new(),
-            });
-        };
-
-        let mut cursor = parse_utc8_day(&earliest_label)?;
-        let end_label = utc8_day_label(now_ms);
-        let end = parse_utc8_day(&end_label)?;
-
-        let mut days = Vec::new();
-        let mut cumulative = UsageMetrics::default();
-        let mut has_available_metrics = false;
-        while cursor <= end {
-            let label = cursor.format("%Y-%m-%d").to_string();
-            let covered = continuity_start_day
-                .as_deref()
-                .is_some_and(|start| label.as_str() >= start);
-            let (coverage, metrics) = match summaries.get(&label) {
-                Some(metrics) => (
-                    if covered {
-                        ProviderDayCoverage::Continuous
-                    } else {
-                        ProviderDayCoverage::RetainedHistorical
-                    },
-                    Some(*metrics),
-                ),
-                None if covered => (
-                    ProviderDayCoverage::Continuous,
-                    Some(UsageMetrics::default()),
-                ),
-                None => (ProviderDayCoverage::Unavailable, None),
+            let Some(earliest_label) = earliest_available_day.clone() else {
+                return Ok(ProviderUsageHistory {
+                    provider_id: provider_id.to_string(),
+                    earliest_available_day: None,
+                    continuity_start_day,
+                    end_day: None,
+                    cumulative: None,
+                    days: Vec::new(),
+                });
             };
-            if let Some(metrics) = metrics.as_ref() {
-                accumulate_metrics(&mut cumulative, metrics);
-                has_available_metrics = true;
-            }
-            days.push(ProviderDailyEntry {
-                day: label.clone(),
-                coverage,
-                ongoing: label == end_label && coverage == ProviderDayCoverage::Continuous,
-                metrics,
-            });
-            cursor = cursor
-                .succ_opt()
-                .ok_or_else(|| "provider history day overflow".to_string())?;
-        }
 
-        if has_available_metrics {
-            derive_rate(&mut cumulative);
-        }
-        Ok(ProviderUsageHistory {
-            provider_id: provider_id.to_string(),
-            earliest_available_day,
-            continuity_start_day,
-            end_day: Some(end_label),
-            cumulative: has_available_metrics.then_some(cumulative),
-            days,
+            let mut cursor = parse_utc8_day(&earliest_label)?;
+            let end_label = utc8_day_label(now_ms);
+            let end = parse_utc8_day(&end_label)?;
+
+            let mut days = Vec::new();
+            let mut cumulative = UsageMetrics::default();
+            let mut has_available_metrics = false;
+            while cursor <= end {
+                let label = cursor.format("%Y-%m-%d").to_string();
+                let covered = continuity_start_day
+                    .as_deref()
+                    .is_some_and(|start| label.as_str() >= start);
+                let (coverage, metrics) = match summaries.get(&label) {
+                    Some(metrics) => (
+                        if covered {
+                            ProviderDayCoverage::Continuous
+                        } else {
+                            ProviderDayCoverage::RetainedHistorical
+                        },
+                        Some(*metrics),
+                    ),
+                    None if covered => (
+                        ProviderDayCoverage::Continuous,
+                        Some(UsageMetrics::default()),
+                    ),
+                    None => (ProviderDayCoverage::Unavailable, None),
+                };
+                if let Some(metrics) = metrics.as_ref() {
+                    accumulate_metrics(&mut cumulative, metrics);
+                    has_available_metrics = true;
+                }
+                days.push(ProviderDailyEntry {
+                    day: label.clone(),
+                    coverage,
+                    ongoing: label == end_label && coverage == ProviderDayCoverage::Continuous,
+                    metrics,
+                });
+                cursor = cursor
+                    .succ_opt()
+                    .ok_or_else(|| "provider history day overflow".to_string())?;
+            }
+
+            if has_available_metrics {
+                derive_rate(&mut cumulative);
+            }
+            Ok(ProviderUsageHistory {
+                provider_id: provider_id.to_string(),
+                earliest_available_day,
+                continuity_start_day,
+                end_day: Some(end_label),
+                cumulative: has_available_metrics.then_some(cumulative),
+                days,
+            })
         })
     }
 }

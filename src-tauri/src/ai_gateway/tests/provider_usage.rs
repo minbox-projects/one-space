@@ -775,6 +775,96 @@ fn provider_history_metrics_reconcile_and_survive_detail_cleanup() {
 // REQ-005 / AC-006: exact provider/day request details
 // ---------------------------------------------------------------------------
 
+/// AC-004/AC-005: a committed terminal row is visible to the public logs,
+/// statistics, selector and provider-history reads on the very next call. The
+/// second append of the same day must appear without reopening or result
+/// caching, and the history remains the exact daily/cumulative projection.
+#[test]
+fn committed_rows_are_immediately_visible_to_logs_stats_and_history() {
+    let fixture = pinned_store("usage-query-freshness", "2026-09-20T10:00:00+08:00");
+    let now = rfc3339_millis("2026-09-20T12:00:00+08:00");
+    let day_ms = rfc3339_millis("2026-09-20T11:00:00+08:00");
+
+    append(
+        &fixture.store,
+        &[terminal(
+            day_ms,
+            "fresh-model",
+            "fresh-upstream",
+            "fresh-p",
+            "Fresh Provider",
+            UsageResult::Success,
+            Some(0.25),
+            tokens(4, 1, 0, 2),
+        )],
+        365,
+    );
+
+    let page = fixture
+        .store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("log page after a commit");
+    assert_eq!(page.total, 1, "the committed row must be visible to logs");
+    assert_eq!(page.records[0].local_model, "fresh-model");
+
+    let stats = fixture
+        .store
+        .usage_stats(&TimeRange::default(), false)
+        .expect("statistics after a commit");
+    assert_eq!(stats.totals.request_count, 1);
+    assert_eq!(stats.totals.total_tokens, 7);
+
+    let identities = fixture
+        .store
+        .provider_usage_identities(&[("fresh-p".to_string(), "Fresh Provider".to_string())])
+        .expect("selector after a commit");
+    assert!(
+        identity(&identities, "fresh-p").has_usage,
+        "the committed provider must be selectable with usage: {identities:?}"
+    );
+
+    let history = fixture
+        .store
+        .provider_usage_history("fresh-p", now)
+        .expect("provider history after a commit");
+    let today = day(&history, "2026-09-20");
+    assert_eq!(metrics(today).request_count, 1);
+    assert!(today.ongoing, "the current day must remain ongoing");
+
+    // A second committed request on the same day is visible immediately and
+    // accumulates in both the detail page and the durable summary.
+    append(
+        &fixture.store,
+        &[terminal(
+            day_ms + 1_000,
+            "fresh-model",
+            "fresh-upstream",
+            "fresh-p",
+            "Fresh Provider",
+            UsageResult::Success,
+            Some(0.25),
+            tokens(3, 0, 0, 1),
+        )],
+        365,
+    );
+    let page = fixture
+        .store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("log page after a second commit");
+    assert_eq!(page.total, 2, "the second commit must not be hidden");
+    let stats = fixture
+        .store
+        .usage_stats(&TimeRange::default(), false)
+        .expect("statistics after a second commit");
+    assert_eq!(stats.totals.request_count, 2);
+    let history = fixture
+        .store
+        .provider_usage_history("fresh-p", now)
+        .expect("history after a second commit");
+    assert_eq!(metrics(day(&history, "2026-09-20")).request_count, 2);
+    assert_eq!(history.cumulative.expect("cumulative").request_count, 2);
+}
+
 /// AC-006: an explicit day is a strict UTC+8 half-open window that takes
 /// precedence over the quick range, so the following midnight is excluded. The
 /// provider-ID query keeps attempt-row visibility, the fixed 50-row pagination

@@ -18,8 +18,8 @@
 
 use crate::ai_gateway::usage_log::{
     clear_usage_log_insert_failure, inject_usage_log_insert_failure_at, reset_usage_log_write_stats,
-    usage_log_write_stats, UsageAccounting, UsageLogEntry, UsageLogRecord, UsageLogStore,
-    UsageLogWriteStats, UsageResult,
+    usage_log_write_stats, LogFilter, TimeRange, UsageAccounting, UsageLogEntry, UsageLogRecord,
+    UsageLogStore, UsageLogWriteStats, UsageResult,
 };
 use crate::ai_gateway::{
     clear_provider_usage_summary_failure, clear_usage_clock_for_test,
@@ -270,6 +270,116 @@ fn logging_failure_is_isolated_from_later_successful_appends() {
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// REQ-004/AC-005: committed rows are immediately visible to subsequent public
+/// reads, and a reader or writer bound to the same path reopens the database when
+/// the file is replaced or deleted. A stale cached handle would keep returning
+/// the old rows; a result cache would hide the just-committed row.
+#[test]
+fn query_reads_see_committed_writes_and_reopen_replaced_or_deleted_databases() {
+    let (dir, db_path) = temp_db("usage-query-identity");
+    let (replacement_dir, replacement_path) = temp_db("usage-query-identity-replacement");
+    let store = UsageLogStore::at(&db_path);
+
+    store
+        .append_batch(&batch("query-first", 2), 365)
+        .expect("first committed batch");
+    let first = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("first query");
+    assert_eq!(first.total, 2, "the first committed batch must be visible");
+    assert!(
+        first.records.iter().all(|row| row.local_model == "query-first"),
+        "the first query must see only the first batch: {:?}",
+        first.records
+    );
+
+    // A write followed by a read through the same path must see the new row.
+    store
+        .append_batch(&batch("query-second", 1), 365)
+        .expect("second committed batch");
+    let second = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("query after a later commit");
+    assert_eq!(second.total, 3, "a later commit must be visible immediately");
+    assert!(
+        second
+            .records
+            .iter()
+            .any(|row| row.local_model == "query-second"),
+        "the later batch must appear in the next query: {:?}",
+        second.records
+    );
+
+    // Build a different database at another real path, then replace this path.
+    {
+        let replacement = UsageLogStore::at(&replacement_path);
+        replacement
+            .append_batch(&batch("query-replacement", 4), 365)
+            .expect("replacement database rows");
+    }
+    fs::rename(&replacement_path, &db_path).expect("replace the usage database");
+    let replaced = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("query after replacing the database");
+    assert_eq!(replaced.total, 4, "the replaced database must be read, not the old one");
+    assert!(
+        replaced
+            .records
+            .iter()
+            .all(|row| row.local_model == "query-replacement"),
+        "no row from the replaced database may survive: {:?}",
+        replaced.records
+    );
+
+    // The writer must also reopen the replacement instead of writing to the old
+    // handle, and the next reader must observe that committed row.
+    store
+        .append_batch(&batch("query-after-replace", 1), 365)
+        .expect("write after replacing the database");
+    let after_writer = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("query after the writer reopened");
+    assert_eq!(after_writer.total, 5);
+    assert_eq!(
+        after_writer
+            .records
+            .iter()
+            .filter(|row| row.local_model == "query-replacement")
+            .count(),
+        4,
+        "the replacement rows must remain: {:?}",
+        after_writer.records
+    );
+    assert_eq!(
+        after_writer
+            .records
+            .iter()
+            .filter(|row| row.local_model == "query-after-replace")
+            .count(),
+        1,
+        "the writer must commit into the replacement database"
+    );
+
+    // Deleting the file invalidates both roles: a read creates a fresh empty
+    // database, and a later append/read works against the new file.
+    fs::remove_file(&db_path).expect("delete the usage database");
+    let deleted = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("query after deleting the database");
+    assert_eq!(deleted.total, 0, "a deleted database must not return old rows");
+    store
+        .append_batch(&batch("query-after-delete", 1), 365)
+        .expect("write after deleting the database");
+    let recreated = store
+        .query_logs(&TimeRange::default(), &LogFilter::default(), 1)
+        .expect("query after recreating the database");
+    assert_eq!(recreated.total, 1);
+    assert_eq!(recreated.records[0].local_model, "query-after-delete");
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&replacement_dir);
 }
 
 /// REQ-005/AC-005 exact counter contract: one request's whole batch is exactly

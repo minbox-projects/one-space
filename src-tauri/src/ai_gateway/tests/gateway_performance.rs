@@ -27,6 +27,7 @@ use crate::ai_gateway::{
         reset_usage_log_write_stats, resolve_range_selector, usage_log_write_stats, LogFilter,
         UsageLogRecord, UsageLogStore, UsageResult,
     },
+    usage_store::{query_work_stats, reset_query_work_stats},
     GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelMapping, ModelPool,
     ModelPoolCandidate, ProviderDayCoverage, UpstreamProtocol, GATEWAY_CONFIG_SCHEMA_VERSION,
 };
@@ -1595,3 +1596,55 @@ perf_case!(gateway_performance_usage_query_100k, "usage_query_100k");
 perf_case!(gateway_performance_provider_history_366, "provider_history_366");
 perf_case!(gateway_performance_provider_history_3650, "provider_history_3650");
 perf_case!(gateway_performance_template_views, "template_views");
+
+/// REQ-004/AC-005 non-ignored regression: two identical public reads must reuse
+/// the same initialized query connection and their prepared statements. The
+/// test-only counters count real `Connection::open`, schema/migration
+/// initialization and statement preparation caused by the public call; they are
+/// thread-local so this test stays independent of parallel store tests.
+#[test]
+fn repeated_query_reuses_initialized_connection_and_prepared_statements() {
+    let dir = TempDir::new("query-reuse");
+    let store = UsageLogStore::at(dir.0.join("ai_gateway_usage.db"));
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    seed_usage_fixture(&store, 60, 5, 5, 7, now_ms);
+    let range = resolve_range_selector(Some("all"), now_ms)
+        .expect("all range")
+        .range;
+
+    reset_query_work_stats();
+    let first = store
+        .query_logs(&range, &LogFilter::default(), 1)
+        .expect("first public read");
+    let after_first = query_work_stats();
+    assert_eq!(
+        after_first.connection_opens, 1,
+        "the first read must open the actual database once"
+    );
+    assert_eq!(
+        after_first.initializations, 1,
+        "the first read must initialize the actual database once"
+    );
+    assert!(
+        after_first.statement_prepares > 0,
+        "the first read must prepare its real statements: {after_first:?}"
+    );
+
+    let second = store
+        .query_logs(&range, &LogFilter::default(), 1)
+        .expect("second public read");
+    let after_second = query_work_stats();
+    assert_eq!(second.total, first.total);
+    assert_eq!(
+        after_second.connection_opens, after_first.connection_opens,
+        "a repeated read must reuse the open query connection: {after_second:?}"
+    );
+    assert_eq!(
+        after_second.initializations, after_first.initializations,
+        "a repeated read must not rerun schema or migration initialization: {after_second:?}"
+    );
+    assert_eq!(
+        after_second.statement_prepares, after_first.statement_prepares,
+        "identical public reads must reuse their prepared statements: {after_second:?}"
+    );
+}
