@@ -29,6 +29,7 @@ import {
   formatUtc8DateTime,
   USAGE_RANGE_KEYS,
   usageStatusTranslationKey,
+  type ModelPoolNativeReasoning,
   type UsageGroupBy,
   type UsageLogRecord,
   type UsageLogResult,
@@ -231,6 +232,106 @@ function resolveLogActionableHint(
 function formatCostRate(rate: number | null | undefined): string {
   if (rate === null || rate === undefined || !Number.isFinite(rate)) return "—";
   return `$${String(rate)}`;
+}
+
+const NATIVE_ENUM_PARAMETER_PATHS: ReadonlyArray<readonly string[]> = [
+  ["reasoning_effort"],
+  ["reasoning", "effort"],
+  ["output_config", "effort"],
+  ["thinking", "type"],
+];
+
+function readNativeParameter(
+  parameters: Record<string, unknown> | null | undefined,
+  path: readonly string[],
+): unknown {
+  let current: unknown = parameters;
+  for (const segment of path) {
+    if (current === null || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function readEnumNativeValue(
+  parameters: Record<string, unknown> | null | undefined,
+): string | null {
+  for (const path of NATIVE_ENUM_PARAMETER_PATHS) {
+    const value = readNativeParameter(parameters, path);
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return null;
+}
+
+function readBudgetNativeTokens(
+  parameters: Record<string, unknown> | null | undefined,
+): string | null {
+  const value = readNativeParameter(parameters, ["thinking", "budget_tokens"]);
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(value) : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed !== "" && Number.isFinite(Number(trimmed)) ? trimmed : null;
+  }
+  return null;
+}
+
+interface NativeReasoningDisplay {
+  summary: string;
+  modeLabel: string;
+  value: string | null;
+  valueLabelKey: string;
+  valueLabelFallback: string;
+}
+
+function describeNativeReasoning(
+  native: ModelPoolNativeReasoning,
+  t: TFunction,
+): NativeReasoningDisplay {
+  const fixedMode = (labelKey: string, fallback: string): NativeReasoningDisplay => {
+    const modeLabel = t(labelKey, fallback);
+    return {
+      summary: modeLabel,
+      modeLabel,
+      value: null,
+      valueLabelKey: "aiGatewayLogsReasoningNativeValue",
+      valueLabelFallback: "Native value",
+    };
+  };
+
+  switch (native.mode) {
+    case "enum": {
+      const modeLabel = t("aiGatewayLogsReasoningModeEnum", "Enum");
+      const value = readEnumNativeValue(native.parameters);
+      return {
+        summary: value ? `${modeLabel} · ${value}` : modeLabel,
+        modeLabel,
+        value,
+        valueLabelKey: "aiGatewayLogsReasoningNativeValue",
+        valueLabelFallback: "Native value",
+      };
+    }
+    case "budget": {
+      const modeLabel = t("aiGatewayLogsReasoningModeBudget", "Budget");
+      const value = readBudgetNativeTokens(native.parameters);
+      return {
+        summary: value ? `${modeLabel} · ${value}` : modeLabel,
+        modeLabel,
+        value,
+        valueLabelKey: "aiGatewayLogsReasoningBudgetTokens",
+        valueLabelFallback: "Budget tokens",
+      };
+    }
+    case "disable":
+      return fixedMode("aiGatewayLogsReasoningModeDisable", "Disabled");
+    case "provider_default":
+      return fixedMode("aiGatewayLogsReasoningModeProviderDefault", "Provider default");
+    default:
+      return fixedMode("aiGatewayLogsReasoningModeUnknown", "Unknown");
+  }
 }
 
 function CostDetail({
@@ -1303,6 +1404,15 @@ export function UsageLogsPanel({
                         const parameterEntries = native?.parameters
                           ? Object.entries(native.parameters)
                           : [];
+                        const nativeDisplay = native
+                          ? describeNativeReasoning(native, t)
+                          : null;
+                        const nativeLabel = nativeDisplay
+                          ? nativeDisplay.summary
+                          : t(
+                              "aiGatewayLogsReasoningNativeUnavailable",
+                              "Unavailable",
+                            );
                         return (
                           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
                             {resolved ? (
@@ -1318,16 +1428,11 @@ export function UsageLogsPanel({
                               <button
                                 type="button"
                                 data-testid="ai-gateway-logs-native-reasoning"
-                                aria-label={`${t("aiGatewayLogsReasoningNative", "Native control")}: ${native ? native.mode : t("aiGatewayLogsReasoningNativeUnavailable", "Unavailable")}`}
+                                aria-label={`${t("aiGatewayLogsReasoningNative", "Native control")}: ${nativeLabel}`}
                                 aria-describedby={nativeDetailId}
                                 className="inline-flex items-center rounded border border-border/70 bg-muted/50 px-1.5 py-0.5 font-mono leading-none text-foreground/85 transition hover:bg-muted focus:outline-none focus:ring-1 focus:ring-primary/40"
                               >
-                                {native
-                                  ? native.mode
-                                  : t(
-                                      "aiGatewayLogsReasoningNativeUnavailable",
-                                      "Unavailable",
-                                    )}
+                                {nativeLabel}
                               </button>
                               <div
                                 id={nativeDetailId}
@@ -1342,14 +1447,31 @@ export function UsageLogsPanel({
                                   <>
                                     <div className="flex items-center justify-between gap-3">
                                       <span className="text-muted-foreground">
-                                        {t("aiGatewayLogsReasoningNative", "Native control")}
+                                        {t("aiGatewayLogsReasoningProtocol", "Protocol")}
                                       </span>
                                       <span className="font-mono">{native.protocol}</span>
                                     </div>
                                     <div className="flex items-center justify-between gap-3">
-                                      <span className="text-muted-foreground">mode</span>
-                                      <span className="font-mono">{native.mode}</span>
+                                      <span className="text-muted-foreground">
+                                        {t("aiGatewayLogsReasoningMode", "Mode")}
+                                      </span>
+                                      <span className="font-mono">
+                                        {nativeDisplay?.modeLabel}
+                                      </span>
                                     </div>
+                                    {nativeDisplay?.value ? (
+                                      <div className="flex items-center justify-between gap-3">
+                                        <span className="text-muted-foreground">
+                                          {t(
+                                            nativeDisplay.valueLabelKey,
+                                            nativeDisplay.valueLabelFallback,
+                                          )}
+                                        </span>
+                                        <span className="font-mono">
+                                          {nativeDisplay.value}
+                                        </span>
+                                      </div>
+                                    ) : null}
                                     {parameterEntries.length > 0 ? (
                                       <div
                                         data-testid="ai-gateway-logs-native-reasoning-parameters"
