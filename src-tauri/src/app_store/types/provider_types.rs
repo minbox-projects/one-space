@@ -1,4 +1,4 @@
-use crate::app_store::default_session_name_source;
+use crate::app_store::{default_session_is_main_agent, default_session_name_source};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -143,6 +143,8 @@ pub struct SessionRecord {
     pub favorited_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
+    #[serde(default = "default_session_is_main_agent")]
+    pub is_main_agent: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

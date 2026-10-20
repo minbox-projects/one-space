@@ -21,9 +21,10 @@
 //! Rust symbol. No real CLI file, terminal projection or user credential is
 //! read or written.
 
-use super::{gateway_config, isolated_temp_home};
+use super::{gateway_config, isolated_temp_home, write_raw_gateway_config};
 use crate::ai_gateway::commands::{
-    apply_terminal_sync_with_selection, terminal_targets_from, TerminalSyncProfile, UpsertFuture,
+    ai_gateway_model_pools_status, apply_terminal_sync_with_selection, terminal_targets_from,
+    TerminalSyncProfile, UpsertFuture,
 };
 use crate::ai_gateway::model_pools::cool_pool_candidate;
 use crate::ai_gateway::runtime_http::{local_model_names, models_payload};
@@ -505,6 +506,7 @@ fn reasoning_pool(
         enabled: true,
         candidates,
         default_reasoning_effort: default,
+        fallback: None,
     }
 }
 
@@ -976,5 +978,272 @@ fn pool_policy_edit_marks_opencode_pending_for_manual_sync() {
     assert!(
         opencode.pending_sync,
         "a pool reasoning policy edit must require the existing manual sync: {opencode:?}"
+    );
+}
+
+/// AC-005: a pool that configures one optional fallback exposes that fallback
+/// as a separate status member next to the regular-only candidate list, so the
+/// fallback's own readiness and reason never fold into the regular rows.
+#[test]
+fn pool_status_exposes_separate_fallback_status_field() {
+    let _home = isolated_temp_home("pool-terminal-fallback-status");
+    let mut raw = serde_json::to_value(gateway_config(19000)).expect("serialize the config");
+    raw["model_pools"] = json!([{
+        "id": "pool-status",
+        "name": "Status Pool",
+        "model": "status-model",
+        "enabled": true,
+        "candidates": [{
+            "provider_id": "g1",
+            "local_model": ORDINARY_LOCAL,
+            "upstream_model": ORDINARY_UPSTREAM,
+            "protocol": "chat_completions",
+            "weight": 1,
+        }],
+        "fallback": {
+            "provider_id": "g1",
+            "local_model": "ds",
+            "upstream_model": "deepseek-chat",
+            "protocol": "chat_completions",
+            "weight": 1,
+        },
+    }]);
+    write_raw_gateway_config(&raw);
+
+    let statuses = ai_gateway_model_pools_status().expect("pool status");
+    let value = serde_json::to_value(&statuses).expect("serialize pool status");
+    let entry = value
+        .as_array()
+        .expect("status array")
+        .iter()
+        .find(|pool| pool["id"] == "pool-status")
+        .unwrap_or_else(|| panic!("missing pool status row: {value}"))
+        .clone();
+
+    let fallback = &entry["fallback"];
+    assert_eq!(fallback["provider_id"], "g1", "{entry}");
+    assert_eq!(fallback["local_model"], "ds", "{entry}");
+    assert_eq!(fallback["upstream_model"], "deepseek-chat", "{entry}");
+    let candidates = entry["candidates"].as_array().expect("regular candidate rows");
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the regular candidate list must stay regular-only: {entry}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|row| row["local_model"] != "ds"),
+        "the fallback must not appear as a regular candidate: {entry}"
+    );
+}
+
+/// Boundary A RED (AC-005 / AC-009): a pool whose *fallback alone* declares a
+/// reasoning preference must advertise that preference in the discovery row and
+/// in the OpenCode payload's model variants, because both surfaces derive the
+/// static support from the configured union of regular candidates and the
+/// fallback. The regular source rows stay regular-only.
+#[tokio::test]
+async fn pool_fallback_only_support_reaches_discovery_and_opencode_payload() {
+    let _home = isolated_temp_home("pool-terminal-fallback-support");
+    let mut raw = serde_json::to_value(gateway_config(19000)).expect("serialize the config");
+    raw["model_pools"] = json!([{
+        "id": "pool-union",
+        "name": "Union Pool",
+        "model": "union-model",
+        "enabled": true,
+        "default_reasoning_effort": "auto",
+        "candidates": [{
+            "provider_id": "g1",
+            "local_model": ORDINARY_LOCAL,
+            "upstream_model": ORDINARY_UPSTREAM,
+            "protocol": "chat_completions",
+            "weight": 1,
+        }],
+        "fallback": {
+            "provider_id": "g1",
+            "local_model": "ds",
+            "upstream_model": "deepseek-chat",
+            "protocol": "chat_completions",
+            "weight": 1,
+            "reasoning": {
+                "profile": "openai_effort",
+                "values": ["high"],
+                "supports_disable": false,
+                "mappings": [
+                    {"effort": "high", "action": {"kind": "enum", "value": "high"}}
+                ],
+            },
+        },
+    }]);
+    write_raw_gateway_config(&raw);
+    let config = read_config().expect("read gateway config");
+
+    // The discovery row advertises the fallback's declaration.
+    let payload = models_payload(&config);
+    let row = discovered_pool(&payload, "union-model");
+    let (efforts, _, coverage) = reasoning_metadata(row);
+    assert_eq!(
+        efforts,
+        vec!["high"],
+        "the fallback-only declaration must be advertised: {row}"
+    );
+    let high = coverage
+        .iter()
+        .find(|(effort, _, _)| effort == "high")
+        .expect("high coverage row");
+    assert_eq!(high.1, 1, "the fallback's declaration counts once: {row}");
+    let sources = row["sources"].as_array().expect("pool sources");
+    assert_eq!(
+        sources.len(),
+        1,
+        "the discovery row must list only the regular sources: {row}"
+    );
+    assert!(
+        sources
+            .iter()
+            .all(|source| source["local_model"] != "ds"),
+        "the fallback must not be listed as a regular source: {row}"
+    );
+
+    // The OpenCode payload exposes the same support as selectable variants.
+    let payloads =
+        capture_payloads(&json!({ "providers": [] }), vec!["opencode".to_string()]).await;
+    let opencode = payload_for(&payloads, "opencode");
+    let model = &opencode["tool_config"]["models"]["union-model"];
+    assert_eq!(
+        model["variants"]["high"]["reasoningEffort"], "high",
+        "the OpenCode payload must expose the fallback-only effort: {model}"
+    );
+}
+
+/// AC-011 (replay): an enabled pool with declared reasoning preferences must
+/// expose `interleaved = { field: "reasoning_content" }` on its OpenCode model
+/// row, so a resync cannot drop replay behavior. A legacy undeclared pool keeps
+/// no guessed reasoning/interleaved capabilities.
+#[tokio::test]
+async fn opencode_pool_row_with_declared_reasoning_includes_replay_interleaved() {
+    let _home = isolated_temp_home("pool-opencode-replay-interleaved");
+    let mut config = gateway_config(19000);
+    config.model_pools.push(reasoning_pool(
+        "pool-replay",
+        "replay-model",
+        PoolDefaultReasoningEffort::High,
+        vec![reasoning_candidate(
+            ORDINARY_LOCAL,
+            ORDINARY_UPSTREAM,
+            Some(reasoning_with(
+                &[(PoolReasoningEffort::High, enum_action("high"))],
+                false,
+            )),
+        )],
+    ));
+    config.model_pools.push(reasoning_pool(
+        "pool-legacy",
+        "legacy-model",
+        PoolDefaultReasoningEffort::Auto,
+        vec![pool_candidate(
+            "g1",
+            ORDINARY_LOCAL,
+            ORDINARY_UPSTREAM,
+            UpstreamProtocol::ChatCompletions,
+            1,
+        )],
+    ));
+    write_config(&config).expect("write gateway config");
+
+    let payloads = capture_payloads(&json!({ "providers": [] }), vec!["opencode".to_string()]).await;
+    let models = &payload_for(&payloads, "opencode")["tool_config"]["models"];
+
+    let declared = &models["replay-model"];
+    assert!(!declared.is_null(), "declared pool must be exposed: {models}");
+    assert_eq!(
+        declared["interleaved"],
+        json!({ "field": "reasoning_content" }),
+        "a pool with declared reasoning must enable replay interleaving: {declared}"
+    );
+
+    let legacy = &models["legacy-model"];
+    assert!(!legacy.is_null(), "legacy pool stays exposed: {models}");
+    assert!(
+        legacy.get("interleaved").is_none(),
+        "an undeclared legacy pool must not gain guessed interleaving: {legacy}"
+    );
+    assert!(
+        legacy.get("variants").is_none(),
+        "an undeclared legacy pool must keep no reasoning variants: {legacy}"
+    );
+
+    // An otherwise matching synced provider row that lacks replay metadata must
+    // be reported pending, so resync restores replay behavior instead of erasing.
+    let complete_provider = payload_for(&payloads, "opencode").clone();
+    let provider_id = complete_provider["id"]
+        .as_str()
+        .expect("captured provider must carry an id")
+        .to_string();
+
+    config.default_key_id = Some("k1".to_string());
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: provider_id.clone(),
+        tool: "opencode".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: local_base_url(config.port),
+        synced_at: 1,
+    });
+
+    // The complete captured payload is current, so it must not be pending.
+    let targets_current = terminal_targets_from(
+        &config,
+        &json!({ "providers": [complete_provider.clone()] }),
+        TerminalSyncProfile::RELEASE,
+    );
+    let opencode_current = targets_current
+        .iter()
+        .find(|target| target.tool == "opencode")
+        .expect("opencode target must exist");
+    assert!(
+        !opencode_current.pending_sync,
+        "the complete captured row must not be pending: {opencode_current:?}"
+    );
+
+    // Remove only replay metadata; everything else stays identical.
+    let mut stale = complete_provider.clone();
+    if let Some(model) = stale
+        .pointer_mut("/tool_config/models/replay-model")
+        .and_then(Value::as_object_mut)
+    {
+        model.remove("interleaved");
+    }
+    let targets = terminal_targets_from(
+        &config,
+        &json!({ "providers": [stale.clone()] }),
+        TerminalSyncProfile::RELEASE,
+    );
+    let opencode = targets
+        .iter()
+        .find(|target| target.tool == "opencode")
+        .expect("opencode target must exist");
+    assert!(
+        opencode.pending_sync,
+        "a synced row lacking replay metadata must be pending: {opencode:?}"
+    );
+
+    // A repeated sync with the stale provider restores interleaving and keeps
+    // the provider id.
+    let resynced = capture_payloads(
+        &json!({ "providers": [stale] }),
+        vec!["opencode".to_string()],
+    )
+    .await;
+    let restored = payload_for(&resynced, "opencode");
+    assert_eq!(
+        restored["id"].as_str(),
+        Some(provider_id.as_str()),
+        "resync must retain the provider id: {restored}"
+    );
+    assert_eq!(
+        restored["tool_config"]["models"]["replay-model"]["interleaved"],
+        json!({ "field": "reasoning_content" }),
+        "resync must restore replay interleaving: {restored}"
     );
 }

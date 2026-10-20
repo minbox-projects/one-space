@@ -52,6 +52,13 @@ pub(in crate::app_store) fn normalize_sessions_state(state: &mut SessionsState) 
             session.runtime_profile_id = None;
             changed = true;
         }
+        if session.tool.eq_ignore_ascii_case("opencode") && session.is_main_agent {
+            let lower_name = session.name.to_lowercase();
+            if lower_name.contains("(@") || lower_name.contains("subagent") {
+                session.is_main_agent = false;
+                changed = true;
+            }
+        }
     }
 
     let mut normalized_tombstones = BTreeSet::new();

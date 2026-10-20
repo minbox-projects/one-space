@@ -109,6 +109,7 @@ where
         status: "pending_bind".to_string(),
         favorited_at: None,
         provider_id,
+        is_main_agent: true,
     };
     let permission_mode = validate_and_resolve_permission_mode(
         &resolve_permission_mode_for_tool(&record.tool),

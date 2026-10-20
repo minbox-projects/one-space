@@ -12500,6 +12500,30 @@ fn usage_store_stats_aggregates_models_providers_and_utc8_buckets() {
     assert_eq!(stats.buckets[0].label, "2026-09-15");
     assert_eq!(stats.buckets[1].label, "2026-09-16");
 
+    assert_eq!(stats.providers.len(), 2, "two distinct providers across range");
+    let prov_one = stats
+        .providers
+        .iter()
+        .find(|row| row.provider_id == "p1")
+        .expect("provider one in stats.providers");
+    assert_eq!(prov_one.provider_name, "Provider One");
+    assert_eq!(prov_one.metrics.request_count, 3);
+    assert_eq!(prov_one.metrics.total_tokens, (10 + 5) + 100 + (1 + 1));
+    assert_eq!(prov_one.models.len(), 2);
+    assert_eq!(prov_one.models[0].local_model, "local-a");
+    assert_eq!(prov_one.models[1].local_model, "local-b");
+
+    let prov_two = stats
+        .providers
+        .iter()
+        .find(|row| row.provider_id == "p2")
+        .expect("provider two in stats.providers");
+    assert_eq!(prov_two.provider_name, "Provider Two");
+    assert_eq!(prov_two.metrics.request_count, 1);
+    assert_eq!(prov_two.metrics.total_tokens, 20 + 10);
+    assert_eq!(prov_two.models.len(), 1);
+    assert_eq!(prov_two.models[0].local_model, "local-a");
+
     // Single-day range buckets by UTC+8 hour.
     let single = store
         .usage_stats(
@@ -15771,6 +15795,119 @@ fn usage_stats_unpriced_count_excludes_rows_without_upstream_model() {
     assert_eq!(stats.unpriced_items[0].local_model, "local-unpriced");
     assert_eq!(stats.unpriced_items[0].upstream_model, "remote-unpriced");
     assert_eq!(stats.unpriced_items[0].count, 1);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Free models (no configured price because they are free) must not be reported
+/// as "unpriced" in usage stats, regardless of a NULL amount column.
+#[test]
+fn usage_stats_free_models_do_not_trigger_unpriced_warning() {
+    /// Unpriced request counts per level: model, provider, provider-model and
+    /// day bucket.
+    fn levels(s: &super::UsageStats) -> [u32; 4] {
+        let model: u32 = s.models.iter().map(|r| r.metrics.unpriced_count).sum();
+        let provider: u32 = s.providers.iter().map(|r| r.metrics.unpriced_count).sum();
+        let provider_model: u32 = s
+            .providers
+            .iter()
+            .flat_map(|p| p.models.iter())
+            .map(|r| r.metrics.unpriced_count)
+            .sum();
+        let bucket: u32 = s.buckets.iter().map(|r| r.metrics.unpriced_count).sum();
+        [model, provider, provider_model, bucket]
+    }
+
+    let (dir, store) = usage_store("usage-free-models-unpriced");
+    let base = rfc3339_millis("2026-09-16T08:00:00+08:00");
+
+    // (local_model, upstream_model, amount): free upstreams ending in `-free`
+    // or `:free`, plus the local `zen-free-` naming convention.
+    let free_rows: [(&str, &str, Option<f64>); 3] = [
+        ("local-free-dash", "  remote-FREE  ", None),
+        ("local-free-colon", "model:Free", None),
+        ("zen-free-big-pickle", "big-pickle", None),
+    ];
+    // (local_model, upstream_model, amount): ordinary rows — unknown-priced
+    // names, a free-sounding alias and a free substring that stay unpriced,
+    // an explicit zero amount and one priced row.
+    let control_rows: [(&str, &str, Option<f64>); 5] = [
+        ("local-unpriced", "remote-unpriced", None),
+        ("local-freeform", "freeform-large", None),
+        ("free-pool", "remote-paid", None),
+        ("zero-amount", "remote-zero", Some(0.0)),
+        ("priced", "remote-priced", Some(0.005)),
+    ];
+
+    let mut timestamp = base;
+    let mut append_row = |local_model: &str, upstream_model: &str, amount: Option<f64>| {
+        store
+            .append(
+                &sample_record(
+                    timestamp,
+                    local_model,
+                    upstream_model,
+                    "p1",
+                    "Provider One",
+                    UsageResult::Success,
+                    amount,
+                    tokens(10, 0, 0, 5),
+                ),
+                365,
+            )
+            .unwrap();
+        timestamp += 1_000;
+    };
+    for (local_model, upstream_model, amount) in free_rows {
+        append_row(local_model, upstream_model, amount);
+    }
+
+    // The free set alone reports no unpriced request at any level.
+    let free = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(free.totals.request_count, 3);
+    assert_eq!(free.totals.total_tokens, 45);
+    assert_eq!(free.totals.successful_request_count, 3);
+    assert_eq!(free.totals.amount, 0.0);
+    assert_eq!(free.totals.unpriced_count, 0);
+    assert_eq!(free.models.len(), 3);
+    assert!(free.unpriced_items.is_empty(), "no free item is unpriced");
+    assert_eq!(levels(&free), [0, 0, 0, 0]);
+
+    // The control rows join the same set.
+    for (local_model, upstream_model, amount) in control_rows {
+        append_row(local_model, upstream_model, amount);
+    }
+    let stats = store.usage_stats(&TimeRange::default(), false).unwrap();
+    assert_eq!(stats.totals.request_count, 8);
+    assert_eq!(stats.totals.total_tokens, 120);
+    assert_eq!(stats.totals.successful_request_count, 8);
+    assert_eq!(stats.totals.amount, 0.005);
+    assert_eq!(stats.totals.unpriced_count, 3);
+    assert_eq!(stats.models.len(), 8);
+    assert_eq!(levels(&stats), [3, 3, 3, 3]);
+
+    // Only the three ordinary unknown-priced rows are unpriced, each once; the
+    // free models are absent from this set.
+    let mut unpriced: Vec<(&str, &str, u32)> = stats
+        .unpriced_items
+        .iter()
+        .map(|item| {
+            (
+                item.local_model.as_str(),
+                item.upstream_model.as_str(),
+                item.count,
+            )
+        })
+        .collect();
+    unpriced.sort();
+    assert_eq!(
+        unpriced,
+        vec![
+            ("free-pool", "remote-paid", 1),
+            ("local-freeform", "freeform-large", 1),
+            ("local-unpriced", "remote-unpriced", 1),
+        ]
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

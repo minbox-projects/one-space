@@ -1,6 +1,7 @@
 use crate::app_store::{
-    provider_env_managed, read_json_object, render_claude, render_claude_reset_to_unmanaged,
-    render_codex, render_codex_reset_to_unmanaged, ServiceProviderRecord, StorageEngine,
+    api_key_has_value, provider_env_managed, read_json_object, render_claude,
+    render_claude_reset_to_unmanaged, render_codex, render_codex_reset_to_unmanaged,
+    ServiceProviderRecord, StorageEngine,
 };
 use serde_json::{Map, Value};
 use std::fs::{self};
@@ -215,6 +216,17 @@ pub(in crate::app_store) fn render_opencode(
         .ok_or_else(|| "OpenCode provider_key is required".to_string())?;
 
     let mut provider_obj = provider.tool_config.clone();
+    if api_key_has_value(&provider.api_key) {
+        let mut options = provider_obj
+            .remove("options")
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        options.insert(
+            "apiKey".to_string(),
+            Value::String(provider.api_key.clone()),
+        );
+        provider_obj.insert("options".to_string(), Value::Object(options));
+    }
     provider_obj.insert("name".to_string(), Value::String(provider.name.clone()));
     providers.insert(provider_key, Value::Object(provider_obj));
 

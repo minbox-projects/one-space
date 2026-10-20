@@ -381,6 +381,7 @@ fn apply_provider_id_map_rewrites_dependent_state_files_and_profile_dirs() {
                 status: "active".to_string(),
                 favorited_at: None,
                 provider_id: Some(old_id.to_string()),
+                is_main_agent: true,
             }],
             ..SessionsState::default()
         };

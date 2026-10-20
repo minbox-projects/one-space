@@ -961,6 +961,7 @@ mod tests {
             status: "active".to_string(),
             favorited_at: None,
             provider_id: None,
+            is_main_agent: true,
         }
     }
 

@@ -639,6 +639,16 @@ export interface UsageProviderBreakdown extends UsageMetrics {
   provider_name: string;
 }
 
+export interface UsageProviderModelBreakdown extends UsageMetrics {
+  local_model: string;
+}
+
+export interface UsageProviderStatsRow extends UsageMetrics {
+  provider_id: string;
+  provider_name: string;
+  models: UsageProviderModelBreakdown[];
+}
+
 export interface UsageModelBreakdown extends UsageMetrics {
   local_model: string;
   providers: UsageProviderBreakdown[];
@@ -656,6 +666,7 @@ export interface UsageStats extends UsageMetrics {
   granularity: "hour" | "day";
   buckets: UsageBucket[];
   models: UsageModelBreakdown[];
+  providers?: UsageProviderStatsRow[];
   unpriced_items?: UnpricedUsageItem[];
 }
 
@@ -1516,6 +1527,12 @@ export interface GatewayModelPool {
   enabled: boolean;
   default_reasoning_effort?: string | null;
   candidates: GatewayModelPoolCandidate[];
+  /**
+   * Optional last-stage source used after every regular candidate is exhausted.
+   * It shares the candidate shape and its pool-local reasoning declaration but
+   * never enters primary scheduling; absent/`null` means no fallback.
+   */
+  fallback?: GatewayModelPoolCandidate | null;
 }
 
 /** Nonsecret source-availability code reported per candidate by the backend. */
@@ -1558,6 +1575,11 @@ export interface GatewayModelPoolStatus {
   /** Per-preference static coverage; absent for legacy pools. */
   reasoning_coverage?: ModelPoolReasoningCoverage[];
   candidates: GatewayModelPoolCandidateStatus[];
+  /**
+   * Readiness of the optional last-stage fallback, reported separately from the
+   * regular candidates. Absent/`null` when the pool configures no fallback.
+   */
+  fallback?: GatewayModelPoolCandidateStatus | null;
 }
 
 /** Read the stored model pools; a legacy/missing collection yields an empty list. */
@@ -1711,12 +1733,20 @@ export interface ModelPoolReasoningCatalog {
  */
 export function poolReasoningCatalog(
   providers: GatewayUpstreamProvider[] | null | undefined,
-  pool: Pick<GatewayModelPool, "candidates" | "default_reasoning_effort">,
+  pool: Pick<
+    GatewayModelPool,
+    "candidates" | "default_reasoning_effort" | "fallback"
+  >,
 ): ModelPoolReasoningCatalog {
-  const total = pool.candidates.length;
+  // The configured union: regular candidates plus the optional last-stage
+  // fallback. Static support ignores transient readiness for both roles.
+  const candidates = pool.fallback
+    ? [...pool.candidates, pool.fallback]
+    : pool.candidates;
+  const total = candidates.length;
   const reasoning_coverage = CANONICAL_REASONING_EFFORTS.map((effort) => ({
     effort,
-    mapped_candidates: pool.candidates.filter((candidate) =>
+    mapped_candidates: candidates.filter((candidate) =>
       modelPoolCandidateServesEffort(providers, candidate, effort),
     ).length,
     total_candidates: total,

@@ -384,12 +384,20 @@ pub(in crate::app_store) fn merge_sensitive_maps(
 ) -> Map<String, Value> {
     let mut merged = incoming.clone();
     for (k, old_v) in existing {
-        let should_restore = key_looks_sensitive(k)
-            && match merged.get(k) {
-                None => true,
-                Some(Value::String(s)) => s.is_empty() || is_placeholder_string(s),
-                Some(_) => false,
-            };
+        if let (Some(Value::Object(in_obj)), Value::Object(old_obj)) =
+            (merged.get_mut(k), old_v)
+        {
+            *in_obj = merge_sensitive_maps(in_obj, old_obj);
+            continue;
+        }
+        if !key_looks_sensitive(k) {
+            continue;
+        }
+        let should_restore = match merged.get(k) {
+            None => true,
+            Some(Value::String(s)) => s.is_empty() || is_placeholder_string(s),
+            Some(_) => false,
+        };
         if should_restore {
             merged.insert(k.clone(), old_v.clone());
         }

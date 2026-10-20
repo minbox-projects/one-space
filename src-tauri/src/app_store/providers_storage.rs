@@ -642,6 +642,10 @@ pub(in crate::app_store) fn merge_history_entry_into_session(
         session.last_used_at = next_last_used_at;
         changed = true;
     }
+    if session.is_main_agent != entry.is_main_agent {
+        session.is_main_agent = entry.is_main_agent;
+        changed = true;
+    }
     changed
 }
 
@@ -733,6 +737,7 @@ pub(in crate::app_store) fn apply_history_entries_to_sessions_state(
             status: "active".to_string(),
             favorited_at: None,
             provider_id: None,
+            is_main_agent: entry.is_main_agent,
         };
         session_index_by_tool_session.insert(record.tool_session_id.clone(), state.sessions.len());
         state.sessions.push(record);

@@ -14,6 +14,7 @@ export interface AiSession {
   last_used_at?: number;
   favorited_at?: number | null;
   provider_id?: string | null;
+  is_main_agent?: boolean;
 }
 
 export type AiSessionListItem = AiSession;

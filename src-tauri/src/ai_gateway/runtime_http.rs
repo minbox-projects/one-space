@@ -1,3 +1,8 @@
+use super::anthropic::{
+    convert_response, error_payload as anthropic_error_payload, is_conversion_path,
+    is_messages_path, stream_error_event, validate_conversion_request,
+};
+use super::anthropic_sse::{AnthropicSseConverter, AnthropicSseObserver};
 use super::attempt_policy::{
     all_unavailable_message, clear_ttl_expired_key_runtime_state, excluded_key_summary,
     key_failure_kind, persist_key_runtime_state, record_provider_failure,
@@ -6,27 +11,28 @@ use super::attempt_policy::{
     settle_success, sync_key_runtime_marks, AttemptResult, KeyAuthFailedTransition,
     MappingAutoDisabledTransition, RequestHealth, RetryCandidate,
 };
-use super::forwarding::{forward_non_streaming_with_protocol, open_streaming_response_with_protocol};
+use super::forwarding::{
+    forward_non_streaming_with_protocol, open_streaming_response_with_protocol,
+};
 use super::model_pools::{
-    cool_pool_candidate, failure_label, plan_pool_request, pool_candidate_scope_failure, PoolPlan,
+    cool_pool_candidate, failure_label, is_configured_fallback, plan_pool_request,
+    pool_candidate_scope_failure, PoolFallbackStage, PoolPlan,
 };
-use super::pool_context_hold;
-use super::anthropic::{
-    convert_response, error_payload as anthropic_error_payload, is_conversion_path,
-    is_messages_path, stream_error_event, validate_conversion_request,
-};
-use super::anthropic_sse::{AnthropicSseConverter, AnthropicSseObserver};
 use super::openai_conversion::{self, include_usage_requested};
 use super::openai_sse::OpenAiSseConverter;
 use super::output_timing::OutputTimingObserver;
+use super::pool_context_hold;
+use super::reasoning::{
+    parse_pool_request_effort, resolved_effort_token, strip_pool_entry_controls, PoolOutputCap,
+    PoolReasoningRequest,
+};
 use super::selection::{
     candidate_providers, classify_failure_with_message, clear_key_runtime_state,
     default_retry_delay, find_probe_candidate, is_quota_exceeded_message,
     is_retryable_with_message, mark_key_failure, rearm_key_probe, resolve_model_for_protocol,
-    resolve_upstream_protocol,
-    resolve_session_id, retry_header_delay, select_usable_key, session_affinity,
-    try_acquire_probe_guard, weighted_candidates, FailureClass, ModelResolution, ProbeCandidate,
-    ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
+    resolve_session_id, resolve_upstream_protocol, retry_header_delay, select_usable_key,
+    session_affinity, try_acquire_probe_guard, weighted_candidates, FailureClass, ModelResolution,
+    ProbeCandidate, ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
 };
 use super::storage::{local_base_url, read_config_shared};
 use super::usage_log::{
@@ -34,10 +40,6 @@ use super::usage_log::{
     normalize_retention_days, now_millis, parse_usage_from_response, CanonicalUsage,
     NativeReasoningSnapshot, SseUsageAccumulator, UsageAccounting, UsageLogEntry, UsageLogRecord,
     UsageLogStore, UsageResult, UsageTokens,
-};
-use super::reasoning::{
-    parse_pool_request_effort, resolved_effort_token, strip_pool_entry_controls, PoolOutputCap,
-    PoolReasoningRequest,
 };
 use super::{
     now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPool,
@@ -159,7 +161,10 @@ fn key_auth_failed_message_input(
             ),
         )),
         detail: None,
-        dedupe_key: Some(format!("ai_gateway_key_auth_failed:{}", payload.provider_id)),
+        dedupe_key: Some(format!(
+            "ai_gateway_key_auth_failed:{}",
+            payload.provider_id
+        )),
         target: Some(crate::messages::MessageTarget {
             tab: "ai-gateway".to_string(),
             section: None,
@@ -199,7 +204,6 @@ pub(in crate::ai_gateway) fn emit_key_auth_failed(transition: &KeyAuthFailedTran
         crate::messages::record_message_silent(&handle, input);
     }
 }
-
 
 /// Build the message-center input for one provider's auto-disable transition.
 /// The provider-scoped `dedupe_key` makes repeated transitions inside the
@@ -245,7 +249,9 @@ fn mapping_auto_disabled_message_input(
 /// seam and persist exactly one message input through the captured handle. A
 /// missing handle skips the production write but still records the seam value so
 /// the transition is observable in tests (REQ-005/AC-005).
-pub(in crate::ai_gateway) fn emit_mapping_auto_disabled(transition: &MappingAutoDisabledTransition) {
+pub(in crate::ai_gateway) fn emit_mapping_auto_disabled(
+    transition: &MappingAutoDisabledTransition,
+) {
     let input = mapping_auto_disabled_message_input(transition);
     #[cfg(test)]
     MAPPING_AUTO_DISABLED_MESSAGE_INPUTS.with(|inputs| inputs.borrow_mut().push(input.clone()));
@@ -779,12 +785,10 @@ pub(in crate::ai_gateway) fn is_authorized(request: &HttpRequest, config: &Gatew
         .and_then(|value| value.trim().strip_prefix("Bearer "))
         .map(str::trim);
     let x_api_key = request.headers.get("x-api-key").map(|value| value.trim());
-    enabled
-        .iter()
-        .any(|key| {
-            let value = key.value.trim();
-            bearer == Some(value) || x_api_key == Some(value)
-        })
+    enabled.iter().any(|key| {
+        let value = key.value.trim();
+        bearer == Some(value) || x_api_key == Some(value)
+    })
 }
 
 /// Union of local model names across enabled providers' user-enabled,
@@ -1069,8 +1073,6 @@ fn failure_reason(status: u16, body_parsed: bool, error_message: Option<&str>) -
     format!("{base} ({msg})")
 }
 
-
-
 /// The exact upstream model and protocol for one attempt.
 ///
 /// A prepared model-pool candidate carries its full stored identity, so its real
@@ -1266,7 +1268,11 @@ async fn attempt_candidate(
                         error_message.as_deref(),
                     ),
                     transport: false,
-                    reason: failure_reason(response.status, response.parsed, error_message.as_deref()),
+                    reason: failure_reason(
+                        response.status,
+                        response.parsed,
+                        error_message.as_deref(),
+                    ),
                     retry_delay: retry_header_delay(&response.headers),
                     bare_rotation: response.status == 429 && key_failure.is_none(),
                     key_failure,
@@ -1306,7 +1312,6 @@ async fn attempt_candidate(
     }
 }
 
-
 /// Try the candidates for a non-streaming request: one immediate fallback-first
 /// pass in order, then bounded retries per provider in earliest-deadline order.
 ///
@@ -1322,6 +1327,31 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
     suppress_transport_failures: bool,
     probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
+) -> HttpResponse {
+    attempt_non_streaming_inner(
+        ordered,
+        path,
+        body,
+        requested,
+        client_headers,
+        suppress_transport_failures,
+        probe,
+        attempts,
+        None,
+    )
+    .await
+}
+
+async fn attempt_non_streaming_inner(
+    ordered: &[GatewayUpstreamProvider],
+    path: &str,
+    body: &[u8],
+    requested: Option<&str>,
+    client_headers: &HashMap<String, String>,
+    suppress_transport_failures: bool,
+    probe: Option<&ProbeCandidate>,
+    attempts: &mut Vec<AttemptLog>,
+    fallback: Option<&PoolFallbackStage>,
 ) -> HttpResponse {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -1374,17 +1404,16 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
             let upstream_protocol = attempt_target(&provider, requested, protocol)
                 .map(|(_, upstream)| upstream)
                 .unwrap_or(protocol);
-            let (outcome, log) =
-                attempt_candidate(
-                    &provider,
-                    path,
-                    body,
-                    &model,
-                    requested,
-                    upstream_protocol,
-                    client_headers,
-                )
-                .await;
+            let (outcome, log) = attempt_candidate(
+                &provider,
+                path,
+                body,
+                &model,
+                requested,
+                upstream_protocol,
+                client_headers,
+            )
+            .await;
             attempts.push(log);
             match outcome {
                 AttemptResult::Success(response) => {
@@ -1475,9 +1504,8 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                             provider: provider.clone(),
                             model: model.clone(),
                             attempts: 1,
-                            ready_at: Instant::now().checked_add(
-                                retry_delay.unwrap_or_else(|| default_retry_delay(1)),
-                            ),
+                            ready_at: Instant::now()
+                                .checked_add(retry_delay.unwrap_or_else(|| default_retry_delay(1))),
                             attempted_keys: HashSet::new(),
                         });
                     }
@@ -1494,9 +1522,8 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                     provider: provider.clone(),
                     model,
                     attempts: 1,
-                    ready_at: Instant::now().checked_add(
-                        retry_delay.unwrap_or_else(|| default_retry_delay(1)),
-                    ),
+                    ready_at: Instant::now()
+                        .checked_add(retry_delay.unwrap_or_else(|| default_retry_delay(1))),
                     attempted_keys: HashSet::new(),
                 });
             }
@@ -1547,29 +1574,23 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
             let upstream_protocol = attempt_target(&candidate.provider, requested, protocol)
                 .map(|(_, upstream)| upstream)
                 .unwrap_or(protocol);
-            let (outcome, log) =
-                attempt_candidate(
-                    &candidate.provider,
-                    path,
-                    body,
-                    &model,
-                    requested,
-                    upstream_protocol,
-                    client_headers,
-                )
-                .await;
+            let (outcome, log) = attempt_candidate(
+                &candidate.provider,
+                path,
+                body,
+                &model,
+                requested,
+                upstream_protocol,
+                client_headers,
+            )
+            .await;
             attempts.push(log);
             match outcome {
                 AttemptResult::Success(response) => {
                     if selected.probe {
                         settle_key_probe_success(&mut candidate.provider, &selected);
                     }
-                    settle_success(
-                        &mut health,
-                        &candidate.provider,
-                        requested,
-                        &model,
-                    );
+                    settle_success(&mut health, &candidate.provider, requested, &model);
                     health.apply();
                     return response;
                 }
@@ -1728,17 +1749,16 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                 // protocol so a converted probe reaches `/v1/messages`
                 // (REQ-005/AC-010).
                 let upstream_protocol = candidate.protocol;
-                let (outcome, log) =
-                    attempt_candidate(
-                        &provider,
-                        path,
-                        body,
-                        model,
-                        requested,
-                        upstream_protocol,
-                        client_headers,
-                    )
-                    .await;
+                let (outcome, log) = attempt_candidate(
+                    &provider,
+                    path,
+                    body,
+                    model,
+                    requested,
+                    upstream_protocol,
+                    client_headers,
+                )
+                .await;
                 attempts.push(log);
                 match outcome {
                     AttemptResult::Success(response) => {
@@ -1806,7 +1826,11 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                                 transport,
                                 &reason,
                             );
-                            record_provider_failure(&mut failures, &failure_label(&provider), reason);
+                            record_provider_failure(
+                                &mut failures,
+                                &failure_label(&provider),
+                                reason,
+                            );
                             last_capture = Some(ForwardCapture {
                                 provider_id: provider.id.clone(),
                                 provider_name: provider.name.clone(),
@@ -1827,7 +1851,12 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                             last_key_failure = Some(reason);
                             continue;
                         }
-                        health.record_probe_failure(&candidate.target, now_ts(), transport, &reason);
+                        health.record_probe_failure(
+                            &candidate.target,
+                            now_ts(),
+                            transport,
+                            &reason,
+                        );
                         record_provider_failure(&mut failures, &failure_label(&provider), reason);
                         last_capture = Some(ForwardCapture {
                             provider_id: provider.id.clone(),
@@ -1838,6 +1867,295 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
                         // The probe is never requeued; fall through to the existing
                         // exhausted path so the 502 envelope names the provider.
                         break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Distinct last-stage fallback: one pass after every
+    // regular candidate, its finite retries and the regular probe are exhausted,
+    // sharing this request's single key-probe allowance and never entering the
+    // primary weighted order. It owns no delayed retry cycle, so a failed
+    // fallback attempt only settles the real source and ends the request.
+    if let Some(stage) = fallback {
+        match stage {
+            PoolFallbackStage::Ready(provider_snapshot) => {
+                let mut provider = provider_snapshot.clone();
+                sync_key_runtime_marks(&mut provider);
+                if let Some((model, _)) = attempt_target(&provider, requested, protocol) {
+                    let upstream_protocol = attempt_target(&provider, requested, protocol)
+                        .map(|(_, upstream)| upstream)
+                        .unwrap_or(protocol);
+                    let mut attempted_keys: HashSet<String> = HashSet::new();
+                    loop {
+                        let Some(selected) = select_attempt_key(
+                            &provider,
+                            now_ts(),
+                            key_probe_used,
+                            &attempted_keys,
+                        ) else {
+                            let reason = excluded_key_summary(&provider, request_has_enabled_key);
+                            record_provider_failure_if_absent(
+                                &mut failures,
+                                &failure_label(&provider),
+                                &reason,
+                            );
+                            break;
+                        };
+                        if selected.probe {
+                            key_probe_used = true;
+                        }
+                        if selected.ttl_cleared {
+                            clear_ttl_expired_key_runtime_state(&mut provider, &selected);
+                        }
+                        provider.attempt_key = selected.value.clone();
+                        let (outcome, log) = attempt_candidate(
+                            &provider,
+                            path,
+                            body,
+                            &model,
+                            requested,
+                            upstream_protocol,
+                            client_headers,
+                        )
+                        .await;
+                        attempts.push(log);
+                        match outcome {
+                            AttemptResult::Success(response) => {
+                                if selected.probe {
+                                    settle_key_probe_success(&mut provider, &selected);
+                                }
+                                settle_success(&mut health, &provider, requested, &model);
+                                health.apply();
+                                return response;
+                            }
+                            AttemptResult::ReturnToClient(response) => {
+                                health.apply();
+                                return response;
+                            }
+                            AttemptResult::Failure {
+                                transport,
+                                class,
+                                retry_delay,
+                                reason,
+                                key_failure,
+                                bare_rotation,
+                                pool_scope,
+                                ..
+                            } => {
+                                record_provider_failure(
+                                    &mut failures,
+                                    &failure_label(&provider),
+                                    reason.clone(),
+                                );
+                                last_capture = Some(ForwardCapture {
+                                    provider_id: provider.id.clone(),
+                                    provider_name: provider.name.clone(),
+                                    upstream_model: model.clone(),
+                                    ..Default::default()
+                                });
+                                if pool_scope {
+                                    if let Some(identity) = provider.pool_candidate.as_ref() {
+                                        cool_pool_candidate(identity, retry_delay);
+                                    }
+                                    break;
+                                }
+                                if selected.probe {
+                                    settle_key_probe_failure(
+                                        &mut provider,
+                                        &selected,
+                                        key_failure,
+                                        &reason,
+                                        now_ts(),
+                                    );
+                                    break;
+                                }
+                                if let Some(kind) = key_failure {
+                                    settle_key_failure(
+                                        &mut provider,
+                                        &selected,
+                                        kind,
+                                        &reason,
+                                        now_ts(),
+                                    );
+                                    attempted_keys.insert(selected.id.clone());
+                                    continue;
+                                }
+                                if bare_rotation {
+                                    attempted_keys.insert(selected.id.clone());
+                                    continue;
+                                }
+                                settle_failure(
+                                    &mut health,
+                                    &provider,
+                                    requested,
+                                    &model,
+                                    class,
+                                    &reason,
+                                    transport,
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            PoolFallbackStage::Probe(candidate) => {
+                if _probe_guard.is_none() {
+                    match try_acquire_probe_guard(&candidate.target) {
+                        Some(guard) => _probe_guard = Some(guard),
+                        None => {
+                            record_provider_failure_if_absent(
+                                &mut failures,
+                                &failure_label(&candidate.provider),
+                                "another request is already probing this fallback mapping",
+                            );
+                        }
+                    }
+                }
+                if _probe_guard.is_some() {
+                    let mut provider = candidate.provider.clone();
+                    sync_key_runtime_marks(&mut provider);
+                    let model = candidate.upstream_model.clone();
+                    let mut probe_attempted: HashSet<String> = HashSet::new();
+                    let mut last_key_failure: Option<String> = None;
+                    loop {
+                        let Some(selected) = select_attempt_key(
+                            &provider,
+                            now_ts(),
+                            key_probe_used,
+                            &probe_attempted,
+                        ) else {
+                            if let Some(reason) = last_key_failure.take() {
+                                health.record_probe_failure(
+                                    &candidate.target,
+                                    now_ts(),
+                                    false,
+                                    &reason,
+                                );
+                                record_provider_failure(
+                                    &mut failures,
+                                    &failure_label(&provider),
+                                    reason,
+                                );
+                            }
+                            break;
+                        };
+                        if selected.probe {
+                            key_probe_used = true;
+                        }
+                        if selected.ttl_cleared {
+                            clear_ttl_expired_key_runtime_state(&mut provider, &selected);
+                        }
+                        provider.attempt_key = selected.value.clone();
+                        let (outcome, log) = attempt_candidate(
+                            &provider,
+                            path,
+                            body,
+                            &model,
+                            requested,
+                            candidate.protocol,
+                            client_headers,
+                        )
+                        .await;
+                        attempts.push(log);
+                        match outcome {
+                            AttemptResult::Success(response) => {
+                                if selected.probe {
+                                    settle_key_probe_success(&mut provider, &selected);
+                                }
+                                health.record_probe_success(&candidate.target);
+                                health.apply();
+                                return response;
+                            }
+                            AttemptResult::ReturnToClient(response) => {
+                                let status = response.status;
+                                let reason = format!("HTTP {status} returned to client");
+                                if selected.probe {
+                                    settle_key_probe_failure(
+                                        &mut provider,
+                                        &selected,
+                                        None,
+                                        &reason,
+                                        now_ts(),
+                                    );
+                                }
+                                health.record_probe_failure(
+                                    &candidate.target,
+                                    now_ts(),
+                                    false,
+                                    &reason,
+                                );
+                                health.apply();
+                                return response;
+                            }
+                            AttemptResult::Failure {
+                                transport,
+                                reason,
+                                key_failure,
+                                retry_delay,
+                                pool_scope,
+                                ..
+                            } => {
+                                if pool_scope {
+                                    if let Some(identity) = provider.pool_candidate.as_ref() {
+                                        cool_pool_candidate(identity, retry_delay);
+                                    }
+                                    record_provider_failure(
+                                        &mut failures,
+                                        &failure_label(&provider),
+                                        reason,
+                                    );
+                                    break;
+                                }
+                                if selected.probe {
+                                    settle_key_probe_failure(
+                                        &mut provider,
+                                        &selected,
+                                        key_failure,
+                                        &reason,
+                                        now_ts(),
+                                    );
+                                    health.record_probe_failure(
+                                        &candidate.target,
+                                        now_ts(),
+                                        transport,
+                                        &reason,
+                                    );
+                                    record_provider_failure(
+                                        &mut failures,
+                                        &failure_label(&provider),
+                                        reason,
+                                    );
+                                    break;
+                                }
+                                if let Some(kind) = key_failure {
+                                    settle_key_failure(
+                                        &mut provider,
+                                        &selected,
+                                        kind,
+                                        &reason,
+                                        now_ts(),
+                                    );
+                                    probe_attempted.insert(selected.id.clone());
+                                    last_key_failure = Some(reason);
+                                    continue;
+                                }
+                                health.record_probe_failure(
+                                    &candidate.target,
+                                    now_ts(),
+                                    transport,
+                                    &reason,
+                                );
+                                record_provider_failure(
+                                    &mut failures,
+                                    &failure_label(&provider),
+                                    reason,
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -1861,7 +2179,10 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
 /// Server-Sent Events stream. Checked before any byte reaches the caller so a
 /// plain non-SSE body stays a retryable failure and can still switch.
 fn is_sse_response_chunk(content_type: &str, first_chunk: &[u8]) -> bool {
-    if !content_type.to_ascii_lowercase().contains("text/event-stream") {
+    if !content_type
+        .to_ascii_lowercase()
+        .contains("text/event-stream")
+    {
         return false;
     }
     if first_chunk.is_empty() {
@@ -1897,6 +2218,33 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
 ) -> Result<ForwardCapture, String> {
+    attempt_streaming_inner(
+        writer,
+        ordered,
+        path,
+        body,
+        requested,
+        client_headers,
+        suppress_transport_failures,
+        probe,
+        attempts,
+        None,
+    )
+    .await
+}
+
+async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    ordered: &[GatewayUpstreamProvider],
+    path: &str,
+    body: &[u8],
+    requested: Option<&str>,
+    client_headers: &HashMap<String, String>,
+    suppress_transport_failures: bool,
+    probe: Option<&ProbeCandidate>,
+    attempts: &mut Vec<AttemptLog>,
+    fallback: Option<&PoolFallbackStage>,
+) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
     // The caller's own boolean `stream_options.include_usage` (Chat ingress
@@ -1914,16 +2262,18 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     let mut remaining_wait = Duration::from_secs(120);
     let mut ordered_queue: VecDeque<RetryCandidate> = ordered
         .iter()
-        .filter_map(|provider| match attempt_target(provider, requested, protocol) {
-            Some((model, _)) => Some(RetryCandidate {
-                provider: provider.clone(),
-                model,
-                attempts: 0,
-                ready_at: None,
-                attempted_keys: HashSet::new(),
-            }),
-            None => None,
-        })
+        .filter_map(
+            |provider| match attempt_target(provider, requested, protocol) {
+                Some((model, _)) => Some(RetryCandidate {
+                    provider: provider.clone(),
+                    model,
+                    attempts: 0,
+                    ready_at: None,
+                    attempted_keys: HashSet::new(),
+                }),
+                None => None,
+            },
+        )
         .collect();
     // Whether this request has already used its single key probe.
     let mut key_probe_used = false;
@@ -1940,6 +2290,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     // candidate and bounded retry has failed. `_probe_guard` holds the
     // single-flight guard for the whole probe and releases it on return.
     let mut pending_probe: Option<ProbeCandidate> = probe.cloned();
+    // The configured fallback stage is taken only after every regular candidate,
+    // its finite retries and the regular probe are exhausted. Once taken, this
+    // request is in its fallback pass and never schedules another retry cycle.
+    let mut pending_fallback: Option<PoolFallbackStage> = fallback.cloned();
+    let mut fallback_active = false;
     // Last key-scoped failure reason of an in-probe rotation, used to re-arm the
     // probe cooldown through the existing probe-failure path when no usable key
     // remains.
@@ -1958,8 +2313,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     // A provider with no usable key and no eligible probe is never
                     // contacted; name it with its excluded-key summary and
                     // continue the request on the next candidate.
-                    let reason =
-                        excluded_key_summary(&candidate.provider, request_has_enabled_key);
+                    let reason = excluded_key_summary(&candidate.provider, request_has_enabled_key);
                     record_provider_failure_if_absent(
                         &mut failures,
                         &failure_label(&candidate.provider),
@@ -1981,8 +2335,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 ) else {
                     // No usable key remains for this retry candidate; name it
                     // with its excluded-key summary and drop it.
-                    let reason =
-                        excluded_key_summary(&candidate.provider, request_has_enabled_key);
+                    let reason = excluded_key_summary(&candidate.provider, request_has_enabled_key);
                     record_provider_failure_if_absent(
                         &mut failures,
                         &failure_label(&candidate.provider),
@@ -2034,6 +2387,98 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                     selected,
                     Some(probe_candidate.protocol),
                 )
+            } else if let Some(stage) = pending_fallback.take() {
+                // The regular stage is exhausted. The fallback receives one pass
+                // with the same request-wide key-probe allowance; no branch below
+                // reschedules this candidate for a delayed retry.
+                fallback_active = true;
+                match stage {
+                    PoolFallbackStage::Ready(snapshot) => {
+                        let mut provider = snapshot.clone();
+                        sync_key_runtime_marks(&mut provider);
+                        let Some((model, _)) = attempt_target(&provider, requested, protocol)
+                        else {
+                            record_provider_failure_if_absent(
+                                &mut failures,
+                                &failure_label(&provider),
+                                "fallback source cannot serve this endpoint",
+                            );
+                            continue;
+                        };
+                        let attempted_keys: HashSet<String> = HashSet::new();
+                        let Some(selected) = select_attempt_key(
+                            &provider,
+                            now_ts(),
+                            key_probe_used,
+                            &attempted_keys,
+                        ) else {
+                            let reason = excluded_key_summary(&provider, true);
+                            record_provider_failure_if_absent(
+                                &mut failures,
+                                &failure_label(&provider),
+                                &reason,
+                            );
+                            continue;
+                        };
+                        (
+                            RetryCandidate {
+                                provider,
+                                model,
+                                attempts: 0,
+                                ready_at: None,
+                                attempted_keys,
+                            },
+                            retries.len(),
+                            None,
+                            selected,
+                            None,
+                        )
+                    }
+                    PoolFallbackStage::Probe(candidate) => {
+                        if _probe_guard.is_none() {
+                            match try_acquire_probe_guard(&candidate.target) {
+                                Some(guard) => _probe_guard = Some(guard),
+                                None => {
+                                    record_provider_failure_if_absent(
+                                        &mut failures,
+                                        &failure_label(&candidate.provider),
+                                        "another request is already probing this fallback mapping",
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        let mut provider = candidate.provider.clone();
+                        sync_key_runtime_marks(&mut provider);
+                        let attempted_keys: HashSet<String> = HashSet::new();
+                        let Some(selected) = select_attempt_key(
+                            &provider,
+                            now_ts(),
+                            key_probe_used,
+                            &attempted_keys,
+                        ) else {
+                            record_provider_failure_if_absent(
+                                &mut failures,
+                                &failure_label(&provider),
+                                "fallback probe has no usable key",
+                            );
+                            continue;
+                        };
+                        (
+                            RetryCandidate {
+                                provider,
+                                model: candidate.upstream_model.clone(),
+                                attempts: 0,
+                                ready_at: None,
+                                attempted_keys,
+                            },
+                            retries.len(),
+                            Some(candidate.target.clone()),
+                            selected,
+                            Some(candidate.protocol),
+                        )
+                    }
+                }
             } else {
                 break;
             };
@@ -2204,8 +2649,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 // Quota-exhausted 429s count toward health but never requeue
                 // the same provider; compute before `error_message` is moved
                 // into the attempt log.
-                let retryable =
-                    is_retryable_with_message(class, status, error_message.as_deref());
+                let retryable = is_retryable_with_message(class, status, error_message.as_deref());
                 let key_failure = key_failure_kind(status, error_message.as_deref());
                 let bare_rotation = status == 429 && key_failure.is_none();
                 let error_type = extract_upstream_error_type(&bytes);
@@ -2401,8 +2845,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                             // and any TPS derivable from the cumulative output
                             // usage actually observed before it failed.
                             let (first_token_ms, avg_tps) = output_timing.timing(
-                                failed_usage
-                                    .and_then(|canonical| canonical.reported_output_tokens),
+                                failed_usage.and_then(|canonical| canonical.reported_output_tokens),
                             );
                             attempts.push(build_attempt_log(
                                 provider,
@@ -2517,9 +2960,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 // bookkeeping.
                                 output_timing.finish_at(Instant::now());
                                 let native_usage = if native_messages {
-                                    let mut observer = native_sse
-                                        .take()
-                                        .expect("native Messages stream observer");
+                                    let mut observer =
+                                        native_sse.take().expect("native Messages stream observer");
                                     observer.finish();
                                     if !observer.is_success() {
                                         let reason = if observer.has_in_band_error() {
@@ -2549,24 +2991,16 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                             persist_key_runtime_state(
                                                 &provider.id,
                                                 &selected.id,
-                                                |key| {
-                                                    rearm_key_probe(
-                                                        key,
-                                                        None,
-                                                        &reason,
-                                                        now_ts(),
-                                                    )
-                                                },
+                                                |key| rearm_key_probe(key, None, &reason, now_ts()),
                                             );
                                         }
                                         health.apply();
                                         let canonical = observer.canonical_usage();
                                         let (first_token_ms, avg_tps) =
-                                            output_timing.timing(
-                                                canonical.and_then(|usage| {
+                                            output_timing
+                                                .timing(canonical.and_then(|usage| {
                                                     usage.reported_output_tokens
-                                                }),
-                                            );
+                                                }));
                                         attempts.push(build_attempt_log(
                                             provider,
                                             protocol,
@@ -2581,7 +3015,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                         ));
                                         if !observer.has_in_band_error() {
                                             if is_messages_path(path) {
-                                                let fragment = stream_error_event(reason, "api_error");
+                                                let fragment =
+                                                    stream_error_event(reason, "api_error");
                                                 let _ = writer.write_all(&fragment).await;
                                             } else {
                                                 let envelope = error_envelope(
@@ -2590,7 +3025,9 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                                     "upstream_stream_error",
                                                 );
                                                 let _ = writer
-                                                    .write_all(format!("data: {envelope}\n\n").as_bytes())
+                                                    .write_all(
+                                                        format!("data: {envelope}\n\n").as_bytes(),
+                                                    )
                                                     .await;
                                             }
                                             let _ = writer.flush().await;
@@ -2647,7 +3084,12 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                             "converted stream ended before completion".to_string()
                                         };
                                         if let Some(target) = &probe_target {
-                                            health.record_probe_failure(target, now_ts(), false, &reason);
+                                            health.record_probe_failure(
+                                                target,
+                                                now_ts(),
+                                                false,
+                                                &reason,
+                                            );
                                         } else {
                                             settle_failure(
                                                 &mut health,
@@ -2660,16 +3102,20 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                             );
                                         }
                                         if selected.probe {
-                                            persist_key_runtime_state(&provider.id, &selected.id, |key| {
-                                                rearm_key_probe(key, None, &reason, now_ts());
-                                            });
+                                            persist_key_runtime_state(
+                                                &provider.id,
+                                                &selected.id,
+                                                |key| {
+                                                    rearm_key_probe(key, None, &reason, now_ts());
+                                                },
+                                            );
                                         }
                                         health.apply();
                                         let failed_usage = usage.canonical_usage();
-                                        let (first_token_ms, avg_tps) = output_timing.timing(
-                                            failed_usage
-                                                .and_then(|canonical| canonical.reported_output_tokens),
-                                        );
+                                        let (first_token_ms, avg_tps) =
+                                            output_timing.timing(failed_usage.and_then(
+                                                |canonical| canonical.reported_output_tokens,
+                                            ));
                                         attempts.push(build_attempt_log(
                                             provider,
                                             protocol,
@@ -2691,13 +3137,12 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                             "server_error",
                                             "upstream_stream_error",
                                         );
-                                        let fragment = if path.split('?').next()
-                                            == Some("/v1/responses")
-                                        {
-                                            format!("event: error\ndata: {envelope}\n\n")
-                                        } else {
-                                            format!("data: {envelope}\n\n")
-                                        };
+                                        let fragment =
+                                            if path.split('?').next() == Some("/v1/responses") {
+                                                format!("event: error\ndata: {envelope}\n\n")
+                                            } else {
+                                                format!("data: {envelope}\n\n")
+                                            };
                                         let _ = writer.write_all(fragment.as_bytes()).await;
                                         let _ = writer.flush().await;
                                         capture.status = 502;
@@ -2737,10 +3182,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                                 // reported output count.
                                 let success_usage =
                                     native_usage.or_else(|| usage.canonical_usage());
-                                let (first_token_ms, avg_tps) = output_timing.timing(
-                                    success_usage
-                                        .and_then(|canonical| canonical.reported_output_tokens),
-                                );
+                                let (first_token_ms, avg_tps) =
+                                    output_timing
+                                        .timing(success_usage.and_then(|canonical| {
+                                            canonical.reported_output_tokens
+                                        }));
                                 attempts.push(build_attempt_log(
                                     provider,
                                     protocol,
@@ -2849,11 +3295,18 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                         mark_key_failure(key, kind, &reason, at);
                     });
                     let mut next_provider = candidate.provider.clone();
-                    if let Some(key) = next_provider.keys.iter_mut().find(|key| key.id == selected.id)
+                    if let Some(key) = next_provider
+                        .keys
+                        .iter_mut()
+                        .find(|key| key.id == selected.id)
                     {
                         mark_key_failure(key, kind, &reason, at);
                     }
-                    record_provider_failure(&mut failures, &failure_label(&provider), reason.clone());
+                    record_provider_failure(
+                        &mut failures,
+                        &failure_label(&provider),
+                        reason.clone(),
+                    );
                     probe_key_failure_reason = Some(reason);
                     pending_probe = Some(ProbeCandidate {
                         provider: next_provider,
@@ -2891,7 +3344,11 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             });
             record_provider_failure(&mut failures, &failure_label(&provider), reason.clone());
             let mut next_provider = candidate.provider.clone();
-            if let Some(key) = next_provider.keys.iter_mut().find(|key| key.id == selected.id) {
+            if let Some(key) = next_provider
+                .keys
+                .iter_mut()
+                .find(|key| key.id == selected.id)
+            {
                 mark_key_failure(key, kind, &reason, at);
             }
             candidate.provider = next_provider;
@@ -2923,7 +3380,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
                 // The pass exhausted every usable key: hand the failure to the
                 // bounded retry scheduler with the full budget.
                 candidate.attempts += 1;
-                if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+                if !fallback_active && retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
                     candidate.ready_at = Instant::now().checked_add(
                         retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
                     );
@@ -2943,7 +3400,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
             );
             record_provider_failure(&mut failures, &failure_label(&provider), reason);
             candidate.attempts += 1;
-            if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+            if !fallback_active && retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
                 candidate.ready_at = Instant::now().checked_add(
                     retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
                 );
@@ -3281,6 +3738,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 let messages_candidate = pool
                     .candidates
                     .iter()
+                    .chain(pool.fallback.iter())
                     .any(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages);
                 // Validate the clean portable body with only this ingress's
                 // recognized controls removed, so the existing adapters keep
@@ -3387,6 +3845,10 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     };
     let pool_probe = match &pool_plan {
         Some(PoolPlan::Ready { probe, .. }) => probe.clone(),
+        _ => None,
+    };
+    let pool_fallback = match &pool_plan {
+        Some(PoolPlan::Ready { fallback, .. }) => fallback.clone(),
         _ => None,
     };
     let is_pool = pool_ordered.is_some();
@@ -3556,7 +4018,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         if wants_stream {
             if is_messages_path(path) {
                 let mut native_writer = NativeHttpWriter::new(&mut writer);
-                attempt_streaming(
+                attempt_streaming_inner(
                     &mut native_writer,
                     &ordered,
                     path,
@@ -3566,10 +4028,11 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     suppress_transport_failures,
                     probe.as_ref(),
                     &mut attempts,
+                    pool_fallback.as_ref(),
                 )
                 .await
             } else {
-                attempt_streaming(
+                attempt_streaming_inner(
                     &mut writer,
                     &ordered,
                     path,
@@ -3579,11 +4042,12 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     suppress_transport_failures,
                     probe.as_ref(),
                     &mut attempts,
+                    pool_fallback.as_ref(),
                 )
                 .await
             }
         } else {
-            let mut response = attempt_non_streaming(
+            let mut response = attempt_non_streaming_inner(
                 &ordered,
                 path,
                 &request.body,
@@ -3592,6 +4056,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 suppress_transport_failures,
                 probe.as_ref(),
                 &mut attempts,
+                pool_fallback.as_ref(),
             )
             .await;
             let status = response.status;
@@ -3602,10 +4067,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 }
             }
             write_response(&mut writer, response).await?;
-            Ok(ForwardCapture {
-                status,
-                ..capture
-            })
+            Ok(ForwardCapture { status, ..capture })
         }
     };
     let outcome: Option<Result<ForwardCapture, String>> = tokio::select! {
@@ -3633,7 +4095,11 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             // probe-only request never read a binding, so it settles none.
             if !probe_only && !is_pool {
                 let served = capture.provider_id.trim();
-                let served = if served.is_empty() { None } else { Some(served) };
+                let served = if served.is_empty() {
+                    None
+                } else {
+                    Some(served)
+                };
                 session_affinity()
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
@@ -3657,13 +4123,27 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     hold_admission,
                     capture.pool_candidate.as_ref(),
                 ) {
+                    // A fallback delivery never becomes the next turn's preferred
+                    // source. It closes any stale primary hold instead of
+                    // publishing a fallback preference; a healthy regular success
+                    // keeps the existing continuation behavior.
+                    let served_is_fallback = config
+                        .model_pools
+                        .iter()
+                        .find(|pool| pool.id.trim() == identity.pool_id.trim())
+                        .is_some_and(|pool| is_configured_fallback(pool, identity));
+                    let record_tool_ids: &[String] = if served_is_fallback {
+                        &[]
+                    } else {
+                        &capture.served_tool_ids
+                    };
                     pool_context_hold::record(
                         scope,
                         admission,
                         history,
                         identity,
                         &capture.endpoint,
-                        &capture.served_tool_ids,
+                        record_tool_ids,
                     );
                 }
             }
@@ -3870,18 +4350,15 @@ fn build_usage_log_row(
 ) -> UsageLogRecord {
     let timestamp_ms = now_millis();
     let tokens = usage.unwrap_or_default();
-    let (amount, cost_breakdown) = match match_price_for_provider(
-        provider_id,
-        upstream_model,
-        &config.model_prices,
-    ) {
-        Some(price) => {
-            let (amount, breakdown) =
-                compute_cost_at_time_with_breakdown(price, &tokens, timestamp_ms);
-            (Some(amount), Some(breakdown))
-        }
-        None => (None, None),
-    };
+    let (amount, cost_breakdown) =
+        match match_price_for_provider(provider_id, upstream_model, &config.model_prices) {
+            Some(price) => {
+                let (amount, breakdown) =
+                    compute_cost_at_time_with_breakdown(price, &tokens, timestamp_ms);
+                (Some(amount), Some(breakdown))
+            }
+            None => (None, None),
+        };
     UsageLogRecord {
         timestamp_ms,
         local_model: local_model.to_string(),

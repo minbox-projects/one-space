@@ -1019,6 +1019,22 @@ pub struct UsageProviderRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageProviderModelRow {
+    pub local_model: String,
+    #[serde(flatten)]
+    pub metrics: UsageMetrics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageProviderStatsRow {
+    pub provider_id: String,
+    pub provider_name: String,
+    #[serde(flatten)]
+    pub metrics: UsageMetrics,
+    pub models: Vec<UsageProviderModelRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageModelRow {
     pub local_model: String,
     #[serde(flatten)]
@@ -1043,6 +1059,8 @@ pub struct UsageStats {
     pub totals: UsageMetrics,
     pub buckets: Vec<UsageBucketRow>,
     pub models: Vec<UsageModelRow>,
+    #[serde(default)]
+    pub providers: Vec<UsageProviderStatsRow>,
     #[serde(default)]
     pub unpriced_items: Vec<UnpricedUsageItem>,
 }
@@ -1094,12 +1112,19 @@ pub(in crate::ai_gateway) const ELIGIBLE_ROW_SQL: &str = "result = 'success' \
     AND cache_accounting_valid = 1 \
     AND (input_tokens + cache_read_tokens + cache_write_tokens) > 0";
 
-/// SQL predicate selecting an unpriced billable row (REQ-003): a missing amount
-/// with a readable upstream model that is either successful or carries recorded
-/// total tokens. The metric projection and the migration backfill share it.
+/// SQL predicate selecting an unpriced billable row: a missing amount with a
+/// readable upstream model that is either successful or carries recorded total
+/// tokens. Free models are excluded because they are expected to have no
+/// configured price: an upstream id ending in `-free` or `:free`, or a local
+/// model using the `zen-free-<slug>` naming convention. Names that merely
+/// contain `free` and paid upstreams behind a free-sounding local alias stay
+/// unpriced. The metric projection and provider daily history share it.
 pub(in crate::ai_gateway) const UNPRICED_ROW_SQL: &str = "amount IS NULL \
     AND upstream_model <> '' \
-    AND (result = 'success' OR total_tokens > 0)";
+    AND (result = 'success' OR total_tokens > 0) \
+    AND lower(trim(upstream_model)) NOT LIKE '%-free' \
+    AND lower(trim(upstream_model)) NOT LIKE '%:free' \
+    AND lower(trim(local_model)) NOT LIKE 'zen-free-%'";
 
 /// The shared metric projection, in [`metrics_from_row`] order. The final four
 /// aggregates are the additive cache fields; the percentage is derived from the
@@ -2140,6 +2165,9 @@ impl UsageLogStore {
             ))?;
             let mut model_metrics: HashMap<String, UsageMetrics> = HashMap::new();
             let mut providers_by_model: HashMap<String, Vec<UsageProviderRow>> = HashMap::new();
+            let mut provider_totals: HashMap<(String, String), UsageMetrics> = HashMap::new();
+            let mut provider_models: HashMap<(String, String), Vec<UsageProviderModelRow>> =
+                HashMap::new();
             for row in grouped_statement
                 .query_map(params_from_iter(params.iter()), |row| {
                     let model = row.get::<_, String>(0)?;
@@ -2153,6 +2181,18 @@ impl UsageLogStore {
                     row.map_err(|error| error.to_string())?;
                 accumulate_metrics(model_metrics.entry(model.clone()).or_default(), &metrics);
                 if !provider_id.is_empty() {
+                    let provider_key = (provider_id.clone(), provider_name.clone());
+                    accumulate_metrics(
+                        provider_totals.entry(provider_key.clone()).or_default(),
+                        &metrics,
+                    );
+                    provider_models
+                        .entry(provider_key)
+                        .or_default()
+                        .push(UsageProviderModelRow {
+                            local_model: model.clone(),
+                            metrics,
+                        });
                     providers_by_model
                         .entry(model)
                         .or_default()
@@ -2184,11 +2224,44 @@ impl UsageLogStore {
                 });
             }
 
+            // Provider rows keep the stored identity split: the summary is
+            // ordered by total tokens, while each provider's models are ordered
+            // by their own token totals and local model id. Every aggregate
+            // comes from the same grouped scan above.
+            let mut provider_rows: Vec<((String, String), UsageMetrics)> =
+                provider_totals.into_iter().collect();
+            provider_rows.sort_by(|left, right| {
+                right
+                    .1
+                    .total_tokens
+                    .cmp(&left.1.total_tokens)
+                    .then_with(|| left.0.1.cmp(&right.0.1))
+            });
+            let mut providers = Vec::with_capacity(provider_rows.len());
+            for (provider_key, mut metrics) in provider_rows {
+                derive_cache_rate(&mut metrics);
+                let mut provider_model_rows =
+                    provider_models.remove(&provider_key).unwrap_or_default();
+                provider_model_rows.sort_by(|left, right| {
+                    right
+                        .metrics
+                        .total_tokens
+                        .cmp(&left.metrics.total_tokens)
+                        .then_with(|| left.local_model.cmp(&right.local_model))
+                });
+                providers.push(UsageProviderStatsRow {
+                    provider_id: provider_key.0,
+                    provider_name: provider_key.1,
+                    metrics,
+                    models: provider_model_rows,
+                });
+            }
+
             let mut unpriced_items = Vec::new();
             if totals.unpriced_count > 0 {
                 let mut unpriced_statement = query.prepare(&format!(
                      "SELECT provider_id, provider_name, local_model, upstream_model, COUNT(*)
-                      FROM usage_logs{stats_where} AND amount IS NULL AND upstream_model <> '' AND (result = 'success' OR total_tokens > 0)
+                      FROM usage_logs{stats_where} AND {UNPRICED_ROW_SQL}
                      GROUP BY provider_id, provider_name, local_model, upstream_model
                      ORDER BY COUNT(*) DESC, provider_name ASC, local_model ASC"
                 ))?;
@@ -2213,6 +2286,7 @@ impl UsageLogStore {
                 totals,
                 buckets,
                 models,
+                providers,
                 unpriced_items,
             })
         })

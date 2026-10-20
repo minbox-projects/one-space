@@ -15,9 +15,10 @@
 //! unrelated scope or a no-longer-eligible candidate returns to normal routing.
 
 use super::{
-    call_gateway, free_port, pool_key, pool_provider, spawn_mock_upstream, temp_home,
-    write_raw_gateway_config, Captured, CapturedLog, MockReply,
+    call_gateway, default_usage_store, free_port, pool_key, pool_provider, read_raw_gateway_config,
+    spawn_mock_upstream, temp_home, write_raw_gateway_config, Captured, CapturedLog, MockReply,
 };
+use crate::ai_gateway::commands::ai_gateway_model_pools_status;
 use crate::ai_gateway::model_pools::cool_pool_candidate;
 use crate::ai_gateway::pool_context_hold::{CallerHistory, HoldScope, HoldStore};
 use crate::ai_gateway::runtime_http::{read_http_request, start_server, stop_server};
@@ -5229,5 +5230,385 @@ fn recording_a_delivered_hold_copies_the_history_at_most_once() {
     assert!(
         copies <= 1,
         "retaining one delivered hold must copy the history at most once; observed {copies}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Boundary B RED: the configured fallback and the same-turn continuation
+// preference (AC-004 / AC-002)
+// ---------------------------------------------------------------------------
+
+/// AC-004 / AC-002: a recognized tool continuation whose regular candidates
+/// are all excluded is served by the configured fallback, and a fallback
+/// delivery never becomes the preferred candidate for a later continuation:
+/// once a regular candidate is eligible again it has priority and the
+/// fallback is not contacted.
+#[tokio::test]
+async fn pool_fallback_serves_a_continuation_without_becoming_its_preference() {
+    let _home = temp_home("pool-context-hold-fallback-stage");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let provider_f = format!("pf-{tag}");
+    let alias = format!("free-fallback-{tag}");
+    let session = format!("sess-fallback-{tag}");
+    let pool_id = format!("pool-fallback-{tag}");
+    let next = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_chat_tool_upstream(next.clone()).await;
+    let (url_b, log_b) = spawn_chat_tool_upstream(next.clone()).await;
+    let (url_f, log_f) = spawn_chat_tool_upstream(next.clone()).await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let provider_f_value = pool_provider(
+        &provider_f,
+        "Provider Fallback",
+        &url_f,
+        vec![pool_key("key-f", "Key F", "sk-f", true)],
+        vec![provider_mapping("local-f", "remote-f", "chat_completions")],
+    );
+    let pool = json!({
+        "id": pool_id,
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+        "fallback": pool_candidate(&provider_f, "local-f", "remote-f", "chat_completions", Some(1)),
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value, provider_f_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let mut messages = vec![json!({"role": "user", "content": "weather?"})];
+    for round in 0..3usize {
+        if round == 1 {
+            // Both regular candidates are excluded, so only the configured
+            // fallback can serve this recognized continuation.
+            cool_pool_candidate(
+                &PoolCandidateIdentity {
+                    pool_id: pool_id.clone(),
+                    provider_id: provider_a.clone(),
+                    local_model: "local-a".to_string(),
+                    upstream_model: "remote-a".to_string(),
+                    protocol: UpstreamProtocol::ChatCompletions,
+                    reasoning: None,
+                },
+                Some(Duration::from_secs(2)),
+            );
+            cool_pool_candidate(
+                &PoolCandidateIdentity {
+                    pool_id: pool_id.clone(),
+                    provider_id: provider_b.clone(),
+                    local_model: "local-b".to_string(),
+                    upstream_model: "remote-b".to_string(),
+                    protocol: UpstreamProtocol::ChatCompletions,
+                    reasoning: None,
+                },
+                Some(Duration::from_secs(2)),
+            );
+        }
+        if round == 2 {
+            // The regular candidates are eligible again, so an eligible
+            // regular candidate has priority over any fallback preference.
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+        }
+        let body = json!({
+            "model": alias,
+            "messages": messages.clone(),
+            "tools": weather_tools(),
+        });
+        let (status, text) = post_json(
+            port,
+            "/v1/chat/completions",
+            "Bearer local-key",
+            Some(&session),
+            None,
+            body,
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "round {round} must be served by a pool source: {text}"
+        );
+        let value = parse(&text);
+        assert_eq!(value["model"], alias, "the client must see the public alias");
+        let call = chat_call(&value);
+        let call_id = call["id"]
+            .as_str()
+            .expect("the response must carry a call id")
+            .to_string();
+        messages.push(json!({"role": "assistant", "content": null, "tool_calls": [call]}));
+        messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
+    }
+
+    // The excluded continuation was served by the configured fallback.
+    let fallback_round_one = with_results(&log_f, 1).map(|captured| forwarded_model(&captured));
+    assert_eq!(
+        fallback_round_one.as_deref(),
+        Some("remote-f"),
+        "the excluded continuation must be served by the fallback"
+    );
+    assert!(
+        with_results(&log_a, 1).is_none() && with_results(&log_b, 1).is_none(),
+        "an excluded regular candidate must not serve the continuation"
+    );
+    // The fallback never becomes the preferred source of a later continuation.
+    assert!(
+        with_results(&log_f, 2).is_none(),
+        "the fallback must not be preferred after a fallback delivery"
+    );
+    assert!(
+        with_results(&log_a, 2).is_some() || with_results(&log_b, 2).is_some(),
+        "an eligible regular candidate must have priority after the recovery"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// One Responses success body without a tool call.
+fn responses_success_body() -> Value {
+    json!({
+        "id": "resp_1",
+        "object": "response",
+        "model": "remote",
+        "status": "completed",
+        "output": [{"id": "m1", "type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": "ok", "annotations": []}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    })
+}
+
+/// Send one request over a raw socket and hand the open connection back, so
+/// the caller can drop it while the upstream attempt is still in flight.
+async fn raw_request(port: u16, path: &str, session: &str, body: Value) -> TcpStream {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect gateway");
+    let payload = serde_json::to_vec(&body).expect("encode body");
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: application/json\r\nauthorization: Bearer local-key\r\nx-opencode-session: {session}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        payload.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write headers");
+    stream.write_all(&payload).await.expect("write body");
+    stream.flush().await.expect("flush request");
+    stream
+}
+
+/// AC-007 / REQ-004: a client that disconnects while the configured fallback
+/// attempt is still in flight ends the request at once. The cancelled attempt
+/// is never replayed, no terminal row is written, no mapping or key health is
+/// published, the fallback stays eligible for the next request and no
+/// continuation preference is published for the cancelled delivery.
+#[tokio::test]
+async fn pool_cancelled_fallback_attempt_publishes_no_row_no_health_and_no_hold() {
+    let _home = temp_home("pool-fallback-cancelled-attempt");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_r = format!("pr-{tag}");
+    let provider_f = format!("pf-{tag}");
+    let alias = format!("free-fallback-cancel-{tag}");
+    let session = format!("sess-fallback-cancel-{tag}");
+    let pool_id = format!("pool-fallback-cancel-{tag}");
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    let (url_f, log_f) = {
+        let arrived = arrived.clone();
+        let release = release.clone();
+        let calls = calls.clone();
+        spawn_mock_upstream(move |_| {
+            let index = calls.fetch_add(1, Ordering::SeqCst);
+            if index == 0 {
+                MockReply::Withhold(
+                    arrived.clone(),
+                    release.clone(),
+                    200,
+                    responses_success_body(),
+                )
+            } else {
+                MockReply::Json(200, responses_success_body())
+            }
+        })
+        .await
+    };
+    let (url_r, log_r) =
+        spawn_mock_upstream(|_| MockReply::Json(200, responses_success_body())).await;
+
+    let provider_r_value = pool_provider(
+        &provider_r,
+        "Regular Provider",
+        &url_r,
+        vec![pool_key("key-r", "Key R", "sk-r", true)],
+        // The regular candidate's own mapping is added only after the
+        // cancellation, so the fallback is the only eligible source while its
+        // attempt is in flight.
+        vec![provider_mapping("local-other", "remote-other", "responses")],
+    );
+    let provider_f_value = pool_provider(
+        &provider_f,
+        "Fallback Provider",
+        &url_f,
+        vec![pool_key("key-f", "Key F", "sk-f", true)],
+        vec![provider_mapping("local-f", "remote-f", "responses")],
+    );
+    let pool = json!({
+        "id": pool_id,
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_r, "local-r", "remote-r", "responses", Some(1)),
+        ],
+        "fallback": pool_candidate(&provider_f, "local-f", "remote-f", "responses", Some(1)),
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_r_value, provider_f_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let client = raw_request(
+        port,
+        "/v1/responses",
+        &session,
+        json!({
+            "model": alias,
+            "input": [responses_user_item("weather?")],
+            "tools": responses_tools(),
+        }),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), arrived.notified())
+        .await
+        .expect("the fallback attempt must begin");
+    drop(client);
+    // Let the held upstream answer, so the cancelled attempt cannot linger.
+    release.notify_one();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        log_f.lock().expect("mock log").len(),
+        1,
+        "a cancelled fallback attempt must never be replayed: {}",
+        log_f.lock().expect("mock log").len()
+    );
+    let records = default_usage_store().all_records().unwrap_or_default();
+    assert!(
+        records.is_empty(),
+        "a cancelled fallback attempt must write no terminal row: {records:?}"
+    );
+    let stored = crate::ai_gateway::storage::read_config().expect("read the config");
+    let fallback_provider = stored
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_f)
+        .expect("the fallback provider must persist");
+    let fallback_mapping = fallback_provider
+        .mappings
+        .iter()
+        .find(|mapping| mapping.local_model == "local-f")
+        .expect("the fallback mapping must persist");
+    assert!(
+        !fallback_mapping.auto_disabled,
+        "a cancellation must not disable the fallback's mapping row: {fallback_mapping:?}"
+    );
+    assert_eq!(
+        fallback_mapping.consecutive_failures, 0,
+        "a cancellation must not count a mapping failure: {fallback_mapping:?}"
+    );
+    assert!(
+        !fallback_provider.keys[0].auto_marked,
+        "a cancellation must not mark the fallback's key: {:?}",
+        fallback_provider.keys[0]
+    );
+    let status_row = ai_gateway_model_pools_status()
+        .expect("read the pool status")
+        .into_iter()
+        .find(|status| status.id == pool_id)
+        .expect("the pool status must exist");
+    let fallback_status = status_row
+        .fallback
+        .expect("the pool must report its separate fallback status");
+    assert_eq!(
+        fallback_status.availability, "ready",
+        "a cancellation must not publish a false health state: {fallback_status:?}"
+    );
+
+    // The regular candidate becomes eligible again, so the continuation is
+    // served by the regular candidate. A hold published for the cancelled
+    // fallback attempt would have preferred the fallback here.
+    let mut recovered = read_raw_gateway_config();
+    recovered["providers"]
+        .as_array_mut()
+        .expect("providers must persist")
+        .iter_mut()
+        .find(|provider| provider["id"] == provider_r)
+        .expect("the regular provider must persist")["mappings"]
+        .as_array_mut()
+        .expect("mappings must persist")
+        .push(provider_mapping("local-r", "remote-r", "responses"));
+    write_raw_gateway_config(&recovered);
+
+    let (status, text) = post_json(
+        port,
+        "/v1/responses",
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({
+            "model": alias,
+            "input": [
+                responses_user_item("weather?"),
+                responses_function_call_item("call_cancelled"),
+                responses_function_call_output_item("call_cancelled"),
+            ],
+            "tools": responses_tools(),
+        }),
+    )
+    .await;
+    stop_server().await.expect("stop the listener");
+
+    assert_eq!(
+        status, 200,
+        "the continuation must be served by an eligible source: {text}"
+    );
+    assert_eq!(
+        log_r.lock().expect("mock log").len(),
+        1,
+        "the eligible regular candidate must serve the continuation: {}",
+        log_r.lock().expect("mock log").len()
+    );
+    assert_eq!(
+        log_f.lock().expect("mock log").len(),
+        1,
+        "a cancelled fallback attempt must not publish a continuation preference: {}",
+        log_f.lock().expect("mock log").len()
     );
 }

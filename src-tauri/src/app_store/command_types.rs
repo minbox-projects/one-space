@@ -165,6 +165,7 @@ pub(crate) fn session_to_legacy(record: &SessionRecord) -> Value {
         map.insert("favorited_at".into(), json!(ts));
     }
     map.insert("provider_id".into(), json!(record.provider_id));
+    map.insert("is_main_agent".into(), json!(record.is_main_agent));
     Value::Object(map)
 }
 

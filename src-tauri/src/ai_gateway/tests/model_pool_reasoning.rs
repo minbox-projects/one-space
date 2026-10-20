@@ -3401,3 +3401,824 @@ fn pool_status_reports_static_reasoning_capability() {
         assert_eq!(high_row["total_candidates"], 3, "{entry}");
     });
 }
+
+// Boundary A RED (AC-001): raw fallback field must survive the typed round trip.
+#[test]
+fn pool_fallback_field_survives_reasoning_config_round_trip() {
+    super::with_temp_home("pool-fallback-reasoning-roundtrip", |_home| {
+        let provider = shared_provider();
+        let mut pool_value = pool(
+            "pool-fb",
+            "Fallback Pool",
+            "fallback-model",
+            Some("medium"),
+            vec![candidate("p-shared", "local-chat", "remote-chat", "chat_completions", Some(valid_chat_reasoning()))],
+        );
+        pool_value["fallback"] = candidate("p-shared", "local-resp", "remote-resp", "responses", None);
+        let raw = config_with(vec![provider], vec![scoped_price("remote-chat")], vec![pool_value]);
+        write_raw_gateway_config(&raw);
+
+        crate::ai_gateway::storage::modify_config::<()>(|config| {
+            config.keys.push(super::key_named("k-extra", "extra-value"));
+            Ok((true, ()))
+        })
+        .expect("write must succeed");
+
+        let after = read_raw_gateway_config();
+        let pool = pool_of(&after, "pool-fb");
+        assert_eq!(pool["fallback"]["upstream_model"], "remote-resp");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Boundary A RED: the static reasoning catalog over the configured union of
+// regular candidates and the optional fallback (AC-005 / AC-009)
+// ---------------------------------------------------------------------------
+
+/// AC-005 / AC-009 RED: a pool whose *fallback alone* declares a reasoning
+/// preference must advertise that preference through the shared static
+/// catalog, while the regular candidate rows and their readiness stay
+/// regular-only and the fallback's own resolved status stays separate.
+#[test]
+fn pool_fallback_only_reasoning_support_is_advertised_in_pool_status() {
+    super::with_temp_home("pool-reasoning-fallback-union", |_home| {
+        let high = reasoning(
+            "openai_effort",
+            Some(vec!["high"]),
+            None,
+            false,
+            vec![enum_mapping("high", "high")],
+        );
+        let mut pool_value = pool(
+            "pool-union",
+            "Union",
+            "union-model",
+            Some("auto"),
+            vec![candidate(
+                "p-shared",
+                "local-chat",
+                "remote-chat",
+                "chat_completions",
+                None,
+            )],
+        );
+        pool_value["fallback"] = candidate(
+            "p-shared",
+            "local-resp",
+            "remote-resp",
+            "responses",
+            Some(high),
+        );
+        write_raw_gateway_config(&config_with(
+            vec![shared_provider()],
+            vec![],
+            vec![pool_value],
+        ));
+
+        let statuses = ai_gateway_model_pools_status().expect("pool status");
+        let value = serde_json::to_value(&statuses).expect("serialize pool status");
+        let entry = value
+            .as_array()
+            .expect("status array")
+            .iter()
+            .find(|pool| pool["id"] == "pool-union")
+            .unwrap_or_else(|| panic!("missing pool status row: {value}"))
+            .clone();
+
+        assert_eq!(
+            entry["reasoning_efforts"],
+            json!(["high"]),
+            "the fallback's declaration must be advertised by the shared catalog: {entry}"
+        );
+        let coverage = entry["reasoning_coverage"]
+            .as_array()
+            .expect("reasoning_coverage must persist");
+        let high_row = coverage
+            .iter()
+            .find(|row| row["effort"] == "high")
+            .expect("high coverage row");
+        assert_eq!(
+            high_row["mapped_candidates"], 1,
+            "the fallback's declaration counts once: {entry}"
+        );
+        let low_row = coverage
+            .iter()
+            .find(|row| row["effort"] == "low")
+            .expect("low coverage row");
+        assert_eq!(
+            low_row["mapped_candidates"], 0,
+            "an undeclared preference stays unsupported: {entry}"
+        );
+
+        // The fallback's own resolved status is separate from the regular rows.
+        assert_eq!(entry["fallback"]["provider_id"], "p-shared", "{entry}");
+        assert_eq!(entry["fallback"]["local_model"], "local-resp", "{entry}");
+        assert_eq!(entry["fallback"]["upstream_model"], "remote-resp", "{entry}");
+        let candidates = entry["candidates"]
+            .as_array()
+            .expect("regular candidate rows must persist");
+        assert_eq!(
+            candidates.len(),
+            1,
+            "the regular candidate list must stay regular-only: {entry}"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|row| row["local_model"] != "local-resp"),
+            "the fallback must not appear as a regular candidate: {entry}"
+        );
+    });
+}
+
+/// AC-005 / AC-009 RED: a concrete default reasoning effort that only the
+/// configured fallback can validly serve must be accepted by the public pool
+/// upsert, because the default is validated against the configured union of
+/// regular candidates and the fallback.
+#[test]
+fn pool_default_reasoning_effort_is_validated_against_the_configured_union() {
+    super::with_temp_home("pool-reasoning-fallback-default", |_home| {
+        write_raw_gateway_config(&config_with(vec![shared_provider()], vec![], vec![]));
+        let high = reasoning(
+            "openai_effort",
+            Some(vec!["high"]),
+            None,
+            false,
+            vec![enum_mapping("high", "high")],
+        );
+        let mut pool_value = pool(
+            "pool-default",
+            "Default",
+            "default-model",
+            Some("high"),
+            vec![candidate(
+                "p-shared",
+                "local-chat",
+                "remote-chat",
+                "chat_completions",
+                None,
+            )],
+        );
+        pool_value["fallback"] = candidate(
+            "p-shared",
+            "local-resp",
+            "remote-resp",
+            "responses",
+            Some(high),
+        );
+
+        let saved = upsert(pool_value)
+            .expect("a default effort served only by the fallback must be accepted");
+        assert!(
+            saved
+                .model_pools
+                .iter()
+                .any(|pool| pool.id == "pool-default"),
+            "the pool must persist: {saved:?}"
+        );
+        let after = read_raw_gateway_config();
+        let stored = pool_of(&after, "pool-default");
+        assert_eq!(stored["default_reasoning_effort"], "high", "{after}");
+        assert_eq!(stored["fallback"]["upstream_model"], "remote-resp", "{after}");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Boundary B RED: the configured fallback as a reasoning-capable source
+// (AC-005 / AC-009)
+//
+// The static catalog already spans the regular-plus-fallback union, so the
+// request-time classification and the native-control injection must span the
+// same union. A RED is an observable classification or injection difference:
+// a 400 instead of the served fallback, a 502 instead of the accepted
+// fallback-only effort, or a missing native control in the captured upstream
+// body.
+// ---------------------------------------------------------------------------
+
+/// AC-005 / AC-009: a concrete effort that only the configured fallback
+/// declares must be classified over the union, so the fallback serves the
+/// request and its own native control reaches the upstream body, while the
+/// regular candidate that declares nothing is never attempted.
+#[tokio::test]
+async fn pool_fallback_only_effort_injects_its_native_control_on_the_fallback_attempt() {
+    let _home = temp_home("pool-reasoning-fallback-native");
+    let port = free_port().await;
+    let tag = new_tag();
+    let alias = format!("free-fallback-native-{tag}");
+    let (url, log) = spawn_reasoning_upstream().await;
+
+    let mut pool_value = pool(
+        &format!("pool-fallback-native-{tag}"),
+        "Fallback Native",
+        &alias,
+        Some("auto"),
+        vec![candidate(
+            "p-shared",
+            "local-chat",
+            "remote-chat",
+            "chat_completions",
+            None,
+        )],
+    );
+    pool_value["fallback"] = candidate(
+        "p-shared",
+        "local-anth",
+        "remote-anth",
+        "anthropic_messages",
+        Some(reasoning(
+            "anthropic_effort_inherit",
+            Some(vec!["high"]),
+            None,
+            false,
+            vec![enum_mapping("high", "high")],
+        )),
+    );
+    write_raw_gateway_config(&http_config(
+        port,
+        vec![reasoning_provider(&url)],
+        vec![pool_value],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, text, body) = attempt(
+        port,
+        &log,
+        CHAT,
+        chat_body(&alias, json!({"reasoning_effort": "high"})),
+    )
+    .await;
+    let bodies = captured_bodies(&log);
+    stop_server().await.expect("stop the listener");
+
+    let mut failures: Vec<String> = Vec::new();
+    if status != 200 {
+        failures.push(format!(
+            "a fallback-only effort must be served by the fallback: {status}: {text}"
+        ));
+    }
+    if bodies.len() != 1 {
+        failures.push(format!(
+            "only the fallback may be attempted for a fallback-only effort: {bodies:?}"
+        ));
+    }
+    if let Some(body) = body {
+        if body.pointer("/output_config/effort") != Some(&json!("high")) {
+            failures.push(format!(
+                "the fallback's own native control must reach the upstream body: {body}"
+            ));
+        }
+    } else {
+        failures.push("no upstream attempt was captured".to_string());
+    }
+    assert!(
+        failures.is_empty(),
+        "fallback-only native control mismatches: {failures:#?}"
+    );
+}
+
+/// AC-005 / AC-009: a declared effort whose only declaration lives on a
+/// fallback whose source is currently unavailable keeps the existing
+/// declaration-without-a-valid-mapping classification, so the request is
+/// answered with the 502 unavailability envelope and no upstream is contacted.
+#[tokio::test]
+async fn pool_fallback_only_effort_without_a_valid_mapping_returns_502() {
+    let _home = temp_home("pool-reasoning-fallback-unavailable");
+    let port = free_port().await;
+    let tag = new_tag();
+    let alias = format!("free-fallback-unavailable-{tag}");
+    let (url, log) = spawn_reasoning_upstream().await;
+
+    // The provider serves the regular candidate only, so the fallback's own
+    // declared mapping has no currently valid source.
+    let provider = pool_provider(
+        "p-shared",
+        "Shared",
+        &url,
+        vec![pool_key("key-shared", "Shared", "sk-shared", true)],
+        vec![mapping("local-chat", "remote-chat", "chat_completions")],
+    );
+    let mut pool_value = pool(
+        &format!("pool-fallback-unavailable-{tag}"),
+        "Fallback Unavailable",
+        &alias,
+        Some("auto"),
+        vec![candidate(
+            "p-shared",
+            "local-chat",
+            "remote-chat",
+            "chat_completions",
+            None,
+        )],
+    );
+    pool_value["fallback"] = candidate(
+        "p-shared",
+        "local-anth",
+        "remote-anth",
+        "anthropic_messages",
+        Some(reasoning(
+            "anthropic_effort_inherit",
+            Some(vec!["high"]),
+            None,
+            false,
+            vec![enum_mapping("high", "high")],
+        )),
+    );
+    write_raw_gateway_config(&http_config(port, vec![provider], vec![pool_value]));
+    start_server(None).await.expect("start the listener");
+
+    let (status, text) = post_json(
+        port,
+        CHAT,
+        chat_body(&alias, json!({"reasoning_effort": "high"})),
+    )
+    .await;
+    let bodies = captured_bodies(&log);
+    stop_server().await.expect("stop the listener");
+
+    let mut failures: Vec<String> = Vec::new();
+    if status != 502 {
+        failures.push(format!(
+            "a declared effort without any valid mapping must be a 502: {status}: {text}"
+        ));
+    }
+    if error_code(&text) != "all_providers_unavailable" {
+        failures.push(format!(
+            "the unavailability code must be preserved: {}: {text}",
+            error_code(&text)
+        ));
+    }
+    if !bodies.is_empty() {
+        failures.push(format!(
+            "no ineligible upstream may be attempted: {bodies:?}"
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "fallback-only classification mismatches: {failures:#?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step 1 of `20261020-model-pool-default-fallback` (REQ-003/005; AC-005):
+// the configured union, the portable strict-tool preselection and the
+// Responses-ingress native control of a fallback-only preference.
+// ---------------------------------------------------------------------------
+
+/// One function tool whose `strict` control a native Messages adapter cannot
+/// carry.
+fn strict_tool() -> Value {
+    json!([{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"]
+            },
+            "strict": true,
+        }
+    }])
+}
+
+/// AC-005 / REQ-003: a stored Anthropic fallback participates in the portable
+/// strict-tool preselection exactly like an Anthropic regular candidate, so a
+/// `strict` function control is rejected before any upstream is contacted.
+#[tokio::test]
+async fn pool_stored_anthropic_fallback_rejects_a_strict_tool_before_any_upstream_attempt() {
+    let _home = temp_home("pool-reasoning-fallback-strict-tool");
+    let port = free_port().await;
+    let tag = new_tag();
+    let alias = format!("free-fallback-strict-{tag}");
+    let (url, log) = spawn_reasoning_upstream().await;
+
+    let mut pool_value = pool(
+        &format!("pool-fallback-strict-{tag}"),
+        "Fallback Strict",
+        &alias,
+        Some("auto"),
+        vec![candidate(
+            "p-shared",
+            "local-chat",
+            "remote-chat",
+            "chat_completions",
+            None,
+        )],
+    );
+    pool_value["fallback"] = candidate(
+        "p-shared",
+        "local-anth",
+        "remote-anth",
+        "anthropic_messages",
+        None,
+    );
+    write_raw_gateway_config(&http_config(
+        port,
+        vec![reasoning_provider(&url)],
+        vec![pool_value],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, text) = post_json(
+        port,
+        CHAT,
+        chat_body(&alias, json!({"tools": strict_tool()})),
+    )
+    .await;
+    let bodies = captured_bodies(&log);
+    stop_server().await.expect("stop the listener");
+
+    let mut failures: Vec<String> = Vec::new();
+    if status != 400 {
+        failures.push(format!(
+            "a strict tool must be rejected when the pool may select an Anthropic fallback: {status}: {text}"
+        ));
+    }
+    if !error_text(&text).contains("strict") {
+        failures.push(format!(
+            "the rejection must name the unrepresentable control: {text}"
+        ));
+    }
+    if !bodies.is_empty() {
+        failures.push(format!(
+            "the rejection must happen before any upstream attempt: {bodies:?}"
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "fallback strict-tool preselection mismatches: {failures:#?}"
+    );
+}
+
+/// AC-006 / REQ-003: a client error returned by a regular candidate keeps its
+/// original classification and ends the request, so the configured fallback is
+/// never entered after a `ReturnToClient` result.
+#[tokio::test]
+async fn pool_client_error_from_a_regular_candidate_ends_the_request_without_a_fallback_attempt() {
+    let _home = temp_home("pool-reasoning-fallback-return-to-client");
+    let port = free_port().await;
+    let tag = new_tag();
+    let alias = format!("free-fallback-return-{tag}");
+    let (url, log) = spawn_mock_upstream(|captured| {
+        if captured.path.ends_with("/chat/completions") {
+            MockReply::Json(
+                400,
+                json!({"error": {"message": "the client request is invalid", "type": "invalid_request_error"}}),
+            )
+        } else {
+            MockReply::Json(200, json!({"id": "ok", "choices": []}))
+        }
+    })
+    .await;
+
+    let mut pool_value = pool(
+        &format!("pool-fallback-return-{tag}"),
+        "Fallback Return",
+        &alias,
+        Some("auto"),
+        vec![candidate(
+            "p-shared",
+            "local-chat",
+            "remote-chat",
+            "chat_completions",
+            None,
+        )],
+    );
+    pool_value["fallback"] = candidate(
+        "p-shared",
+        "local-resp",
+        "remote-resp",
+        "responses",
+        None,
+    );
+    write_raw_gateway_config(&http_config(
+        port,
+        vec![reasoning_provider(&url)],
+        vec![pool_value],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, text) = post_json(
+        port,
+        CHAT,
+        chat_body(&alias, json!({"messages": [{"role": "user", "content": "hi"}]})),
+    )
+    .await;
+    let bodies = captured_bodies(&log);
+    stop_server().await.expect("stop the listener");
+
+    let mut failures: Vec<String> = Vec::new();
+    if status != 400 {
+        failures.push(format!(
+            "a client error must be returned to the caller unchanged: {status}: {text}"
+        ));
+    }
+    if error_code(&text) == "all_providers_unavailable" {
+        failures.push(format!(
+            "a client error must not be reclassified as an unavailability: {text}"
+        ));
+    }
+    if bodies.len() != 1 {
+        failures.push(format!(
+            "only the regular candidate may be attempted: {bodies:?}"
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "fallback return-to-client mismatches: {failures:#?}"
+    );
+}
+
+/// AC-005 / REQ-003: a fallback-only effort reaches the Responses ingress's
+/// own adapter with the fallback's native control, and the request's effective
+/// output cap is preserved on the wire.
+#[tokio::test]
+async fn pool_fallback_only_effort_reaches_the_responses_ingress_adapter_with_its_effective_cap() {
+    let _home = temp_home("pool-reasoning-fallback-responses");
+    let port = free_port().await;
+    let tag = new_tag();
+    let alias = format!("free-fallback-responses-{tag}");
+    let (url, log) = spawn_reasoning_upstream().await;
+
+    let mut pool_value = pool(
+        &format!("pool-fallback-responses-{tag}"),
+        "Fallback Responses",
+        &alias,
+        Some("auto"),
+        vec![candidate(
+            "p-shared",
+            "local-chat",
+            "remote-chat",
+            "chat_completions",
+            None,
+        )],
+    );
+    pool_value["fallback"] = candidate(
+        "p-shared",
+        "local-resp",
+        "remote-resp",
+        "responses",
+        Some(reasoning(
+            "openai_effort",
+            Some(vec!["high"]),
+            None,
+            false,
+            vec![enum_mapping("high", "high")],
+        )),
+    );
+    write_raw_gateway_config(&http_config(
+        port,
+        vec![reasoning_provider(&url)],
+        vec![pool_value],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let before = captured_len(&log);
+    let (status, text) = post_json(
+        port,
+        RESP,
+        responses_body(
+            &alias,
+            json!({"reasoning": {"effort": "high"}, "max_output_tokens": 2048}),
+        ),
+    )
+    .await;
+    let captured = log.lock().expect("mock log").clone();
+    stop_server().await.expect("stop the listener");
+
+    let mut failures: Vec<String> = Vec::new();
+    if status != 200 {
+        failures.push(format!(
+            "a fallback-only effort must be served by the fallback: {status}: {text}"
+        ));
+    }
+    if captured.len() != before + 1 {
+        failures.push(format!(
+            "only the fallback may be attempted for a fallback-only effort: {}",
+            captured.len()
+        ));
+    }
+    if let Some(entry) = captured.get(before) {
+        if !entry.path.ends_with("/responses") {
+            failures.push(format!(
+                "the fallback must reach the Responses adapter: {}",
+                entry.path
+            ));
+        }
+        let body: Value = serde_json::from_slice(&entry.body).unwrap_or(Value::Null);
+        if body.pointer("/reasoning/effort") != Some(&json!("high")) {
+            failures.push(format!(
+                "the fallback's own native control must reach the upstream body: {body}"
+            ));
+        }
+        if body.pointer("/max_output_tokens") != Some(&json!(2048)) {
+            failures.push(format!(
+                "the effective output cap must be preserved on the wire: {body}"
+            ));
+        }
+    } else {
+        failures.push("no upstream attempt was captured".to_string());
+    }
+    assert!(
+        failures.is_empty(),
+        "fallback Responses native control mismatches: {failures:#?}"
+    );
+}
+
+/// AC-005 / REQ-003: an `auto` preference injects no reasoning control on the
+/// fallback attempt, so the upstream body carries no reasoning field at all.
+#[tokio::test]
+async fn pool_auto_effort_injects_no_control_on_the_fallback_attempt() {
+    let _home = temp_home("pool-reasoning-fallback-auto");
+    let port = free_port().await;
+    let tag = new_tag();
+    let alias = format!("free-fallback-auto-{tag}");
+    let (url, log) = spawn_reasoning_upstream().await;
+
+    let mut pool_value = pool(
+        &format!("pool-fallback-auto-{tag}"),
+        "Fallback Auto",
+        &alias,
+        Some("auto"),
+        // The regular candidate references a mapping the provider does not
+        // own, so the fallback is the only eligible source of the request.
+        vec![candidate(
+            "p-shared",
+            "local-missing",
+            "remote-missing",
+            "chat_completions",
+            None,
+        )],
+    );
+    pool_value["fallback"] = candidate(
+        "p-shared",
+        "local-resp",
+        "remote-resp",
+        "responses",
+        Some(reasoning(
+            "openai_effort",
+            Some(vec!["high"]),
+            None,
+            false,
+            vec![enum_mapping("high", "high")],
+        )),
+    );
+    write_raw_gateway_config(&http_config(
+        port,
+        vec![reasoning_provider(&url)],
+        vec![pool_value],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let before = captured_len(&log);
+    let (status, text) = post_json(
+        port,
+        RESP,
+        responses_body(&alias, json!({"max_output_tokens": 2048})),
+    )
+    .await;
+    let captured = log.lock().expect("mock log").clone();
+    stop_server().await.expect("stop the listener");
+
+    let mut failures: Vec<String> = Vec::new();
+    if status != 200 {
+        failures.push(format!(
+            "the fallback must serve an auto preference: {status}: {text}"
+        ));
+    }
+    if captured.len() != before + 1 {
+        failures.push(format!(
+            "only the fallback may be attempted: {}",
+            captured.len()
+        ));
+    }
+    if let Some(entry) = captured.get(before) {
+        let body: Value = serde_json::from_slice(&entry.body).unwrap_or(Value::Null);
+        if body.get("reasoning").is_some() || body.get("reasoning_effort").is_some() {
+            failures.push(format!(
+                "an auto preference must inject no reasoning control: {body}"
+            ));
+        }
+    } else {
+        failures.push("no upstream attempt was captured".to_string());
+    }
+    assert!(
+        failures.is_empty(),
+        "fallback auto omission mismatches: {failures:#?}"
+    );
+}
+
+/// AC-005 / REQ-003: the union of regular candidates and the configured
+/// fallback keeps the existing classifications. A preference no declaration
+/// anywhere supports stays the field-named 400, and a valid manual budget that
+/// is not below the request's effective cap stays the output-limit 400 that
+/// names the cap field. Both are answered before any upstream attempt.
+#[tokio::test]
+async fn pool_fallback_reasoning_guards_keep_the_no_declaration_and_output_limit_classifications() {
+    let _home = temp_home("pool-reasoning-fallback-guards");
+    let port = free_port().await;
+    let tag = new_tag();
+    let undeclared_alias = format!("free-fallback-undeclared-{tag}");
+    let budget_alias = format!("free-fallback-budget-{tag}");
+    let (url, log) = spawn_reasoning_upstream().await;
+
+    let mut undeclared = pool(
+        &format!("pool-fallback-undeclared-{tag}"),
+        "Fallback Undeclared",
+        &undeclared_alias,
+        Some("auto"),
+        vec![candidate(
+            "p-shared",
+            "local-chat",
+            "remote-chat",
+            "chat_completions",
+            None,
+        )],
+    );
+    undeclared["fallback"] = candidate(
+        "p-shared",
+        "local-anth",
+        "remote-anth",
+        "anthropic_messages",
+        None,
+    );
+    let mut budget = pool(
+        &format!("pool-fallback-budget-{tag}"),
+        "Fallback Budget",
+        &budget_alias,
+        Some("auto"),
+        vec![candidate(
+            "p-shared",
+            "local-chat",
+            "remote-chat",
+            "chat_completions",
+            None,
+        )],
+    );
+    budget["fallback"] = candidate(
+        "p-shared",
+        "local-anth",
+        "remote-anth",
+        "anthropic_messages",
+        Some(reasoning(
+            "anthropic_manual_budget",
+            None,
+            Some((1024, 8192)),
+            false,
+            vec![budget_mapping("high", 4096)],
+        )),
+    );
+    write_raw_gateway_config(&http_config(
+        port,
+        vec![reasoning_provider(&url)],
+        vec![undeclared, budget],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let mut failures: Vec<String> = Vec::new();
+
+    // No declaration across the regular candidates plus the fallback keeps the
+    // existing unsupported-effort 400.
+    let (status, text) = post_json(
+        port,
+        RESP,
+        responses_body(&undeclared_alias, json!({"reasoning": {"effort": "high"}})),
+    )
+    .await;
+    if status != 400 || error_code(&text) != "unsupported_reasoning_effort" {
+        failures.push(format!(
+            "a preference no declaration supports must stay a 400: {status}: {text}"
+        ));
+    }
+
+    // A valid manual budget that is not below the effective cap keeps the
+    // output-limit 400 and names the cap field.
+    let (status, text) = post_json(
+        port,
+        RESP,
+        responses_body(&budget_alias, json!({"reasoning": {"effort": "high"}})),
+    )
+    .await;
+    if status != 400 || error_code(&text) != "reasoning_output_limit_incompatible" {
+        failures.push(format!(
+            "an incompatible manual budget must stay the output-limit 400: {status}: {text}"
+        ));
+    } else if !error_text(&text).contains("max_output_tokens") {
+        failures.push(format!(
+            "the output-limit error must name the effective cap field: {text}"
+        ));
+    }
+
+    let bodies = captured_bodies(&log);
+    stop_server().await.expect("stop the listener");
+    if !bodies.is_empty() {
+        failures.push(format!(
+            "an ineligible request must not reach an upstream: {bodies:?}"
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "fallback reasoning guard mismatches: {failures:#?}"
+    );
+}

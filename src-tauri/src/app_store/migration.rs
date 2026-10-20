@@ -266,6 +266,7 @@ pub(in crate::app_store) fn build_new_sessions_from_legacy() -> Result<SessionsS
             status: "active".to_string(),
             favorited_at: None,
             provider_id: None,
+            is_main_agent: true,
         })
         .collect();
     Ok(SessionsState {

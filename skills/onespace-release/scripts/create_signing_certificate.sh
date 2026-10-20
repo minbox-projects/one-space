@@ -91,7 +91,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -z "$keychain" ]; then
-  keychain="$(security default-keychain -d user 2>/dev/null | tr -d '"')"
+  keychain="$(security default-keychain -d user 2>/dev/null \
+    | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/')"
   if [ -z "$keychain" ]; then
     keychain="$HOME/Library/Keychains/login.keychain-db"
   fi

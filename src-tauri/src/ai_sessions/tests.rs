@@ -3783,6 +3783,7 @@ fn history_file_cache_revalidates_on_dependency_or_file_identity_change() {
             model_name: None,
             created_at_ms: 1,
             updated_at_ms: 2,
+            is_main_agent: true,
         })
     };
 

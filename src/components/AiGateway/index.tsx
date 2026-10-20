@@ -1811,6 +1811,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             (activeTab === "usage" && usageSubTab === "stats") ? (
               <UsageStatsPanel
                 isActive={activeTab === "usage" && usageSubTab === "stats"}
+                providers={config.providers}
               />
             ) : null}
           </div>
