@@ -60,22 +60,24 @@ Status: implemented
 - 流式观察现在在首个有意义事件处结束分帧工作：建立观测的事件仍被计入，而同一读取中的后续事件与之后的全部分片都不再分帧。首字时刻与整次尝试 TPS 保持其定义，首个输出前观察到的无终止符最后有效事件仍在结束时被识别。
 - 热查询路径按文件身份只打开、初始化并迁移一次真实数据库，重复的相同读取复用 prepared statements；被删除或被替换的文件会重新打开并初始化，而不是继续从旧句柄返回行。由于不缓存结果，新提交的行仍然可见。
 - 用量统计现在用一次分组扫描同时产出模型聚合与服务商行，服务商行经本地模型哈希查找组装；服务商历史在同一查询连接的同一读事务内读取 metadata 与汇总。
-- 验证：五个新回归通过，聚焦套件在 `--test-threads=1` 下通过 119 个测试（routing 15、pools 25、continuation 43、attempt policy 15、reasoning 21）。routing 模块的 15 个断言通过，但外层 shell 包装器在测试命令之后对只读 shell 变量赋值失败，因此不声称干净的包装器退出码。不声称端到端延迟、吞吐、缓存命中、成本或常驻内存改善；对比性能仍属独立测量。
+- 验证：五个新回归通过，聚焦套件在 `--test-threads=1` 下通过 119 个测试（routing 15、pools 25、continuation 43、attempt policy 15、reasoning 21）。routing 模块的 15 个断言通过，但外层 shell 包装器在测试命令之后对只读 shell 变量赋值失败，因此不声称干净的包装器退出码。这些聚焦计数本身不证明端到端延迟、吞吐、缓存命中、成本或常驻内存改善；对比测量记录如下。
 - 流式回归通过：网关测试在 `--test-threads=1` 下 179 个通过（输出计时 41、原生 Messages 11、Anthropic 转换 40、OpenAI 转换 44、池同轮延续 43）。未发现字节、事件、工具身份、用量、取消或整次尝试计时的等价性回归。不声称端到端延迟改善。
-- 数据库回归与聚焦套件通过：精确的查询复用回归通过，套件通过 usage store 18 个（另有 1 个既有 ignored）、provider usage 10 个、migration 30 个与 DeepSeek cache 20 个。第一次 migration 调用达到 600,000 ms 工具超时且没有测试结果；完全相同的重跑退出 0。计数器是线程局部的，因此未运行并行全套执行；写侧准备与进程级隔离不在这些计数器范围内。此处不声称最终性能达标；对比测量仍属独立工作。
+- 数据库回归与聚焦套件通过：精确的查询复用回归通过，套件通过 usage store 18 个（另有 1 个既有 ignored）、provider usage 10 个、migration 30 个与 DeepSeek cache 20 个。第一次 migration 调用在仅编译准备阶段达到 600,000 ms 工具超时且没有测试结果；完全相同的重跑完成 30/30 个 migration 测试并通过。计数器是线程局部的，因此未运行并行全套执行；写侧准备与进程级隔离不在这些计数器范围内。
 - 首字与整次尝试 TPS 的公开定义未被取代：[Gateway Request Latency: Observed First-Token and Generation TPS](../feature/2026-10-14-gateway-request-latency.md) 与 [Gateway Whole-Attempt Average TPS](../bug-fix/2026-10-16-gateway-whole-attempt-tps.md) 的定义、验证与持久化事实继续有效；本记录只增加「首个有意义事件后停止分帧」这一观察工作量事实。
 - Supersession：[Gateway Configuration Writes Serialize on One Lock and Reads Cache by File Identity](2026-09-25-gateway-config-write-serialization-and-read-cache.md) 被部分取代。其串行写锁、文件身份缓存、原子发布、迁移与无操作抑制继续有效；本记录把其每次读取的拥有式克隆替换为共享 `Arc` 交接。[Core Workflows Cleanup and Optimization](2026-10-09-core-workflows-cleanup-and-optimization.md) 在配置重读、池/历史拷贝与网关数据库连接事实层面被部分取代。其尝试策略抽取、串行结算、不冻结的逐次尝试重读、写连接、单请求事务、commit 后保留清理与日志失败隔离继续有效；本记录增加独立的查询连接、prepared statement 复用与单次扫描聚合。两条记录均保留并交叉链接；不做完整合并。
 - 并发的匹配冷启动或强制额度与 Go 用量查询现在只执行一次网络抓取，而 key、base URL 或有效策略不同的查询保持独立，各自取得自己的结果。
 - 失败的额度或 Go 用量查询会传递给当前加入者，但不留下快照条目，因此下一次查询会重试；被取消的 owner 以错误结算其跟随者，且不会滞留后续查询。
 - 内置服务商模板每进程只解析一次，而持久化同步与自定义模板仍然优先，模板同步顺序与结果不变。
-- 验证：12 个新增并发、身份隔离、失败重试与取消回归通过。聚焦套件在 `--test-threads=1` 下以退出码 0 通过：额度 38、Go 用量 26、模板 86、自动刷新 7、日重置 6、Claude 终端同步 14、模型池终端同步 15 与运行时生命周期 3。构建与产物锁等待被并发终端同步 Cargo 工作放大，因此未证明运行时回归；最终对比性能门槛仍待执行。
+- 验证：12 个新增并发、身份隔离、失败重试与取消回归通过。聚焦套件在 `--test-threads=1` 下以退出码 0 通过：额度 38、Go 用量 26、模板 86、自动刷新 7、日重置 6、Claude 终端同步 14、模型池终端同步 15 与运行时生命周期 3。构建与产物锁等待被并发终端同步 Cargo 工作放大，因此未证明运行时回归；最终对比门槛记录如下。
 - 无取代：[CommandCode Provider Cards Show Account Quota](../feature/2026-09-23-commandcode-provider-quota.md)、[OpenCode Go Provider Cards Show Usage](../feature/2026-09-24-opencode-go-provider-usage.md) 与 [Provider Templates Own Closed Strategies and Bind Providers by Template Id](2026-10-10-provider-template-bound-strategies.md) 保留其固定 key、缓存、渲染、绑定与持久化快照事实；本记录只增加在途合并与内置快照解析复用。
 - 等价在途读取现在只解析自一次调用：十事件配置突发产生两次配置、两次状态与两次池状态读取，且不读取用量或请求日志，而此前每个事件各读取一次。
 - 三十次隐藏轮询 tick 没有发起页面调用；恢复可见时作为单次连贯页面读取的一部分恰好执行一次统计读取，间隔追赶被消费而非重复。手动刷新仍启动新读取，失败读取不留下共享条目。
 - 今日失败数始终来自同一统计快照；面板不再为此发起分组日志查询，仅在统计不可用时回退到一次普通日志读取。
 - 已访问的重型页签或用量子视图只构造一次，并在切换页签时保留筛选、草稿、滚动/焦点与选择；非活动的 memo 化面板跳过行、候选与计数派生并复用 locale 格式化器。
 - 测试守卫现在断言首次访问边界与分组日志查询的缺失；fixture 新增仅为类型；两个导航前的模型池期望与一条过时的分组日志正请求断言被移除，因为交付的挂载与读取行为使其失效。
-- 验证：作用域 27 个测试文件通过 752 个测试、退出码 0，聚焦 `src/lib/aiGateway.test.ts` 通过 136 个，`npm run build` 转换 2,669 个模块用时 4.78 秒、退出码 0，18 个变更路径通过 ESLint，0 错误、44 个既有警告。性能基线文件与 runner 未改动；最终基线比较仍待执行，因此不声称端到端 UI 延迟或 CPU/RSS 改善，也未运行原生 GUI 或 Windows 检查。
+- 验证：作用域 27 个测试文件通过 752 个测试、退出码 0，聚焦 `src/lib/aiGateway.test.ts` 通过 136 个，`npm run build` 转换 2,669 个模块用时 4.78 秒、退出码 0，18 个变更路径通过 ESLint，0 错误、44 个既有警告。冻结基线 JSON 保持字节一致；测量 runner 仅比较侧的门禁选择修正与已批准的性能测试守卫和类型不影响指标、命令或阈值。端到端对比（包括已接受的有界 RSS 偏差）记录如下；未运行原生 GUI 或 Windows 检查。
 - 无进一步取代：共享运行时状态 store 与 `useVisibleInterval`/`useAppVisibility` 契约以及既有草稿安全运行时合并继续有效；本记录只增加页面级合并并消费间隔的一次追赶。
+- 最终对比：固定的 44 个服务/查询/管理用例与 6 个 UI 用例完成，每个用例 1 次冷 + 5 次热，每个 HTTP 或查询用例每趟至少 200 次操作，写入用例每趟 10,000 请求 × 3 尝试。请求处理改善 85.81%（27.2953125 ms 到 3.872021 ms 中位数），查询改善 72.02%（0.5727085 ms 到 0.160229 ms），UI 重复请求日志计数从 30 降到 0（100%），所有用例均在 P95 限内。唯一失败门禁是 frontend 聚合峰值 RSS：2,440,085,504 B 对 2,230,794,649.6 B 上限（基线 2,027,995,136 B，+20.32%）。因此运行仍为 incomplete，且非零退出仅由该 RSS 门禁导致。冻结基线为 `docs/ai-gateway-performance-baseline.json`，字节保真的最终报告为 `docs/ai-gateway-performance-final.json`，`docs/ai-gateway-performance.md` 记录范围、命令与证据。
+- 已接受的有界偏差：三次同会话整文件 ROOT 对 BASE 配对测得 frontend 聚合 +12.74%、+7.54% 与 +10.08%（上限 +10%；一对低于、两对边际超标），而同 BASE 代码对冻结基线 JSON 测得 +10.50% 到 +12.98%，隔离逐用例最终峰值更低（all tabs -3.68%、visible ticks -2.83%、3,650 天日历 -8.07%）。重复并发用例 3/3 次均在 P95 限内，direct-mock 对照未退化。用户接受此为有界偏差：不声称 RSS 目标达成，也未降低阈值。未发现可归因于本次改动的可复现产品回归；聚合值主要由 GC 与堆保留方差主导。
 
 

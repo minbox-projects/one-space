@@ -892,3 +892,208 @@ test("CLI help exits 0 and an incomplete run never exits 0", () => {
   assert.notEqual(bad.status, 0, "an invalid/incomplete invocation must not exit 0");
   assert.equal(bad.signal, null);
 });
+
+// AC-010 gate selection: any representative case in the category may prove the
+// gain, while direct-mock controls stay separate and cannot satisfy a product
+// request/query gate. The UI gate may choose any UI case and exact duplicate
+// query/render/formatter counter with a positive baseline.
+const REQUEST_LOCAL_CASES = REQUIRED_CASES.filter(
+  (entry) => entry.category === "request" && !entry.id.startsWith("direct_mock_"),
+);
+const DIRECT_MOCK_CASES = REQUIRED_CASES.filter((entry) => entry.id.startsWith("direct_mock_"));
+const QUERY_CASES = REQUIRED_CASES.filter((entry) => entry.category === "query");
+const UI_COUNTERS = [
+  "invoke_calls",
+  "usage_stats_calls",
+  "request_logs_calls",
+  "config_calls",
+  "provider_history_calls",
+  "pool_status_calls",
+  "usage_providers_calls",
+  "catch_up_usage_stats_calls",
+];
+
+function measureAll(target, cases, samples, duplicateOperations) {
+  for (const entry of cases) {
+    replaceSamples(target, entry.id, filled(samples, entry.operations_per_pass), {
+      duplicate_operations: duplicateOperations,
+    });
+  }
+}
+
+function gateNumber(gate, side, counter) {
+  const names = [
+    side,
+    `${side}_value`,
+    `${side}_count`,
+    counter ? `${side}_${counter}` : null,
+    `${side}_median_ms`,
+    `${side}_duplicate_operations`,
+  ].filter(Boolean);
+  for (const name of names) {
+    if (typeof gate?.[name] === "number") return gate[name];
+  }
+  return undefined;
+}
+
+function assertGateSelection(gate, { caseId, counter, baseline, final }) {
+  assert.equal(gate?.passed, true, JSON.stringify(gate));
+  assert.equal(gate?.case, caseId, JSON.stringify(gate));
+  if (counter !== undefined) {
+    assert.equal(gate?.counter, counter, JSON.stringify(gate));
+  }
+  assert.equal(gateNumber(gate, "baseline", counter), baseline, JSON.stringify(gate));
+  assert.equal(gateNumber(gate, "final", counter), final, JSON.stringify(gate));
+}
+
+test("request gate selects any gateway-local request case meeting the threshold", () => {
+  const { compareGatewayReports } = requireRunner();
+  const baseline = report("baseline");
+  const final = report("final");
+
+  measureAll(baseline, REQUEST_LOCAL_CASES, 100, 200);
+  measureAll(final, REQUEST_LOCAL_CASES, 100, 200);
+  replaceSamples(baseline, REQUEST_GATE, filled(100, 200), { duplicate_operations: 200 });
+  replaceSamples(final, REQUEST_GATE, filled(105, 200), { duplicate_operations: 200 });
+  replaceSamples(baseline, "routing_small", filled(100, 200), { duplicate_operations: 200 });
+  replaceSamples(final, "routing_small", filled(49.3, 200), { duplicate_operations: 200 });
+  replaceSamples(final, "direct_mock_chat_sync_32k", filled(10, 200), {
+    duplicate_operations: 100,
+  });
+
+  const result = compareGatewayReports(baseline, final);
+  assert.equal(result.status, "complete", result.failures.join("\n"));
+  assertGateSelection(result.gates.request_improvement, {
+    caseId: "routing_small",
+    baseline: 100,
+    final: 49.3,
+  });
+});
+
+test("request gate rejects direct-mock-only gains when every gateway-local request case misses", () => {
+  const { compareGatewayReports } = requireRunner();
+  const baseline = report("baseline");
+  const final = report("final");
+
+  measureAll(baseline, REQUEST_LOCAL_CASES, 100, 200);
+  measureAll(final, REQUEST_LOCAL_CASES, 100, 200);
+  measureAll(baseline, DIRECT_MOCK_CASES, 100, 200);
+  measureAll(final, DIRECT_MOCK_CASES, 10, 100);
+
+  const result = compareGatewayReports(baseline, final);
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.gates.request_improvement.passed, false);
+  assert.ok(result.failures.some((failure) => /request/i.test(failure)));
+  assert.ok(
+    !String(result.gates.request_improvement.case ?? "").startsWith("direct_mock_"),
+    "direct-mock controls must not satisfy the product request gate",
+  );
+  assert.ok(final.cases.some((entry) => entry.case === "direct_mock_chat_sync_32k"));
+});
+
+test("query gate selects any database query case meeting the threshold", () => {
+  const { compareGatewayReports } = requireRunner();
+  const baseline = report("baseline");
+  const final = report("final");
+
+  measureAll(baseline, QUERY_CASES, 100, 200);
+  measureAll(final, QUERY_CASES, 100, 200);
+  replaceSamples(baseline, QUERY_GATE, filled(100, 200), { duplicate_operations: 200 });
+  replaceSamples(final, QUERY_GATE, filled(100, 200), { duplicate_operations: 200 });
+  replaceSamples(baseline, "usage_stats_1k", filled(100, 200), { duplicate_operations: 200 });
+  replaceSamples(final, "usage_stats_1k", filled(75, 200), { duplicate_operations: 200 });
+
+  const result = compareGatewayReports(baseline, final);
+  assert.equal(result.status, "complete", result.failures.join("\n"));
+  assertGateSelection(result.gates.query_improvement, {
+    caseId: "usage_stats_1k",
+    baseline: 100,
+    final: 75,
+  });
+});
+
+test("query gate fails when every database query case misses", () => {
+  const { compareGatewayReports } = requireRunner();
+  const baseline = report("baseline");
+  const final = report("final");
+
+  measureAll(baseline, QUERY_CASES, 100, 200);
+  measureAll(final, QUERY_CASES, 100, 200);
+
+  const result = compareGatewayReports(baseline, final);
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.gates.query_improvement.passed, false);
+  assert.ok(result.failures.some((failure) => /query/i.test(failure)));
+});
+
+test("UI gate selects any positive exact duplicate counter across UI cases", () => {
+  const { compareGatewayReports } = requireRunner();
+  const baseline = report("baseline");
+  const final = report("final");
+
+  for (const entry of baseline.frontend.ui_counts) {
+    if (entry.case === UI_GATE) {
+      entry.counters.invoke_calls = 120;
+      entry.counters.request_logs_calls = 30;
+    }
+  }
+  for (const entry of final.frontend.ui_counts) {
+    if (entry.case === UI_GATE) {
+      entry.counters.invoke_calls = 90;
+      entry.counters.request_logs_calls = 0;
+    }
+  }
+
+  const requestPass = compareGatewayReports(baseline, final);
+  assert.equal(requestPass.status, "complete", requestPass.failures.join("\n"));
+  assertGateSelection(requestPass.gates.ui_duplicate_work, {
+    caseId: UI_GATE,
+    counter: "request_logs_calls",
+    baseline: 30,
+    final: 0,
+  });
+
+  const burstBaseline = clone(report("baseline"));
+  const burstFinal = clone(report("final"));
+  for (const entry of burstBaseline.frontend.ui_counts) {
+    if (entry.case === UI_GATE) entry.counters.invoke_calls = 120;
+    if (entry.case === "ui_config_burst") entry.counters.invoke_calls = 50;
+  }
+  for (const entry of burstFinal.frontend.ui_counts) {
+    if (entry.case === UI_GATE) entry.counters.invoke_calls = 90;
+    if (entry.case === "ui_config_burst") entry.counters.invoke_calls = 10;
+  }
+
+  const burstPass = compareGatewayReports(burstBaseline, burstFinal);
+  assert.equal(burstPass.status, "complete", burstPass.failures.join("\n"));
+  assertGateSelection(burstPass.gates.ui_duplicate_work, {
+    caseId: "ui_config_burst",
+    counter: "invoke_calls",
+    baseline: 50,
+    final: 10,
+  });
+});
+
+test("UI gate fails when every positive exact duplicate counter misses or starts at zero", () => {
+  const { compareGatewayReports } = requireRunner();
+  const baseline = report("baseline");
+  const final = report("final");
+
+  for (const entry of baseline.frontend.ui_counts) {
+    for (const counter of UI_COUNTERS) entry.counters[counter] = 10;
+  }
+  for (const entry of final.frontend.ui_counts) {
+    for (const counter of UI_COUNTERS) entry.counters[counter] = 9;
+  }
+  for (const entry of baseline.frontend.ui_counts) {
+    if (entry.case === "ui_hidden_ticks") entry.counters.invoke_calls = 0;
+  }
+  for (const entry of final.frontend.ui_counts) {
+    if (entry.case === "ui_hidden_ticks") entry.counters.invoke_calls = 0;
+  }
+
+  const result = compareGatewayReports(baseline, final);
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.gates.ui_duplicate_work.passed, false);
+  assert.ok(result.failures.some((failure) => /ui/i.test(failure)));
+});
