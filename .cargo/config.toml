@@ -1,0 +1,10 @@
+# Default local builds and tests to four jobs. An existing CARGO_BUILD_JOBS or
+# `cargo -j` value still wins because Cargo applies its command-line and
+# environment precedence before this config default.
+[build]
+jobs = 4
+
+# Default the test harness to four threads. `force = false` leaves an existing
+# RUST_TEST_THREADS value and harness `--test-threads` overrides in control.
+[env]
+RUST_TEST_THREADS = { value = "4", force = false }

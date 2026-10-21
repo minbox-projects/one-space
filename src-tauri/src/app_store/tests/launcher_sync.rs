@@ -1,6 +1,17 @@
 use super::*;
 use serde_json::json;
 
+fn set_modified_seconds_ago(path: &Path, seconds: u64) {
+    let timestamp = std::time::SystemTime::now()
+        .checked_sub(Duration::from_secs(seconds))
+        .expect("timestamp before now");
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open file to set mtime");
+    file.set_modified(timestamp).expect("set modified time");
+}
+
 fn launcher_item(
     id: &str,
     pinned: bool,
@@ -131,8 +142,9 @@ fn sync_directory_bidirectional_exports_when_local_is_newer() {
     fs::create_dir_all(&shared).expect("create shared");
 
     let rel = Path::new("repo").join("skill.md");
-    write_test_file(&shared.join(&rel), "shared-old");
-    sleep(Duration::from_secs(1));
+    let shared_path = shared.join(&rel);
+    write_test_file(&shared_path, "shared-old");
+    set_modified_seconds_ago(&shared_path, 60);
     write_test_file(&local.join(&rel), "local-new");
 
     let mut warnings = vec![];
@@ -154,8 +166,9 @@ fn sync_directory_bidirectional_imports_when_shared_is_newer() {
     fs::create_dir_all(&shared).expect("create shared");
 
     let rel = Path::new("meta").join("index.json");
-    write_test_file(&local.join(&rel), "local-old");
-    sleep(Duration::from_secs(1));
+    let local_path = local.join(&rel);
+    write_test_file(&local_path, "local-old");
+    set_modified_seconds_ago(&local_path, 60);
     write_test_file(&shared.join(&rel), "shared-new");
 
     let mut warnings = vec![];

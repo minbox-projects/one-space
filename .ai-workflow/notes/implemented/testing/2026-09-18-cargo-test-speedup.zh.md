@@ -18,7 +18,7 @@ Status: implemented
 - 在 `get_app_dir()` 后使用线程局部的 `cfg(test)` 应用目录 guard，为 72 个测试提供隔离，并新增并发隔离回归。不修改生产函数签名或生产路径解析。直接修改 HOME 或依赖全局 server 状态的测试仍串行；线程局部状态不能代替进程全局资源隔离。
 - 将五个计时测试迁至 Tokio paused 时间，使用三个到达间隔断言消除 auto-advance/I/O 计时波动，不弱化重试或退避语义。被测行为涉及真实 socket 时保留真实计时。12 个 file_sharing 测试已在 0.03 s 内完成，其 25 ms 真实 socket header guard 无需修改。约 5.5 s 的 blackhole 测试保留真实时间，因为 OS connect 行为不受 Tokio 虚拟时钟控制。
 - 按用户随后明确提出的要求，删除冗余慢测试 `end_to_end_below_threshold...`（约 7.9 s）。保留阈值单元覆盖及包含三次请求、18 次尝试的 E2E。为 MCP mock 响应补充 `Connection: close`。变更独立基线阶段共 581 例：新增一个并发回归、删除一个冗余测试，579 通过、两个既有 ignored；未新增 ignore。同期 main 变更新增 30 例，最终交付快照共 611 例，609 通过且保留相同的两个 ignored。这些数量是特定时点的证据，不是永久测试数量要求。
-- 保留 `[profile.test]` 的 `opt-level = 1`、`debug = 0`、`split-debuginfo = "off"`，以及 `[profile.test.package.sha2]` 的 `opt-level = 2`。密码学参数不变，包括 PBKDF2 的 100,000 次迭代，已核对 `src-tauri/src/crypto.rs` 中的 `PBKDF2_ITERATIONS`；优化不通过降低密码学工作因子实现。保持 `[lib] crate-type = ["staticlib", "cdylib", "rlib"]`。
+- 保留 `[profile.test]` 的 `opt-level = 1`、`debug = 0`、`split-debuginfo = "off"`，以及 `[profile.test.package.sha2]` 的 `opt-level = 2`。密码学参数不变，包括 PBKDF2 的 100,000 次迭代，已核对 `src-tauri/src/crypto.rs` 中的 `PBKDF2_ITERATIONS`；优化不通过降低密码学工作因子实现。保持 `[lib] crate-type = ["staticlib", "cdylib", "rlib"]`。当前 profile 另外将根 `OneSpace` 包设为 `opt-level = 2`，并默认本地构建使用四个 job 与四个测试线程；见 [Cargo test resource defaults](2026-10-21-cargo-test-resource-defaults.md)。
 
 ### Authorization record
 
@@ -81,7 +81,7 @@ paused 时钟模块证据：新 profile 下、模块迁移前，`cargo test --li
 
 分别报告 harness 与原始 wall 时间，在原始测量中保留争用，并在等价触发方式与缓存条件下比较暖增量编译。已完成的双轴审查和用户最终同意将原单例计时与增量改善缺口明确处置为已接受偏差，而非指标达标。已完成合并至 main `29b31c0` 及 root 最终验证。未建立 Linux/Windows 或冷编译提速结论。两个既有 ignored 测试仍是覆盖缺口，不是本次为提速新增的排除项。
 
-替代关系评估：此前授权的 proposed/implemented 检索未发现相关活动测试策略笔记；本记录不替代其他笔记。本次收尾仅更新交付事实，不改变决策或理由，也不引入新的替代关系。本次没有需要新增 feature 条目的模块边界、生产公共符号、索引路径或导航流程变化。本次收尾仅更新 owned worktree 的 `MEMORY.md` 与 root 单源 note 三件套；root `MEMORY.md` 留待后续 worktree 提交与集成。
+替代关系评估：此前授权的 proposed/implemented 检索未发现相关活动测试策略笔记，因此本记录交付时不替代其他笔记。后续 [Cargo test resource defaults](2026-10-21-cargo-test-resource-defaults.md) 记录部分替代本记录的 test profile 选择；本记录保留隔离、paused 时钟、测试删除与系统库决策及其历史测量与证据主张。本次没有需要新增 feature 条目的模块边界、生产公共符号、索引路径或导航流程变化。本次收尾仅更新 owned worktree 的 `MEMORY.md` 与 root 单源 note 三件套；root `MEMORY.md` 留待后续 worktree 提交与集成。
 
 ### References
 

@@ -555,7 +555,8 @@ fn opencode_history_merges_sqlite_v2_v1_and_legacy_json_with_priority() {
             directory TEXT NOT NULL,
             time_created INTEGER NOT NULL,
             time_updated INTEGER NOT NULL,
-            time_archived INTEGER
+            time_archived INTEGER,
+            parent_id TEXT
         );
         CREATE TABLE message (
             id TEXT PRIMARY KEY,
@@ -569,7 +570,8 @@ fn opencode_history_merges_sqlite_v2_v1_and_legacy_json_with_priority() {
             directory TEXT NOT NULL,
             time_created INTEGER NOT NULL,
             time_updated INTEGER NOT NULL,
-            time_archived INTEGER
+            time_archived INTEGER,
+            parent_id TEXT
         );
         CREATE TABLE session_message (
             id TEXT PRIMARY KEY,
@@ -748,7 +750,8 @@ fn opencode_history_does_not_fallback_when_v2_owner_is_filtered() {
             directory TEXT NOT NULL,
             time_created INTEGER NOT NULL,
             time_updated INTEGER NOT NULL,
-            time_archived INTEGER
+            time_archived INTEGER,
+            parent_id TEXT
         );
         CREATE TABLE message (
             id TEXT PRIMARY KEY,
@@ -762,7 +765,8 @@ fn opencode_history_does_not_fallback_when_v2_owner_is_filtered() {
             directory TEXT NOT NULL,
             time_created INTEGER NOT NULL,
             time_updated INTEGER NOT NULL,
-            time_archived INTEGER
+            time_archived INTEGER,
+            parent_id TEXT
         );
         CREATE TABLE session_message (
             id TEXT PRIMARY KEY,

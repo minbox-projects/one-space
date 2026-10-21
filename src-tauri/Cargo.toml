@@ -13,6 +13,14 @@ rust-version = "1.77.2"
 [lib]
 name = "onespace_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+# Backend behavior tests live in the library; it has no doctests to run.
+doctest = false
+
+# The desktop binary has no unit tests; backend coverage comes from the library.
+[[bin]]
+name = "OneSpace"
+path = "src/main.rs"
+test = false
 
 [build-dependencies]
 tauri-build = { version = "2.5.4", features = [] }
@@ -99,4 +107,9 @@ opt-level = 1
 
 # Keep the PBKDF2/SHA-2 hot path optimized even in test builds.
 [profile.test.package.sha2]
+opt-level = 2
+
+# Optimize this crate's monomorphized PBKDF2/HMAC code without rebuilding
+# dependencies at a higher level.
+[profile.test.package.OneSpace]
 opt-level = 2

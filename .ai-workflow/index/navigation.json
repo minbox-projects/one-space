@@ -5173,7 +5173,7 @@
       ],
       "module_root": "tooling",
       "owner_role": "backend",
-      "responsibility": "CLI 能力矩阵校验与网关脱敏校验脚本；`tools/measure-core-workflows.mjs` 用 node 内置模块运行 `core_workflows_perf` ignored 测试并解析 `CWF_METRIC` 行（cold + 5 warm，环境与维度，harness vs 原始 wall，缺失如实 not_measured）；`tools/diagnose-deepseek-cache.mjs`（临时、按需）用 Node 内置模块提供 `observe`（回环绑定并将字节原样转发到命令行给定的回环网关，只观察选中会话与模型的 `/v1/chat/completions` 与 `/chat/completions`，元数据白名单 JSONL 输出）与 `compare`（六个 `CACHE_DIAG_*` 环境变量、256 KiB 公开合成前缀、每条路径 2 轮 × 10（2 warmup + 8 测量）、最多 40 次 POST 无重试、输出元数据 `comparison` JSON、绝不自我证明账户等价）；`tools/measure-ai-gateway.mjs`（仅 Node 内置模块）按 44 个固定 request/query/management 用例与 6 个 UI 用例产出 `--phase baseline` / `--phase final --baseline <path>` 单份 JSON，区分进程冷/热、业务与 harness wall、实际 worker CPU/RSS，缺失或畸形指标使报告 `incomplete` 并以非零退出，行为回归见 `tools/measure-ai-gateway.test.mjs`",
+      "responsibility": "CLI 能力矩阵校验与网关脱敏校验脚本；`tools/measure-core-workflows.mjs` 用 node 内置模块运行 `core_workflows_perf` ignored 测试并解析 `CWF_METRIC` 行（cold + 5 warm，环境与维度，harness vs 原始 wall，缺失如实 not_measured）；`tools/diagnose-deepseek-cache.mjs`（临时、按需）用 Node 内置模块提供 `observe`（回环绑定并将字节原样转发到命令行给定的回环网关，只观察选中会话与模型的 `/v1/chat/completions` 与 `/chat/completions`，元数据白名单 JSONL 输出）与 `compare`（六个 `CACHE_DIAG_*` 环境变量、256 KiB 公开合成前缀、每条路径 2 轮 × 10（2 warmup + 8 测量）、最多 40 次 POST 无重试、输出元数据 `comparison` JSON、绝不自我证明账户等价）；`tools/measure-ai-gateway.mjs`（仅 Node 内置模块）按 44 个固定 request/query/management 用例与 6 个 UI 用例产出 `--phase baseline` / `--phase final --baseline <path>` 单份 JSON，区分进程冷/热、业务与 harness wall、实际 worker CPU/RSS，缺失或畸形指标使报告 `incomplete` 并以非零退出，行为回归见 `tools/measure-ai-gateway.test.mjs`；`.cargo/config.toml` 与 `src-tauri/Cargo.toml` 的测试资源默认值（4 个 job、4 个线程，独立可覆盖）与 test profile 也归属该工具链校验范围",
       "entries": [
         "tools/check-cli-matrix.sh"
       ],
@@ -5184,7 +5184,9 @@
         "tools/measure-ai-gateway.mjs",
         "tools/measure-ai-gateway.test.mjs",
         "tools/diagnose-deepseek-cache.mjs",
-        "tools/diagnose-deepseek-cache.test.mjs"
+        "tools/diagnose-deepseek-cache.test.mjs",
+        ".cargo/config.toml",
+        "src-tauri/Cargo.toml"
       ],
       "tests": [],
       "symbols": [],
@@ -5197,7 +5199,9 @@
         "tools/measure-ai-gateway.mjs",
         "tools/measure-ai-gateway.test.mjs",
         "tools/diagnose-deepseek-cache.mjs",
-        "tools/diagnose-deepseek-cache.test.mjs"
+        "tools/diagnose-deepseek-cache.test.mjs",
+        ".cargo/config.toml",
+        "src-tauri/Cargo.toml"
       ],
       "relations": [],
       "shared_entry": false
