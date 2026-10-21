@@ -65,6 +65,13 @@ hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }
 futures-util = "0.3"
 if-addrs = "0.15.0"
 tokio-util = { version = "0.7.19", features = ["io-util", "rt"] }
+x509-parser = "0.18.1"
+rustls = "0.23.46"
+tokio-rustls = "0.26.6"
+webpki-roots = "1.0.10"
+rustls-pki-types = "1.15.1"
+rcgen = "0.14.7"
+instant-acme = "0.8.5"
 
 [dev-dependencies]
 # `start_paused`/`pause`/`advance` for the AI Gateway retry timing tests.

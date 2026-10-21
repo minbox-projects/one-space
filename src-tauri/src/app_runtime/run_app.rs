@@ -2,7 +2,7 @@ use crate::{
     ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store, backup, cli_updates,
     config, file_sharing, http_client, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, sftp, short_link, skills,
-    ssh_tunnels, storage, subagents, version_detect, workspaces,
+    ssl_certificate, ssh_tunnels, storage, subagents, version_detect, workspaces,
 };
 use std::path::Path;
 use std::str::FromStr;
@@ -223,6 +223,17 @@ pub fn run() {
             sftp::sftp_upload_file,
             sftp::sftp_start_log_tail,
             sftp::sftp_stop_log_tail,
+            ssl_certificate::ssl_check_certificate,
+            ssl_certificate::ssl_watchlist_list,
+            ssl_certificate::ssl_watchlist_add,
+            ssl_certificate::ssl_watchlist_remove,
+            ssl_certificate::ssl_watchlist_check_all,
+            ssl_certificate::ssl_certificate_create_order,
+            ssl_certificate::ssl_certificate_doh_precheck,
+            ssl_certificate::ssl_certificate_verify_and_finalize,
+            ssl_certificate::ssl_certificate_list,
+            ssl_certificate::ssl_certificate_delete,
+            ssl_certificate::ssl_certificate_export,
             shortcuts_tray::update_shortcuts,
             shortcuts_tray::toggle_quick_ai_window,
             windows_data::hide_window,

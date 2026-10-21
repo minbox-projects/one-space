@@ -16,6 +16,7 @@ import { quickSftpTool } from "./plugins/quick-sftp";
 import { randomPasswordTool } from "./plugins/random-password";
 import { shortLinkTool } from "./plugins/short-link";
 import { snippetsTool } from "./plugins/snippets";
+import { sslCertificateTool } from "./plugins/ssl-certificate";
 import { sshServersTool } from "./plugins/ssh-servers";
 import { sshTunnelsTool } from "./plugins/ssh-tunnels";
 import type {
@@ -42,6 +43,7 @@ export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   jwtInspectorTool,
   curlPlaygroundTool,
   quickSftpTool,
+  sslCertificateTool,
   snippetsTool,
   notesTool,
 ];

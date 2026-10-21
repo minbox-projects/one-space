@@ -523,6 +523,12 @@ pub fn record_message_silent(app: &tauri::AppHandle, input: MessageCreateInput) 
     }
 }
 
+pub fn create_message_headless(input: MessageCreateInput) -> Result<MessageRecord, String> {
+    let _guard = store_lock().lock().map_err(|e| e.to_string())?;
+    let path = messages_path()?;
+    create_message_at_path(&path, current_retention_days(), input, now_ts())
+}
+
 pub fn cleanup_for_current_retention(app: tauri::AppHandle) -> Result<(), String> {
     let _guard = store_lock().lock().map_err(|e| e.to_string())?;
     let (messages, changed) = cleanup_current_path()?;
