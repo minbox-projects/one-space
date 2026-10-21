@@ -60,6 +60,10 @@ struct PoolCandidateKey {
 struct PoolSchedulerKey {
     candidate: PoolCandidateKey,
     ingress: &'static str,
+    /// `None` for the primary pool order; the stored fallback model id for the
+    /// fallback queue. A fallback source therefore never shares accounting with
+    /// the primary order or with another fallback model.
+    fallback_model: Option<String>,
 }
 
 fn candidate_key(pool_id: &str, identity: &PoolCandidateIdentity) -> PoolCandidateKey {
@@ -91,6 +95,20 @@ fn scheduler_key(
     PoolSchedulerKey {
         candidate: candidate_key(pool_id, identity),
         ingress,
+        fallback_model: None,
+    }
+}
+
+fn fallback_scheduler_key(
+    pool_id: &str,
+    identity: &PoolCandidateIdentity,
+    ingress: &'static str,
+    fallback_model: &str,
+) -> PoolSchedulerKey {
+    PoolSchedulerKey {
+        candidate: candidate_key(pool_id, identity),
+        ingress,
+        fallback_model: Some(fallback_model.trim().to_string()),
     }
 }
 
@@ -150,14 +168,13 @@ pub(in crate::ai_gateway) fn pool_provider_copy_count() -> usize {
 /// The plan for one request whose model is a current or retired pool alias.
 pub(in crate::ai_gateway) enum PoolPlan {
     /// The pool has at least one usable selected candidate (or an eligible
-    /// probe), or the configured fallback is the only reachable stage.
-    /// `ordered` is the pool SWRR order and never contains an ordinary or
-    /// unselected source; the fallback is carried separately and never enters
-    /// that order.
+    /// probe), or at least one reachable fallback source. `ordered` is the pool
+    /// SWRR order and never contains an ordinary or unselected source; the
+    /// fallback queue is carried separately and never enters that order.
     Ready {
         ordered: Vec<GatewayUpstreamProvider>,
         probe: Option<ProbeCandidate>,
-        fallback: Option<PoolFallbackStage>,
+        fallback: Vec<PoolFallbackStage>,
     },
     /// The alias fails closed before any ordinary route is considered.
     Fenced { message: String },
@@ -171,10 +188,10 @@ pub(in crate::ai_gateway) enum PoolPlan {
     },
 }
 
-/// One reachable configured fallback stage. A ready fallback is a single
-/// prepared source pass; a probe variant is the one shared half-open recovery
-/// attempt for an auto-disabled fallback mapping. Neither variant is part of the
-/// primary weighted order.
+/// One reachable fallback source. A ready source is a single prepared provider
+/// pass; a probe variant is the one shared half-open recovery attempt for an
+/// auto-disabled fallback mapping. Neither variant is part of the primary
+/// weighted order, and the request consumes the queue in stored model order.
 #[derive(Clone)]
 pub(in crate::ai_gateway) enum PoolFallbackStage {
     Ready(GatewayUpstreamProvider),
@@ -433,32 +450,24 @@ pub(in crate::ai_gateway) fn expand_fallback_model_in(
     expanded
 }
 
-/// Expand a pool's ordered fallback model list into the concatenated source
-/// list: every source of the first stored model precedes every source of the
-/// next.
-fn expand_pool_fallback_models(
+/// Expand a pool's ordered fallback model list into ordered per-model groups.
+/// Each group keeps the stored model id and the flattened candidate range, so
+/// every source of the first stored model precedes every source of the next.
+fn expand_pool_fallback_groups(
     config: &GatewayConfig,
     pool: &ModelPool,
-) -> Vec<ModelPoolCandidate> {
+) -> (Vec<(String, usize, usize)>, Vec<ModelPoolCandidate>) {
+    let mut groups = Vec::new();
     let mut expanded = Vec::new();
     for model in &pool.fallback_models {
-        expanded.extend(expand_fallback_model_in(&config.providers, model));
+        let model = model.trim().to_string();
+        let candidates = expand_fallback_model_in(&config.providers, &model);
+        let start = expanded.len();
+        let len = candidates.len();
+        expanded.extend(candidates);
+        groups.push((model, start, len));
     }
-    expanded
-}
-
-/// One expanded native Messages source from the ordered fallback list, used only
-/// as the transient pre-attempt protocol hint. `None` when no expanded fallback
-/// source uses that protocol.
-pub(in crate::ai_gateway) fn fallback_protocol_hint(
-    providers: &[GatewayUpstreamProvider],
-    pool: &ModelPool,
-) -> Option<ModelPoolCandidate> {
-    pool.fallback_models.iter().find_map(|model| {
-        expand_fallback_model_in(providers, model)
-            .into_iter()
-            .find(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages)
-    })
+    (groups, expanded)
 }
 
 /// Plan a pool request for `alias`. Returns `None` when the alias is neither a
@@ -503,7 +512,7 @@ pub(in crate::ai_gateway) fn plan_pool_request(
     // candidates and every auto-expanded fallback source. An `auto` preference
     // keeps every candidate and injects no control.
     let preference = super::reasoning::resolve_pool_preference(pool, request.requested);
-    let fallback_candidates = expand_pool_fallback_models(config, pool);
+    let (fallback_groups, fallback_candidates) = expand_pool_fallback_groups(config, pool);
     let mut natives: Vec<Option<PoolNativeReasoning>> = Vec::with_capacity(pool.candidates.len());
     let mut fallback_natives: Vec<Option<PoolNativeReasoning>> =
         Vec::with_capacity(fallback_candidates.len());
@@ -605,7 +614,7 @@ pub(in crate::ai_gateway) fn plan_pool_request(
             candidate.available && candidate.prepared.is_some() && candidate.native.is_some()
         })
         .collect();
-    let mut ordered = pool_weighted_order(&healthy, &pool.id, protocol.endpoint_path());
+    let mut ordered = pool_weighted_order(&healthy, &pool.id, protocol.endpoint_path(), None);
     // A selected mapping whose only usable-key state is an eligible quota-key
     // probe is appended after the healthy primaries (in candidate order), so its
     // at-most-one key probe stays reachable without consuming a primary slot.
@@ -631,22 +640,22 @@ pub(in crate::ai_gateway) fn plan_pool_request(
     // eligible, a selected auto-disabled mapping) is permitted per pool request.
     let probe = pool_probe(&resolved, alias, protocol, now);
     // The expanded fallback list is a distinct last stage: it is never appended
-    // to the primary weighted order or the primary probe. The request bridge uses
-    // the first reachable expanded source in stored model order; a ready source
-    // (or one whose only usable-key state is an eligible quota probe) is
-    // attempted after the regular stage, and a mapping probe is offered only
-    // while the regular stage has no probe of its own.
-    let fallback = first_fallback_stage(
+    // to the primary weighted order or the primary probe. Each stored model
+    // contributes its own SWRR order, and the groups stay concatenated so every
+    // source of an earlier model precedes every source of a later one. A mapping
+    // probe is offered only while the regular stage has no probe of its own.
+    let fallback = fallback_queue(
         config,
         pool,
         alias,
         protocol,
         &fallback_candidates,
         &fallback_natives,
+        &fallback_groups,
         probe.is_none(),
         now,
     );
-    if ordered.is_empty() && probe.is_none() && fallback.is_none() {
+    if ordered.is_empty() && probe.is_none() && fallback.is_empty() {
         return Some(PoolPlan::Fenced {
             message: pool_unavailable_message(alias, &resolved),
         });
@@ -713,13 +722,16 @@ fn pool_unavailable_message(alias: &str, resolved: &[ResolvedCandidate]) -> Stri
 /// (provider, original local/upstream pair and stored protocol) *and the ingress
 /// protocol*, so two pools, two same-provider models, and the Chat/Responses
 /// entries routing to the same stored candidate each own an independent cycle.
-/// An unavailable candidate is filtered before it can consume a slot. The
-/// returned primary candidate is first, followed by the remaining candidates in
-/// descending updated current-weight order.
+/// A `fallback_model` additionally isolates one stored fallback model's cycle
+/// from the primary order and from every other fallback model. An unavailable
+/// candidate is filtered before it can consume a slot. The returned primary
+/// candidate is first, followed by the remaining candidates in descending
+/// updated current-weight order.
 fn pool_weighted_order(
     candidates: &[&ResolvedCandidate],
     pool_id: &str,
     ingress: &'static str,
+    fallback_model: Option<&str>,
 ) -> Vec<GatewayUpstreamProvider> {
     if candidates.is_empty() {
         return Vec::new();
@@ -736,7 +748,12 @@ fn pool_weighted_order(
     }
     let keys: Vec<PoolSchedulerKey> = candidates
         .iter()
-        .map(|candidate| scheduler_key(pool_id, &candidate.identity, ingress))
+        .map(|candidate| match fallback_model {
+            Some(model) => {
+                fallback_scheduler_key(pool_id, &candidate.identity, ingress, model)
+            }
+            None => scheduler_key(pool_id, &candidate.identity, ingress),
+        })
         .collect();
     let tokens: Vec<String> = candidates
         .iter()
@@ -799,72 +816,117 @@ fn pool_weighted_order(
     ordered
 }
 
-/// Pick the single-stage fallback bridge from the ordered expanded sources.
+/// Build the ordered fallback queue from the stored model groups.
 ///
-/// Sources are considered in stored model order and then provider/mapping
-/// order. A usable source wins; when none is usable, the first auto-disabled
-/// source may lend the request-wide mapping probe, but only when the regular
-/// stage has no probe of its own.
-fn first_fallback_stage(
+/// Every stored model contributes its own equal-weight smooth weighted round
+/// robin order over its currently eligible sources, scoped to the pool, that
+/// fallback model and the ingress protocol. Sources whose only usable-key state
+/// is an eligible quota probe follow that model's ready sources, and the first
+/// auto-disabled mapping may lend the request-wide mapping probe while the
+/// regular stage has none. Groups stay concatenated, so a model's sources are
+/// all attempted before the next model becomes eligible.
+fn fallback_queue(
     config: &GatewayConfig,
     pool: &ModelPool,
     alias: &str,
     ingress: UpstreamProtocol,
     candidates: &[ModelPoolCandidate],
     natives: &[Option<PoolNativeReasoning>],
+    groups: &[(String, usize, usize)],
     probe_allowed: bool,
     now: u64,
-) -> Option<PoolFallbackStage> {
-    let mut probe_source: Option<ResolvedCandidate> = None;
-    for (candidate, native) in candidates.iter().zip(natives.iter()) {
-        let resolved = resolve_candidate(
-            config,
-            pool,
-            alias,
-            candidate,
-            Some(ingress),
-            native.clone(),
-            now,
-        );
-        if resolved.native.is_none() {
+) -> Vec<PoolFallbackStage> {
+    let mut queue = Vec::new();
+    let mut mapping_probe_used = !probe_allowed;
+    for (model, start, len) in groups {
+        let end = (*start).saturating_add(*len).min(candidates.len());
+        let Some(group_candidates) = candidates.get(*start..end) else {
+            continue;
+        };
+        let Some(group_natives) = natives.get(*start..end) else {
+            continue;
+        };
+        let resolved: Vec<ResolvedCandidate> = group_candidates
+            .iter()
+            .zip(group_natives.iter())
+            .map(|(candidate, native)| {
+                resolve_candidate(
+                    config,
+                    pool,
+                    alias,
+                    candidate,
+                    Some(ingress),
+                    native.clone(),
+                    now,
+                )
+            })
+            .collect();
+        let healthy: Vec<&ResolvedCandidate> = resolved
+            .iter()
+            .filter(|candidate| {
+                candidate.available && candidate.prepared.is_some() && candidate.native.is_some()
+            })
+            .collect();
+        for prepared in pool_weighted_order(
+            &healthy,
+            &pool.id,
+            ingress.endpoint_path(),
+            Some(model.as_str()),
+        ) {
+            queue.push(PoolFallbackStage::Ready(prepared));
+        }
+        for candidate in &resolved {
+            if candidate.available
+                || candidate.availability != "no_usable_key"
+                || candidate.prepared.is_none()
+                || candidate.native.is_none()
+            {
+                continue;
+            }
+            let Some(prepared) = candidate.prepared.as_ref() else {
+                continue;
+            };
+            if find_key_probe_candidate(prepared, now).is_some() {
+                let cloned = prepared.clone();
+                #[cfg(test)]
+                note_pool_provider_copy();
+                queue.push(PoolFallbackStage::Ready(cloned));
+            }
+        }
+        if mapping_probe_used {
             continue;
         }
+        let probe_source = resolved.iter().find(|candidate| {
+            candidate.native.is_some()
+                && candidate.prepared.is_some()
+                && candidate.availability == "mapping_unavailable"
+                && pool_candidate_cooling(&candidate.identity).is_none()
+        });
+        let Some(resolved) = probe_source else {
+            continue;
+        };
         let Some(prepared) = resolved.prepared.as_ref() else {
             continue;
         };
-        if resolved.available {
-            return Some(PoolFallbackStage::Ready(prepared.clone()));
-        }
-        if resolved.availability == "no_usable_key"
-            && find_key_probe_candidate(prepared, now).is_some()
-        {
-            return Some(PoolFallbackStage::Ready(prepared.clone()));
-        }
-        if probe_allowed
-            && probe_source.is_none()
-            && resolved.availability == "mapping_unavailable"
-        {
-            probe_source = Some(resolved);
-        }
-    }
-    let resolved = probe_source?;
-    let prepared = resolved.prepared.as_ref()?;
-    find_probe_candidate(
-        std::slice::from_ref(prepared),
-        Some(alias),
-        resolved.identity.protocol,
-        &[],
-        now,
-    )
-    .map(|mut candidate| {
+        let Some(mut candidate) = find_probe_candidate(
+            std::slice::from_ref(prepared),
+            Some(alias),
+            resolved.identity.protocol,
+            &[],
+            now,
+        ) else {
+            continue;
+        };
         candidate.target = MappingTarget::new(
             &resolved.identity.provider_id,
             &resolved.identity.local_model,
             &resolved.identity.upstream_model,
         );
         candidate.protocol = resolved.identity.protocol;
-        PoolFallbackStage::Probe(candidate)
-    })
+        queue.push(PoolFallbackStage::Probe(candidate));
+        mapping_probe_used = true;
+    }
+    queue
 }
 
 /// The single eligible half-open probe inside the pool's own candidate set.
@@ -1173,19 +1235,6 @@ pub(in crate::ai_gateway) fn reference_resolves_in(
     })
 }
 
-/// Whether one resolved pool identity is reachable through the pool's ordered
-/// fallback model list rather than only through its regular candidates. The
-/// single-stage bridge uses this role decision to keep a delivered fallback
-/// attempt from publishing a continuation preference.
-pub(in crate::ai_gateway) fn is_configured_fallback(
-    pool: &ModelPool,
-    identity: &PoolCandidateIdentity,
-) -> bool {
-    pool.fallback_models
-        .iter()
-        .any(|model| model.trim() == identity.local_model.trim())
-}
-
 fn candidate_tuple(candidate: &ModelPoolCandidate) -> (String, String, String, UpstreamProtocol) {
     (
         candidate.provider_id.trim().to_string(),
@@ -1293,7 +1342,6 @@ pub(in crate::ai_gateway) fn validate_pool_upsert(
         fallback_models.push(model);
     }
     pool.fallback_models = fallback_models;
-    pool.fallback = fallback_protocol_hint(&config.providers, &pool);
     for provider in &config.providers {
         for mapping in &provider.mappings {
             if mapping.local_model.trim() == pool.model {
@@ -1432,10 +1480,6 @@ pub struct ModelPoolStatus {
     /// Ordered per-model readiness of the stored fallback list. Empty when the
     /// pool configures no fallback model.
     pub fallback_models: Vec<ModelPoolFallbackModelStatus>,
-    /// Transitional single-fallback slot retained while the ordered queue is not
-    /// yet consumed at runtime. It is never populated or serialized.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fallback: Option<ModelPoolCandidateStatus>,
 }
 
 /// Nonsecret status of one stored candidate reference. The regular and fallback
@@ -1572,7 +1616,6 @@ pub(in crate::ai_gateway) fn pool_status(config: &GatewayConfig) -> Vec<ModelPoo
                     .collect(),
                 candidates,
                 fallback_models,
-                fallback: None,
             }
         })
         .collect()

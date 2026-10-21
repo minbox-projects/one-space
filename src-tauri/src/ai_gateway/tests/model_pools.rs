@@ -6042,3 +6042,633 @@ fn a_rejected_fallback_save_changes_neither_the_encrypted_bytes_nor_the_runtime_
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+
+// Step 2 RED: route the fallback queue with provider rotation
+// ---------------------------------------------------------------------------
+
+/// RED (AC-003): fallback model A is served by P (failing) and Q (healthy);
+/// all regular candidates are exhausted. The queue must try P, then Q, and a
+/// success ends the request. The current single-stage bridge stops after P.
+#[tokio::test]
+async fn pool_fallback_queue_tries_next_provider_of_same_model_before_next_model() {
+    let _home = temp_home("pool-fallback-queue-next-provider");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let p_id = format!("p-p-{tag}");
+    let q_id = format!("p-q-{tag}");
+    let b_id = format!("p-b-{tag}");
+
+    let (p_url, p_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "p failed"}}))
+    })
+    .await;
+    let (q_url, q_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "ok-q", "choices": []}))
+    })
+    .await;
+    let (b_url, b_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "ok-b", "choices": []}))
+    })
+    .await;
+
+    // One provider serves A via two mappings (P and Q are distinct providers).
+    let provider_p = pool_provider(
+        &p_id,
+        "Provider P",
+        &p_url,
+        vec![pool_key("key-p", "P", "sk-p", true)],
+        vec![provider_mapping("model-a", "remote-a-p", "chat_completions")],
+    );
+    let provider_q = pool_provider(
+        &q_id,
+        "Provider Q",
+        &q_url,
+        vec![pool_key("key-q", "Q", "sk-q", true)],
+        vec![provider_mapping("model-a", "remote-a-q", "chat_completions")],
+    );
+    let provider_b = pool_provider(
+        &b_id,
+        "Provider B",
+        &b_url,
+        vec![pool_key("key-b", "B", "sk-b", true)],
+        vec![provider_mapping("model-b", "remote-b", "chat_completions")],
+    );
+
+    let regular_provider_id = format!("p-reg-{tag}");
+    let (regular_url, _regular_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "regular failed"}}))
+    })
+    .await;
+    let provider_reg = pool_provider(
+        &regular_provider_id,
+        "Regular Provider",
+        &regular_url,
+        vec![pool_key("key-reg", "Reg", "sk-reg", true)],
+        vec![provider_mapping(
+            "local-regular",
+            "remote-regular",
+            "chat_completions",
+        )],
+    );
+
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Ordered Fallback Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&regular_provider_id, "local-regular", "remote-regular", "chat_completions", Some(1)),
+        ],
+        "fallback_models": ["model-a", "model-b"],
+    });
+
+    write_raw_gateway_config(&pool_config_v3(
+        port,
+        vec![provider_reg, provider_p, provider_q, provider_b],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 200,
+        "the queue must serve Q after P fails: {text}"
+    );
+
+    let p_models = models_of(&p_log);
+    assert!(
+        p_models.iter().any(|m| m == "remote-a-p"),
+        "P must be attempted: {p_models:?}"
+    );
+    let q_models = models_of(&q_log);
+    assert!(
+        q_models.iter().any(|m| m == "remote-a-q"),
+        "Q must be attempted and serve: {q_models:?}"
+    );
+    let b_models = models_of(&b_log);
+    assert!(
+        b_models.is_empty(),
+        "model B must not be attempted once model A succeeds: {b_models:?}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// RED (AC-003): across independent requests for the same pool alias and
+/// fallback model, eligible sources rotate rather than always choosing first.
+#[tokio::test]
+async fn pool_fallback_queue_rotates_providers_across_independent_requests() {
+    let _home = temp_home("pool-fallback-queue-rotation");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let p_id = format!("p-p-{tag}");
+    let q_id = format!("p-q-{tag}");
+
+    let (p_url, p_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "ok-p", "choices": []}))
+    })
+    .await;
+    let (q_url, q_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "ok-q", "choices": []}))
+    })
+    .await;
+
+    let provider_p = pool_provider(
+        &p_id,
+        "Provider P",
+        &p_url,
+        vec![pool_key("key-p", "P", "sk-p", true)],
+        vec![provider_mapping("model-a", "remote-a-p", "chat_completions")],
+    );
+    let provider_q = pool_provider(
+        &q_id,
+        "Provider Q",
+        &q_url,
+        vec![pool_key("key-q", "Q", "sk-q", true)],
+        vec![provider_mapping("model-a", "remote-a-q", "chat_completions")],
+    );
+
+    let regular_provider_id = format!("p-reg-{tag}");
+    let (regular_url, _regular_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "regular failed"}}))
+    })
+    .await;
+    let provider_reg = pool_provider(
+        &regular_provider_id,
+        "Regular Provider",
+        &regular_url,
+        vec![pool_key("key-reg", "Reg", "sk-reg", true)],
+        vec![provider_mapping(
+            "local-regular",
+            "remote-regular",
+            "chat_completions",
+        )],
+    );
+
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Ordered Fallback Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&regular_provider_id, "local-regular", "remote-regular", "chat_completions", Some(1)),
+        ],
+        "fallback_models": ["model-a"],
+    });
+
+    write_raw_gateway_config(&pool_config_v3(
+        port,
+        vec![provider_reg, provider_p, provider_q],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    // Two independent requests.
+    let _ = post_chat(port, &alias).await;
+    let _ = post_chat(port, &alias).await;
+
+    // Rotation: not both requests should hit the same first provider.
+    let p_count = models_of(&p_log).len();
+    let q_count = models_of(&q_log).len();
+    assert!(
+        p_count >= 1 && q_count >= 1,
+        "rotation must use both providers across requests: p={p_count} q={q_count}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// RED (AC-003): a healthy regular candidate yields zero fallback attempts.
+#[tokio::test]
+async fn pool_fallback_queue_zero_attempts_when_regular_healthy() {
+    let _home = temp_home("pool-fallback-queue-zero");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let regular_provider_id = format!("p-reg-{tag}");
+    let fb_provider_id = format!("p-fb-{tag}");
+
+    let (regular_url, _regular_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "ok-reg", "choices": []}))
+    })
+    .await;
+    let (fb_url, fb_log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "ok-fb", "choices": []}))
+    })
+    .await;
+
+    let provider_reg = pool_provider(
+        &regular_provider_id,
+        "Regular Provider",
+        &regular_url,
+        vec![pool_key("key-reg", "Reg", "sk-reg", true)],
+        vec![provider_mapping(
+            "local-regular",
+            "remote-regular",
+            "chat_completions",
+        )],
+    );
+    let provider_fb = pool_provider(
+        &fb_provider_id,
+        "Fallback Provider",
+        &fb_url,
+        vec![pool_key("key-fb", "Fb", "sk-fb", true)],
+        vec![provider_mapping("local-fb", "remote-fb", "chat_completions")],
+    );
+
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Ordered Fallback Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&regular_provider_id, "local-regular", "remote-regular", "chat_completions", Some(1)),
+        ],
+        "fallback_models": ["local-fb"],
+    });
+
+    write_raw_gateway_config(&pool_config_v3(
+        port,
+        vec![provider_reg, provider_fb],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(status, 200, "regular must serve: {text}");
+    let fb_models = models_of(&fb_log);
+    assert!(
+        fb_models.is_empty(),
+        "fallback must receive zero attempts when a healthy regular serves: {fb_models:?}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// RED (AC-005): no regular candidate and no reachable fallback returns the
+/// existing bounded all-providers-unavailable 502.
+#[tokio::test]
+async fn pool_fallback_queue_all_unavailable_returns_502() {
+    let _home = temp_home("pool-fallback-queue-502");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+
+    let provider_id = format!("p-{tag}");
+    let (provider_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "x"}}))
+    })
+    .await;
+    let provider = pool_provider(
+        &provider_id,
+        "Provider",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![],
+    );
+    // Add a mapping via raw provider with disabled? Simpler: no candidates, no fallbacks -> pool invalid (requires regular). 
+    // Use a regular candidate whose provider has no mapping for the model.
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Ordered Fallback Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_id, "local-missing", "remote-missing", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [],
+    });
+    write_raw_gateway_config(&pool_config_v3(
+        port,
+        vec![provider],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 502,
+        "all providers unavailable must return 502: {text}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+// ---------------------------------------------------------------------------
+// The fallback queue skips an already attempted source and keeps the stored
+// model order.
+//
+// The two cases below drive the real loopback listener and in-process mock
+// upstreams only. Every failing source answers `404`, the gateway's permanent
+// per-request skip: one upstream call, no retry cycle, no key mark and no
+// candidate cooldown. That keeps the observed attempt count an exact function
+// of the queue instead of a retry-count assumption.
+//
+// The real upstream arrival order is recorded by the shared `AttemptOrder`
+// recorder: every mock upstream pushes its own label when it receives a
+// request, so the observed sequence is the order in which the gateway actually
+// contacted the sources.
+// ---------------------------------------------------------------------------
+
+/// REQ-002 / AC-003: a source the request already attempted is skipped in the
+/// fallback queue, while an unattempted source of the same gateway model still
+/// serves the request.
+///
+/// The regular candidate and the fallback expansion of the same gateway model
+/// share one exact source identity, so re-attempting it would replay a source
+/// that already failed in this request. The skip must not consume the model's
+/// remaining sources: the second source of the same model still serves.
+#[tokio::test]
+async fn pool_fallback_queue_skips_an_attempted_source_and_still_serves_another_source_of_the_same_model() {
+    let _home = temp_home("pool-fallback-queue-attempted-skip");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let p_id = format!("p-a1-{tag}");
+    let q_id = format!("p-a2-{tag}");
+
+    let order: AttemptOrder = Arc::new(Mutex::new(Vec::new()));
+    let (p_url, p_log) = spawn_mock_upstream({
+        let order = order.clone();
+        move |_| {
+            order.lock().expect("attempt order").push("a-p");
+            MockReply::Json(404, json!({"error": {"message": "p not found"}}))
+        }
+    })
+    .await;
+    let (q_url, q_log) = spawn_mock_upstream({
+        let order = order.clone();
+        move |_| {
+            order.lock().expect("attempt order").push("a-q");
+            MockReply::Json(
+                200,
+                json!({"id": "ok-q", "choices": [{"message": {"role": "assistant", "content": "from-q"}}]}),
+            )
+        }
+    })
+    .await;
+
+    let provider_p = pool_provider(
+        &p_id,
+        "Provider A One",
+        &p_url,
+        vec![pool_key("key-p", "P", "sk-p", true)],
+        vec![provider_mapping("model-a", "remote-a-p", "chat_completions")],
+    );
+    let provider_q = pool_provider(
+        &q_id,
+        "Provider A Two",
+        &q_url,
+        vec![pool_key("key-q", "Q", "sk-q", true)],
+        vec![provider_mapping("model-a", "remote-a-q", "chat_completions")],
+    );
+
+    // The regular candidate and the first fallback source are the same exact
+    // source: provider A One serving gateway model `model-a`.
+    let pool = pool_with_fallback_models(
+        &format!("pool-{tag}"),
+        &alias,
+        pool_candidate(&p_id, "model-a", "remote-a-p", "chat_completions", Some(1)),
+        &["model-a"],
+    );
+    write_raw_gateway_config(&pool_config_v3(
+        port,
+        vec![provider_p, provider_q],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 200,
+        "the unattempted source of the same gateway model must serve: {text}"
+    );
+
+    assert_eq!(
+        order.lock().expect("attempt order").clone(),
+        vec!["a-p", "a-q"],
+        "the already attempted source must not be contacted again and the unattempted source of the same model must serve"
+    );
+    assert_eq!(
+        models_of(&p_log),
+        vec!["remote-a-p".to_string()],
+        "the source that already failed in the regular stage must receive exactly one upstream call"
+    );
+    assert_eq!(
+        models_of(&q_log),
+        vec!["remote-a-q".to_string()],
+        "the unattempted source of the same model must receive exactly one upstream call"
+    );
+
+    let records = wait_for_usage_logs(2).await;
+    let terminals: Vec<_> = records.iter().filter(|record| record.terminal).collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "the request must own exactly one terminal row: {records:?}"
+    );
+    let terminal = terminals[0];
+    assert_eq!(
+        terminal.local_model, alias,
+        "the public alias must stay the logged local model: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.provider_id, q_id,
+        "the served source must be logged as the real provider: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.upstream_model, "remote-a-q",
+        "the served source must be logged with its real upstream model: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.status, 200,
+        "the served attempt must be logged: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.result,
+        UsageResult::Success,
+        "the served fallback attempt must be logged as a success: {terminal:?}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// REQ-002 / AC-003: every source of the first stored fallback model is tried
+/// before the next stored fallback model becomes eligible, and only the served
+/// source owns the single terminal row under the public alias.
+///
+/// Each source receives exactly one provider pass: no second retry cycle, no
+/// key rotation inside a pass and no probe. The request therefore contacts
+/// the regular source, both sources of the first fallback model and only then
+/// the source of the second fallback model.
+#[tokio::test]
+async fn pool_fallback_queue_serves_the_next_fallback_model_after_every_source_of_the_first_model_failed() {
+    let _home = temp_home("pool-fallback-queue-model-order");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let reg_id = format!("p-reg-{tag}");
+    let a1_id = format!("p-a1-{tag}");
+    let a2_id = format!("p-a2-{tag}");
+    let b1_id = format!("p-b1-{tag}");
+
+    let order: AttemptOrder = Arc::new(Mutex::new(Vec::new()));
+    let (reg_url, _reg_log) = spawn_mock_upstream({
+        let order = order.clone();
+        move |_| {
+            order.lock().expect("attempt order").push("regular");
+            MockReply::Json(404, json!({"error": {"message": "regular not found"}}))
+        }
+    })
+    .await;
+    let (a1_url, _a1_log) = spawn_mock_upstream({
+        let order = order.clone();
+        move |_| {
+            order.lock().expect("attempt order").push("a-one");
+            MockReply::Json(404, json!({"error": {"message": "a one not found"}}))
+        }
+    })
+    .await;
+    let (a2_url, _a2_log) = spawn_mock_upstream({
+        let order = order.clone();
+        move |_| {
+            order.lock().expect("attempt order").push("a-two");
+            MockReply::Json(404, json!({"error": {"message": "a two not found"}}))
+        }
+    })
+    .await;
+    let (b1_url, b1_log) = spawn_mock_upstream({
+        let order = order.clone();
+        move |_| {
+            order.lock().expect("attempt order").push("b-one");
+            MockReply::Json(
+                200,
+                json!({"id": "ok-b", "choices": [{"message": {"role": "assistant", "content": "from-b"}}]}),
+            )
+        }
+    })
+    .await;
+
+    let provider_reg = pool_provider(
+        &reg_id,
+        "Regular Provider",
+        &reg_url,
+        vec![pool_key("key-reg", "Reg", "sk-reg", true)],
+        vec![provider_mapping(
+            "local-regular",
+            "remote-regular",
+            "chat_completions",
+        )],
+    );
+    let provider_a1 = pool_provider(
+        &a1_id,
+        "Provider A One",
+        &a1_url,
+        vec![pool_key("key-a1", "A One", "sk-a1", true)],
+        vec![provider_mapping("model-a", "remote-a-one", "chat_completions")],
+    );
+    let provider_a2 = pool_provider(
+        &a2_id,
+        "Provider A Two",
+        &a2_url,
+        vec![pool_key("key-a2", "A Two", "sk-a2", true)],
+        vec![provider_mapping("model-a", "remote-a-two", "chat_completions")],
+    );
+    let provider_b1 = pool_provider(
+        &b1_id,
+        "Provider B One",
+        &b1_url,
+        vec![pool_key("key-b1", "B One", "sk-b1", true)],
+        vec![provider_mapping("model-b", "remote-b-one", "chat_completions")],
+    );
+
+    let pool = pool_with_fallback_models(
+        &format!("pool-{tag}"),
+        &alias,
+        pool_candidate(
+            &reg_id,
+            "local-regular",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        ),
+        &["model-a", "model-b"],
+    );
+    write_raw_gateway_config(&pool_config_v3(
+        port,
+        vec![provider_reg, provider_a1, provider_a2, provider_b1],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    assert_eq!(
+        status, 200,
+        "the source of the next fallback model must serve after every source of the first model failed: {text}"
+    );
+
+    assert_eq!(
+        order.lock().expect("attempt order").clone(),
+        vec!["regular", "a-one", "a-two", "b-one"],
+        "every source of the first fallback model must be tried before the next fallback model, each source exactly once"
+    );
+    assert_eq!(
+        models_of(&b1_log),
+        vec!["remote-b-one".to_string()],
+        "the serving source must receive exactly one upstream call"
+    );
+
+    let records = wait_for_usage_logs(4).await;
+    assert_eq!(
+        records.len(),
+        4,
+        "every completed attempt must own exactly one row: {records:?}"
+    );
+    let terminals: Vec<_> = records.iter().filter(|record| record.terminal).collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "the request must own exactly one terminal row: {records:?}"
+    );
+    let terminal = terminals[0];
+    assert_eq!(
+        terminal.local_model, alias,
+        "the public alias must stay the logged local model: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.provider_id, b1_id,
+        "the served source must be logged as the real provider: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.upstream_model, "remote-b-one",
+        "the served source must be logged with its real upstream model: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.status, 200,
+        "the served attempt must be logged: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.result,
+        UsageResult::Success,
+        "the served fallback attempt must be logged as a success: {terminal:?}"
+    );
+    let mut failed_providers: Vec<String> = records
+        .iter()
+        .filter(|record| !record.terminal)
+        .map(|record| record.provider_id.clone())
+        .collect();
+    failed_providers.sort();
+    let mut expected_providers = vec![reg_id.clone(), a1_id.clone(), a2_id.clone()];
+    expected_providers.sort();
+    assert_eq!(
+        failed_providers, expected_providers,
+        "the three exhausted sources must own one non-terminal row each: {records:?}"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+

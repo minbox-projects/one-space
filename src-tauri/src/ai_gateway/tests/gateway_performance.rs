@@ -878,7 +878,6 @@ fn pool_config(base_url: &str, target: UpstreamProtocol) -> GatewayConfig {
         }],
         default_reasoning_effort: Default::default(),
         fallback_models: Vec::new(),
-        fallback: None,
     });
     config
 }
