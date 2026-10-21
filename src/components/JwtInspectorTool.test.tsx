@@ -1,8 +1,10 @@
 import { fireEvent, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { JwtInspectorTool } from "./JwtInspectorTool";
 import { renderWithProviders } from "@/test/mocks/render";
+
+const TEST_JWT =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c3JfOTk4ODIxMDMiLCJyb2xlcyI6WyJhZG1pbiIsImRldmVsb3BlciJdfQ.dummySignature";
 
 describe("JwtInspectorTool", () => {
   beforeEach(() => {
@@ -10,7 +12,7 @@ describe("JwtInspectorTool", () => {
     vi.useRealTimers();
   });
 
-  it("renders the tool shell and input textarea", () => {
+  it("renders the tool shell and input textarea without sample button", () => {
     renderWithProviders(<JwtInspectorTool />);
     expect(
       screen.getByRole("heading", { name: /JWT Inspector|JWT 解析/i }),
@@ -20,17 +22,18 @@ describe("JwtInspectorTool", () => {
         /Paste JWT token string here|在此粘贴 JWT 字符串/i,
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Sample|演示样例/i }),
+    ).not.toBeInTheDocument();
   });
 
-  it("loads sample JWT and displays subject context and claims", async () => {
-    const user = userEvent.setup();
+  it("parses input JWT and displays subject context and claims", () => {
     renderWithProviders(<JwtInspectorTool />);
 
-    // 点击“加载样例”按钮
-    const sampleBtn = screen.getByRole("button", {
-      name: /Sample|演示样例/i,
-    });
-    await user.click(sampleBtn);
+    const textarea = screen.getByPlaceholderText(
+      /Paste JWT token string here|在此粘贴 JWT 字符串/i,
+    );
+    fireEvent.change(textarea, { target: { value: TEST_JWT } });
 
     // 应该展示主体数据卡片
     expect(

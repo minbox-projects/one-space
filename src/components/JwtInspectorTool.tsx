@@ -8,7 +8,6 @@ import {
   KeyRound,
   RotateCcw,
   ShieldCheck,
-  Sparkles,
   User,
   XCircle,
 } from "lucide-react";
@@ -20,40 +19,6 @@ import { getToolboxTool } from "@/toolbox/registry";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import { parseJwt, verifyJwtSignature } from "@/lib/jwtInspector";
 
-// 内置便于体验的演示 Token
-const SAMPLE_TOKEN = (() => {
-  const header = { alg: "HS256", typ: "JWT" };
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    sub: "usr_99882103",
-    username: "alex_architect",
-    name: "Alex Zhang",
-    email: "alex@onespace.dev",
-    tenant_id: "tenant-cloud-apac",
-    dept: "Cloud Architecture & Infrastructure",
-    roles: ["admin", "developer", "cloud-ops"],
-    permissions: [
-      "cluster:deploy",
-      "cluster:read",
-      "service:restart",
-      "config:write",
-      "logs:export",
-    ],
-    iat: now - 3600, // 1小时前签发
-    exp: now + 7200, // 2小时后过期
-    jti: "jwt-uuid-sample-4f9a",
-  };
-
-  const toB64Url = (obj: unknown) =>
-    btoa(unescape(encodeURIComponent(JSON.stringify(obj))))
-      .replace(/=/g, "")
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_");
-
-  // 使用 secret: "onespace-demo-secret" 计算
-  return `${toB64Url(header)}.${toB64Url(payload)}.demoSignaturePreviewOnly`;
-})();
-
 export function JwtInspectorTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
@@ -63,7 +28,7 @@ export function JwtInspectorTool() {
     toolDescriptor?.iconClassName ?? "bg-emerald-500/10 text-emerald-600";
 
   const [tokenInput, setTokenInput] = useState("");
-  const [secretInput, setSecretInput] = useState("onespace-demo-secret");
+  const [secretInput, setSecretInput] = useState("");
   const [verifyStatus, setVerifyStatus] = useState<{
     tested: boolean;
     valid: boolean;
@@ -106,11 +71,6 @@ export function JwtInspectorTool() {
     });
   };
 
-  const handleLoadSample = () => {
-    setTokenInput(SAMPLE_TOKEN);
-    setVerifyStatus(null);
-  };
-
   const handleClear = () => {
     setTokenInput("");
     setVerifyStatus(null);
@@ -131,14 +91,6 @@ export function JwtInspectorTool() {
       }
       actions={
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleLoadSample}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium hover:bg-muted"
-          >
-            <Sparkles className="h-3.5 w-3.5 text-amber-500" />
-            {t("jwtLoadSample", "Sample")}
-          </button>
           <button
             type="button"
             onClick={handleClear}

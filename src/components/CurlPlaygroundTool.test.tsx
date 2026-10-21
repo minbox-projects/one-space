@@ -10,20 +10,26 @@ describe("CurlPlaygroundTool", () => {
     vi.useRealTimers();
   });
 
-  it("renders the tool shell, method selector, and URL input", () => {
+  it("renders the tool shell, method selector, and URL input without sample button", () => {
     renderWithProviders(<CurlPlaygroundTool />);
     expect(
       screen.getByRole("heading", { name: /cURL Playground|cURL 请求/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Send|发送/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Sample|演示样例/i }),
+    ).not.toBeInTheDocument();
   });
 
-  it("parses sample curl command on clicking sample button", async () => {
+  it("parses input curl command and updates endpoint", async () => {
     const user = userEvent.setup();
     renderWithProviders(<CurlPlaygroundTool />);
 
-    const sampleBtn = screen.getByRole("button", { name: /Sample|演示样例/i });
-    await user.click(sampleBtn);
+    const curlInput = screen.getByPlaceholderText(/curl -X POST/i);
+    await user.type(
+      curlInput,
+      'curl "https://api.github.com/users/octocat"',
+    );
 
     const urlInput = screen.getByPlaceholderText(/endpoint/i);
     expect(urlInput).toHaveValue("https://api.github.com/users/octocat");

@@ -7,7 +7,6 @@ import {
   Plus,
   RotateCcw,
   Send,
-  Sparkles,
   Trash2,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -36,10 +35,6 @@ interface HttpResponsePayload {
   is_truncated: boolean;
 }
 
-const SAMPLE_CURL = `curl "https://api.github.com/users/octocat" \\
-  -H "User-Agent: OneSpace-Desktop" \\
-  -H "Accept: application/vnd.github.v3+json"`;
-
 export function CurlPlaygroundTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
@@ -53,12 +48,9 @@ export function CurlPlaygroundTool() {
 
   // 请求结构化状态
   const [method, setMethod] = useState("GET");
-  const [baseUrl, setBaseUrl] = useState("https://api.github.com/users/octocat");
+  const [baseUrl, setBaseUrl] = useState("");
   const [params, setParams] = useState<KeyValuePair[]>([]);
-  const [headers, setHeaders] = useState<KeyValuePair[]>([
-    { name: "User-Agent", value: "OneSpace-Desktop", enabled: true },
-    { name: "Accept", value: "application/json", enabled: true },
-  ]);
+  const [headers, setHeaders] = useState<KeyValuePair[]>([]);
   const [body, setBody] = useState("");
 
   // Tabs
@@ -216,17 +208,6 @@ export function CurlPlaygroundTool() {
       }
       actions={
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setCurlInput(SAMPLE_CURL);
-              handleImportCurl(SAMPLE_CURL);
-            }}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium hover:bg-muted"
-          >
-            <Sparkles className="h-3.5 w-3.5 text-amber-500" />
-            {t("curlLoadSample", "Sample")}
-          </button>
           <button
             type="button"
             onClick={() => {
