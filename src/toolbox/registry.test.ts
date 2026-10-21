@@ -33,6 +33,7 @@ const CANONICAL_HUB_IDS = [
   "port-tunnel",
   "jwt-inspector",
   "curl-playground",
+  "quick-sftp",
 ] as const;
 
 const NON_HUB_IDS = ["notes", "snippets"] as const;

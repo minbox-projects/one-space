@@ -12,6 +12,7 @@ import { md5EncryptionTool } from "./plugins/md5-encryption";
 import { notesTool } from "./plugins/notes";
 import { portTunnelTool } from "./plugins/port-tunnel";
 import { protocolRouterTool } from "./plugins/protocol-router";
+import { quickSftpTool } from "./plugins/quick-sftp";
 import { randomPasswordTool } from "./plugins/random-password";
 import { shortLinkTool } from "./plugins/short-link";
 import { snippetsTool } from "./plugins/snippets";
@@ -40,6 +41,7 @@ export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   portTunnelTool,
   jwtInspectorTool,
   curlPlaygroundTool,
+  quickSftpTool,
   snippetsTool,
   notesTool,
 ];

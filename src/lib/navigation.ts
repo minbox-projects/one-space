@@ -11,6 +11,7 @@ export type MoreToolsSection =
   | "json-parser"
   | "jwt-inspector"
   | "curl-playground"
+  | "quick-sftp"
   | "md5-encryption"
   | "short-link"
   | "file-sharing"

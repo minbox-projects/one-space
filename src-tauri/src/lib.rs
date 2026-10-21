@@ -24,6 +24,7 @@ mod protocol_router;
 mod proxy;
 mod runtime_profiles;
 mod secrets;
+pub mod sftp;
 mod short_link;
 mod skills;
 mod ssh_tunnels;
