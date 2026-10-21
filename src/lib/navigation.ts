@@ -9,6 +9,7 @@ export type MoreToolsSection =
   | "protocol-router"
   | "random-password"
   | "json-parser"
+  | "jwt-inspector"
   | "md5-encryption"
   | "short-link"
   | "file-sharing"
