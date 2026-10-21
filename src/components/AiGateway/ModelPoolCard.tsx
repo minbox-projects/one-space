@@ -286,10 +286,16 @@ export function ModelPoolCard({
             data-testid={`ai-gateway-model-pool-fallback-${pool.id}`}
             className="mt-2.5 space-y-1.5 rounded-lg border border-border/60 bg-muted/20 p-2"
           >
-            <div className="text-[10px] font-medium text-muted-foreground">
-              {t("aiGatewayModelPoolFallbackLabel", "Fallback models")}
+            <div className="flex items-center justify-between text-[10px] font-medium text-muted-foreground">
+              <span>{t("aiGatewayModelPoolFallbackLabel", "Fallback models")}</span>
+              <span>
+                {t("aiGatewayModelPoolFallbackCount", {
+                  count: fallbackModels.length,
+                  defaultValue: "{{count}} model(s)",
+                })}
+              </span>
             </div>
-            <ul className="space-y-1.5">
+            <ul className="space-y-1">
               {fallbackModels.map((model) => {
                 const record = fallbackStatusByModel.get(model) ?? null;
                 const derived: GatewayModelPoolFallbackSourceStatus[] = record
@@ -339,15 +345,46 @@ export function ModelPoolCard({
                         "Unavailable — no provider mapping",
                       )
                     : null);
+
+                const sourceDetails = sources
+                  .map(
+                    (s) =>
+                      `${s.provider_name ?? s.provider_id} (${s.upstream_model}, ${protocolShortLabel(s.protocol)})`,
+                  )
+                  .join("; ");
+                const tooltipParts = [
+                  `${model}: ${label}`,
+                  t(
+                    "aiGatewayModelPoolFallbackSourceCount",
+                    "{{ready}} / {{total}} sources",
+                    { ready: readySources, total: totalSources },
+                  ),
+                ];
+                if (sourceDetails) {
+                  tooltipParts.push(`[${sourceDetails}]`);
+                }
+                if (reason) {
+                  tooltipParts.push(reason);
+                }
+                const tooltip = tooltipParts.join(" · ");
+
                 return (
                   <li
                     key={model}
                     role="listitem"
-                    className="space-y-1 rounded-md border border-border/50 bg-card/60 px-1.5 py-1"
+                    title={tooltip}
+                    className="flex items-center justify-between gap-1.5 rounded-md border border-border/50 bg-card/60 px-2 py-1 text-xs"
                   >
-                    <div className="flex flex-wrap items-center justify-between gap-1.5">
-                      <span className="break-all font-mono text-[11px] font-medium text-foreground">
-                        {model}
+                    <span className="truncate font-mono text-[11px] font-medium text-foreground">
+                      {model}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <span className="text-[10px] text-muted-foreground">
+                        {t(
+                          "aiGatewayModelPoolFallbackSourceCount",
+                          "{{ready}} / {{total}} sources",
+                          { ready: readySources, total: totalSources },
+                        )}
                       </span>
                       <span
                         className={`inline-flex items-center rounded px-1.5 py-0.2 text-[10px] font-medium ${
@@ -359,52 +396,6 @@ export function ModelPoolCard({
                         {label}
                       </span>
                     </div>
-                    <div className="text-[10px] text-muted-foreground">
-                      {t(
-                        "aiGatewayModelPoolFallbackSourceCount",
-                        "{{ready}} / {{total}} sources",
-                        { ready: readySources, total: totalSources },
-                      )}
-                    </div>
-                    {sources.map((source) => (
-                      <div
-                        key={`${source.provider_id}-${source.upstream_model}-${source.protocol}`}
-                        className="flex flex-wrap items-center gap-1.5 text-[10px]"
-                      >
-                        <span className="font-medium text-foreground/85">
-                          {source.provider_name ?? source.provider_id}
-                        </span>
-                        <code className="break-all rounded border border-border/40 bg-background px-1 py-0.2 font-mono text-foreground">
-                          {source.upstream_model}
-                        </code>
-                        <span className="rounded bg-background px-1.5 py-0.2 text-muted-foreground">
-                          {protocolShortLabel(source.protocol)}
-                        </span>
-                        <span className="text-muted-foreground">
-                          {MODEL_POOL_AVAILABILITY_LABEL_KEYS[
-                            source.availability
-                          ]
-                            ? t(
-                                MODEL_POOL_AVAILABILITY_LABEL_KEYS[
-                                  source.availability
-                                ],
-                              )
-                            : source.availability}
-                        </span>
-                      </div>
-                    ))}
-                    {reason ? (
-                      <div className="flex flex-wrap items-baseline gap-1 text-[10px] text-amber-700 dark:text-amber-400">
-                        <span>
-                          {t(
-                            "aiGatewayModelPoolFallbackReason",
-                            "Fallback reason",
-                          )}
-                          :
-                        </span>
-                        <span className="break-words">{reason}</span>
-                      </div>
-                    ) : null}
                   </li>
                 );
               })}

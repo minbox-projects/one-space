@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CheckSquare,
@@ -313,6 +313,24 @@ export function ModelPoolDialog({
   const [fallbackModels, setFallbackModels] = useState<string[]>(() =>
     (pool?.fallback_models ?? []).map((model) => model.trim()).filter(Boolean),
   );
+  const [fallbackQuery, setFallbackQuery] = useState("");
+  const [fallbackDropdownOpen, setFallbackDropdownOpen] = useState(false);
+  const fallbackComboboxRef = useRef<HTMLDivElement>(null);
+  const fallbackInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!fallbackDropdownOpen) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        fallbackComboboxRef.current &&
+        !fallbackComboboxRef.current.contains(event.target as Node)
+      ) {
+        setFallbackDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [fallbackDropdownOpen]);
   // Pool default preference; a new pool starts at `medium`, a legacy pool at `auto`.
   const [defaultEffort, setDefaultEffort] = useState<string>(() =>
     pool ? resolveModelPoolDefaultEffort(pool) : "medium",
@@ -442,6 +460,22 @@ export function ModelPoolDialog({
       .filter((entry) => !aliasModels.has(entry.model) && !added.has(entry.model))
       .map((entry) => entry.model);
   }, [activeProviders, aliasModels, fallbackModels]);
+
+  const filteredFallbackModelOptions = useMemo(() => {
+    const trimmed = fallbackQuery.trim().toLowerCase();
+    if (!trimmed) return fallbackModelOptions;
+    return fallbackModelOptions.filter((item) =>
+      item.toLowerCase().includes(trimmed),
+    );
+  }, [fallbackModelOptions, fallbackQuery]);
+
+  const filteredFallbackModels = useMemo(() => {
+    const trimmed = fallbackQuery.trim().toLowerCase();
+    if (!trimmed) return fallbackModels;
+    return fallbackModels.filter((item) =>
+      item.toLowerCase().includes(trimmed),
+    );
+  }, [fallbackModels, fallbackQuery]);
 
   // Distinct enabled provider count per aggregated model, also used for stored
   // ids that are no longer offered by the add control.
@@ -1248,37 +1282,184 @@ export function ModelPoolDialog({
               ) : null}
             </div>
 
-            <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
-              <span>
-                {t(
-                  "aiGatewayModelPoolFallbackAddLabel",
-                  "Add fallback model",
-                )}
-              </span>
-              <select
-                data-testid="model-pool-fallback-add"
-                aria-label={t(
-                  "aiGatewayModelPoolFallbackAddAria",
-                  "Add fallback model",
-                )}
-                value=""
-                onChange={(event) => addFallbackModel(event.target.value)}
-                disabled={busy || saving}
-                className="h-9 rounded-lg border border-border/80 bg-background px-2 text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
-              >
-                <option value="">
+            <div className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
+              <div className="flex items-center justify-between">
+                <span>
                   {t(
-                    "aiGatewayModelPoolFallbackAddPlaceholder",
+                    "aiGatewayModelPoolFallbackAddLabel",
                     "Add fallback model",
                   )}
-                </option>
-                {fallbackModelOptions.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
+                </span>
+                {fallbackQuery.trim() ? (
+                  <span
+                    data-testid="model-pool-fallback-match-count"
+                    className="text-[10px] text-muted-foreground"
+                  >
+                    {t(
+                      "aiGatewayModelPoolFallbackMatchCount",
+                      "{{count}} fallback models matching",
+                      { count: filteredFallbackModelOptions.length },
+                    )}
+                  </span>
+                ) : null}
+              </div>
+
+              {/* Searchable Combobox for selecting & adding fallback models */}
+              <div ref={fallbackComboboxRef} className="relative w-full">
+                <div className="relative flex items-center">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/70" />
+                  <input
+                    ref={fallbackInputRef}
+                    type="search"
+                    data-testid="model-pool-fallback-search"
+                    aria-label={t(
+                      "aiGatewayModelPoolFallbackComboboxAria",
+                      "Search fallback models to add",
+                    )}
+                    aria-expanded={fallbackDropdownOpen}
+                    value={fallbackQuery}
+                    onFocus={() => setFallbackDropdownOpen(true)}
+                    onChange={(event) => {
+                      setFallbackQuery(event.target.value);
+                      if (!fallbackDropdownOpen) setFallbackDropdownOpen(true);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        setFallbackDropdownOpen(false);
+                      } else if (
+                        event.key === "Enter" &&
+                        filteredFallbackModelOptions.length > 0
+                      ) {
+                        event.preventDefault();
+                        addFallbackModel(filteredFallbackModelOptions[0]);
+                        setFallbackQuery("");
+                        setFallbackDropdownOpen(false);
+                      }
+                    }}
+                    placeholder={t(
+                      "aiGatewayModelPoolFallbackComboboxPlaceholder",
+                      "Search or select fallback model to add...",
+                    )}
+                    disabled={busy || saving}
+                    className="h-9 w-full rounded-lg border border-border/80 bg-background pl-9 pr-16 text-xs text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
+                  />
+                  <div className="absolute right-1.5 flex items-center gap-0.5">
+                    {fallbackQuery ? (
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        onClick={() => {
+                          setFallbackQuery("");
+                          fallbackInputRef.current?.focus();
+                        }}
+                        aria-label={t("aiGatewayModelListClearSearch", "Clear search")}
+                        className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="model-pool-fallback-combobox-toggle"
+                      onClick={() =>
+                        setFallbackDropdownOpen((previous) => !previous)
+                      }
+                      aria-label={t(
+                        "aiGatewayModelPoolFallbackAddAria",
+                        "Add fallback model",
+                      )}
+                      disabled={busy || saving}
+                      className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      <ChevronDown
+                        className={`h-4 w-4 transition-transform duration-150 ${
+                          fallbackDropdownOpen ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Dropdown menu */}
+                {fallbackDropdownOpen && (
+                  <div
+                    role="listbox"
+                    data-testid="model-pool-fallback-combobox-menu"
+                    className="absolute left-0 top-full z-40 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-border/80 bg-popover p-1 shadow-lg"
+                  >
+                    {filteredFallbackModelOptions.length > 0 ? (
+                      filteredFallbackModelOptions.map((candidateModel) => {
+                        const providerCount =
+                          fallbackProviderCounts.get(candidateModel) ?? 0;
+                        return (
+                          <div
+                            key={candidateModel}
+                            role="option"
+                            aria-selected={false}
+                            data-testid={`model-pool-fallback-option-${candidateModel}`}
+                            onClick={() => {
+                              addFallbackModel(candidateModel);
+                              setFallbackQuery("");
+                              setFallbackDropdownOpen(false);
+                            }}
+                            className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-xs text-foreground hover:bg-muted transition-colors"
+                          >
+                            <span className="truncate font-mono font-medium">
+                              {candidateModel}
+                            </span>
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              {t(
+                                "aiGatewayModelPoolFallbackProviderCount",
+                                "{{count}} providers",
+                                { count: providerCount },
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div
+                        data-testid="model-pool-fallback-combobox-empty"
+                        className="px-3 py-2 text-center text-xs text-muted-foreground"
+                      >
+                        {t(
+                          "aiGatewayModelPoolFallbackNoMatch",
+                          "No matching fallback models",
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Backward compatibility standard select */}
+                <select
+                  data-testid="model-pool-fallback-add"
+                  aria-label={t(
+                    "aiGatewayModelPoolFallbackAddAria",
+                    "Add fallback model",
+                  )}
+                  value=""
+                  onChange={(event) => {
+                    addFallbackModel(event.target.value);
+                  }}
+                  disabled={busy || saving}
+                  className="sr-only"
+                >
+                  <option value="">
+                    {t(
+                      "aiGatewayModelPoolFallbackAddPlaceholder",
+                      "Add fallback model",
+                    )}
                   </option>
-                ))}
-              </select>
-            </label>
+                  {fallbackModelOptions.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
             {fallbackModels.length === 0 ? (
               <p className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-3 text-center text-[11px] text-muted-foreground">
@@ -1287,12 +1468,23 @@ export function ModelPoolDialog({
                   "No fallback models configured.",
                 )}
               </p>
+            ) : filteredFallbackModels.length === 0 ? (
+              <p
+                data-testid="model-pool-fallback-empty-filter"
+                className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-3 text-center text-[11px] text-muted-foreground"
+              >
+                {t(
+                  "aiGatewayModelPoolFallbackNoConfiguredMatch",
+                  "No configured fallback models match the filter.",
+                )}
+              </p>
             ) : (
               <ul
                 data-testid="model-pool-fallback-list"
                 className="space-y-1.5"
               >
-                {fallbackModels.map((model, index) => {
+                {filteredFallbackModels.map((model) => {
+                  const rawIndex = fallbackModels.indexOf(model);
                   const providerCount =
                     fallbackProviderCounts.get(model) ?? 0;
                   return (
@@ -1327,8 +1519,8 @@ export function ModelPoolDialog({
                       <div className="flex shrink-0 items-center gap-0.5">
                         <button
                           type="button"
-                          onClick={() => moveFallbackModel(index, -1)}
-                          disabled={busy || saving || index === 0}
+                          onClick={() => moveFallbackModel(rawIndex, -1)}
+                          disabled={busy || saving || rawIndex === 0}
                           aria-label={t(
                             "aiGatewayModelPoolFallbackMoveUpAria",
                             {
@@ -1342,11 +1534,11 @@ export function ModelPoolDialog({
                         </button>
                         <button
                           type="button"
-                          onClick={() => moveFallbackModel(index, 1)}
+                          onClick={() => moveFallbackModel(rawIndex, 1)}
                           disabled={
                             busy ||
                             saving ||
-                            index === fallbackModels.length - 1
+                            rawIndex === fallbackModels.length - 1
                           }
                           aria-label={t(
                             "aiGatewayModelPoolFallbackMoveDownAria",

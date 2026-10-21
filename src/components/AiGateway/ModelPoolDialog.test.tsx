@@ -2979,6 +2979,96 @@ describe("ModelPoolDialog 有序回退模型（Step 3）", () => {
     await user.selectOptions(control, option as HTMLOptionElement);
     expectFallbackOrder(["local-b1"]);
   });
+
+  it("回退模型搜索框支持模糊过滤候选选项，并支持按 Enter 键快速添加首项", async () => {
+    await openFallbackDialog(fallbackPoolFixture({ fallback_models: [] }));
+
+    const searchInput = screen.getByTestId("model-pool-fallback-search");
+    expect(searchInput).toBeInTheDocument();
+
+    // 聚焦展开下拉浮层
+    fireEvent.focus(searchInput);
+
+    // 输入 "local-b" 进行模糊过滤
+    fireEvent.change(searchInput, { target: { value: "local-b" } });
+
+    // 匹配数量徽标显示
+    expect(screen.getByTestId("model-pool-fallback-match-count")).toBeInTheDocument();
+
+    // 下拉选项浮层只剩下匹配的项
+    expect(
+      screen.getByTestId("model-pool-fallback-option-local-b1"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("model-pool-fallback-option-local-a2"),
+    ).not.toBeInTheDocument();
+
+    // 在搜索框按回车直接将首个匹配项添加
+    fireEvent.keyDown(searchInput, { key: "Enter" });
+    expectFallbackOrder(["local-b1"]);
+
+    // 添加后搜索框清空，可选列表中已排除 local-b1
+    expect(searchInput).toHaveValue("");
+  });
+
+  it("回退模型搜索框支持模糊过滤已配置列表并在无匹配时提示", async () => {
+    await openFallbackDialog(
+      fallbackPoolFixture({ fallback_models: ["local-b1", "local-c1"] }),
+    );
+
+    expectFallbackOrder(["local-b1", "local-c1"]);
+
+    const searchInput = screen.getByTestId("model-pool-fallback-search");
+
+    // 过滤 "c1"
+    fireEvent.change(searchInput, { target: { value: "c1" } });
+
+    // 已配置列表只显示匹配项
+    const list = screen.getByTestId("model-pool-fallback-list");
+    expect(within(list).getByText("local-c1")).toBeInTheDocument();
+    expect(within(list).queryByText("local-b1")).not.toBeInTheDocument();
+
+    // 过滤不存在的模型
+    fireEvent.change(searchInput, { target: { value: "not-exist-model" } });
+    expect(screen.queryByTestId("model-pool-fallback-list")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("model-pool-fallback-empty-filter"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("model-pool-fallback-empty-filter"),
+    ).toHaveTextContent(i18n.t("aiGatewayModelPoolFallbackNoConfiguredMatch"));
+
+    // 清空过滤，恢复全部展示
+    fireEvent.change(searchInput, { target: { value: "" } });
+    expectFallbackOrder(["local-b1", "local-c1"]);
+  });
+
+  it("选择添加回退模型时支持点击展开下拉列表并检索过滤点选添加", async () => {
+    await openFallbackDialog(fallbackPoolFixture({ fallback_models: [] }));
+
+    const searchInput = screen.getByTestId("model-pool-fallback-search");
+    // 点击或聚焦展开下拉菜单
+    fireEvent.focus(searchInput);
+
+    const menu = screen.getByTestId("model-pool-fallback-combobox-menu");
+    expect(menu).toBeInTheDocument();
+
+    // 输入 "local-b" 检索过滤
+    fireEvent.change(searchInput, { target: { value: "local-b" } });
+    expect(
+      screen.getByTestId("model-pool-fallback-option-local-b1"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("model-pool-fallback-option-local-a2"),
+    ).not.toBeInTheDocument();
+
+    // 点击选项完成添加
+    fireEvent.click(screen.getByTestId("model-pool-fallback-option-local-b1"));
+    expectFallbackOrder(["local-b1"]);
+    expect(
+      screen.queryByTestId("model-pool-fallback-combobox-menu"),
+    ).not.toBeInTheDocument();
+  });
 });
 
 // ---------------------------------------------------------------------------

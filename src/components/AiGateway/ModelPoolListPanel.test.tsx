@@ -429,7 +429,11 @@ describe("ModelPoolListPanel 有序回退状态透传（Step 3）", () => {
     expect(text).toContain("local-b1");
     expect(text).toContain("local-c1");
     expect(text.indexOf("local-b1")).toBeLessThan(text.indexOf("local-c1"));
-    expect(within(fallback).getByText("Provider B")).toBeInTheDocument();
+    expect(within(fallback).queryByText("Provider B")).not.toBeInTheDocument();
+    expect(within(fallback).getAllByRole("listitem")[0]).toHaveAttribute(
+      "title",
+      expect.stringContaining("Provider B"),
+    );
     expect(fallback.textContent).toContain(
       i18n.t("aiGatewayModelPoolStatusNoUsableKey"),
     );

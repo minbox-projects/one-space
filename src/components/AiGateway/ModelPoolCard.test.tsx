@@ -782,7 +782,7 @@ describe("ModelPoolCard 有序回退模型展示（Step 3）", () => {
     await i18n.changeLanguage("en");
   });
 
-  it("按存储顺序展示每个回退模型，并各自携带就绪状态与服务商来源", () => {
+  it("按存储顺序简洁展示每个回退模型，携带就绪状态与渠道统计，移除平铺来源详情", () => {
     renderFallbackCard(fallbackCardStatus());
 
     const card = screen.getByTestId(`ai-gateway-model-pool-${FALLBACK_POOL_ID}`);
@@ -794,14 +794,20 @@ describe("ModelPoolCard 有序回退模型展示（Step 3）", () => {
     expect(text).toContain("local-b1");
     expect(text).toContain("local-c1");
     expect(text.indexOf("local-b1")).toBeLessThan(text.indexOf("local-c1"));
-    expect(text).toContain("Provider B");
-    expect(text).toContain("remote-b1");
     expect(text).toContain(i18n.t("aiGatewayModelPoolStatusReady"));
-    // The first model reports its two expanded sources.
+    // The first model reports its two expanded sources in compact counter.
     expect(text).toMatch(/1\s*\/\s*2|1 of 2|2 sources/i);
+
+    // Flat provider expansion list is removed for concise display; details live in tooltip.
+    expect(within(fallback).queryByText("Provider B")).not.toBeInTheDocument();
+    expect(within(fallback).queryByText("remote-b1")).not.toBeInTheDocument();
+
+    const items = within(fallback).getAllByRole("listitem");
+    expect(items[0]).toHaveAttribute("title", expect.stringContaining("Provider B"));
+    expect(items[0]).toHaveAttribute("title", expect.stringContaining("remote-b1"));
   });
 
-  it("不可用的回退模型展示自己的可用性代码与原因，常规计数不被回退来源放大", () => {
+  it("不可用的回退模型展示自己的可用性代码，原因收纳于 tooltip 中，常规计数不被回退来源放大", () => {
     renderFallbackCard(fallbackCardStatus());
 
     const card = screen.getByTestId(`ai-gateway-model-pool-${FALLBACK_POOL_ID}`);
@@ -812,7 +818,9 @@ describe("ModelPoolCard 有序回退模型展示（Step 3）", () => {
     expect(fallback.textContent).toContain(
       i18n.t("aiGatewayModelPoolStatusNoUsableKey"),
     );
-    expect(within(fallback).getByText("no usable key")).toBeInTheDocument();
+    // Flat text reason is removed from direct view and kept in tooltip title.
+    const items = within(fallback).getAllByRole("listitem");
+    expect(items[1]).toHaveAttribute("title", expect.stringContaining("no usable key"));
     expect(fallback.textContent).toContain("local-c1");
 
     // One regular candidate from one provider; fallback sources never inflate it.

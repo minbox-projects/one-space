@@ -885,6 +885,18 @@ const resources = {
       aiGatewayModelPoolFallbackSourceCount: "{{ready}} / {{total}} sources",
       aiGatewayModelPoolFallbackUnavailable:
         "Unavailable — no provider mapping",
+      aiGatewayModelPoolFallbackCount: "{{count}} fallback model(s)",
+      aiGatewayModelPoolFallbackSearchLabel: "Filter fallback models",
+      aiGatewayModelPoolFallbackSearchPlaceholder:
+        "Filter fallback models by name...",
+      aiGatewayModelPoolFallbackMatchCount:
+        "{{count}} fallback models matching",
+      aiGatewayModelPoolFallbackNoMatch: "No matching fallback models",
+      aiGatewayModelPoolFallbackNoConfiguredMatch:
+        "No configured fallback models match the filter.",
+      aiGatewayModelPoolFallbackComboboxPlaceholder:
+        "Search or select fallback model to add...",
+      aiGatewayModelPoolFallbackComboboxAria: "Search fallback models to add",
       aiGatewayModelPoolsTab: "Model pools",
       aiGatewayModelPoolsDesc:
         "Aggregate upstream models into unified public model pools with failover.",
@@ -4865,6 +4877,17 @@ const resources = {
       aiGatewayModelPoolFallbackProviderCount: "{{count}} 个服务商",
       aiGatewayModelPoolFallbackSourceCount: "{{ready}} / {{total}} 个来源",
       aiGatewayModelPoolFallbackUnavailable: "不可用 — 无服务商映射",
+      aiGatewayModelPoolFallbackCount: "{{count}} 个回退模型",
+      aiGatewayModelPoolFallbackSearchLabel: "过滤回退模型",
+      aiGatewayModelPoolFallbackSearchPlaceholder:
+        "模糊过滤回退模型名称...",
+      aiGatewayModelPoolFallbackMatchCount:
+        "{{count}} 个匹配的回退模型",
+      aiGatewayModelPoolFallbackNoMatch: "无匹配的候选回退模型",
+      aiGatewayModelPoolFallbackNoConfiguredMatch:
+        "没有已配置的回退模型匹配当前筛选条件。",
+      aiGatewayModelPoolFallbackComboboxPlaceholder: "搜索或选择回退模型添加...",
+      aiGatewayModelPoolFallbackComboboxAria: "搜索待添加的回退模型",
       aiGatewayModelPoolsTab: "模型池",
       aiGatewayModelPoolsDesc:
         "聚合多个上游服务商的模型为统一的公共模型，提供智能路由与故障转移。",
