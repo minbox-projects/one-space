@@ -4,6 +4,7 @@ import { aiGatewayStatus } from "@/lib/aiGateway";
 import { bleLockGetStatus } from "@/lib/bleLock";
 import { protocolRouterStatus } from "@/lib/protocolRouter";
 import { fileSharingStatus } from "@/lib/fileSharing";
+import { tunnelListStatus } from "@/lib/portTunnel";
 import { sshTunnelsSnapshot } from "@/lib/sshTunnels";
 
 /**
@@ -20,7 +21,8 @@ export type RuntimeService =
   | "router"
   | "ssh-tunnels"
   | "file-sharing"
-  | "ble-lock";
+  | "ble-lock"
+  | "port-tunnel";
 
 export type RuntimeStatusSnapshot<T> = {
   data: T | null;
@@ -47,6 +49,7 @@ const COMMANDS: Record<RuntimeService, () => Promise<unknown>> = {
   "ssh-tunnels": () => sshTunnelsSnapshot(),
   "file-sharing": () => fileSharingStatus(),
   "ble-lock": () => bleLockGetStatus(),
+  "port-tunnel": () => tunnelListStatus(),
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -72,6 +75,7 @@ const VALIDATORS: Record<RuntimeService, (payload: unknown) => boolean> = {
     typeof payload.platform_available === "boolean" &&
     isRecord(payload.config) &&
     typeof payload.config.mode === "string",
+  "port-tunnel": (payload) => Array.isArray(payload),
 };
 
 const entries = new Map<RuntimeService, ServiceEntry>();

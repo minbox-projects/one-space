@@ -63,11 +63,18 @@ describe("App 窗口顶部右侧各工具状态图标", () => {
     router = { enabled: false, running: false, port: 17860, route_count: 0 },
     tunnels = { runtime: [], tunnels: [] },
     sharing = { running: false, files: [] },
+    portTunnels = [],
   }: {
     gateway?: { running: boolean; port?: number };
     router?: { enabled: boolean; running: boolean; port: number; route_count: number };
     tunnels?: { runtime: { status: string; name?: string }[]; tunnels: { name: string }[] };
     sharing?: { running: boolean; files: string[] };
+    portTunnels?: Array<{
+      id: string;
+      state: "stopped" | "starting" | "running" | "error";
+      public_url?: string;
+      error?: string;
+    }>;
   } = {}) {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "ai_gateway_status") {
@@ -90,6 +97,9 @@ describe("App 窗口顶部右侧各工具状态图标", () => {
       }
       if (command === "file_sharing_status") {
         return sharing;
+      }
+      if (command === "tunnel_list_status") {
+        return portTunnels;
       }
       if (command === "get_storage_config") {
         return {
@@ -391,6 +401,78 @@ describe("App 窗口顶部右侧各工具状态图标", () => {
 
       await user.click(btn);
       expect(await screen.findByTestId("mock-more-tools-file-sharing")).toBeInTheDocument();
+    });
+  });
+
+  describe("内网穿透状态图标", () => {
+    it("无活跃穿透时不渲染图标", async () => {
+      setupInvokeMock({ portTunnels: [] });
+      renderWithProviders(
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("tunnel_list_status"));
+      expect(screen.queryByTestId("header-port-tunnel-status")).not.toBeInTheDocument();
+    });
+
+    it("正常连接时呈现绿色激活态与数量提示，并支持点击跳转", async () => {
+      const user = userEvent.setup();
+      setupInvokeMock({
+        portTunnels: [
+          { id: "t1", state: "running", public_url: "https://foo.trycloudflare.com" },
+          { id: "t2", state: "running", public_url: "https://bar.trycloudflare.com" },
+        ],
+      });
+      renderWithProviders(
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>,
+      );
+
+      const btn = await screen.findByTestId("header-port-tunnel-status");
+      expect(btn).toBeInTheDocument();
+      expect(btn).toHaveClass("text-emerald-600");
+      expect(btn.getAttribute("title")).toContain("2");
+
+      await user.click(btn);
+      expect(await screen.findByTestId("mock-more-tools-port-tunnel")).toBeInTheDocument();
+    });
+
+    it("有正在启动中穿透时呈现琥珀色告警态", async () => {
+      setupInvokeMock({
+        portTunnels: [
+          { id: "t1", state: "starting" },
+        ],
+      });
+      renderWithProviders(
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>,
+      );
+
+      const btn = await screen.findByTestId("header-port-tunnel-status");
+      expect(btn).toBeInTheDocument();
+      expect(btn).toHaveClass("text-amber-600");
+    });
+
+    it("有穿透报错时呈现红色警示态", async () => {
+      setupInvokeMock({
+        portTunnels: [
+          { id: "t1", state: "running", public_url: "https://foo.trycloudflare.com" },
+          { id: "t2", state: "error", error: "Port already in use" },
+        ],
+      });
+      renderWithProviders(
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>,
+      );
+
+      const btn = await screen.findByTestId("header-port-tunnel-status");
+      expect(btn).toBeInTheDocument();
+      expect(btn).toHaveClass("text-destructive");
     });
   });
 });

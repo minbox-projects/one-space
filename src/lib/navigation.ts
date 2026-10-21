@@ -14,7 +14,8 @@ export type MoreToolsSection =
   | "file-sharing"
   | "jtt-data-parser"
   | "ai-workflow-model-switcher"
-  | "ble-lock";
+  | "ble-lock"
+  | "port-tunnel";
 
 export type ResolvedNavigationTarget = {
   tab: string;

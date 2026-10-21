@@ -28,6 +28,7 @@ mod skills;
 mod ssh_tunnels;
 mod storage;
 mod subagents;
+pub mod tunnel;
 mod version_detect;
 mod workspaces;
 

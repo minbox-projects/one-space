@@ -5700,6 +5700,252 @@
       ],
       "relations": [],
       "shared_entry": false
+    },
+    {
+      "id": "port-tunnel",
+      "name": "Port Tunnel",
+      "aliases": [
+        "port-tunnel-tool"
+      ],
+      "module_root": "frontend",
+      "owner_role": "frontend",
+      "responsibility": "内网穿透前端工具（id `port-tunnel`，别名 `port-tunnel`）：将本机端口映射到公网互联网直接访问。提供 Cloudflare Quick Tunnel 零配置极速模式与自定义 FRP 通道，支持公网 URL 展示、一键复制、浏览器打开、手机扫码预览弹窗（qrcode.react）、依赖缺失安装引导横幅与可折叠实时日志查看器",
+      "entries": [
+        "src/components/PortTunnelTool.tsx"
+      ],
+      "related_files": [
+        "src/components/PortTunnelTool/index.tsx",
+        "src/components/PortTunnelTool/TunnelConfigDialog.tsx",
+        "src/components/PortTunnelTool/EnvironmentBanner.tsx",
+        "src/components/PortTunnelTool/QrCodeModal.tsx",
+        "src/components/PortTunnelTool/LogViewer.tsx",
+        "src/lib/portTunnel.ts",
+        "src/toolbox/plugins/port-tunnel.ts",
+        "src/toolbox/registry.ts",
+        "src/lib/navigation.ts",
+        "src/i18n.ts",
+        "en_keys.txt",
+        "zh_keys.txt"
+      ],
+      "tests": [
+        "src/components/PortTunnelTool/index.test.tsx",
+        "src/toolbox/registry.test.ts"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/PortTunnelTool.tsx",
+          "name": "PortTunnelTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "TUNNEL_STATUS_CHANGED_EVENT",
+          "kind": "constant",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "TunnelConfig",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "TunnelRuntimeStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "EnvironmentStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "tunnelList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "tunnelSave",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "tunnelDelete",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "tunnelStart",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "tunnelStop",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "tunnelStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "tunnelGetLogs",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/portTunnel.ts",
+          "name": "tunnelCheckEnvironment",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "depends_on": [],
+      "read_scope": [
+        "en_keys.txt",
+        "src/components/PortTunnelTool.tsx",
+        "src/components/PortTunnelTool/EnvironmentBanner.tsx",
+        "src/components/PortTunnelTool/LogViewer.tsx",
+        "src/components/PortTunnelTool/QrCodeModal.tsx",
+        "src/components/PortTunnelTool/TunnelConfigDialog.tsx",
+        "src/components/PortTunnelTool/index.test.tsx",
+        "src/components/PortTunnelTool/index.tsx",
+        "src/i18n.ts",
+        "src/lib/navigation.ts",
+        "src/lib/portTunnel.ts",
+        "src/toolbox/plugins/port-tunnel.ts",
+        "src/toolbox/registry.test.ts",
+        "src/toolbox/registry.ts",
+        "zh_keys.txt"
+      ],
+      "relations": [],
+      "shared_entry": false
+    },
+    {
+      "id": "port-tunnel-backend",
+      "name": "Port Tunnel Backend",
+      "aliases": [
+        "port-tunnel-rust"
+      ],
+      "module_root": "tauri-backend",
+      "owner_role": "backend",
+      "responsibility": "内网穿透后端（Rust）：`src-tauri/src/tunnel/` 提供配置持久化（当前 Profile 应用目录下隔离的 `tunnels.json`）、Tokio 异步子进程监管器（支持 Cloudflare Quick Tunnel 零配置免账号公网 HTTPS 分发与自定义 FRP 协议客户端）、标准输出/错误流监听与正则捕获分配的公网 URL、进程生命周期优雅退出与 SIGKILL 强制终止；桌面应用退出时在 `shutdown_runtime_services` 中调用 `tunnel::shutdown_all()` 杜绝孤儿进程",
+      "entries": [
+        "src-tauri/src/tunnel/mod.rs"
+      ],
+      "related_files": [
+        "src-tauri/src/tunnel/config.rs",
+        "src-tauri/src/tunnel/environment.rs",
+        "src-tauri/src/tunnel/supervisor.rs",
+        "src-tauri/src/tunnel/commands.rs",
+        "src-tauri/src/tunnel/types.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs"
+      ],
+      "tests": [
+        "src-tauri/src/tunnel/tests.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src-tauri/src/tunnel/types.rs",
+          "name": "TunnelConfig",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/types.rs",
+          "name": "TunnelRuntimeStatus",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/types.rs",
+          "name": "EnvironmentStatus",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/commands.rs",
+          "name": "tunnel_list",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/commands.rs",
+          "name": "tunnel_save",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/commands.rs",
+          "name": "tunnel_delete",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/commands.rs",
+          "name": "tunnel_start",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/commands.rs",
+          "name": "tunnel_stop",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/commands.rs",
+          "name": "tunnel_status",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/commands.rs",
+          "name": "tunnel_get_logs",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/commands.rs",
+          "name": "tunnel_check_environment",
+          "kind": "command",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/tunnel/supervisor.rs",
+          "name": "shutdown_all",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "depends_on": [],
+      "read_scope": [
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/tunnel/commands.rs",
+        "src-tauri/src/tunnel/config.rs",
+        "src-tauri/src/tunnel/environment.rs",
+        "src-tauri/src/tunnel/mod.rs",
+        "src-tauri/src/tunnel/supervisor.rs",
+        "src-tauri/src/tunnel/tests.rs",
+        "src-tauri/src/tunnel/types.rs"
+      ],
+      "relations": [],
+      "shared_entry": false
     }
   ]
 }

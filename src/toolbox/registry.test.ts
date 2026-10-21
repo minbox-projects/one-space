@@ -30,6 +30,7 @@ const CANONICAL_HUB_IDS = [
   "jtt-data-parser",
   "ai-workflow-model-switcher",
   "ble-lock",
+  "port-tunnel",
 ] as const;
 
 const NON_HUB_IDS = ["notes", "snippets"] as const;

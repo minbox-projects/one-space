@@ -459,7 +459,17 @@ pub fn run() {
             ble_lock_native::ble_lock_set_password,
             ble_lock_native::ble_lock_delete_password,
             ble_lock_native::ble_lock_request_accessibility,
-            ble_lock_native::ble_lock_lock_now
+            ble_lock_native::ble_lock_lock_now,
+            // Port Tunnel
+            crate::tunnel::tunnel_list,
+            crate::tunnel::tunnel_save,
+            crate::tunnel::tunnel_delete,
+            crate::tunnel::tunnel_start,
+            crate::tunnel::tunnel_stop,
+            crate::tunnel::tunnel_status,
+            crate::tunnel::tunnel_list_status,
+            crate::tunnel::tunnel_get_logs,
+            crate::tunnel::tunnel_check_environment
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

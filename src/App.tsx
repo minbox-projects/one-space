@@ -33,6 +33,7 @@ import {
   Menu,
   X,
   Route,
+  Globe,
   BarChart3,
   Network,
   Share2,
@@ -136,6 +137,8 @@ import {
   resolveToolboxText,
 } from "./toolbox/registry";
 import { deriveSshTunnelHeaderSummary } from "./lib/sshTunnelSummary";
+import { derivePortTunnelHeaderSummary } from "./lib/portTunnelSummary";
+import { TUNNEL_STATUS_CHANGED_EVENT, type TunnelRuntimeStatus } from "./lib/portTunnel";
 import {
   errorToMessage,
   getUnreadMessageCount,
@@ -543,6 +546,10 @@ function App() {
   const sharingRuntime = useRuntimeStatus<FileSharingSnapshot>("file-sharing", {
     enabled: runtimeEnabled,
   });
+  const portTunnelRuntime = useRuntimeStatus<TunnelRuntimeStatus[]>("port-tunnel", {
+    enabled: runtimeEnabled,
+  });
+  const portTunnelSummary = derivePortTunnelHeaderSummary(portTunnelRuntime.data || []);
 
   useEffect(() => {
     const status = gatewayRuntime.data;
@@ -1041,6 +1048,9 @@ function App() {
     });
     addListener(BLE_LOCK_STATUS_EVENT, (event) => {
       publishRuntimeStatus("ble-lock", event.payload);
+    });
+    addListener(TUNNEL_STATUS_CHANGED_EVENT, () => {
+      void refreshRuntimeStatus("port-tunnel");
     });
     addListener("tray-shortcuts-updated", (event) => {
       const payload = (event.payload ?? {}) as {
@@ -2769,6 +2779,62 @@ function App() {
                 >
                   <Share2 className="w-5 h-5" />
                   <ToolStatusDot tone="success" />
+                </button>
+              )}
+              {portTunnelSummary && portTunnelSummary.activeCount > 0 && (
+                <button
+                  onClick={() => navigateToTab("port-tunnel")}
+                  className={`relative p-2.5 rounded-md transition-colors ${
+                    portTunnelSummary.hasErrors
+                      ? "text-destructive hover:bg-destructive/10 dark:text-destructive"
+                      : portTunnelSummary.hasStarting
+                        ? "text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
+                        : "text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                  }`}
+                  title={
+                    portTunnelSummary.hasErrors
+                      ? t("launcherPortTunnelErrorAria", {
+                          count: portTunnelSummary.connectedCount,
+                          defaultValue: `${portTunnelSummary.connectedCount} connected, with errors`,
+                        })
+                      : portTunnelSummary.hasStarting
+                        ? t("launcherPortTunnelConnectingAria", {
+                            count: portTunnelSummary.connectedCount,
+                            defaultValue: `${portTunnelSummary.connectedCount} connected, connecting...`,
+                          })
+                        : t("launcherPortTunnelRunningAria", {
+                            count: portTunnelSummary.connectedCount,
+                            defaultValue: `${portTunnelSummary.connectedCount} port tunnel${portTunnelSummary.connectedCount > 1 ? "s" : ""} connected`,
+                          })
+                  }
+                  aria-label={
+                    portTunnelSummary.hasErrors
+                      ? t("launcherPortTunnelErrorAria", {
+                          count: portTunnelSummary.connectedCount,
+                          defaultValue: `${portTunnelSummary.connectedCount} connected, with errors`,
+                        })
+                      : portTunnelSummary.hasStarting
+                        ? t("launcherPortTunnelConnectingAria", {
+                            count: portTunnelSummary.connectedCount,
+                            defaultValue: `${portTunnelSummary.connectedCount} connected, connecting...`,
+                          })
+                        : t("launcherPortTunnelRunningAria", {
+                            count: portTunnelSummary.connectedCount,
+                            defaultValue: `${portTunnelSummary.connectedCount} port tunnel(s) connected`,
+                          })
+                  }
+                  data-testid="header-port-tunnel-status"
+                >
+                  <Globe className="w-5 h-5" />
+                  <ToolStatusDot
+                    tone={
+                      portTunnelSummary.hasErrors
+                        ? "error"
+                        : portTunnelSummary.hasStarting
+                          ? "warning"
+                          : "success"
+                    }
+                  />
                 </button>
               )}
 

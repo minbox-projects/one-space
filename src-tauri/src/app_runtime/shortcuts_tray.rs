@@ -173,6 +173,8 @@ pub(super) fn shutdown_runtime_services() {
     crate::ai_gateway::stop_daily_reset_scanner();
     // Stop and release the BLE lock runtime; idempotent (REQ-011/AC-014).
     super::run_app::ble_lock_native::shutdown_runtime();
+    // Stop and kill all port tunnel processes on app shutdown.
+    crate::tunnel::shutdown_all();
 }
 
 #[tauri::command]

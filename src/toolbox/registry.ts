@@ -8,6 +8,7 @@ import { jsonParserTool } from "./plugins/json-parser";
 import { jttDataParserTool } from "./plugins/jtt-data-parser";
 import { md5EncryptionTool } from "./plugins/md5-encryption";
 import { notesTool } from "./plugins/notes";
+import { portTunnelTool } from "./plugins/port-tunnel";
 import { protocolRouterTool } from "./plugins/protocol-router";
 import { randomPasswordTool } from "./plugins/random-password";
 import { shortLinkTool } from "./plugins/short-link";
@@ -34,6 +35,7 @@ export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   fileSharingTool,
   jttDataParserTool,
   aiWorkflowModelSwitcherTool,
+  portTunnelTool,
   snippetsTool,
   notesTool,
 ];
