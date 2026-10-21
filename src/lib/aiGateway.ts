@@ -1528,11 +1528,12 @@ export interface GatewayModelPool {
   default_reasoning_effort?: string | null;
   candidates: GatewayModelPoolCandidate[];
   /**
-   * Optional last-stage source used after every regular candidate is exhausted.
-   * It shares the candidate shape and its pool-local reasoning declaration but
-   * never enters primary scheduling; absent/`null` means no fallback.
+   * Ordered gateway local model ids used after every regular candidate is
+   * exhausted. Each id expands to every provider mapping serving that model, so
+   * the list stores no provider, upstream model, protocol or weight. An
+   * absent/empty list means no configured fallback.
    */
-  fallback?: GatewayModelPoolCandidate | null;
+  fallback_models?: string[];
 }
 
 /** Nonsecret source-availability code reported per candidate by the backend. */
@@ -1555,6 +1556,32 @@ export interface GatewayModelPoolCandidateStatus extends GatewayModelPoolCandida
   cooling_until: number | null;
 }
 
+/** Nonsecret readiness of one provider mapping serving a fallback gateway model. */
+export interface GatewayModelPoolFallbackSourceStatus {
+  provider_id: string;
+  provider_name: string | null;
+  local_model: string;
+  upstream_model: string;
+  protocol: GatewayUpstreamProtocol;
+  ready: boolean;
+  availability: GatewayModelPoolAvailability | string;
+  reason: string | null;
+  /** Wall-clock epoch SECONDS when cooldown ends; `null` when not cooling. */
+  cooling_until: number | null;
+}
+
+/** Nonsecret readiness of one stored fallback gateway model and its sources. */
+export interface GatewayModelPoolFallbackModelStatus {
+  /** The trimmed gateway local model id stored in the ordered list. */
+  model: string;
+  ready: boolean;
+  ready_sources: number;
+  total_sources: number;
+  sources: GatewayModelPoolFallbackSourceStatus[];
+  /** Bounded nonsecret explanation when no expanded source is ready. */
+  reason?: string | null;
+}
+
 /** One public preference's static pool coverage, independent of readiness. */
 export interface ModelPoolReasoningCoverage {
   effort: string;
@@ -1574,12 +1601,13 @@ export interface GatewayModelPoolStatus {
   reasoning_efforts?: string[];
   /** Per-preference static coverage; absent for legacy pools. */
   reasoning_coverage?: ModelPoolReasoningCoverage[];
+  /** Regular candidate readiness; always regular-only. */
   candidates: GatewayModelPoolCandidateStatus[];
   /**
-   * Readiness of the optional last-stage fallback, reported separately from the
-   * regular candidates. Absent/`null` when the pool configures no fallback.
+   * Ordered per-model readiness of the stored fallback list. Missing on legacy
+   * payloads and empty when the pool configures no fallback model.
    */
-  fallback?: GatewayModelPoolCandidateStatus | null;
+  fallback_models?: GatewayModelPoolFallbackModelStatus[];
 }
 
 /** Read the stored model pools; a legacy/missing collection yields an empty list. */
@@ -1717,6 +1745,93 @@ export function modelPoolCandidateServesEffort(
   return isModelPoolReasoningMappingValid(reasoning, mapping);
 }
 
+/** Map one source-advertised native token to a canonical pool preference. */
+function fallbackCanonicalEffort(raw: string): CanonicalReasoningEffort | null {
+  const normalized = raw.trim().toLowerCase();
+  return (CANONICAL_REASONING_EFFORTS as readonly string[]).includes(normalized)
+    ? (normalized as CanonicalReasoningEffort)
+    : null;
+}
+
+/**
+ * Derive one expanded fallback source's native reasoning declaration from its
+ * exact provider mapping: the OpenAI effort profile for Chat/Responses and the
+ * Anthropic effort-inherit profile for Messages. Only declared canonical
+ * efforts become mappings, and `none` becomes an explicit disable only when the
+ * mapping declares it. No control is inferred from a model name.
+ */
+export function fallbackModelReasoning(
+  mapping: Pick<GatewayModelMapping, "reasoning_efforts"> | null | undefined,
+  protocol: GatewayUpstreamProtocol,
+): GatewayModelPoolReasoning | null {
+  const profile =
+    protocol === "anthropic_messages"
+      ? "anthropic_effort_inherit"
+      : "openai_effort";
+  const efforts: CanonicalReasoningEffort[] = [];
+  const values: string[] = [];
+  for (const raw of mapping?.reasoning_efforts ?? []) {
+    const trimmed = raw.trim();
+    const effort = fallbackCanonicalEffort(trimmed);
+    if (!effort || efforts.includes(effort)) continue;
+    efforts.push(effort);
+    if (effort !== "none") values.push(effort);
+  }
+  if (efforts.length === 0) return null;
+  return {
+    profile,
+    values,
+    supports_disable: efforts.includes("none"),
+    mappings: efforts.map((effort) => ({
+      effort,
+      action:
+        effort === "none"
+          ? { kind: "disable" as const }
+          : { kind: "enum" as const, value: effort },
+    })),
+  };
+}
+
+/**
+ * Expand one stored fallback gateway model to every provider mapping that serves
+ * its trimmed local model, preserving provider and mapping order. Disabled
+ * providers and mappings stay included so status can report them; the runtime
+ * eligibility contract is applied separately. Each source derives its reasoning
+ * automatically from its exact mapping and effective protocol.
+ */
+export function expandModelPoolFallbackModel(
+  providers: GatewayUpstreamProvider[] | null | undefined,
+  localModel: string,
+): GatewayModelPoolCandidate[] {
+  const model = localModel.trim();
+  if (!model) return [];
+  const expanded: GatewayModelPoolCandidate[] = [];
+  const seen = new Set<string>();
+  for (const provider of providers ?? []) {
+    const providerId = provider.id.trim();
+    for (const mapping of provider.mappings ?? []) {
+      if (mapping.local_model.trim() !== model) continue;
+      const upstreamModel = mapping.upstream_model.trim();
+      if (!upstreamModel) continue;
+      const protocol =
+        mapping.protocol ?? provider.protocol ?? "chat_completions";
+      const candidate: GatewayModelPoolCandidate = {
+        provider_id: providerId,
+        local_model: model,
+        upstream_model: upstreamModel,
+        protocol,
+        weight: 1,
+      };
+      const key = modelPoolCandidateKey(candidate);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const reasoning = fallbackModelReasoning(mapping, protocol);
+      expanded.push(reasoning ? { ...candidate, reasoning } : candidate);
+    }
+  }
+  return expanded;
+}
+
 /** One pool's configuration-derived static reasoning catalog. */
 export interface ModelPoolReasoningCatalog {
   reasoning_efforts: string[];
@@ -1735,14 +1850,18 @@ export function poolReasoningCatalog(
   providers: GatewayUpstreamProvider[] | null | undefined,
   pool: Pick<
     GatewayModelPool,
-    "candidates" | "default_reasoning_effort" | "fallback"
+    "candidates" | "default_reasoning_effort" | "fallback_models"
   >,
 ): ModelPoolReasoningCatalog {
-  // The configured union: regular candidates plus the optional last-stage
-  // fallback. Static support ignores transient readiness for both roles.
-  const candidates = pool.fallback
-    ? [...pool.candidates, pool.fallback]
-    : pool.candidates;
+  // The configured union: regular candidates plus every provider mapping that
+  // serves an ordered fallback gateway model. Static support ignores transient
+  // readiness for both roles.
+  const candidates = [
+    ...pool.candidates,
+    ...(pool.fallback_models ?? []).flatMap((model) =>
+      expandModelPoolFallbackModel(providers, model),
+    ),
+  ];
   const total = candidates.length;
   const reasoning_coverage = CANONICAL_REASONING_EFFORTS.map((effort) => ({
     effort,

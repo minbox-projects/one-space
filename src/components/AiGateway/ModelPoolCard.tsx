@@ -13,9 +13,12 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ToastProvider";
 import {
   MODEL_POOL_AVAILABILITY_LABEL_KEYS,
+  expandModelPoolFallbackModel,
   resolveModelPoolCandidateState,
   selectPoolReasoningCoverageRow,
   type GatewayModelPool,
+  type GatewayModelPoolFallbackModelStatus,
+  type GatewayModelPoolFallbackSourceStatus,
   type GatewayModelPoolStatus,
   type GatewayUpstreamProvider,
 } from "@/lib/aiGateway";
@@ -92,24 +95,19 @@ export function ModelPoolCard({
   const candidateCount = pool.candidates.length;
   const sourceCount = new Set(pool.candidates.map((c) => c.provider_id)).size;
 
-  // The optional fallback is identified separately and never counted as a
-  // regular candidate or as part of regular readiness.
-  const fallback = pool.fallback ?? null;
-  const fallbackState = fallback
-    ? resolveModelPoolCandidateState(
-        fallback,
-        providers,
-        status?.fallback ?? null,
-      )
-    : null;
-  const fallbackLabelKey = fallbackState
-    ? MODEL_POOL_AVAILABILITY_LABEL_KEYS[fallbackState.availability]
-    : undefined;
-  const fallbackLabel = fallbackState
-    ? fallbackLabelKey
-      ? t(fallbackLabelKey)
-      : fallbackState.availability
-    : null;
+  // Ordered fallback models are reported separately and never counted as
+  // regular candidates or as part of regular readiness.
+  const fallbackModels = (pool.fallback_models ?? [])
+    .map((model) => model.trim())
+    .filter((model) => model !== "");
+  const fallbackStatusByModel = new Map<
+    string,
+    GatewayModelPoolFallbackModelStatus
+  >(
+    (status?.fallback_models ?? []).map(
+      (item) => [item.model.trim(), item] as const,
+    ),
+  );
 
   // Pool capability is read only from this pool's own status snapshot; source
   // metadata is never promoted into a pool reasoning variant.
@@ -283,51 +281,134 @@ export function ModelPoolCard({
           </div>
         </div>
 
-        {fallback && fallbackState ? (
+        {fallbackModels.length > 0 ? (
           <div
             data-testid={`ai-gateway-model-pool-fallback-${pool.id}`}
             className="mt-2.5 space-y-1.5 rounded-lg border border-border/60 bg-muted/20 p-2"
           >
-            <div className="flex flex-wrap items-center justify-between gap-1.5">
-              <span className="text-[10px] font-medium text-muted-foreground">
-                {t(
-                  "aiGatewayModelPoolFallbackLabel",
-                  "Default fallback model",
-                )}
-              </span>
-              <span
-                className={`inline-flex items-center rounded px-1.5 py-0.2 text-[10px] font-medium ${
-                  fallbackState.ready
-                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                    : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                }`}
-              >
-                {fallbackLabel}
-              </span>
+            <div className="text-[10px] font-medium text-muted-foreground">
+              {t("aiGatewayModelPoolFallbackLabel", "Fallback models")}
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-              <span className="font-medium text-foreground/85">
-                {fallbackState.provider_name ?? fallback.provider_id}
-              </span>
-              <span className="break-all font-medium text-foreground">
-                {fallback.local_model}
-              </span>
-              <span className="text-muted-foreground/60">→</span>
-              <code className="break-all rounded border border-border/40 bg-background px-1 py-0.2 font-mono text-[10px] text-foreground">
-                {fallback.upstream_model}
-              </code>
-              <span className="inline-flex items-center rounded bg-background px-1.5 py-0.2 text-[10px] text-muted-foreground">
-                {protocolShortLabel(fallback.protocol)}
-              </span>
-            </div>
-            {fallbackState.reason ? (
-              <div className="flex flex-wrap items-baseline gap-1 text-[10px] text-amber-700 dark:text-amber-400">
-                <span>
-                  {t("aiGatewayModelPoolFallbackReason", "Fallback reason")}:
-                </span>
-                <span className="break-words">{fallbackState.reason}</span>
-              </div>
-            ) : null}
+            <ul className="space-y-1.5">
+              {fallbackModels.map((model) => {
+                const record = fallbackStatusByModel.get(model) ?? null;
+                const derived: GatewayModelPoolFallbackSourceStatus[] = record
+                  ? []
+                  : expandModelPoolFallbackModel(providers, model).map(
+                      (candidate) => {
+                        const state = resolveModelPoolCandidateState(
+                          candidate,
+                          providers,
+                          null,
+                        );
+                        return {
+                          provider_id: candidate.provider_id,
+                          provider_name: state.provider_name,
+                          local_model: candidate.local_model,
+                          upstream_model: candidate.upstream_model,
+                          protocol: candidate.protocol,
+                          ready: state.ready,
+                          availability: state.availability,
+                          reason: state.reason,
+                          cooling_until: state.cooling_until,
+                        };
+                      },
+                    );
+                const sources = record?.sources ?? derived;
+                const readySources =
+                  record?.ready_sources ??
+                  sources.filter((source) => source.ready).length;
+                const totalSources = record?.total_sources ?? sources.length;
+                const ready = record?.ready ?? readySources > 0;
+                const firstUnavailable = sources.find(
+                  (source) => !source.ready,
+                );
+                const availability = ready
+                  ? "ready"
+                  : (firstUnavailable?.availability ??
+                    (sources.length === 0 ? "mapping_unavailable" : "no_usable_key"));
+                const labelKey =
+                  MODEL_POOL_AVAILABILITY_LABEL_KEYS[availability];
+                const label = labelKey ? t(labelKey) : availability;
+                const reason =
+                  record?.reason?.trim() ||
+                  (!ready ? firstUnavailable?.reason?.trim() : null) ||
+                  (sources.length === 0
+                    ? t(
+                        "aiGatewayModelPoolFallbackUnavailable",
+                        "Unavailable — no provider mapping",
+                      )
+                    : null);
+                return (
+                  <li
+                    key={model}
+                    role="listitem"
+                    className="space-y-1 rounded-md border border-border/50 bg-card/60 px-1.5 py-1"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <span className="break-all font-mono text-[11px] font-medium text-foreground">
+                        {model}
+                      </span>
+                      <span
+                        className={`inline-flex items-center rounded px-1.5 py-0.2 text-[10px] font-medium ${
+                          ready
+                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                            : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                        }`}
+                      >
+                        {label}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {t(
+                        "aiGatewayModelPoolFallbackSourceCount",
+                        "{{ready}} / {{total}} sources",
+                        { ready: readySources, total: totalSources },
+                      )}
+                    </div>
+                    {sources.map((source) => (
+                      <div
+                        key={`${source.provider_id}-${source.upstream_model}-${source.protocol}`}
+                        className="flex flex-wrap items-center gap-1.5 text-[10px]"
+                      >
+                        <span className="font-medium text-foreground/85">
+                          {source.provider_name ?? source.provider_id}
+                        </span>
+                        <code className="break-all rounded border border-border/40 bg-background px-1 py-0.2 font-mono text-foreground">
+                          {source.upstream_model}
+                        </code>
+                        <span className="rounded bg-background px-1.5 py-0.2 text-muted-foreground">
+                          {protocolShortLabel(source.protocol)}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {MODEL_POOL_AVAILABILITY_LABEL_KEYS[
+                            source.availability
+                          ]
+                            ? t(
+                                MODEL_POOL_AVAILABILITY_LABEL_KEYS[
+                                  source.availability
+                                ],
+                              )
+                            : source.availability}
+                        </span>
+                      </div>
+                    ))}
+                    {reason ? (
+                      <div className="flex flex-wrap items-baseline gap-1 text-[10px] text-amber-700 dark:text-amber-400">
+                        <span>
+                          {t(
+                            "aiGatewayModelPoolFallbackReason",
+                            "Fallback reason",
+                          )}
+                          :
+                        </span>
+                        <span className="break-words">{reason}</span>
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         ) : null}
 

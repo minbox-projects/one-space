@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   CheckSquare,
   ChevronDown,
+  ChevronUp,
   Layers,
   Search,
   Server,
@@ -22,8 +23,10 @@ import {
 import { useToast } from "@/components/ToastProvider";
 import { errorToMessage } from "@/lib/messages";
 import {
+  aggregateModels,
   autoBindCandidateReasoning,
   CANONICAL_REASONING_EFFORTS,
+  expandModelPoolFallbackModel,
   MODEL_POOL_AVAILABILITY_LABEL_KEYS,
   modelPoolCandidateKey,
   modelPoolCandidateServesEffort,
@@ -252,6 +255,8 @@ type ModelPoolDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   providers: GatewayUpstreamProvider[];
+  /** Current and retired pool aliases that a fallback model must not reuse. */
+  aliases?: string[];
   /** Loaded template views, used to resolve a provider's bound template name. */
   templates?: GatewayProviderTemplateView[];
   /** The saved pool being edited; `null`/absent creates a new pool. */
@@ -267,19 +272,6 @@ function toDraft(candidate: GatewayModelPoolCandidate): DraftCandidate {
   return { ...candidate, key: modelPoolCandidateKey(candidate) };
 }
 
-/** One unambiguous provider -> source -> protocol label for a fallback choice. */
-function fallbackCandidateLabel(
-  providerName: string,
-  candidate: Pick<
-    GatewayModelPoolCandidate,
-    "local_model" | "upstream_model" | "protocol"
-  >,
-): string {
-  return `${providerName} · ${candidate.local_model} → ${candidate.upstream_model} · ${protocolShortLabel(
-    candidate.protocol,
-  )}`;
-}
-
 function parseWeight(value: string): number | null {
   const trimmed = value.trim();
   if (trimmed === "") return null;
@@ -292,6 +284,7 @@ export function ModelPoolDialog({
   open,
   onOpenChange,
   providers,
+  aliases = [],
   templates = [],
   pool = null,
   poolStatus = null,
@@ -315,22 +308,11 @@ export function ModelPoolDialog({
     }
     return initial;
   });
-  // The optional last-stage fallback stays a separate selection: it never shares
-  // the regular candidates' weights or primary scheduling.
-  const [fallback, setFallback] = useState<DraftCandidate | null>(() =>
-    pool?.fallback ? toDraft(pool.fallback) : null,
+  // Ordered fallback gateway model ids. The list never shares regular weights
+  // or primary scheduling, and each id expands to its provider mappings later.
+  const [fallbackModels, setFallbackModels] = useState<string[]>(() =>
+    (pool?.fallback_models ?? []).map((model) => model.trim()).filter(Boolean),
   );
-  const [fallbackReasoningDrafts, setFallbackReasoningDrafts] = useState<
-    Record<string, ReasoningDraft>
-  >(() => {
-    const initial: Record<string, ReasoningDraft> = {};
-    if (pool?.fallback) {
-      initial[modelPoolCandidateKey(pool.fallback)] = reasoningDraftFrom(
-        pool.fallback.reasoning,
-      );
-    }
-    return initial;
-  });
   // Pool default preference; a new pool starts at `medium`, a legacy pool at `auto`.
   const [defaultEffort, setDefaultEffort] = useState<string>(() =>
     pool ? resolveModelPoolDefaultEffort(pool) : "medium",
@@ -442,78 +424,68 @@ export function ModelPoolDialog({
     [selected],
   );
 
-  const fallbackReasoningDraft = fallback
-    ? (fallbackReasoningDrafts[fallback.key] ??
-      reasoningDraftFrom(fallback.reasoning))
-    : null;
+  // Current and retired pool aliases can never be selected as fallback models.
+  const aliasModels = useMemo(
+    () =>
+      new Set(
+        aliases.map((alias) => alias.trim()).filter((alias) => alias !== ""),
+      ),
+    [aliases],
+  );
 
-  // The fallback offers only real provider mappings, never one already selected
-  // as a regular candidate. A saved reference whose source disappeared stays
-  // visible as its own option so it can be retained or explicitly cleared.
-  const fallbackOptions = useMemo(() => {
-    const options: Array<{
-      key: string;
-      candidate: DraftCandidate;
-      label: string;
-    }> = [];
-    const seen = new Set<string>();
-    for (const group of sourceGroups) {
-      for (const row of group.rows) {
-        if (selectedKeys.has(row.key) || seen.has(row.key)) continue;
-        const candidate =
-          fallback?.key === row.key ? fallback : toDraft(row.candidate);
-        seen.add(row.key);
-        options.push({
-          key: row.key,
-          candidate,
-          label: fallbackCandidateLabel(group.providerName, candidate),
-        });
-      }
-    }
-    if (fallback && !seen.has(fallback.key) && !selectedKeys.has(fallback.key)) {
-      const providerName =
-        activeProviders.find((provider) => provider.id === fallback.provider_id)
-          ?.name ??
-        (poolStatus?.fallback?.provider_id === fallback.provider_id
-          ? poolStatus.fallback.provider_name
-          : null) ??
-        fallback.provider_id;
-      options.push({
-        key: fallback.key,
-        candidate: fallback,
-        label: fallbackCandidateLabel(providerName, fallback),
-      });
-    }
-    return options;
-  }, [activeProviders, fallback, poolStatus, selectedKeys, sourceGroups]);
+  // Options come from the aggregated enabled gateway models: model-level ids,
+  // never provider-specific mapping labels. Already added ids and aliases are
+  // excluded; a regular candidate id remains a legal fallback selection.
+  const fallbackModelOptions = useMemo(() => {
+    const added = new Set(fallbackModels);
+    return aggregateModels(activeProviders)
+      .filter((entry) => !aliasModels.has(entry.model) && !added.has(entry.model))
+      .map((entry) => entry.model);
+  }, [activeProviders, aliasModels, fallbackModels]);
 
-  const selectFallback = (key: string) => {
-    setError(null);
-    if (!key) {
-      setFallback(null);
-      return;
+  // Distinct enabled provider count per aggregated model, also used for stored
+  // ids that are no longer offered by the add control.
+  const fallbackProviderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of aggregateModels(activeProviders)) {
+      counts.set(
+        entry.model,
+        new Set(entry.providers.map((item) => item.providerId)).size,
+      );
     }
-    const option = fallbackOptions.find((item) => item.key === key);
-    if (!option) return;
-    setFallback(option.candidate);
-    setFallbackReasoningDrafts((previous) =>
-      previous[key]
-        ? previous
-        : { ...previous, [key]: reasoningDraftFrom(option.candidate.reasoning) },
+    return counts;
+  }, [activeProviders]);
+
+  const addFallbackModel = (model: string) => {
+    const trimmed = model.trim();
+    if (!trimmed) return;
+    setFallbackModels((previous) =>
+      previous.includes(trimmed) ? previous : [...previous, trimmed],
     );
+    setError(null);
   };
 
-  const updateFallbackReasoning = (
-    candidate: DraftCandidate,
-    patch: Partial<ReasoningDraft>,
-  ) => {
-    setFallbackReasoningDrafts((previous) => ({
-      ...previous,
-      [candidate.key]: {
-        ...(previous[candidate.key] ?? reasoningDraftFrom(candidate.reasoning)),
-        ...patch,
-      },
-    }));
+  const moveFallbackModel = (index: number, delta: number) => {
+    setFallbackModels((previous) => {
+      const target = index + delta;
+      if (index < 0 || index >= previous.length || target < 0 || target >= previous.length) {
+        return previous;
+      }
+      const next = [...previous];
+      const [moved] = next.splice(index, 1);
+      next.splice(target, 0, moved);
+      return next;
+    });
+    setError(null);
+  };
+
+  const removeFallbackModel = (model: string) => {
+    setFallbackModels((previous) => previous.filter((item) => item !== model));
+    setError(null);
+  };
+
+  const clearFallbackModels = () => {
+    setFallbackModels([]);
     setError(null);
   };
 
@@ -542,12 +514,22 @@ export function ModelPoolDialog({
     );
   }, [filteredCandidates, selectedKeys]);
 
+  // Every provider mapping serving the current ordered fallback list, with its
+  // reasoning auto-derived from the exact mapping and effective protocol.
+  const expandedFallbackCandidates = useMemo(
+    () =>
+      fallbackModels.flatMap((model) =>
+        expandModelPoolFallbackModel(providers, model),
+      ),
+    [fallbackModels, providers],
+  );
+
   // Live static coverage derived from the current binding drafts and the
   // current provider list; readiness stays a separate, key/health-aware count.
-  // The denominator spans the configured union of regular candidates and the
-  // optional fallback, while runtime readiness below remains regular-only.
+  // The denominator spans the configured union of regular candidates and every
+  // expanded fallback source, while runtime readiness below remains regular-only.
   const draftReasoningCatalog = useMemo(() => {
-    const candidates = selected.map((candidate) => {
+    const candidates: GatewayModelPoolCandidate[] = selected.map((candidate) => {
       const draft =
         reasoningDrafts[candidate.key] ??
         reasoningDraftFrom(candidate.reasoning);
@@ -558,17 +540,7 @@ export function ModelPoolDialog({
       );
       return { ...candidate, ...(reasoning ? { reasoning } : {}) };
     });
-    if (fallback && fallbackReasoningDraft) {
-      const reasoning = deriveReasoning(
-        fallback.reasoning,
-        fallbackReasoningDraft,
-        fallback.protocol,
-      );
-      candidates.push({
-        ...fallback,
-        ...(reasoning ? { reasoning } : {}),
-      });
-    }
+    candidates.push(...expandedFallbackCandidates);
     const coverage = CANONICAL_REASONING_EFFORTS.map((effort) => ({
       effort,
       mapped_candidates: candidates.filter((candidate) =>
@@ -582,7 +554,7 @@ export function ModelPoolDialog({
         .filter((row) => row.mapped_candidates > 0)
         .map((row) => row.effort),
     };
-  }, [fallback, fallbackReasoningDraft, providers, reasoningDrafts, selected]);
+  }, [expandedFallbackCandidates, providers, reasoningDrafts, selected]);
 
   const coverageRow = selectPoolReasoningCoverageRow(
     draftReasoningCatalog.coverage,
@@ -752,16 +724,8 @@ export function ModelPoolDialog({
     setError(null);
   };
 
-  const reasoningEditor = (
-    candidate: DraftCandidate,
-    draftOverride?: ReasoningDraft,
-    update: (
-      candidate: DraftCandidate,
-      patch: Partial<ReasoningDraft>,
-    ) => void = updateReasoning,
-  ) => {
+  const reasoningEditor = (candidate: DraftCandidate) => {
     const draft =
-      draftOverride ??
       reasoningDrafts[candidate.key] ??
       reasoningDraftFrom(candidate.reasoning);
     const base = candidate.reasoning ?? null;
@@ -787,7 +751,7 @@ export function ModelPoolDialog({
     const isExpanded = Boolean(expandedReasoning[candidate.key]);
 
     const updateBinding = (effort: string, option: string) => {
-      update(candidate, {
+      updateReasoning(candidate, {
         mappings: { ...draft.mappings, [effort]: option },
       });
     };
@@ -1014,68 +978,71 @@ export function ModelPoolDialog({
         ),
       };
     });
-    const fallbackDraftEntry =
-      fallback && fallbackReasoningDraft
-        ? {
-            candidate: fallback,
-            draft: fallbackReasoningDraft,
-            reasoning: deriveReasoning(
-              fallback.reasoning,
-              fallbackReasoningDraft,
-              fallback.protocol,
-            ),
-          }
-        : null;
-    const allDrafts = fallbackDraftEntry
-      ? [...selectedDrafts, fallbackDraftEntry]
-      : selectedDrafts;
     // A concrete default preference requires at least one currently valid
-    // candidate mapping across the configured union; `auto` omits the controls.
-    // The same save may not delete the retained default's last declaration,
-    // while a retained, unchanged declaration may survive an unavailable source
-    // in an unrelated edit.
+    // candidate mapping across the configured union of regular drafts and every
+    // expanded fallback source; `auto` omits the controls. The same save may not
+    // delete the retained default's last declaration, while a retained,
+    // unchanged declaration may survive an unavailable source in an unrelated
+    // edit.
     if (defaultEffort !== "auto") {
       const defaultUnmapped = () =>
         t(
           "aiGatewayModelPoolErrorReasoningDefaultUnmapped",
           "Invalid model pool reasoning policy: the default preference needs at least one valid candidate mapping.",
         );
-      const declaresDefault = allDrafts.some(({ draft }) =>
-        Boolean(draft.mappings[defaultEffort]),
-      );
+      const declaresDefault =
+        selectedDrafts.some(({ draft }) =>
+          Boolean(draft.mappings[defaultEffort]),
+        ) ||
+        expandedFallbackCandidates.some((candidate) =>
+          (candidate.reasoning?.mappings ?? []).some(
+            (mapping) => mapping.effort === defaultEffort,
+          ),
+        );
       if (!declaresDefault) {
         setError(defaultUnmapped());
         return;
       }
-      const currentlyValid = allDrafts.some(({ candidate, reasoning }) =>
-        modelPoolCandidateServesEffort(
-          providers,
-          {
-            provider_id: candidate.provider_id,
-            local_model: candidate.local_model,
-            upstream_model: candidate.upstream_model,
-            protocol: candidate.protocol,
-            weight: candidate.weight,
-            ...(reasoning ? { reasoning } : {}),
-          },
-          defaultEffort,
-        ),
+      const unionCandidates: GatewayModelPoolCandidate[] = [
+        ...selectedDrafts.map(({ candidate, reasoning }) => ({
+          provider_id: candidate.provider_id,
+          local_model: candidate.local_model,
+          upstream_model: candidate.upstream_model,
+          protocol: candidate.protocol,
+          weight: candidate.weight,
+          ...(reasoning ? { reasoning } : {}),
+        })),
+        ...expandedFallbackCandidates,
+      ];
+      const currentlyValid = unionCandidates.some((candidate) =>
+        modelPoolCandidateServesEffort(providers, candidate, defaultEffort),
       );
       const existingDefault = pool
         ? resolveModelPoolDefaultEffort(pool)
         : null;
       const retained = pool != null && existingDefault === defaultEffort;
-      const submittedSignature = effortDeclarationSignature(
-        allDrafts.map(({ candidate, draft }) => ({
+      const submittedSignature = effortDeclarationSignature([
+        ...selectedDrafts.map(({ candidate, draft }) => ({
           key: candidate.key,
           action: draft.mappings[defaultEffort]
             ? optionValueToAction(draft.mappings[defaultEffort])
             : null,
         })),
-      );
+        ...expandedFallbackCandidates.map((candidate) => {
+          const mapping = (candidate.reasoning?.mappings ?? []).find(
+            (item) => item.effort === defaultEffort,
+          );
+          return {
+            key: modelPoolCandidateKey(candidate),
+            action: mapping ? mapping.action : null,
+          };
+        }),
+      ]);
       const storedPoolCandidates = [
         ...(pool?.candidates ?? []),
-        ...(pool?.fallback ? [pool.fallback] : []),
+        ...(pool?.fallback_models ?? []).flatMap((model) =>
+          expandModelPoolFallbackModel(providers, model),
+        ),
       ];
       const declarationUnchanged =
         retained &&
@@ -1136,18 +1103,6 @@ export function ModelPoolDialog({
     }
     setError(null);
     setSaving(true);
-    const fallbackPayload: GatewayModelPoolCandidate | undefined = fallback
-      ? {
-          provider_id: fallback.provider_id,
-          local_model: fallback.local_model,
-          upstream_model: fallback.upstream_model,
-          protocol: fallback.protocol,
-          weight: fallback.weight,
-          ...(fallbackDraftEntry?.reasoning
-            ? { reasoning: fallbackDraftEntry.reasoning }
-            : {}),
-        }
-      : undefined;
     try {
       await onSave({
         id: pool?.id || newModelPoolId(),
@@ -1156,7 +1111,7 @@ export function ModelPoolDialog({
         enabled: pool?.enabled ?? true,
         default_reasoning_effort: defaultEffort,
         candidates,
-        ...(fallbackPayload ? { fallback: fallbackPayload } : {}),
+        fallback_models: fallbackModels,
       });
       onOpenChange(false);
     } catch (err) {
@@ -1260,61 +1215,171 @@ export function ModelPoolDialog({
             </select>
           </label>
 
-          {/* Optional last-stage fallback, separate from regular selection */}
+          {/* Ordered fallback gateway models, separate from regular selection */}
           <div className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 space-y-0.5">
+                <div className="text-xs font-semibold text-foreground">
+                  {t("aiGatewayModelPoolFallbackLabel", "Fallback models")}
+                </div>
+                <p className="text-[10px] leading-relaxed text-muted-foreground">
+                  {t(
+                    "aiGatewayModelPoolFallbackHint",
+                    "Ordered fallback models are used only after every regular candidate is exhausted.",
+                  )}
+                </p>
+              </div>
+              {fallbackModels.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={clearFallbackModels}
+                  disabled={busy || saving}
+                  aria-label={t(
+                    "aiGatewayModelPoolFallbackClear",
+                    "Clear fallback models",
+                  )}
+                  className="inline-flex h-7 shrink-0 items-center rounded-md border border-border/80 bg-background px-2 text-[11px] font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
+                >
+                  {t(
+                    "aiGatewayModelPoolFallbackClear",
+                    "Clear fallback models",
+                  )}
+                </button>
+              ) : null}
+            </div>
+
             <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
               <span>
                 {t(
-                  "aiGatewayModelPoolFallbackLabel",
-                  "Default fallback model",
+                  "aiGatewayModelPoolFallbackAddLabel",
+                  "Add fallback model",
                 )}
               </span>
               <select
-                data-testid="model-pool-fallback-select"
+                data-testid="model-pool-fallback-add"
                 aria-label={t(
-                  "aiGatewayModelPoolFallbackLabel",
-                  "Default fallback model",
+                  "aiGatewayModelPoolFallbackAddAria",
+                  "Add fallback model",
                 )}
-                value={fallback ? encodeURIComponent(fallback.key) : ""}
-                onChange={(event) =>
-                  selectFallback(
-                    event.target.value
-                      ? decodeURIComponent(event.target.value)
-                      : "",
-                  )
-                }
+                value=""
+                onChange={(event) => addFallbackModel(event.target.value)}
                 disabled={busy || saving}
                 className="h-9 rounded-lg border border-border/80 bg-background px-2 text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
               >
                 <option value="">
                   {t(
-                    "aiGatewayModelPoolFallbackNone",
-                    "No fallback (none)",
+                    "aiGatewayModelPoolFallbackAddPlaceholder",
+                    "Add fallback model",
                   )}
                 </option>
-                {fallbackOptions.map((option) => (
-                  <option
-                    key={option.key}
-                    value={encodeURIComponent(option.key)}
-                  >
-                    {option.label}
+                {fallbackModelOptions.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
                   </option>
                 ))}
               </select>
             </label>
-            <p className="text-[10px] leading-relaxed text-muted-foreground">
-              {t(
-                "aiGatewayModelPoolFallbackHint",
-                "Used only after every regular candidate is exhausted; it never enters primary scheduling.",
-              )}
-            </p>
-            {fallback && fallbackReasoningDraft
-              ? reasoningEditor(
-                  fallback,
-                  fallbackReasoningDraft,
-                  updateFallbackReasoning,
-                )
-              : null}
+
+            {fallbackModels.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-3 text-center text-[11px] text-muted-foreground">
+                {t(
+                  "aiGatewayModelPoolFallbackEmpty",
+                  "No fallback models configured.",
+                )}
+              </p>
+            ) : (
+              <ul
+                data-testid="model-pool-fallback-list"
+                className="space-y-1.5"
+              >
+                {fallbackModels.map((model, index) => {
+                  const providerCount =
+                    fallbackProviderCounts.get(model) ?? 0;
+                  return (
+                    <li
+                      key={model}
+                      role="listitem"
+                      className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-card/70 px-2.5 py-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="break-all font-mono text-xs font-medium text-foreground">
+                          {model}
+                        </div>
+                        <div
+                          className={`text-[10px] ${
+                            providerCount > 0
+                              ? "text-muted-foreground"
+                              : "text-amber-700 dark:text-amber-400"
+                          }`}
+                        >
+                          {providerCount > 0
+                            ? t(
+                                "aiGatewayModelPoolFallbackProviderCount",
+                                "{{count}} providers",
+                                { count: providerCount },
+                              )
+                            : t(
+                                "aiGatewayModelPoolFallbackUnavailable",
+                                "Unavailable — no provider mapping",
+                              )}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => moveFallbackModel(index, -1)}
+                          disabled={busy || saving || index === 0}
+                          aria-label={t(
+                            "aiGatewayModelPoolFallbackMoveUpAria",
+                            {
+                              model,
+                              defaultValue: "Move fallback {{model}} up",
+                            },
+                          )}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
+                        >
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveFallbackModel(index, 1)}
+                          disabled={
+                            busy ||
+                            saving ||
+                            index === fallbackModels.length - 1
+                          }
+                          aria-label={t(
+                            "aiGatewayModelPoolFallbackMoveDownAria",
+                            {
+                              model,
+                              defaultValue: "Move fallback {{model}} down",
+                            },
+                          )}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
+                        >
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeFallbackModel(model)}
+                          disabled={busy || saving}
+                          aria-label={t(
+                            "aiGatewayModelPoolFallbackRemoveAria",
+                            {
+                              model,
+                              defaultValue: "Remove fallback {{model}}",
+                            },
+                          )}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
 
           {/* Live static coverage (config-derived) separated from runtime readiness */}
