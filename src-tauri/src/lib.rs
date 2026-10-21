@@ -13,6 +13,7 @@ mod config;
 mod crypto;
 mod file_sharing;
 mod git;
+pub mod http_client;
 mod managed_assets;
 mod mcp_export;
 mod mcp_runtime;

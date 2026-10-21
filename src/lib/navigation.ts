@@ -10,6 +10,7 @@ export type MoreToolsSection =
   | "random-password"
   | "json-parser"
   | "jwt-inspector"
+  | "curl-playground"
   | "md5-encryption"
   | "short-link"
   | "file-sharing"

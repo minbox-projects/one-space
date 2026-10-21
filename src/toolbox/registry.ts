@@ -3,6 +3,7 @@ import i18n from "@/i18n";
 import { aiWorkflowModelSwitcherTool } from "./plugins/ai-workflow-model-switcher";
 import { bleLockTool } from "./plugins/ble-lock";
 import { bookmarksTool } from "./plugins/bookmarks";
+import { curlPlaygroundTool } from "./plugins/curl-playground";
 import { fileSharingTool } from "./plugins/file-sharing";
 import { jsonParserTool } from "./plugins/json-parser";
 import { jttDataParserTool } from "./plugins/jtt-data-parser";
@@ -38,6 +39,7 @@ export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   aiWorkflowModelSwitcherTool,
   portTunnelTool,
   jwtInspectorTool,
+  curlPlaygroundTool,
   snippetsTool,
   notesTool,
 ];

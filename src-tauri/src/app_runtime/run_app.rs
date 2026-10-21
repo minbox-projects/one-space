@@ -1,6 +1,6 @@
 use crate::{
     ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store, backup, cli_updates,
-    config, file_sharing, mcp_export,
+    config, file_sharing, http_client, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, short_link, skills,
     ssh_tunnels, storage, subagents, version_detect, workspaces,
 };
@@ -216,6 +216,7 @@ pub fn run() {
             short_link::short_link_save_token,
             short_link::short_link_delete_token,
             short_link::short_link_create,
+            http_client::send_http_request,
             shortcuts_tray::update_shortcuts,
             shortcuts_tray::toggle_quick_ai_window,
             windows_data::hide_window,
