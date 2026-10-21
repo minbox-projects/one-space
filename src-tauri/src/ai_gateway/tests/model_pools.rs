@@ -12,9 +12,10 @@
 //!
 //! Chosen serialized fixture names (to be aligned with the Backend DTO):
 //! top-level `model_pools` (array) and `model_pool_reserved_models` (string
-//! array); each pool is `{id, name, model, enabled, candidates: [...]}` and each
-//! candidate is `{provider_id, local_model, upstream_model, protocol, weight?}`,
-//! where an omitted `weight` must default to 1.
+//! array); each pool is `{id, name, model, enabled, candidates: [...],
+//! fallback_models: [...]}` and each candidate is `{provider_id, local_model,
+//! upstream_model, protocol, weight?}`, where an omitted `weight` must default
+//! to 1. The ordered `fallback_models` list holds gateway model ids only.
 
 use super::{
     call_gateway, default_usage_store, free_port, key_named, pool_key, pool_provider,
@@ -29,7 +30,7 @@ use crate::ai_gateway::reasoning::{PoolOutputCap, PoolReasoningRequest};
 use crate::ai_gateway::runtime_http::{start_server, stop_server};
 use crate::ai_gateway::{
     GatewayConfig, GatewayUpstreamProvider, ModelPool, ModelPoolCandidate, PoolCandidateIdentity,
-    PoolDefaultReasoningEffort, UpstreamProtocol, GATEWAY_CONFIG_SCHEMA_VERSION, UsageResult,
+    UpstreamProtocol, GATEWAY_CONFIG_SCHEMA_VERSION, UsageResult,
 };
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -2513,15 +2514,16 @@ fn pool_planning_provider_copies_do_not_scale_with_stored_candidates() {
 }
 
 // ---------------------------------------------------------------------------
-// Boundary A RED: optional default fallback configuration (AC-001 / AC-009)
+// Boundary A RED: the ordered gateway-model fallback list (AC-001)
 // ---------------------------------------------------------------------------
 
-/// AC-001/AC-009 RED: a raw pool carrying an optional `fallback` field must
-/// survive the typed encrypted round trip with its exact identity and reasoning
-/// declaration. Production currently ignores the unknown field, so the
-/// assertion fails until the additive field is implemented.
+/// REQ-001 / AC-001: a raw pool carrying an ordered gateway-model fallback list
+/// must survive the typed encrypted round trip with its exact order, and the
+/// legacy single provider-specific member must never be stored again. The
+/// current reader ignores the unknown list member, so the assertion fails until
+/// the ordered list is implemented.
 #[test]
-fn pool_optional_fallback_survives_typed_round_trip() {
+fn pool_ordered_fallback_models_survive_typed_round_trip() {
     super::with_temp_home("pool-fallback-roundtrip", |_home| {
         let provider = pool_provider(
             "p-a",
@@ -2531,9 +2533,9 @@ fn pool_optional_fallback_survives_typed_round_trip() {
             vec![
                 provider_mapping("local-a1", "remote-a1", "chat_completions"),
                 provider_mapping("local-fb", "remote-fb", "chat_completions"),
+                provider_mapping("local-fb2", "remote-fb2", "chat_completions"),
             ],
         );
-        let fallback = pool_candidate("p-a", "local-fb", "remote-fb", "chat_completions", Some(1));
         let mut pool = json!({
             "id": "pool-fb",
             "name": "Fallback Pool",
@@ -2543,7 +2545,7 @@ fn pool_optional_fallback_survives_typed_round_trip() {
                 pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(3)),
             ],
         });
-        pool["fallback"] = fallback;
+        pool["fallback_models"] = json!(["local-fb", "local-fb2"]);
         write_raw_gateway_config(&pool_config_v3(0, vec![provider], vec![pool]));
 
         crate::ai_gateway::storage::modify_config::<()>(|config| {
@@ -2559,18 +2561,22 @@ fn pool_optional_fallback_survives_typed_round_trip() {
             .expect("pool collection must persist");
         assert_eq!(pools.len(), 1);
         let pool = &pools[0];
-        assert_eq!(pool["fallback"]["provider_id"], "p-a");
-        assert_eq!(pool["fallback"]["local_model"], "local-fb");
-        assert_eq!(pool["fallback"]["upstream_model"], "remote-fb");
-        assert_eq!(pool["fallback"]["protocol"], "chat_completions");
-        assert_eq!(pool["fallback"]["weight"], 1);
+        assert_eq!(
+            pool["fallback_models"],
+            json!(["local-fb", "local-fb2"]),
+            "the ordered fallback model list must survive the typed round trip: {pool}"
+        );
+        assert!(
+            pool.get("fallback").is_none(),
+            "the legacy single fallback member must never be stored: {pool}"
+        );
     });
 }
 
-/// AC-001/AC-009 RED: a missing fallback reads as no fallback and never
-/// rewrites the stored bytes on a typed round trip.
+/// REQ-001 / AC-001: a pool without any stored fallback model reads as an empty
+/// list and never synthesizes a fallback member on a typed round trip.
 #[test]
-fn pool_missing_fallback_reads_as_none_without_rewrite() {
+fn pool_missing_fallback_models_read_as_an_empty_list_without_rewrite() {
     super::with_temp_home("pool-fallback-missing", |_home| {
         let provider = pool_provider(
             "p-a",
@@ -2601,19 +2607,23 @@ fn pool_missing_fallback_reads_as_none_without_rewrite() {
         let serialized = after.to_string();
         assert!(
             !serialized.contains("\"fallback\""),
-            "a missing fallback must not synthesize a fallback field: {serialized}"
+            "a pool without fallback models must not synthesize a legacy fallback member: {serialized}"
+        );
+        assert!(
+            !serialized.contains("\"fallback_models\""),
+            "a pool without fallback models must not synthesize a fallback model list: {serialized}"
         );
         let _ = before;
     });
 }
 
 // ---------------------------------------------------------------------------
-// Boundary A RED: the optional default fallback through the public CRUD
-// boundary (AC-001 / AC-009)
+// Boundary A RED: the ordered gateway-model fallback list through the public
+// CRUD boundary (AC-001)
 //
-// Every fixture below is raw JSON, so the optional member survives the fixture
+// Every fixture below is raw JSON, so the ordered list survives the fixture
 // while the typed contract still ignores it: a RED is an observable behavior
-// failure (a dropped reference, an accepted invalid save or an unchanged
+// failure (a dropped list, an accepted invalid save or an unchanged
 // ciphertext) and never a missing Rust symbol.
 // ---------------------------------------------------------------------------
 
@@ -2634,13 +2644,12 @@ fn encrypted_config_bytes() -> String {
         .expect("read the encrypted configuration")
 }
 
-/// AC-001 / AC-009 RED: the public pool upsert command must save, replace and
-/// clear one optional fallback reference through the encrypted configuration
-/// boundary. The fallback's own weight defaults to 1 and accepts the inclusive
-/// 1..=100 range, and the provider, key, price and sibling-pool values stay
-/// semantically unchanged by the pool CRUD.
+/// REQ-001 / REQ-005 / AC-001: the public pool upsert command must save,
+/// replace and clear an ordered gateway-model fallback list through the
+/// encrypted configuration boundary, and the provider, key, price and
+/// sibling-pool values stay semantically unchanged by the pool CRUD.
 #[test]
-fn pool_fallback_upsert_saves_replaces_and_clears_through_public_command() {
+fn pool_fallback_model_list_upsert_saves_replaces_and_clears_through_public_command() {
     super::with_temp_home("pool-fallback-public-upsert", |_home| {
         let provider_a = pool_provider(
             "p-a",
@@ -2684,8 +2693,8 @@ fn pool_fallback_upsert_saves_replaces_and_clears_through_public_command() {
                 serde_json::from_value(value).expect("the pool fixture must deserialize");
             crate::ai_gateway::commands::ai_gateway_upsert_model_pool(pool)
         };
-        let pool_with = |fallback: Option<Value>| {
-            let mut value = json!({
+        let pool_with = |fallback_models: &[&str]| {
+            json!({
                 "id": "pool-fb",
                 "name": "Fallback Pool",
                 "model": "fallback-model",
@@ -2693,54 +2702,41 @@ fn pool_fallback_upsert_saves_replaces_and_clears_through_public_command() {
                 "candidates": [
                     pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1)),
                 ],
-            });
-            if let Some(fallback) = fallback {
-                value["fallback"] = fallback;
-            }
-            value
+                "fallback_models": fallback_models,
+            })
         };
 
-        // Saving a valid fallback persists its exact identity, and an omitted
-        // weight persists as the documented default of 1.
-        upsert(pool_with(Some(pool_candidate(
-            "p-a",
-            "local-a2",
-            "remote-a2",
-            "chat_completions",
-            None,
-        ))))
-        .expect("a valid fallback reference must save");
+        // Saving a valid fallback model list persists its exact order.
+        upsert(pool_with(&["local-a2"])).expect("a valid fallback model list must save");
         let saved = read_raw_gateway_config();
         let stored = pool_of(&saved, "pool-fb");
-        assert_eq!(stored["fallback"]["provider_id"], "p-a", "{saved}");
-        assert_eq!(stored["fallback"]["local_model"], "local-a2", "{saved}");
-        assert_eq!(stored["fallback"]["upstream_model"], "remote-a2", "{saved}");
-        assert_eq!(stored["fallback"]["protocol"], "chat_completions", "{saved}");
-        assert_eq!(stored["fallback"]["weight"], json!(1), "{saved}");
+        assert_eq!(
+            stored["fallback_models"],
+            json!(["local-a2"]),
+            "the saved fallback model list must keep its exact order: {saved}"
+        );
+        assert!(
+            stored.get("fallback").is_none(),
+            "the legacy single fallback member must never be stored: {saved}"
+        );
 
-        // Replacing it swaps the stored identity, and the inclusive weight
-        // ceiling is accepted.
-        upsert(pool_with(Some(pool_candidate(
-            "p-b",
-            "local-b1",
-            "remote-b1",
-            "chat_completions",
-            Some(100),
-        ))))
-        .expect("a replaced fallback reference must save");
+        // Replacing it swaps the stored list.
+        upsert(pool_with(&["local-b1"])).expect("a replaced fallback model list must save");
         let replaced = read_raw_gateway_config();
         let stored = pool_of(&replaced, "pool-fb");
-        assert_eq!(stored["fallback"]["provider_id"], "p-b", "{replaced}");
-        assert_eq!(stored["fallback"]["local_model"], "local-b1", "{replaced}");
-        assert_eq!(stored["fallback"]["weight"], json!(100), "{replaced}");
+        assert_eq!(
+            stored["fallback_models"],
+            json!(["local-b1"]),
+            "the replaced fallback model list must be stored: {replaced}"
+        );
 
-        // Clearing it removes the optional member entirely.
-        upsert(pool_with(None)).expect("clearing a fallback must save");
+        // Clearing it removes the member entirely.
+        upsert(pool_with(&[])).expect("clearing the fallback model list must save");
         let cleared = read_raw_gateway_config();
         let stored = pool_of(&cleared, "pool-fb");
         assert!(
-            stored.get("fallback").is_none(),
-            "a cleared fallback must not persist a member: {stored}"
+            stored.get("fallback_models").is_none(),
+            "a cleared fallback model list must not persist a member: {stored}"
         );
 
         // The provider, key, price and sibling-pool values are unchanged.
@@ -2783,13 +2779,14 @@ fn pool_fallback_upsert_saves_replaces_and_clears_through_public_command() {
     });
 }
 
-/// AC-001 / AC-009 RED: a new unknown fallback reference, a blank fallback
-/// identity, a fallback that duplicates a regular candidate, an empty regular
-/// selection, a fallback weight outside 1..=100 and an invalid fallback
-/// reasoning declaration must all be rejected, and every rejection must leave
-/// the original encrypted configuration bytes unchanged.
+/// REQ-001 / AC-001: a pool still requires at least one regular candidate, so
+/// an empty regular selection is rejected atomically and the encrypted
+/// configuration bytes stay unchanged. The ordered fallback list itself is
+/// validated by the dedicated cases in the ordered-fallback section below (a
+/// blank entry, a duplicate entry, a current pool alias, a retired pool alias
+/// and a newly unknown model).
 #[test]
-fn pool_fallback_rejects_invalid_references_and_weights_without_changing_encrypted_bytes() {
+fn pool_fallback_model_list_rejects_an_empty_regular_selection_without_changing_encrypted_bytes() {
     super::with_temp_home("pool-fallback-rejections", |_home| {
         let provider = pool_provider(
             "p-a",
@@ -2812,172 +2809,81 @@ fn pool_fallback_rejects_invalid_references_and_weights_without_changing_encrypt
         let regular = json!([
             pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1))
         ]);
-        let fallback = |provider_id: &str,
-                        local: &str,
-                        upstream: &str,
-                        protocol: &str,
-                        weight: u32| {
-            json!({
-                "provider_id": provider_id,
-                "local_model": local,
-                "upstream_model": upstream,
-                "protocol": protocol,
-                "weight": weight,
-            })
-        };
-        let pool_with = |candidates: Value, fallback: Value| {
+        let pool_with = |candidates: Value, fallback_models: Value| {
             json!({
                 "id": "pool-fb",
                 "name": "Fallback Pool",
                 "model": "fallback-model",
                 "enabled": true,
                 "candidates": candidates,
-                "fallback": fallback,
+                "fallback_models": fallback_models,
             })
         };
-        let reject = |label: &str, value: Value| {
-            let result = upsert(value);
-            assert!(result.is_err(), "{label} must be rejected");
-            assert_eq!(
-                encrypted_config_bytes(),
-                baseline,
-                "{label} must leave the encrypted configuration unchanged"
-            );
-        };
 
-        // A new reference that resolves against no provider/mapping/protocol.
-        reject(
-            "an unknown fallback reference",
-            pool_with(
-                regular.clone(),
-                fallback("p-missing", "local-x", "remote-x", "chat_completions", 1),
-            ),
-        );
-        // The effective protocol is part of the identity, so a mismatched
-        // protocol does not resolve either.
-        reject(
-            "a fallback whose protocol does not match its source",
-            pool_with(
-                regular.clone(),
-                fallback("p-a", "local-a1", "remote-a1", "responses", 1),
-            ),
-        );
-        // A blank identity member.
-        reject(
-            "a blank fallback local model",
-            pool_with(
-                regular.clone(),
-                fallback("p-a", "  ", "remote-a1", "chat_completions", 1),
-            ),
-        );
-        reject(
-            "a blank fallback provider id",
-            pool_with(
-                regular.clone(),
-                fallback("  ", "local-a1", "remote-a1", "chat_completions", 1),
-            ),
-        );
-        reject(
-            "a blank fallback upstream model",
-            pool_with(
-                regular.clone(),
-                fallback("p-a", "local-a1", "  ", "chat_completions", 1),
-            ),
-        );
-        // The same exact source identity may not appear in both roles.
-        reject(
-            "a fallback duplicating a regular candidate",
-            pool_with(
-                regular.clone(),
-                fallback("p-a", "local-a1", "remote-a1", "chat_completions", 1),
-            ),
-        );
         // A pool still requires at least one regular candidate.
-        reject(
-            "an empty regular selection",
-            pool_with(
-                json!([]),
-                fallback("p-a", "local-a1", "remote-a1", "chat_completions", 1),
-            ),
+        let rejected = upsert(pool_with(json!([]), json!(["local-a2"])));
+        assert!(
+            rejected.is_err(),
+            "an empty regular selection must be rejected: {rejected:?}"
         );
-        // The weight range stays inclusive 1..=100.
-        reject(
-            "a fallback weight below the floor",
-            pool_with(
-                regular.clone(),
-                fallback("p-a", "local-a1", "remote-a1", "chat_completions", 0),
-            ),
-        );
-        reject(
-            "a fallback weight above the ceiling",
-            pool_with(
-                regular.clone(),
-                fallback("p-a", "local-a1", "remote-a1", "chat_completions", 101),
-            ),
-        );
-        // An invalid reasoning declaration is rejected on the fallback too. The
-        // fallback references its own distinct real mapping here, so the
-        // rejection comes from the declaration and never from the duplicate
-        // identity rule exercised above.
-        reject(
-            "an unknown fallback reasoning profile",
-            pool_with(
-                regular.clone(),
-                json!({
-                    "provider_id": "p-a",
-                    "local_model": "local-a2",
-                    "upstream_model": "remote-a2",
-                    "protocol": "chat_completions",
-                    "weight": 1,
-                    "reasoning": {
-                        "profile": "made_up_profile",
-                        "mappings": [
-                            {"effort": "high", "action": {"kind": "enum", "value": "high"}}
-                        ],
-                    },
-                }),
-            ),
-        );
-        reject(
-            "a fallback reasoning profile unsupported by its protocol",
-            pool_with(
-                regular.clone(),
-                json!({
-                    "provider_id": "p-a",
-                    "local_model": "local-a2",
-                    "upstream_model": "remote-a2",
-                    "protocol": "chat_completions",
-                    "weight": 1,
-                    "reasoning": {
-                        "profile": "anthropic_manual_budget",
-                        "budget": {"min": 1024, "max": 4096},
-                        "mappings": [
-                            {"effort": "high", "action": {"kind": "budget", "budget_tokens": 2048}}
-                        ],
-                    },
-                }),
-            ),
+        assert_eq!(
+            encrypted_config_bytes(),
+            baseline,
+            "an empty regular selection must leave the encrypted configuration unchanged"
         );
 
-        // The inclusive lower bound is accepted, so only the out-of-range
-        // weights are rejected. The accepted fallback references its own real
-        // mapping, because the same identity may not hold both roles.
-        let accepted = upsert(pool_with(
-            regular.clone(),
-            fallback("p-a", "local-a2", "remote-a2", "chat_completions", 1),
-        ));
+        // The same pool with a regular candidate is accepted, so only the empty
+        // regular selection is rejected.
+        let accepted = upsert(pool_with(regular, json!(["local-a2"])));
         assert!(
             accepted.is_ok(),
-            "the inclusive lower weight bound must be accepted: {accepted:?}"
+            "a pool with a regular candidate and a served fallback model must be accepted: {accepted:?}"
         );
     });
 }
 
-/// AC-001 / AC-009 RED: a saved fallback whose source later disappears stays
-/// retainable across an unrelated save, stays visible as unavailable with its
-/// own reason, is never substituted by another source and stays clearable.
+/// REQ-002 / AC-003: a fallback model may share its local model with a regular
+/// candidate. The fallback stage is selected by the stored list and never by
+/// configuration overlap, so the shared model is accepted and stored.
 #[test]
-fn pool_fallback_unavailable_source_stays_retainable_clearable_and_unsubstituted() {
+fn pool_fallback_model_may_share_a_local_model_with_a_regular_candidate() {
+    super::with_temp_home("pool-fallback-shared-model", |_home| {
+        let provider = pool_provider(
+            "p-a",
+            "Provider A",
+            "https://provider-a.example.invalid/v1",
+            vec![pool_key("key-a", "Key A", "sk-secret-a", true)],
+            vec![provider_mapping("local-a1", "remote-a1", "chat_completions")],
+        );
+        write_raw_gateway_config(&pool_config_v3(0, vec![provider], vec![]));
+
+        let pool = pool_with_fallback_models(
+            "pool-fb",
+            "fallback-model",
+            pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1)),
+            &["local-a1"],
+        );
+        crate::ai_gateway::commands::ai_gateway_upsert_model_pool(
+            serde_json::from_value(pool).expect("the pool fixture must deserialize"),
+        )
+        .expect("a fallback model that shares a regular candidate's local model must be accepted");
+
+        let after = read_raw_gateway_config();
+        let stored = pool_of(&after, "pool-fb");
+        assert_eq!(
+            stored["fallback_models"],
+            json!(["local-a1"]),
+            "the shared fallback model must be stored: {after}"
+        );
+    });
+}
+
+/// REQ-001 / REQ-003 / AC-001 / AC-002: a saved fallback model whose provider
+/// mapping later disappears stays retainable across an unrelated save, stays
+/// visible in the per-model status with its own bounded reason, is never
+/// substituted by another model and stays clearable.
+#[test]
+fn pool_fallback_model_with_a_disappeared_source_stays_retainable_visible_and_clearable() {
     super::with_temp_home("pool-fallback-unavailable", |_home| {
         let provider = pool_provider(
             "p-a",
@@ -2989,20 +2895,16 @@ fn pool_fallback_unavailable_source_stays_retainable_clearable_and_unsubstituted
                 provider_mapping("local-fb", "remote-fb", "chat_completions"),
             ],
         );
-        let pool = json!({
-            "id": "pool-fb",
-            "name": "Fallback Pool",
-            "model": "fallback-model",
-            "enabled": true,
-            "candidates": [
-                pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1)),
-            ],
-            "fallback": pool_candidate("p-a", "local-fb", "remote-fb", "chat_completions", Some(1)),
-        });
+        let pool = pool_with_fallback_models(
+            "pool-fb",
+            "fallback-model",
+            pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1)),
+            &["local-fb"],
+        );
         write_raw_gateway_config(&pool_config_v3(0, vec![provider], vec![pool]));
 
-        // The saved fallback's source later disappears: its mapping row is gone
-        // while the stored reference stays in the configuration.
+        // The saved fallback model's source later disappears: its mapping row is
+        // gone while the stored model stays in the configuration.
         let mut without_source = read_raw_gateway_config();
         let providers = without_source
             .get_mut("providers")
@@ -3014,86 +2916,70 @@ fn pool_fallback_unavailable_source_stays_retainable_clearable_and_unsubstituted
             .retain(|mapping| mapping["local_model"] != "local-fb");
         write_raw_gateway_config(&without_source);
 
-        // An unrelated save keeps the unchanged reference instead of dropping it
-        // or substituting another source.
-        let renamed = json!({
-            "id": "pool-fb",
-            "name": "Renamed Pool",
-            "model": "fallback-model",
-            "enabled": true,
-            "candidates": [
-                pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1)),
-            ],
-            "fallback": pool_candidate("p-a", "local-fb", "remote-fb", "chat_completions", Some(1)),
-        });
+        // An unrelated save keeps the unchanged model instead of dropping it or
+        // substituting another model.
+        let renamed = pool_with_fallback_models(
+            "pool-fb",
+            "fallback-model",
+            pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1)),
+            &["local-fb"],
+        );
         crate::ai_gateway::commands::ai_gateway_upsert_model_pool(
             serde_json::from_value(renamed).expect("the pool fixture must deserialize"),
         )
-        .expect("an unchanged saved fallback must stay retainable");
+        .expect("an unchanged saved fallback model must stay retainable");
         let after = read_raw_gateway_config();
         let stored = pool_of(&after, "pool-fb");
-        assert_eq!(stored["fallback"]["provider_id"], "p-a", "{after}");
-        assert_eq!(stored["fallback"]["local_model"], "local-fb", "{after}");
-        assert_eq!(stored["fallback"]["upstream_model"], "remote-fb", "{after}");
+        assert_eq!(
+            stored["fallback_models"],
+            json!(["local-fb"]),
+            "the unchanged saved fallback model must stay stored: {after}"
+        );
 
-        // The status keeps the fallback separate from the regular candidates and
-        // reports its own availability and reason.
-        let statuses = crate::ai_gateway::commands::ai_gateway_model_pools_status()
-            .expect("pool status");
-        let value = serde_json::to_value(&statuses).expect("serialize pool status");
-        let entry = value
-            .as_array()
-            .expect("status array")
-            .iter()
-            .find(|pool| pool["id"] == "pool-fb")
-            .unwrap_or_else(|| panic!("missing pool status row: {value}"))
-            .clone();
-        let fallback = &entry["fallback"];
-        assert_eq!(fallback["provider_id"], "p-a", "{entry}");
-        assert_eq!(fallback["local_model"], "local-fb", "{entry}");
-        assert_eq!(fallback["upstream_model"], "remote-fb", "{entry}");
-        assert_ne!(
-            fallback["availability"], "ready",
-            "an unavailable fallback must not report ready: {entry}"
+        // The status keeps the fallback model separate from the regular
+        // candidates and reports its own unavailability and reason.
+        let status = pool_status_json("pool-fb");
+        let record = fallback_model_record(&status, "local-fb");
+        assert_eq!(
+            record["ready"],
+            json!(false),
+            "an unavailable fallback model must not report ready: {status}"
         );
         assert!(
-            fallback["reason"]
+            record["reason"]
                 .as_str()
                 .is_some_and(|reason| !reason.trim().is_empty()),
-            "an unavailable fallback must carry its own reason: {entry}"
+            "an unavailable fallback model must carry its own reason: {status}"
         );
-        let candidates = entry["candidates"].as_array().expect("regular candidate rows");
+        let candidates = status["candidates"].as_array().expect("regular candidate rows");
         assert_eq!(
             candidates.len(),
             1,
-            "the regular candidate list must stay regular-only: {entry}"
+            "the regular candidate list must stay regular-only: {status}"
         );
         assert!(
             candidates
                 .iter()
                 .all(|row| row["local_model"] != "local-fb"),
-            "the fallback must not appear as a regular candidate: {entry}"
+            "the fallback model must not appear as a regular candidate: {status}"
         );
 
-        // Clearing the reference works and leaves no fallback behind.
-        let cleared = json!({
-            "id": "pool-fb",
-            "name": "Renamed Pool",
-            "model": "fallback-model",
-            "enabled": true,
-            "candidates": [
-                pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1)),
-            ],
-        });
+        // Clearing the list works and leaves no fallback model behind.
+        let cleared = pool_with_fallback_models(
+            "pool-fb",
+            "fallback-model",
+            pool_candidate("p-a", "local-a1", "remote-a1", "chat_completions", Some(1)),
+            &[],
+        );
         crate::ai_gateway::commands::ai_gateway_upsert_model_pool(
             serde_json::from_value(cleared).expect("the pool fixture must deserialize"),
         )
-        .expect("clearing a fallback must save");
+        .expect("clearing the fallback model list must save");
         let after = read_raw_gateway_config();
         let stored = pool_of(&after, "pool-fb");
         assert!(
-            stored.get("fallback").is_none(),
-            "a cleared fallback must not persist a member: {stored}"
+            stored.get("fallback_models").is_none(),
+            "a cleared fallback model list must not persist a member: {stored}"
         );
     });
 }
@@ -3104,24 +2990,11 @@ fn pool_fallback_unavailable_source_stays_retainable_clearable_and_unsubstituted
 //
 // Every case below drives the real loopback listener, the encrypted
 // configuration and the in-process mock upstreams. A pool record carries its
-// optional fallback as a raw JSON member, so a RED is an observable routing
-// outcome (a 502 instead of a served fallback, a missing source-attributed row
-// or a replayed stream) and never a missing Rust symbol. No live provider and
-// no real terminal projection is involved.
+// ordered gateway-model fallback list as a raw JSON member, so a RED is an
+// observable routing outcome (a 502 instead of a served fallback, a missing
+// source-attributed row or a replayed stream) and never a missing Rust symbol.
+// No live provider and no real terminal projection is involved.
 // ---------------------------------------------------------------------------
-
-/// One pool record with exactly one regular candidate and one configured
-/// fallback, each referencing its own real source identity.
-fn pool_with_fallback(id: &str, alias: &str, regular: Value, fallback: Value) -> Value {
-    json!({
-        "id": id,
-        "name": "Free Modle",
-        "model": alias,
-        "enabled": true,
-        "candidates": [regular],
-        "fallback": fallback,
-    })
-}
 
 /// The stored identity of one pool candidate, for the in-memory cooldown seam.
 fn candidate_identity(
@@ -3181,7 +3054,7 @@ async fn pool_fallback_serves_when_the_only_regular_candidate_is_cooling() {
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &pool_id,
         &alias,
         pool_candidate(
@@ -3191,13 +3064,7 @@ async fn pool_fallback_serves_when_the_only_regular_candidate_is_cooling() {
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -3262,7 +3129,7 @@ async fn pool_fallback_serves_an_empty_regular_set_and_a_recovered_regular_regai
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -3272,13 +3139,7 @@ async fn pool_fallback_serves_an_empty_regular_set_and_a_recovered_regular_regai
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
     start_server(None).await.expect("start the listener");
@@ -3374,7 +3235,7 @@ async fn pool_fallback_serves_after_the_regular_candidate_exhausts_its_finite_re
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -3384,13 +3245,7 @@ async fn pool_fallback_serves_after_the_regular_candidate_exhausts_its_finite_re
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -3447,7 +3302,7 @@ async fn pool_healthy_regular_candidates_never_reach_the_configured_fallback() {
             provider_mapping("local-fallback", "remote-fallback", "chat_completions"),
         ],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -3457,13 +3312,7 @@ async fn pool_healthy_regular_candidates_never_reach_the_configured_fallback() {
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
     start_server(None).await.expect("start the listener");
@@ -3529,7 +3378,7 @@ async fn pool_fallback_attempt_is_attributed_to_the_real_source_in_one_terminal_
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &pool_id,
         &alias,
         pool_candidate(
@@ -3539,13 +3388,7 @@ async fn pool_fallback_attempt_is_attributed_to_the_real_source_in_one_terminal_
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -3646,7 +3489,7 @@ async fn pool_fallback_serves_a_streaming_request_after_a_pre_output_failure() {
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -3656,13 +3499,7 @@ async fn pool_fallback_serves_a_streaming_request_after_a_pre_output_failure() {
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -3764,7 +3601,7 @@ async fn pool_stream_failure_after_client_output_never_replays_through_the_fallb
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -3774,13 +3611,7 @@ async fn pool_stream_failure_after_client_output_never_replays_through_the_fallb
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -4122,7 +3953,7 @@ async fn pool_fallback_serves_after_the_regular_retry_wait_budget_is_spent() {
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -4132,13 +3963,7 @@ async fn pool_fallback_serves_after_the_regular_retry_wait_budget_is_spent() {
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -4251,7 +4076,7 @@ async fn pool_fallback_is_never_attempted_after_a_disconnect_during_the_regular_
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -4261,13 +4086,7 @@ async fn pool_fallback_is_never_attempted_after_a_disconnect_during_the_regular_
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -4377,7 +4196,7 @@ async fn pool_fallback_serves_after_in_request_failures_leave_every_regular_key_
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -4387,13 +4206,7 @@ async fn pool_fallback_serves_after_in_request_failures_leave_every_regular_key_
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -4491,7 +4304,7 @@ async fn pool_fallback_candidate_failure_cools_only_the_fallback_candidate() {
             provider_mapping("local-sibling", "remote-sibling", "chat_completions"),
         ],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &pool_id,
         &alias,
         pool_candidate(
@@ -4501,13 +4314,7 @@ async fn pool_fallback_candidate_failure_cools_only_the_fallback_candidate() {
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -4542,18 +4349,21 @@ async fn pool_fallback_candidate_failure_cools_only_the_fallback_candidate() {
         models_of(&fallback_log)
     );
 
-    let status_row = pool_status_row(&pool_id);
-    let fallback_status = status_row
-        .fallback
-        .expect("the pool must report its separate fallback status");
+    let status = pool_status_json(&pool_id);
+    let record = fallback_model_record(&status, "local-fallback");
+    let sources = expanded_sources(&record);
+    let fallback_status = source_of(&sources, &fallback_provider_id);
     assert_eq!(
-        fallback_status.availability, "cooling",
-        "the failed fallback candidate must own the cooldown: {fallback_status:?}"
+        fallback_status["availability"], "cooling",
+        "the failed fallback source must own the cooldown: {status}"
     );
     assert!(
-        fallback_status.cooling_until.is_some(),
-        "the cooling fallback must publish its deadline: {fallback_status:?}"
+        fallback_status
+            .get("cooling_until")
+            .is_some_and(|deadline| !deadline.is_null()),
+        "the cooling fallback source must publish its deadline: {status}"
     );
+    let status_row = pool_status_row(&pool_id);
     assert!(
         !status_row.candidates[0].ready,
         "the excluded regular candidate must stay unavailable: {:?}",
@@ -4629,7 +4439,7 @@ async fn pool_fallback_account_exhaustion_marks_the_key_without_cooling_the_cand
             provider_mapping("local-sibling", "remote-sibling", "chat_completions"),
         ],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &pool_id,
         &alias,
         pool_candidate(
@@ -4639,13 +4449,7 @@ async fn pool_fallback_account_exhaustion_marks_the_key_without_cooling_the_cand
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -4676,13 +4480,13 @@ async fn pool_fallback_account_exhaustion_marks_the_key_without_cooling_the_cand
         models_of(&fallback_log)
     );
 
-    let status_row = pool_status_row(&pool_id);
-    let fallback_status = status_row
-        .fallback
-        .expect("the pool must report its separate fallback status");
+    let status = pool_status_json(&pool_id);
+    let record = fallback_model_record(&status, "local-fallback");
+    let sources = expanded_sources(&record);
+    let fallback_status = source_of(&sources, &fallback_provider_id);
     assert_ne!(
-        fallback_status.availability, "cooling",
-        "an account-scoped failure must not cool the candidate: {fallback_status:?}"
+        fallback_status["availability"], "cooling",
+        "an account-scoped failure must not cool the fallback source: {status}"
     );
 
     let stored = stored_provider(&fallback_provider_id);
@@ -4739,7 +4543,7 @@ async fn pool_exhausted_fallback_reports_the_last_upstream_status_and_a_bounded_
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -4749,13 +4553,7 @@ async fn pool_exhausted_fallback_reports_the_last_upstream_status_and_a_bounded_
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -4835,23 +4633,27 @@ async fn pool_exhausted_fallback_reports_the_last_upstream_status_and_a_bounded_
     );
 }
 
-/// One typed pool record with exactly one regular candidate and an optional
-/// fallback, for the public upsert command.
-fn typed_pool_with_fallback(
+/// One typed pool record with exactly one regular candidate and an ordered
+/// gateway-model fallback list, for the public upsert command. The pool row is
+/// built as raw JSON so the suite never names a typed member that does not
+/// exist yet, and every RED is an observable behavior failure instead of a
+/// missing Rust symbol.
+fn typed_pool_with_fallback_models(
     id: &str,
     alias: &str,
-    regular: ModelPoolCandidate,
-    fallback: Option<ModelPoolCandidate>,
+    regular: &ModelPoolCandidate,
+    fallback_models: &[&str],
 ) -> ModelPool {
-    ModelPool {
-        id: id.to_string(),
-        name: "Free Modle".to_string(),
-        model: alias.to_string(),
-        enabled: true,
-        candidates: vec![regular],
-        default_reasoning_effort: PoolDefaultReasoningEffort::Auto,
-        fallback,
-    }
+    let value = json!({
+        "id": id,
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [serde_json::to_value(regular).expect("serialize the regular candidate")],
+        "default_reasoning_effort": "auto",
+        "fallback_models": fallback_models,
+    });
+    serde_json::from_value(value).expect("the pool fixture must deserialize")
 }
 
 /// One typed pool candidate reference.
@@ -4881,13 +4683,13 @@ fn pool_status_row(pool_id: &str) -> crate::ai_gateway::model_pools::ModelPoolSt
         .unwrap_or_else(|| panic!("missing the status row of pool '{pool_id}'"))
 }
 
-/// AC-009 / REQ-006: a model-scoped failure of the configured fallback creates
-/// the fallback-owned cooldown. A rejected save changes neither the encrypted
-/// bytes nor that runtime state, and a successful replacement, clearing or
-/// deletion prunes only the removed identity, so a re-added reference starts
-/// ready instead of inheriting a stale cooldown.
+/// REQ-005 / AC-007: a model-scoped failure of a fallback source creates the
+/// fallback-owned cooldown. A successful replacement, clearing or deletion
+/// prunes only the removed expansion, so the regular candidate keeps its own
+/// cooldown and a re-added fallback model starts ready instead of inheriting a
+/// stale cooldown.
 #[tokio::test]
-async fn pool_fallback_cooldown_survives_a_rejected_save_and_is_pruned_only_for_the_removed_identity() {
+async fn pool_fallback_model_cooldown_is_pruned_only_for_the_removed_expansion() {
     let _home = temp_home("pool-fallback-cooldown-pruning");
     let port = free_port().await;
     let tag = tag();
@@ -4940,7 +4742,7 @@ async fn pool_fallback_cooldown_survives_a_rejected_save_and_is_pruned_only_for_
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &pool_id,
         &alias,
         pool_candidate(
@@ -4950,13 +4752,7 @@ async fn pool_fallback_cooldown_survives_a_rejected_save_and_is_pruned_only_for_
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -4989,172 +4785,108 @@ async fn pool_fallback_cooldown_survives_a_rejected_save_and_is_pruned_only_for_
         "the fallback must receive exactly one pass: {:?}",
         models_of(&fallback_log)
     );
-    let cooled = pool_status_row(&pool_id);
-    let cooling = cooled
-        .fallback
-        .clone()
-        .expect("the pool must report its separate fallback status");
+    let cooled = pool_status_json(&pool_id);
+    let cooling_record = fallback_model_record(&cooled, "local-fallback");
+    let cooling_sources = expanded_sources(&cooling_record);
+    let cooling = source_of(&cooling_sources, &fallback_provider_id);
     assert_eq!(
-        cooling.availability, "cooling",
-        "the failed fallback must own the cooldown: {cooling:?}"
+        cooling["availability"], "cooling",
+        "the failed fallback source must own the cooldown: {cooled}"
     );
 
-    // A rejected save changes neither the encrypted bytes nor the runtime
-    // state the fallback owns.
-    let bytes_before = encrypted_config_bytes();
-    let rejected = ai_gateway_upsert_model_pool(typed_pool_with_fallback(
+    // A successful replacement prunes only the removed identity, so the regular
+    // candidate keeps its own cooldown while the replacement fallback source
+    // starts ready again.
+    ai_gateway_upsert_model_pool(typed_pool_with_fallback_models(
         &pool_id,
         &alias,
-        typed_candidate(
+        &typed_candidate(
             &regular_provider_id,
             "local-regular",
             "remote-regular",
             UpstreamProtocol::ChatCompletions,
             100,
         ),
-        Some(typed_candidate(
-            &fallback_provider_id,
-            "local-fallback",
-            "remote-fallback",
-            UpstreamProtocol::ChatCompletions,
-            0,
-        )),
-    ));
-    assert!(
-        rejected.is_err(),
-        "an out-of-range fallback weight must be rejected: {rejected:?}"
-    );
-    assert_eq!(
-        encrypted_config_bytes(),
-        bytes_before,
-        "a rejected save must leave the encrypted configuration bytes unchanged"
-    );
-    let after_rejection = pool_status_row(&pool_id);
-    assert_eq!(
-        after_rejection
-            .fallback
-            .expect("the fallback status must persist")
-            .availability,
-        "cooling",
-        "a rejected save must leave the fallback's runtime state unchanged"
-    );
-
-    // A successful replacement prunes only the removed identity, so the
-    // regular candidate keeps its own cooldown while the removed fallback
-    // starts ready again when it is configured once more.
-    ai_gateway_upsert_model_pool(typed_pool_with_fallback(
-        &pool_id,
-        &alias,
-        typed_candidate(
-            &regular_provider_id,
-            "local-regular",
-            "remote-regular",
-            UpstreamProtocol::ChatCompletions,
-            100,
-        ),
-        Some(typed_candidate(
-            &other_provider_id,
-            "local-other-fallback",
-            "remote-other-fallback",
-            UpstreamProtocol::ChatCompletions,
-            1,
-        )),
+        &["local-other-fallback"],
     ))
     .expect("the replacement must be accepted");
-    let replaced = pool_status_row(&pool_id);
-    let replacement_status = replaced
-        .fallback
-        .clone()
-        .expect("the replacement fallback must be reported");
+    let replaced = pool_status_json(&pool_id);
+    let replacement_record = fallback_model_record(&replaced, "local-other-fallback");
+    let replacement_sources = expanded_sources(&replacement_record);
+    let replacement_status = source_of(&replacement_sources, &other_provider_id);
     assert_eq!(
-        replacement_status.availability,
-        "ready",
-        "the replacement fallback must not inherit a cooldown: {replacement_status:?}"
+        replacement_status["ready"], json!(true),
+        "the replacement fallback source must not inherit a cooldown: {replaced}"
     );
+    let replaced_row = pool_status_row(&pool_id);
     assert_eq!(
-        replaced.candidates[0].availability, "cooling",
+        replaced_row.candidates[0].availability, "cooling",
         "the removed identity's pruning must not touch the regular candidate: {:?}",
-        replaced.candidates[0]
+        replaced_row.candidates[0]
     );
-    ai_gateway_upsert_model_pool(typed_pool_with_fallback(
+    ai_gateway_upsert_model_pool(typed_pool_with_fallback_models(
         &pool_id,
         &alias,
-        typed_candidate(
+        &typed_candidate(
             &regular_provider_id,
             "local-regular",
             "remote-regular",
             UpstreamProtocol::ChatCompletions,
             100,
         ),
-        Some(typed_candidate(
-            &fallback_provider_id,
-            "local-fallback",
-            "remote-fallback",
-            UpstreamProtocol::ChatCompletions,
-            1,
-        )),
+        &["local-fallback"],
     ))
-    .expect("the re-added fallback must be accepted");
-    let re_added = pool_status_row(&pool_id);
-    let re_added_status = re_added
-        .fallback
-        .clone()
-        .expect("the re-added fallback must be reported");
+    .expect("the re-added fallback model must be accepted");
+    let re_added = pool_status_json(&pool_id);
+    let re_added_record = fallback_model_record(&re_added, "local-fallback");
+    let re_added_sources = expanded_sources(&re_added_record);
+    let re_added_status = source_of(&re_added_sources, &fallback_provider_id);
     assert_eq!(
-        re_added_status.availability,
-        "ready",
-        "the removed identity's cooldown must be pruned, not resurrected: {re_added_status:?}"
+        re_added_status["ready"], json!(true),
+        "the removed identity's cooldown must be pruned, not resurrected: {re_added}"
     );
 
-    // Clearing the fallback and deleting the pool prune the same removed
-    // identity, so a later configuration of the same reference starts ready.
-    ai_gateway_upsert_model_pool(typed_pool_with_fallback(
+    // Clearing the fallback list and deleting the pool prune the same removed
+    // identity, so a later configuration of the same model starts ready.
+    ai_gateway_upsert_model_pool(typed_pool_with_fallback_models(
         &pool_id,
         &alias,
-        typed_candidate(
+        &typed_candidate(
             &regular_provider_id,
             "local-regular",
             "remote-regular",
             UpstreamProtocol::ChatCompletions,
             100,
         ),
-        None,
+        &[],
     ))
-    .expect("the cleared fallback must be accepted");
-    let cleared = pool_status_row(&pool_id);
+    .expect("the cleared fallback list must be accepted");
+    let cleared = pool_status_json(&pool_id);
     assert!(
-        cleared.fallback.is_none(),
-        "a cleared fallback must not be reported: {cleared:?}"
+        fallback_status_records(&cleared).is_empty(),
+        "a cleared fallback list must not be reported: {cleared}"
     );
     ai_gateway_delete_model_pool(pool_id.clone()).expect("the pool must be deleted");
-    ai_gateway_upsert_model_pool(typed_pool_with_fallback(
+    ai_gateway_upsert_model_pool(typed_pool_with_fallback_models(
         &pool_id,
         &alias,
-        typed_candidate(
+        &typed_candidate(
             &regular_provider_id,
             "local-regular",
             "remote-regular",
             UpstreamProtocol::ChatCompletions,
             100,
         ),
-        Some(typed_candidate(
-            &fallback_provider_id,
-            "local-fallback",
-            "remote-fallback",
-            UpstreamProtocol::ChatCompletions,
-            1,
-        )),
+        &["local-fallback"],
     ))
     .expect("the recreated pool must be accepted");
-    let recreated = pool_status_row(&pool_id);
-    let recreated_status = recreated
-        .fallback
-        .clone()
-        .expect("the recreated fallback must be reported");
+    let recreated = pool_status_json(&pool_id);
+    let recreated_record = fallback_model_record(&recreated, "local-fallback");
+    let recreated_sources = expanded_sources(&recreated_record);
+    let recreated_status = source_of(&recreated_sources, &fallback_provider_id);
     assert_eq!(
-        recreated_status.availability,
-        "ready",
-        "a deleted pool must not leave its fallback cooldown behind: {recreated_status:?}"
+        recreated_status["ready"], json!(true),
+        "a deleted pool must not leave its fallback cooldown behind: {recreated}"
     );
     assert!(
         models_of(&other_log).is_empty(),
@@ -5219,7 +4951,7 @@ async fn pool_fallback_serves_after_the_regular_stage_used_its_permitted_probe()
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -5229,13 +4961,7 @@ async fn pool_fallback_serves_after_the_regular_stage_used_its_permitted_probe()
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -5314,7 +5040,7 @@ async fn pool_fallback_shares_the_request_wide_probe_allowance() {
             "chat_completions",
         )],
     );
-    let pool = pool_with_fallback(
+    let pool = pool_with_fallback_models(
         &format!("pool-{tag}"),
         &alias,
         pool_candidate(
@@ -5324,13 +5050,7 @@ async fn pool_fallback_shares_the_request_wide_probe_allowance() {
             "chat_completions",
             Some(100),
         ),
-        pool_candidate(
-            fallback_provider_id.as_str(),
-            "local-fallback",
-            "remote-fallback",
-            "chat_completions",
-            Some(1),
-        ),
+        &["local-fallback"],
     );
     write_raw_gateway_config(&pool_config_v3(
         port,
@@ -5370,4 +5090,955 @@ async fn pool_fallback_shares_the_request_wide_probe_allowance() {
         fallback_mapping.auto_disabled,
         "a row that was never probed must keep its own state: {fallback_mapping:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Ordered fallback models: the gateway-model fallback list (REQ-001 /
+// REQ-002 / REQ-005; AC-001, AC-002 and the pruning half of AC-007).
+//
+// Every pool row below is raw JSON, so this suite never names a typed member
+// that does not exist yet, and every RED is an observable mismatch instead of
+// a missing Rust symbol.
+// ---------------------------------------------------------------------------
+
+/// One raw pool row carrying an ordered gateway-model fallback list.
+fn pool_with_fallback_models(
+    id: &str,
+    alias: &str,
+    regular: Value,
+    fallback_models: &[&str],
+) -> Value {
+    json!({
+        "id": id,
+        "name": "Ordered Fallback Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [regular],
+        "fallback_models": fallback_models,
+    })
+}
+
+/// The typed pool of a raw pool row. The raw JSON carries the ordered
+/// fallback list, so the typed value is produced by the same deserialization
+/// the public upsert command receives.
+fn typed_pool_from_raw(value: Value) -> ModelPool {
+    serde_json::from_value(value).expect("the raw pool row must deserialize")
+}
+
+/// One provider serving the regular candidate model and two gateway models.
+fn fallback_models_provider(id: &str, name: &str) -> Value {
+    pool_provider(
+        id,
+        name,
+        "https://fallback-models.example.invalid/v1",
+        vec![pool_key("key-1", "Key 1", "sk-secret-1", true)],
+        vec![
+            provider_mapping("regular-model", "remote-regular", "chat_completions"),
+            provider_mapping("model-a", "remote-a", "chat_completions"),
+            provider_mapping("model-b", "remote-b", "chat_completions"),
+        ],
+    )
+}
+
+/// One configuration carrying the given providers and pools plus one retired
+/// pool alias, so a retired alias is never served by an ordinary mapping.
+fn fallback_models_config(providers: Vec<Value>, pools: Vec<Value>) -> Value {
+    let mut config = pool_config_v3(0, providers, pools);
+    config["model_pool_reserved_models"] = json!(["retired-model"]);
+    config
+}
+
+/// The persisted fallback model list of one stored pool. A pool without any
+/// stored fallback model reads as an empty list.
+fn stored_fallback_models(pool_id: &str) -> Vec<String> {
+    read_raw_gateway_config()
+        .get("model_pools")
+        .and_then(Value::as_array)
+        .and_then(|pools| pools.iter().find(|pool| pool["id"] == pool_id))
+        .and_then(|pool| pool.get("fallback_models"))
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The serialized status row of one stored pool.
+fn pool_status_json(pool_id: &str) -> Value {
+    let rows = ai_gateway_model_pools_status().expect("read the pool status");
+    let row = rows
+        .iter()
+        .find(|row| row.id == pool_id)
+        .unwrap_or_else(|| panic!("missing the status row of pool '{pool_id}'"));
+    serde_json::to_value(row).expect("serialize the pool status row")
+}
+
+/// The ordered per-model fallback status records of one status row.
+fn fallback_status_records(status: &Value) -> Vec<Value> {
+    status
+        .get("fallback_models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The expanded source rows of one per-model fallback status record. The
+/// source rows are the array whose entries all carry a `provider_id`.
+fn expanded_sources(record: &Value) -> Vec<Value> {
+    record
+        .as_object()
+        .and_then(|object| {
+            object.values().find_map(|value| {
+                value
+                    .as_array()
+                    .filter(|entries| {
+                        !entries.is_empty()
+                            && entries
+                                .iter()
+                                .all(|entry| entry.get("provider_id").is_some())
+                    })
+                    .cloned()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// Every string value inside one JSON value.
+fn string_values(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(entries) => entries.iter().flat_map(string_values).collect(),
+        Value::Object(map) => map.values().flat_map(string_values).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every number inside one JSON value.
+fn numeric_values(value: &Value) -> Vec<i64> {
+    match value {
+        Value::Number(number) => number.as_i64().into_iter().collect(),
+        Value::Array(entries) => entries.iter().flat_map(numeric_values).collect(),
+        Value::Object(map) => map.values().flat_map(numeric_values).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether one status record names the given gateway model.
+fn record_names_model(record: &Value, model: &str) -> bool {
+    string_values(record).iter().any(|value| value == model)
+}
+
+/// The per-model fallback status record of one stored gateway model.
+fn fallback_model_record(status: &Value, model: &str) -> Value {
+    fallback_status_records(status)
+        .into_iter()
+        .find(|record| record.get("model").and_then(Value::as_str) == Some(model))
+        .unwrap_or_else(|| {
+            panic!("missing the fallback model status record of '{model}': {status}")
+        })
+}
+
+/// The source row of one provider inside the expanded sources.
+fn source_of<'a>(sources: &'a [Value], provider_id: &str) -> &'a Value {
+    sources
+        .iter()
+        .find(|source| source.get("provider_id").and_then(Value::as_str) == Some(provider_id))
+        .unwrap_or_else(|| panic!("missing the expanded source of provider '{provider_id}': {sources:?}"))
+}
+
+/// Submit one pool row and require the save to be rejected without touching
+/// the encrypted configuration.
+fn assert_fallback_save_rejected(pool: Value) {
+    let bytes_before = encrypted_config_bytes();
+    let outcome = ai_gateway_upsert_model_pool(typed_pool_from_raw(pool));
+    assert!(
+        outcome.is_err(),
+        "the invalid ordered fallback list must be rejected: {outcome:?}"
+    );
+    assert_eq!(
+        encrypted_config_bytes(),
+        bytes_before,
+        "a rejected save must leave the encrypted configuration bytes unchanged"
+    );
+}
+
+/// REQ-001 / AC-001: the saved fallback list is an ordered list of gateway
+/// model ids, and reopening the pool restores exactly that order.
+#[test]
+fn pool_upsert_persists_ordered_fallback_models_in_the_stored_order() {
+    super::with_temp_home("pool-upsert-ordered-fallback-models", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-ordered",
+                "ordered-model",
+                regular.clone(),
+                &["model-b", "model-a"],
+            )],
+        ));
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-ordered",
+            "ordered-model",
+            regular,
+            &["model-b", "model-a"],
+        )))
+        .expect("the ordered fallback list must be accepted");
+
+        assert_eq!(
+            stored_fallback_models("pool-ordered"),
+            vec!["model-b".to_string(), "model-a".to_string()],
+            "the saved fallback list must keep the submitted order"
+        );
+    });
+}
+
+/// REQ-001 / AC-001: every submitted fallback model entry is trimmed before it
+/// is stored.
+#[test]
+fn pool_upsert_trims_each_fallback_model_entry() {
+    super::with_temp_home("pool-upsert-trimmed-fallback-models", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-trimmed",
+                "trimmed-model",
+                regular.clone(),
+                &[" model-a "],
+            )],
+        ));
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-trimmed",
+            "trimmed-model",
+            regular,
+            &[" model-a "],
+        )))
+        .expect("a trimmed fallback model entry must be accepted");
+
+        assert_eq!(
+            stored_fallback_models("pool-trimmed"),
+            vec!["model-a".to_string()],
+            "the stored fallback model entry must be trimmed"
+        );
+    });
+}
+
+/// REQ-001 / AC-001: a whitespace-only fallback model entry is rejected and
+/// the encrypted configuration bytes stay unchanged.
+#[test]
+fn pool_upsert_rejects_a_blank_fallback_model_entry() {
+    super::with_temp_home("pool-upsert-blank-fallback-model", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-blank",
+                "blank-model",
+                regular.clone(),
+                &["model-a"],
+            )],
+        ));
+
+        assert_fallback_save_rejected(pool_with_fallback_models(
+            "pool-blank",
+            "blank-model",
+            regular,
+            &["   "],
+        ));
+    });
+}
+
+/// REQ-001 / AC-001: a duplicated fallback model entry is rejected and the
+/// encrypted configuration bytes stay unchanged.
+#[test]
+fn pool_upsert_rejects_a_duplicate_fallback_model_entry() {
+    super::with_temp_home("pool-upsert-duplicate-fallback-model", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-duplicate",
+                "duplicate-model",
+                regular.clone(),
+                &["model-a"],
+            )],
+        ));
+
+        assert_fallback_save_rejected(pool_with_fallback_models(
+            "pool-duplicate",
+            "duplicate-model",
+            regular,
+            &["model-a", "model-a"],
+        ));
+    });
+}
+
+/// REQ-001 / AC-001: a current pool alias is rejected as a fallback model, so
+/// a fallback can never recurse into a pool, and the encrypted configuration
+/// bytes stay unchanged.
+#[test]
+fn pool_upsert_rejects_a_current_pool_alias_as_a_fallback_model() {
+    super::with_temp_home("pool-upsert-pool-alias-fallback-model", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-alias",
+                "alias-model",
+                regular.clone(),
+                &["model-a"],
+            )],
+        ));
+
+        assert_fallback_save_rejected(pool_with_fallback_models(
+            "pool-alias",
+            "alias-model",
+            regular,
+            &["alias-model"],
+        ));
+    });
+}
+
+/// REQ-001 / AC-001: a retired pool alias is rejected as a fallback model and
+/// the encrypted configuration bytes stay unchanged.
+#[test]
+fn pool_upsert_rejects_a_retired_pool_alias_as_a_fallback_model() {
+    super::with_temp_home("pool-upsert-retired-alias-fallback-model", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-retired",
+                "retired-alias-model",
+                regular.clone(),
+                &["model-a"],
+            )],
+        ));
+
+        assert_fallback_save_rejected(pool_with_fallback_models(
+            "pool-retired",
+            "retired-alias-model",
+            regular,
+            &["retired-model"],
+        ));
+    });
+}
+
+/// REQ-001 / AC-001: a newly submitted fallback model that no provider
+/// mapping serves is rejected and the encrypted configuration bytes stay
+/// unchanged.
+#[test]
+fn pool_upsert_rejects_a_newly_unknown_fallback_model_entry() {
+    super::with_temp_home("pool-upsert-unknown-fallback-model", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-unknown",
+                "unknown-model",
+                regular.clone(),
+                &["model-a"],
+            )],
+        ));
+
+        assert_fallback_save_rejected(pool_with_fallback_models(
+            "pool-unknown",
+            "unknown-model",
+            regular,
+            &["model-never-served"],
+        ));
+    });
+}
+
+/// REQ-001 / AC-001: a saved fallback model whose provider disappeared stays
+/// retainable and clearable, because it is neither a new entry nor a source
+/// that must resolve.
+#[test]
+fn pool_upsert_retains_a_saved_fallback_model_whose_provider_disappeared() {
+    super::with_temp_home("pool-upsert-retained-fallback-model", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-retained",
+                "retained-model",
+                regular.clone(),
+                &[],
+            )],
+        ));
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-retained",
+            "retained-model",
+            regular.clone(),
+            &["model-a"],
+        )))
+        .expect("a served fallback model must be accepted");
+        assert_eq!(
+            stored_fallback_models("pool-retained"),
+            vec!["model-a".to_string()],
+            "the saved fallback model must be stored"
+        );
+
+        // The provider stops serving the fallback model.
+        let mut config = crate::ai_gateway::storage::read_config().expect("read the configuration");
+        for provider in &mut config.providers {
+            provider
+                .mappings
+                .retain(|mapping| mapping.local_model.trim() != "model-a");
+        }
+        crate::ai_gateway::storage::write_config(&config).expect("write the configuration");
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-retained",
+            "retained-model",
+            regular.clone(),
+            &["model-a"],
+        )))
+        .expect("an unchanged saved fallback model must stay retainable");
+        assert_eq!(
+            stored_fallback_models("pool-retained"),
+            vec!["model-a".to_string()],
+            "the retained fallback model must stay stored"
+        );
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-retained",
+            "retained-model",
+            regular,
+            &[],
+        )))
+        .expect("a saved fallback model must stay clearable");
+        assert!(
+            stored_fallback_models("pool-retained").is_empty(),
+            "the cleared fallback list must be empty"
+        );
+    });
+}
+
+/// REQ-003 / AC-004: the pool status reports the ordered fallback models with
+/// their expanded source statuses, keeps the regular candidate list regular
+/// only and exposes no key, endpoint, header or message body.
+#[test]
+fn pool_status_reports_the_ordered_fallback_models_with_their_expanded_sources() {
+    super::with_temp_home("pool-status-ordered-fallback-models", |_home| {
+        let provider_a = pool_provider(
+            "p-a",
+            "Provider A",
+            "https://provider-a.example.invalid/v1",
+            vec![pool_key("key-a", "Key A", "sk-secret-a", true)],
+            vec![provider_mapping(
+                "model-a",
+                "remote-a",
+                "chat_completions",
+            )],
+        );
+        let provider_b = pool_provider(
+            "p-b",
+            "Provider B",
+            "https://provider-b.example.invalid/v1",
+            vec![pool_key("key-b", "Key B", "sk-secret-b", true)],
+            vec![provider_mapping(
+                "model-a",
+                "remote-b",
+                "chat_completions",
+            )],
+        );
+        let mut disabled_provider = pool_provider(
+            "p-off",
+            "Provider Off",
+            "https://provider-off.example.invalid/v1",
+            vec![pool_key("key-off", "Key Off", "sk-secret-off", true)],
+            vec![provider_mapping(
+                "model-a",
+                "remote-off",
+                "chat_completions",
+            )],
+        );
+        disabled_provider["enabled"] = json!(false);
+        let mut auto_provider = pool_provider(
+            "p-auto",
+            "Provider Auto",
+            "https://provider-auto.example.invalid/v1",
+            vec![pool_key("key-auto", "Key Auto", "sk-secret-auto", true)],
+            vec![provider_mapping(
+                "model-a",
+                "remote-auto",
+                "chat_completions",
+            )],
+        );
+        auto_provider["mappings"][0]["auto_disabled"] = json!(true);
+        auto_provider["mappings"][0]["disabled_reason"] = json!("free usage limit");
+        let regular_provider = pool_provider(
+            "p-reg",
+            "Provider Regular",
+            "https://provider-regular.example.invalid/v1",
+            vec![pool_key("key-reg", "Key Regular", "sk-secret-reg", true)],
+            vec![provider_mapping(
+                "regular-model",
+                "remote-regular",
+                "chat_completions",
+            )],
+        );
+        let pool = pool_with_fallback_models(
+            "pool-status",
+            "status-model",
+            pool_candidate(
+                "p-reg",
+                "regular-model",
+                "remote-regular",
+                "chat_completions",
+                Some(1),
+            ),
+            &["model-a", "model-unserved"],
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![
+                provider_a,
+                provider_b,
+                disabled_provider,
+                auto_provider,
+                regular_provider,
+            ],
+            vec![pool],
+        ));
+
+        let status = pool_status_json("pool-status");
+        let regular_rows = status
+            .get("candidates")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("the status must carry its regular candidates: {status}"));
+        assert_eq!(
+            regular_rows.len(),
+            1,
+            "the regular candidate list must stay regular-only: {status}"
+        );
+        assert_eq!(
+            regular_rows[0].get("local_model"),
+            Some(&json!("regular-model")),
+            "the regular candidate list must stay regular-only: {status}"
+        );
+
+        let records = fallback_status_records(&status);
+        assert_eq!(
+            records.len(),
+            2,
+            "the status must report one record per stored fallback model: {status}"
+        );
+        assert!(
+            record_names_model(&records[0], "model-a")
+                && !record_names_model(&records[0], "model-unserved"),
+            "the fallback status must keep the stored order: {status}"
+        );
+        assert!(
+            record_names_model(&records[1], "model-unserved"),
+            "the fallback status must report every stored fallback model: {status}"
+        );
+
+        let sources = expanded_sources(&records[0]);
+        assert_eq!(
+            sources.len(),
+            4,
+            "the fallback status must list every known matching provider mapping: {status}"
+        );
+        let numbers = numeric_values(&records[0]);
+        assert!(
+            numbers.contains(&2),
+            "the fallback status must report the ready source count: {status}"
+        );
+        assert!(
+            numbers.contains(&4),
+            "the fallback status must report the total source count: {status}"
+        );
+
+        assert_eq!(
+            source_of(&sources, "p-a").get("ready"),
+            Some(&json!(true)),
+            "an enabled provider and mapping must be a ready expanded source: {status}"
+        );
+        assert_eq!(
+            source_of(&sources, "p-b").get("ready"),
+            Some(&json!(true)),
+            "a second enabled provider must be a ready expanded source: {status}"
+        );
+        assert_eq!(
+            source_of(&sources, "p-off").get("ready"),
+            Some(&json!(false)),
+            "a disabled provider must not be a ready expanded source: {status}"
+        );
+        assert_eq!(
+            source_of(&sources, "p-off").get("availability"),
+            Some(&json!("source_disabled")),
+            "a disabled provider must report its availability code: {status}"
+        );
+        assert_eq!(
+            source_of(&sources, "p-auto").get("ready"),
+            Some(&json!(false)),
+            "an auto-disabled mapping must not be a ready expanded source: {status}"
+        );
+
+        let text = serde_json::to_string(&status).expect("serialize the pool status");
+        for secret in [
+            "sk-secret-a",
+            "sk-secret-b",
+            "sk-secret-off",
+            "sk-secret-auto",
+            "https://provider-a.example.invalid",
+            "https://provider-b.example.invalid",
+            "authorization",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "the pool status must not expose '{secret}': {text}"
+            );
+        }
+    });
+}
+
+/// AC-002: a fallback model expands to every eligible provider mapping. A
+/// request whose regular candidate set is empty is served by an expanded
+/// provider of that model, and a disabled provider is never contacted.
+#[tokio::test]
+async fn fallback_model_expands_to_an_eligible_provider_and_serves_the_request() {
+    let _home = temp_home("pool-fallback-model-expansion");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let pool_id = format!("pool-{tag}");
+
+    let (url_a, log_a) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "chatcmpl-a",
+                "object": "chat.completion",
+                "model": "remote-a",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "from-a"},
+                    "finish_reason": "stop"}],
+            }),
+        )
+    })
+    .await;
+    let (url_b, log_b) = spawn_mock_upstream(|_| {
+        MockReply::Json(
+            200,
+            json!({
+                "id": "chatcmpl-b",
+                "object": "chat.completion",
+                "model": "remote-b",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "from-b"},
+                    "finish_reason": "stop"}],
+            }),
+        )
+    })
+    .await;
+    let (url_off, log_off) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "ok", "choices": []}))).await;
+
+    let provider_a = pool_provider(
+        "p-a",
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-secret-a", true)],
+        vec![provider_mapping("model-a", "remote-a", "chat_completions")],
+    );
+    let provider_b = pool_provider(
+        "p-b",
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-secret-b", true)],
+        vec![provider_mapping("model-a", "remote-b", "chat_completions")],
+    );
+    let mut provider_off = pool_provider(
+        "p-off",
+        "Provider Off",
+        &url_off,
+        vec![pool_key("key-off", "Key Off", "sk-secret-off", true)],
+        vec![provider_mapping("model-a", "remote-off", "chat_completions")],
+    );
+    provider_off["enabled"] = json!(false);
+    // The regular candidate references a provider that does not exist, so the
+    // regular runtime candidate set is empty and the fallback stage is reached.
+    let pool = pool_with_fallback_models(
+        &pool_id,
+        &alias,
+        pool_candidate(
+            "p-ghost",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        ),
+        &["model-a"],
+    );
+    write_raw_gateway_config(&pool_config_v3(
+        port,
+        vec![provider_a, provider_b, provider_off],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let (status, _content_type, text) = post_chat(port, &alias).await;
+    stop_server().await.expect("stop the listener");
+
+    assert_eq!(
+        status, 200,
+        "an expanded fallback source must serve the exhausted pool: {text}"
+    );
+    assert!(
+        text.contains("from-a") || text.contains("from-b"),
+        "the response must come from an expanded fallback provider: {text}"
+    );
+    let attempts_a = models_of(&log_a).len();
+    let attempts_b = models_of(&log_b).len();
+    assert_eq!(
+        attempts_a + attempts_b,
+        1,
+        "exactly one expanded provider must serve the request: {attempts_a} + {attempts_b}"
+    );
+    assert!(
+        models_of(&log_off).is_empty(),
+        "a disabled provider must never be contacted: {:?}",
+        models_of(&log_off)
+    );
+}
+
+/// REQ-005 / AC-007: an expanded fallback identity that is still referenced
+/// by a regular candidate keeps its cooldown when the fallback model is
+/// removed, because the identity is never unowned.
+#[test]
+fn pool_pruning_keeps_the_cooldown_of_an_identity_still_referenced_by_a_regular_candidate() {
+    super::with_temp_home("pool-pruning-overlapping-identity", |_home| {
+        let provider = pool_provider(
+            "p-a",
+            "Provider A",
+            "https://provider-a.example.invalid/v1",
+            vec![pool_key("key-a", "Key A", "sk-secret-a", true)],
+            vec![
+                provider_mapping("model-a", "remote-a", "chat_completions"),
+                provider_mapping("regular-model", "remote-regular", "chat_completions"),
+            ],
+        );
+        // The regular candidate and the expanded fallback source are the very
+        // same identity.
+        let regular = pool_candidate(
+            "p-a",
+            "model-a",
+            "remote-a",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-overlap",
+                "overlap-model",
+                regular.clone(),
+                &[],
+            )],
+        ));
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-overlap",
+            "overlap-model",
+            regular.clone(),
+            &["model-a"],
+        )))
+        .expect("the fallback model must be accepted");
+        assert_eq!(
+            stored_fallback_models("pool-overlap"),
+            vec!["model-a".to_string()],
+            "the fallback model must be stored"
+        );
+
+        let identity = candidate_identity("pool-overlap", "p-a", "model-a", "remote-a");
+        cool_pool_candidate(&identity, Some(Duration::from_secs(60)));
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-overlap",
+            "overlap-model",
+            regular,
+            &[],
+        )))
+        .expect("removing the fallback model must be accepted");
+        assert!(
+            crate::ai_gateway::model_pools::pool_candidate_cooling(&identity).is_some(),
+            "an identity that is still a regular candidate must keep its cooldown"
+        );
+    });
+}
+
+/// REQ-005 / AC-007: the cooldown of a removed fallback expansion is pruned
+/// after a successful publication, because no role references that identity
+/// any more.
+#[test]
+fn pool_pruning_drops_the_cooldown_of_a_removed_fallback_expansion() {
+    super::with_temp_home("pool-pruning-removed-expansion", |_home| {
+        let provider = pool_provider(
+            "p-a",
+            "Provider A",
+            "https://provider-a.example.invalid/v1",
+            vec![pool_key("key-a", "Key A", "sk-secret-a", true)],
+            vec![
+                provider_mapping("model-a", "remote-a", "chat_completions"),
+                provider_mapping("regular-model", "remote-regular", "chat_completions"),
+            ],
+        );
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-removed",
+                "removed-model",
+                regular.clone(),
+                &[],
+            )],
+        ));
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-removed",
+            "removed-model",
+            regular.clone(),
+            &["model-a"],
+        )))
+        .expect("the fallback model must be accepted");
+        assert_eq!(
+            stored_fallback_models("pool-removed"),
+            vec!["model-a".to_string()],
+            "the fallback model must be stored"
+        );
+
+        let identity = candidate_identity("pool-removed", "p-a", "model-a", "remote-a");
+        cool_pool_candidate(&identity, Some(Duration::from_secs(60)));
+        assert!(
+            crate::ai_gateway::model_pools::pool_candidate_cooling(&identity).is_some(),
+            "the cooled fallback source must own its cooldown"
+        );
+
+        ai_gateway_upsert_model_pool(typed_pool_from_raw(pool_with_fallback_models(
+            "pool-removed",
+            "removed-model",
+            regular,
+            &[],
+        )))
+        .expect("removing the fallback model must be accepted");
+        assert!(
+            crate::ai_gateway::model_pools::pool_candidate_cooling(&identity).is_none(),
+            "a removed fallback expansion must be pruned after the publication"
+        );
+    });
+}
+
+/// REQ-005 / AC-007: a rejected save changes neither the encrypted
+/// configuration bytes nor the runtime cooldowns the pool owns.
+#[test]
+fn a_rejected_fallback_save_changes_neither_the_encrypted_bytes_nor_the_runtime_cooldowns() {
+    super::with_temp_home("pool-rejected-fallback-save", |_home| {
+        let provider = fallback_models_provider("p-a", "Provider A");
+        let regular = pool_candidate(
+            "p-a",
+            "regular-model",
+            "remote-regular",
+            "chat_completions",
+            Some(1),
+        );
+        write_raw_gateway_config(&fallback_models_config(
+            vec![provider],
+            vec![pool_with_fallback_models(
+                "pool-cooldown",
+                "cooldown-model",
+                regular.clone(),
+                &["model-a"],
+            )],
+        ));
+
+        let identity = candidate_identity("pool-cooldown", "p-a", "model-a", "remote-a");
+        cool_pool_candidate(&identity, Some(Duration::from_secs(60)));
+        let bytes_before = encrypted_config_bytes();
+
+        assert_fallback_save_rejected(pool_with_fallback_models(
+            "pool-cooldown",
+            "cooldown-model",
+            regular,
+            &["model-a", "model-a"],
+        ));
+
+        assert_eq!(
+            encrypted_config_bytes(),
+            bytes_before,
+            "a rejected save must leave the encrypted configuration bytes unchanged"
+        );
+        assert!(
+            crate::ai_gateway::model_pools::pool_candidate_cooling(&identity).is_some(),
+            "a rejected save must leave the runtime cooldowns unchanged"
+        );
+    });
 }

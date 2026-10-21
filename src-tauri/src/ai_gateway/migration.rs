@@ -4,7 +4,9 @@
 //! gateway marker and the legacy field shapes. Two version gates live here: a
 //! configuration older than [`super::GATEWAY_CONFIG_SCHEMA_VERSION`] is rewritten
 //! once with its global price rows scoped, its singular `off_peak` window folded
-//! into `off_peaks` and its provider-level runtime fields cleared; a usage
+//! into `off_peaks`, its provider-level runtime fields cleared and each pool's
+//! legacy single fallback candidate converted into the ordered gateway-model
+//! fallback list; a usage
 //! database older than [`USAGE_DB_VERSION`] has its legacy `cancelled` rows
 //! deleted once (version below 1), then gains the durable provider/day summary
 //! tables, the one-shot retained-row backfill and the continuity boundary
@@ -62,6 +64,58 @@ const DEFAULT_MODEL_FIELD: &str = "default_model";
 const UPSTREAM_MODEL_FIELD: &str = "upstream_model";
 const PROTOCOL_FIELD: &str = "protocol";
 const ENABLED_FIELD: &str = "enabled";
+const MODEL_POOLS_FIELD: &str = "model_pools";
+const LOCAL_MODEL_FIELD: &str = "local_model";
+/// Legacy single provider-specific fallback candidate of one model pool,
+/// superseded by the ordered `fallback_models` gateway-model list.
+const LEGACY_POOL_FALLBACK_FIELD: &str = "fallback";
+/// Current ordered gateway-model fallback list.
+const POOL_FALLBACK_MODELS_FIELD: &str = "fallback_models";
+
+/// Convert every stored pool's legacy single fallback candidate to the ordered
+/// gateway-model list and remove the legacy key. Only the trimmed local model id
+/// is kept: the legacy candidate's reasoning, weight, provider id, upstream
+/// model and protocol have no place in a model-level list. A missing, null or
+/// malformed legacy fallback leaves an existing list untouched and adds nothing.
+/// Idempotent: a migrated pool has no legacy key to convert.
+fn migrate_pool_fallbacks(object: &mut Map<String, Value>) -> bool {
+    let Some(pools) = object
+        .get_mut(MODEL_POOLS_FIELD)
+        .and_then(Value::as_array_mut)
+    else {
+        return false;
+    };
+    let mut changed = false;
+    for pool in pools.iter_mut() {
+        let Some(pool) = pool.as_object_mut() else {
+            continue;
+        };
+        let Some(legacy) = pool.remove(LEGACY_POOL_FALLBACK_FIELD) else {
+            continue;
+        };
+        changed = true;
+        let local_model = legacy
+            .get(LOCAL_MODEL_FIELD)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty());
+        let Some(local_model) = local_model else {
+            continue;
+        };
+        if pool
+            .get(POOL_FALLBACK_MODELS_FIELD)
+            .and_then(Value::as_array)
+            .is_some()
+        {
+            continue;
+        }
+        pool.insert(
+            POOL_FALLBACK_MODELS_FIELD.to_string(),
+            Value::Array(vec![Value::String(local_model.to_string())]),
+        );
+    }
+    changed
+}
 
 /// Serialize the shipped OpenCode Go baseline into its persisted JSON shape,
 /// plus each declared model id's explicit protocol. A missing baseline yields
@@ -443,7 +497,8 @@ pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value) -> bool {
         let object = config
             .as_object_mut()
             .expect("config was checked to be an object");
-        migrate_opencode_zen_to_go(object)
+        let changed = migrate_opencode_zen_to_go(object);
+        changed | migrate_pool_fallbacks(object)
     };
     let reachable = reachable_provider_models(config);
     let Some(object) = config.as_object_mut() else {

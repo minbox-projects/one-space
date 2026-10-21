@@ -33,8 +33,10 @@ pub const MAX_PROVIDER_WEIGHT: u32 = 100;
 /// `keys` pool; version 1 and older files are converted once by
 /// [`super::migration::migrate_legacy_config`]. Version 3 carries the
 /// `opencode-go` template identity and provider bindings, replacing the old
-/// `opencode-zen` built-in through the same version-gated migration.
-pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 3;
+/// `opencode-zen` built-in through the same version-gated migration. Version 4
+/// replaces a pool's single provider-specific `fallback` candidate with an
+/// ordered list of gateway local model ids.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 4;
 
 pub(in crate::ai_gateway) fn default_port() -> u16 {
     if cfg!(debug_assertions) {
@@ -759,11 +761,11 @@ impl Default for ModelPoolCandidate {
 /// always serialized so a legacy pool persists as `auto` without inferring a
 /// capability.
 ///
-/// `fallback` is the optional last-stage source the pool may use after every
-/// regular candidate is exhausted. It references the same real provider mapping
-/// shape as a regular candidate, including the pool-local reasoning declaration
-/// and the inclusive 1..=100 weight whose stored default is 1, but it never
-/// enters primary scheduling. An absent member means no configured fallback.
+/// `fallback_models` is the ordered list of gateway local model ids used after
+/// every regular candidate is exhausted. Each entry expands at request time to
+/// the provider mappings serving that local model, so a fallback stores no
+/// provider, upstream model, protocol, weight or fallback-local reasoning.
+/// An absent or empty list means no configured fallback.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelPool {
     pub id: String,
@@ -777,7 +779,16 @@ pub struct ModelPool {
     pub candidates: Vec<ModelPoolCandidate>,
     #[serde(default)]
     pub default_reasoning_effort: PoolDefaultReasoningEffort,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_models: Vec<String>,
+    /// Transient pre-attempt protocol hint for the ordered fallback list. On a
+    /// configuration read it holds one auto-expanded native Messages fallback
+    /// source whenever the stored list may select one, so the request boundary
+    /// can reject tools that the Messages adapter cannot carry before any
+    /// attempt. It is never persisted or read from disk; routing expands
+    /// [`Self::fallback_models`] itself, and persisted legacy data is converted
+    /// by the version-gated migration.
+    #[serde(skip)]
     pub fallback: Option<ModelPoolCandidate>,
 }
 
@@ -790,6 +801,7 @@ impl Default for ModelPool {
             enabled: true,
             candidates: Vec::new(),
             default_reasoning_effort: PoolDefaultReasoningEffort::Auto,
+            fallback_models: Vec::new(),
             fallback: None,
         }
     }
@@ -1135,8 +1147,89 @@ impl Default for ModelPrice {
     }
 }
 
+/// Deserialization shape of [`GatewayConfig`]. The persisted fields keep their
+/// ordinary defaults; the conversion below derives the transient fallback
+/// protocol hint that is not stored on disk.
+#[derive(Deserialize)]
+struct GatewayConfigWire {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_port")]
+    port: u16,
+    #[serde(default)]
+    providers: Vec<GatewayUpstreamProvider>,
+    #[serde(default)]
+    keys: Vec<GatewayKey>,
+    #[serde(default)]
+    default_key_id: Option<String>,
+    #[serde(default)]
+    terminal_syncs: Vec<TerminalSyncRecord>,
+    #[serde(default = "default_usage_retention_days")]
+    usage_retention_days: u32,
+    #[serde(default)]
+    model_prices: Vec<ModelPrice>,
+    #[serde(default)]
+    provider_templates: Vec<ProviderTemplateState>,
+    #[serde(default)]
+    deleted_template_ids: Vec<String>,
+    #[serde(
+        default = "default_template_auto_refresh_minutes",
+        deserialize_with = "deserialize_template_auto_refresh_minutes"
+    )]
+    template_auto_refresh_minutes: u32,
+    #[serde(default)]
+    model_pools: Vec<ModelPool>,
+    #[serde(default)]
+    model_pool_reserved_models: Vec<String>,
+}
+
+impl From<GatewayConfigWire> for GatewayConfig {
+    fn from(wire: GatewayConfigWire) -> Self {
+        let mut config = GatewayConfig {
+            schema_version: wire.schema_version,
+            enabled: wire.enabled,
+            port: wire.port,
+            providers: wire.providers,
+            keys: wire.keys,
+            default_key_id: wire.default_key_id,
+            terminal_syncs: wire.terminal_syncs,
+            usage_retention_days: wire.usage_retention_days,
+            model_prices: wire.model_prices,
+            provider_templates: wire.provider_templates,
+            deleted_template_ids: wire.deleted_template_ids,
+            template_auto_refresh_minutes: wire.template_auto_refresh_minutes,
+            model_pools: wire.model_pools,
+            model_pool_reserved_models: wire.model_pool_reserved_models,
+        };
+        let providers = config.providers.as_slice();
+        for pool in &mut config.model_pools {
+            if pool.fallback.is_some() {
+                continue;
+            }
+            // Only the pre-attempt Messages representability check reads this
+            // slot. Keeping one expanded native Messages fallback source here
+            // lets that check cover the ordered fallback list before any
+            // selection or upstream attempt; the routing path expands the whole
+            // list itself.
+            pool.fallback = super::model_pools::fallback_protocol_hint(providers, pool);
+        }
+        config
+    }
+}
+
+impl<'de> Deserialize<'de> for GatewayConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        GatewayConfigWire::deserialize(deserializer).map(Into::into)
+    }
+}
+
 /// Persisted AI Gateway configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GatewayConfig {
     /// Persisted schema version; a missing field reads as `0` (legacy) and the
     /// read path migrates once to [`GATEWAY_CONFIG_SCHEMA_VERSION`].

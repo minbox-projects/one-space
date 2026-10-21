@@ -499,6 +499,9 @@ fn reasoning_pool(
     default: PoolDefaultReasoningEffort,
     candidates: Vec<ModelPoolCandidate>,
 ) -> ModelPool {
+    // The remaining pool members come from the default, so this literal stays
+    // valid for the ordered `fallback_models` list, which the model-level
+    // contract replaces.
     ModelPool {
         id: id.to_string(),
         name: format!("Pool {id}"),
@@ -506,7 +509,7 @@ fn reasoning_pool(
         enabled: true,
         candidates,
         default_reasoning_effort: default,
-        fallback: None,
+        ..ModelPool::default()
     }
 }
 
@@ -981,11 +984,41 @@ fn pool_policy_edit_marks_opencode_pending_for_manual_sync() {
     );
 }
 
-/// AC-005: a pool that configures one optional fallback exposes that fallback
-/// as a separate status member next to the regular-only candidate list, so the
-/// fallback's own readiness and reason never fold into the regular rows.
+/// The expanded source rows of one per-model fallback status record: the
+/// record member whose entries all carry a `provider_id`.
+fn fallback_record_sources(record: &Value) -> Vec<Value> {
+    record
+        .as_object()
+        .and_then(|object| {
+            object.values().find_map(|value| {
+                value
+                    .as_array()
+                    .filter(|entries| {
+                        !entries.is_empty()
+                            && entries
+                                .iter()
+                                .all(|entry| entry.get("provider_id").is_some())
+                    })
+                    .cloned()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// The record's own numeric members: the ready and the total source counts.
+fn fallback_record_counts(record: &Value) -> Vec<i64> {
+    record
+        .as_object()
+        .map(|object| object.values().filter_map(Value::as_i64).collect())
+        .unwrap_or_default()
+}
+
+/// AC-005: a pool that configures ordered fallback models exposes one
+/// per-model status record next to the regular-only candidate list, so each
+/// fallback model's own readiness, counts, expanded sources and reason never
+/// fold into the regular rows.
 #[test]
-fn pool_status_exposes_separate_fallback_status_field() {
+fn pool_status_exposes_the_fallback_models_separately_from_the_regular_candidates() {
     let _home = isolated_temp_home("pool-terminal-fallback-status");
     let mut raw = serde_json::to_value(gateway_config(19000)).expect("serialize the config");
     raw["model_pools"] = json!([{
@@ -1000,13 +1033,7 @@ fn pool_status_exposes_separate_fallback_status_field() {
             "protocol": "chat_completions",
             "weight": 1,
         }],
-        "fallback": {
-            "provider_id": "g1",
-            "local_model": "ds",
-            "upstream_model": "deepseek-chat",
-            "protocol": "chat_completions",
-            "weight": 1,
-        },
+        "fallback_models": ["ds"],
     }]);
     write_raw_gateway_config(&raw);
 
@@ -1020,10 +1047,42 @@ fn pool_status_exposes_separate_fallback_status_field() {
         .unwrap_or_else(|| panic!("missing pool status row: {value}"))
         .clone();
 
-    let fallback = &entry["fallback"];
-    assert_eq!(fallback["provider_id"], "g1", "{entry}");
-    assert_eq!(fallback["local_model"], "ds", "{entry}");
-    assert_eq!(fallback["upstream_model"], "deepseek-chat", "{entry}");
+    // The ordered fallback list is reported as one per-model record array.
+    let records = entry["fallback_models"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the status must expose the fallback model records: {entry}"));
+    assert_eq!(
+        records.len(),
+        1,
+        "the status must report one record per stored fallback model: {entry}"
+    );
+    let record = &records[0];
+    assert_eq!(
+        record["model"], "ds",
+        "the record must name the stored fallback model: {entry}"
+    );
+    assert_eq!(
+        record["ready"], json!(true),
+        "a served fallback model must report ready: {entry}"
+    );
+
+    // The expanded source statuses belong to the record, and the record
+    // reports the ready and the total source counts.
+    let sources = fallback_record_sources(record);
+    assert_eq!(
+        sources.len(),
+        1,
+        "the record must list the expanded source of the fallback model: {entry}"
+    );
+    assert_eq!(sources[0]["provider_id"], "g1", "{entry}");
+    assert_eq!(sources[0]["ready"], json!(true), "{entry}");
+    let counts = fallback_record_counts(record);
+    assert!(
+        counts.contains(&1),
+        "the record must report the ready and the total source count: {entry}"
+    );
+
+    // The regular candidate list stays regular-only.
     let candidates = entry["candidates"].as_array().expect("regular candidate rows");
     assert_eq!(
         candidates.len(),
@@ -1038,15 +1097,26 @@ fn pool_status_exposes_separate_fallback_status_field() {
     );
 }
 
-/// Boundary A RED (AC-005 / AC-009): a pool whose *fallback alone* declares a
-/// reasoning preference must advertise that preference in the discovery row and
-/// in the OpenCode payload's model variants, because both surfaces derive the
-/// static support from the configured union of regular candidates and the
-/// fallback. The regular source rows stay regular-only.
+/// Boundary A RED (AC-005 / AC-009): a pool whose *fallback model alone*
+/// declares a native reasoning effort must advertise that effort in the
+/// discovery row and in the OpenCode payload's model variants, because both
+/// surfaces derive the static support from the configured union of regular
+/// candidates and the auto-expanded fallback models. The regular source rows
+/// stay regular-only.
 #[tokio::test]
 async fn pool_fallback_only_support_reaches_discovery_and_opencode_payload() {
     let _home = isolated_temp_home("pool-terminal-fallback-support");
     let mut raw = serde_json::to_value(gateway_config(19000)).expect("serialize the config");
+    // The fallback model expands to the "ds" mapping, whose declared native
+    // effort lets the expanded source derive its own native control.
+    let mappings = raw["providers"][0]["mappings"]
+        .as_array_mut()
+        .expect("the provider mappings must persist");
+    let ds = mappings
+        .iter_mut()
+        .find(|mapping| mapping["local_model"] == "ds")
+        .expect("the ds mapping");
+    ds["reasoning_efforts"] = json!(["high"]);
     raw["model_pools"] = json!([{
         "id": "pool-union",
         "name": "Union Pool",
@@ -1060,39 +1130,29 @@ async fn pool_fallback_only_support_reaches_discovery_and_opencode_payload() {
             "protocol": "chat_completions",
             "weight": 1,
         }],
-        "fallback": {
-            "provider_id": "g1",
-            "local_model": "ds",
-            "upstream_model": "deepseek-chat",
-            "protocol": "chat_completions",
-            "weight": 1,
-            "reasoning": {
-                "profile": "openai_effort",
-                "values": ["high"],
-                "supports_disable": false,
-                "mappings": [
-                    {"effort": "high", "action": {"kind": "enum", "value": "high"}}
-                ],
-            },
-        },
+        "fallback_models": ["ds"],
     }]);
     write_raw_gateway_config(&raw);
     let config = read_config().expect("read gateway config");
 
-    // The discovery row advertises the fallback's declaration.
+    // The discovery row advertises the fallback-only declaration.
     let payload = models_payload(&config);
     let row = discovered_pool(&payload, "union-model");
     let (efforts, _, coverage) = reasoning_metadata(row);
     assert_eq!(
         efforts,
         vec!["high"],
-        "the fallback-only declaration must be advertised: {row}"
+        "the auto-expanded fallback source must be advertised: {row}"
     );
     let high = coverage
         .iter()
         .find(|(effort, _, _)| effort == "high")
         .expect("high coverage row");
     assert_eq!(high.1, 1, "the fallback's declaration counts once: {row}");
+    assert_eq!(
+        high.2, 2,
+        "the union spans the regular candidate and the auto-expanded fallback source: {row}"
+    );
     let sources = row["sources"].as_array().expect("pool sources");
     assert_eq!(
         sources.len(),
@@ -1246,4 +1306,46 @@ async fn opencode_pool_row_with_declared_reasoning_includes_replay_interleaved()
         json!({ "field": "reasoning_content" }),
         "resync must restore replay interleaving: {restored}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Ordered fallback models: per-model status array (REQ-003 / AC-004 RED).
+// Raw JSON uses the new `fallback_models` list; the current reader ignores it,
+// so the ordered status array assertion below fails until auto-expansion lands.
+// ---------------------------------------------------------------------------
+#[test]
+fn pool_status_reports_ordered_fallback_models_array() {
+    let _home = isolated_temp_home("pool-terminal-fallback-models-status");
+    let mut raw = serde_json::to_value(gateway_config(19010)).expect("serialize the config");
+    raw["model_pools"] = json!([{
+        "id": "pool-status-fm",
+        "name": "Status Pool",
+        "model": "status-model",
+        "enabled": true,
+        "candidates": [{
+            "provider_id": "g1",
+            "local_model": ORDINARY_LOCAL,
+            "upstream_model": ORDINARY_UPSTREAM,
+            "protocol": "chat_completions",
+            "weight": 1,
+        }],
+        "fallback_models": ["ds"],
+    }]);
+    write_raw_gateway_config(&raw);
+
+    let statuses = ai_gateway_model_pools_status().expect("pool status");
+    let value = serde_json::to_value(&statuses).expect("serialize pool status");
+    let entry = value
+        .as_array()
+        .expect("status array")
+        .iter()
+        .find(|pool| pool["id"] == "pool-status-fm")
+        .unwrap_or_else(|| panic!("missing pool status row: {value}"))
+        .clone();
+
+    let fallback_models = entry["fallback_models"]
+        .as_array()
+        .expect("fallback_models status array must exist");
+    assert_eq!(fallback_models.len(), 1, "{entry}");
+    assert_eq!(fallback_models[0]["model"], "ds", "{entry}");
 }
