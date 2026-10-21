@@ -25,6 +25,7 @@ mod runtime_profiles;
 mod secrets;
 mod short_link;
 mod skills;
+pub mod ssl_certificate;
 mod ssh_tunnels;
 mod storage;
 mod subagents;
@@ -55,6 +56,12 @@ pub use ai_workflow_profiles::{
     ai_workflow_activate_profile, ai_workflow_create_profile, ai_workflow_delete_profile,
     ai_workflow_get_model_sources, ai_workflow_get_profile_matrix, ai_workflow_list_profiles,
     ai_workflow_rename_profile, ai_workflow_save_profile,
+};
+pub use ssl_certificate::{
+    ssl_certificate_create_order, ssl_certificate_delete, ssl_certificate_doh_precheck,
+    ssl_certificate_export, ssl_certificate_list, ssl_certificate_verify_and_finalize,
+    ssl_check_certificate, ssl_watchlist_add, ssl_watchlist_check_all, ssl_watchlist_list,
+    ssl_watchlist_remove,
 };
 
 // Test-only discovery hook for the delegated `ble_lock` contract tests. The
