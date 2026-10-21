@@ -1935,6 +1935,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           }
           busy={busy}
           onSave={handleSavePool}
+          onDelete={handleDeletePool}
         />
 
         {/* 服务商模板维护与编辑模态弹窗 */}

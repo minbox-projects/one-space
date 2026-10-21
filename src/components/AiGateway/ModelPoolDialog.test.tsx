@@ -385,7 +385,7 @@ describe("ModelPoolDialog", () => {
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
     openModelPoolsTab();
-    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-existing"));
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-existing"));
 
     const selected = screen.getByTestId("model-pool-selected-list");
     // The stored reference stays explicit and visible even though its provider
@@ -529,7 +529,7 @@ describe("ModelPoolDialog", () => {
       expect(screen.getByTestId("ai-gateway-model-pool-pool-saved")).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-saved"));
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-saved"));
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
 
     // 来源模型中不展示已禁用的 Provider B
@@ -689,7 +689,7 @@ describe("ModelPoolDialog", () => {
       expect(screen.getByTestId("ai-gateway-model-pool-pool-1")).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-1"));
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-1"));
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
 
     // Source group header badge
@@ -884,7 +884,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
     openModelPoolsTab();
-    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-legacy"));
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-legacy"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
     expect(reasoningDefaultSelect()).toHaveValue("auto");
@@ -923,7 +923,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
     openModelPoolsTab();
-    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-declared"));
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-declared"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
     const editor = screen.getByTestId("model-pool-reasoning-editor-p-a-local-a1");
@@ -987,7 +987,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
     openModelPoolsTab();
-    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-unknown"));
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-unknown"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
     const editor = screen.getByTestId("model-pool-reasoning-editor-p-a-local-a1");
@@ -1036,7 +1036,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
     openModelPoolsTab();
-    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-switch"));
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-switch"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
     expect(
@@ -1087,7 +1087,7 @@ describe("ModelPoolDialog 模型池推理策略（Step 4）", () => {
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
     openModelPoolsTab();
-    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-edit-pool-guard"));
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-guard"));
 
     expect(await screen.findByTestId("model-pool-dialog")).toBeInTheDocument();
     await user.selectOptions(mappingSelect("medium"), "");
@@ -1287,7 +1287,7 @@ describe("ModelPoolDialog 模型池推理策略回归（Step 4 repair）", () =>
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
     openModelPoolsTab();
-    fireEvent.click(screen.getByTestId(`ai-gateway-model-pool-edit-${pool.id}`));
+    fireEvent.click(screen.getByTestId(`ai-gateway-model-pool-name-${pool.id}`));
     await screen.findByTestId("model-pool-dialog");
   }
 
@@ -1950,7 +1950,7 @@ describe("ModelPoolDialog 模型池推理绑定（binding）", () => {
     await screen.findByText("Provider A");
     openModelPoolsTab();
     fireEvent.click(
-      screen.getByTestId("ai-gateway-model-pool-edit-pool-bind-edit"),
+      screen.getByTestId("ai-gateway-model-pool-name-pool-bind-edit"),
     );
     await screen.findByTestId("model-pool-dialog");
 
@@ -2446,7 +2446,7 @@ describe("ModelPoolDialog 有序回退模型（Step 3）", () => {
     await screen.findByText("Provider A");
     openModelPoolsTab();
     fireEvent.click(
-      screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
+      screen.getByTestId(`ai-gateway-model-pool-name-${FALLBACK_POOL_ID}`),
     );
     return screen.findByTestId("model-pool-dialog");
   }
@@ -2478,7 +2478,7 @@ describe("ModelPoolDialog 有序回退模型（Step 3）", () => {
 
     // Reopening restores the saved order.
     fireEvent.click(
-      screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
+      screen.getByTestId(`ai-gateway-model-pool-name-${FALLBACK_POOL_ID}`),
     );
     await screen.findByTestId("model-pool-dialog");
     expectFallbackOrder(["local-a2", "local-b1"]);
@@ -2490,7 +2490,7 @@ describe("ModelPoolDialog 有序回退模型（Step 3）", () => {
 
     // Clearing the list persists an empty ordered list.
     fireEvent.click(
-      screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
+      screen.getByTestId(`ai-gateway-model-pool-name-${FALLBACK_POOL_ID}`),
     );
     await screen.findByTestId("model-pool-dialog");
     clearFallbackModels();
@@ -2619,7 +2619,7 @@ describe("ModelPoolDialog 有序回退模型（Step 3）", () => {
     expect(upsertCalls()[0].fallback_models).toEqual(["local-gone"]);
 
     fireEvent.click(
-      screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
+      screen.getByTestId(`ai-gateway-model-pool-name-${FALLBACK_POOL_ID}`),
     );
     await screen.findByTestId("model-pool-dialog");
     removeFallback("local-gone");

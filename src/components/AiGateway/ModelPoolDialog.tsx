@@ -266,6 +266,8 @@ type ModelPoolDialogProps = {
   busy?: boolean;
   /** Persist the pool; a rejected promise keeps the draft and surfaces its message. */
   onSave: (pool: GatewayModelPool) => Promise<void>;
+  /** Delete the pool; only shown on existing pools. */
+  onDelete?: (poolId: string) => Promise<boolean | void> | boolean | void;
 };
 
 function toDraft(candidate: GatewayModelPoolCandidate): DraftCandidate {
@@ -290,9 +292,20 @@ export function ModelPoolDialog({
   poolStatus = null,
   busy = false,
   onSave,
+  onDelete,
 }: ModelPoolDialogProps) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
+
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setConfirmingDelete(false);
+      setDeleting(false);
+    }
+  }, [open]);
 
   // Seeded once per mount; the console remounts this dialog per open/target so
   // an in-flight runtime refresh can never overwrite an unsaved draft.
@@ -1155,6 +1168,22 @@ export function ModelPoolDialog({
     }
   };
 
+  const handleDelete = async () => {
+    if (!pool || !onDelete || busy || saving || deleting) return;
+    setDeleting(true);
+    try {
+      const result = await onDelete(pool.id);
+      if (result !== false) {
+        onOpenChange(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : errorToMessage(err));
+    } finally {
+      setDeleting(false);
+      setConfirmingDelete(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -1991,25 +2020,67 @@ export function ModelPoolDialog({
           ) : null}
         </div>
 
-        <DialogFooter className="flex flex-row items-center justify-end gap-2 border-t px-6 py-4 shrink-0">
-          <button
-            type="button"
-            data-testid="model-pool-cancel"
-            onClick={() => onOpenChange(false)}
-            disabled={busy || saving}
-            className="inline-flex h-8 items-center rounded-lg border border-border/80 bg-background px-3 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
-          >
-            {t("aiGatewayModelPoolCancel", "Cancel")}
-          </button>
-          <button
-            type="button"
-            data-testid="model-pool-save"
-            onClick={() => void handleSave()}
-            disabled={busy || saving}
-            className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-xs transition hover:bg-primary/90 disabled:opacity-50"
-          >
-            {t("aiGatewayModelPoolSave", "Save")}
-          </button>
+        <DialogFooter className="flex flex-row items-center justify-between border-t px-6 py-4 shrink-0">
+          <div>
+            {pool && onDelete ? (
+              confirmingDelete ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-destructive">
+                    {t("aiGatewayModelPoolDeleteConfirm", "Delete model pool?")}
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="ai-gateway-model-pool-delete-confirm"
+                    onClick={() => void handleDelete()}
+                    disabled={busy || saving || deleting}
+                    className="inline-flex h-8 items-center rounded-lg bg-destructive px-2.5 text-xs font-medium text-destructive-foreground transition hover:bg-destructive/90 disabled:opacity-50"
+                  >
+                    {t("aiGatewayModelPoolDeleteConfirmButton", "Delete")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                    disabled={busy || saving || deleting}
+                    className="inline-flex h-8 items-center rounded-lg border border-border/80 bg-background px-2.5 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
+                  >
+                    {t("aiGatewayModelPoolDeleteCancel", "Cancel")}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  data-testid={`ai-gateway-model-pool-delete-${pool.id}`}
+                  onClick={() => setConfirmingDelete(true)}
+                  disabled={busy || saving || deleting}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/30 bg-background px-3 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>{t("aiGatewayModelPoolDelete", "Delete")}</span>
+                </button>
+              )
+            ) : null}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="model-pool-cancel"
+              onClick={() => onOpenChange(false)}
+              disabled={busy || saving || deleting}
+              className="inline-flex h-8 items-center rounded-lg border border-border/80 bg-background px-3 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
+            >
+              {t("aiGatewayModelPoolCancel", "Cancel")}
+            </button>
+            <button
+              type="button"
+              data-testid="model-pool-save"
+              onClick={() => void handleSave()}
+              disabled={busy || saving || deleting}
+              className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-xs transition hover:bg-primary/90 disabled:opacity-50"
+            >
+              {t("aiGatewayModelPoolSave", "Save")}
+            </button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

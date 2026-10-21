@@ -190,8 +190,8 @@ describe("ModelPoolListPanel", () => {
     fireEvent.click(enableSwitch);
     expect(onTogglePoolEnabled).toHaveBeenCalledWith("pool-1", false);
 
-    // Edit button
-    const editBtn = screen.getByTestId("ai-gateway-model-pool-edit-pool-1");
+    // Edit by clicking pool name
+    const editBtn = screen.getByTestId("ai-gateway-model-pool-name-pool-1");
     fireEvent.click(editBtn);
     expect(onEditPool).toHaveBeenCalledWith(mockPools[0]);
 

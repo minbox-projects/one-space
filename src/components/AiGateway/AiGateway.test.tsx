@@ -5226,7 +5226,7 @@ describe("AiGateway 模型池推理纵向切片（Step 4）", () => {
     );
     await user.click(
       within(card).getByTestId(
-        `ai-gateway-model-pool-edit-${String(payload.id)}`,
+        `ai-gateway-model-pool-name-${String(payload.id)}`,
       ),
     );
     await screen.findByTestId("model-pool-dialog");

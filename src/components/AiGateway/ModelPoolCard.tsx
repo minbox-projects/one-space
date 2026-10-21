@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowRightLeft,
   Check,
   Copy,
   Layers,
-  MoreVertical,
-  Pencil,
   ScrollText,
-  Trash2,
+  Server,
+  Sparkles,
+  Terminal,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ToastProvider";
@@ -31,7 +32,7 @@ type ModelPoolCardProps = {
   busy?: boolean;
   onToggleEnabled: (poolId: string, enabled: boolean) => void;
   onEdit: (pool: GatewayModelPool) => void;
-  onDelete: (poolId: string) => void;
+  onDelete?: (poolId: string) => void;
   onOpenLogs: (model: string) => void;
 };
 
@@ -42,14 +43,20 @@ export function ModelPoolCard({
   busy = false,
   onToggleEnabled,
   onEdit,
-  onDelete,
   onOpenLogs,
 }: ModelPoolCardProps) {
   const { t } = useTranslation();
   const { pushToast } = useToast();
   const [copied, setCopied] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = async () => {
     let ok = false;
@@ -83,7 +90,10 @@ export function ModelPoolCard({
         title: t("aiGatewayModelListCopySuccess", "Model ID copied to clipboard"),
         kind: "success",
       });
-      setTimeout(() => setCopied(false), 1500);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), 1500);
     } else {
       pushToast({
         title: t("aiGatewayCopyFailed", "Failed to copy to clipboard"),
@@ -94,6 +104,22 @@ export function ModelPoolCard({
 
   const candidateCount = pool.candidates.length;
   const sourceCount = new Set(pool.candidates.map((c) => c.provider_id)).size;
+
+  const distinctProviders = useMemo(() => {
+    const seen = new Set<string>();
+    const result: Array<{ id: string; name: string }> = [];
+    for (const c of pool.candidates) {
+      if (!seen.has(c.provider_id)) {
+        seen.add(c.provider_id);
+        const found = providers.find((p) => p.id === c.provider_id);
+        result.push({
+          id: c.provider_id,
+          name: found?.name?.trim() || c.provider_id,
+        });
+      }
+    }
+    return result;
+  }, [pool.candidates, providers]);
 
   // Ordered fallback models are reported separately and never counted as
   // regular candidates or as part of regular readiness.
@@ -137,7 +163,10 @@ export function ModelPoolCard({
       <div>
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 min-w-0 flex-1">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs mt-0.5">
+            <div
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs mt-0.5"
+              aria-hidden="true"
+            >
               <Layers className="h-4.5 w-4.5" />
             </div>
             <div className="min-w-0 flex-1">
@@ -145,19 +174,15 @@ export function ModelPoolCard({
                 type="button"
                 data-testid={`ai-gateway-model-pool-name-${pool.id}`}
                 onClick={() => onEdit(pool)}
-                className="cursor-pointer break-words text-left text-sm font-semibold text-foreground leading-5 transition hover:text-primary"
+                className="truncate text-left text-sm font-semibold text-foreground hover:text-primary transition-colors block w-full leading-5"
+                title={pool.name}
               >
                 {pool.name}
               </button>
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                <code
-                  data-testid={`ai-gateway-model-pool-model-${pool.id}`}
-                  onClick={() => void handleCopy()}
-                  title={t("aiGatewayModelPoolCopyAria", "Copy public model ID")}
-                  className="inline-flex max-w-full cursor-pointer items-center break-all rounded-md border border-border/60 bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-4 text-foreground transition hover:bg-muted"
-                >
-                  {pool.model}
-                </code>
+                <span className="inline-flex items-center rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium leading-4 text-primary">
+                  {t("aiGatewayModelPoolVirtualTag", "Model pool")}
+                </span>
                 <span
                   className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-4 ${
                     pool.enabled
@@ -173,7 +198,7 @@ export function ModelPoolCard({
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1 pt-0.5">
+          <div className="shrink-0 pt-0.5">
             <Switch
               data-testid={`ai-gateway-model-pool-enable-${pool.id}`}
               aria-label={t("aiGatewayModelPoolEnableAria", {
@@ -187,15 +212,64 @@ export function ModelPoolCard({
           </div>
         </div>
 
-        {/* Counts + actions */}
-        <div className="mt-2.5 flex items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        {/* 中间信息：公共模型 ID 与候选源及服务商统计 */}
+        <div className="mt-2.5 space-y-1.5">
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1 text-xs transition-colors hover:bg-muted/50">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <Terminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-70" />
+              <code
+                data-testid={`ai-gateway-model-pool-model-${pool.id}`}
+                onClick={() => void handleCopy()}
+                title={t("aiGatewayModelPoolCopyAria", "Copy public model ID")}
+                className="truncate cursor-pointer font-mono text-[11px] font-medium text-foreground hover:text-primary transition-colors block"
+              >
+                {pool.model}
+              </code>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button
+                type="button"
+                data-testid={`ai-gateway-model-pool-copy-${pool.id}`}
+                onClick={() => void handleCopy()}
+                aria-label={t("aiGatewayModelPoolCopyAria", "Copy public model ID")}
+                title={t("aiGatewayModelPoolCopyAria", "Copy public model ID")}
+                className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                {copied ? (
+                  <Check className="h-3.5 w-3.5 text-emerald-500" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+              </button>
+              <button
+                type="button"
+                data-testid={`ai-gateway-model-pool-log-${pool.id}`}
+                onClick={() => onOpenLogs(pool.model)}
+                aria-label={t("aiGatewayModelPoolLogAria", {
+                  model: pool.model,
+                  defaultValue: "View request logs for {{model}}",
+                })}
+                title={t("aiGatewayModelPoolLogAria", {
+                  model: pool.model,
+                  defaultValue: "View request logs for {{model}}",
+                })}
+                className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                <ScrollText className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 opacity-70" />
             <span>
               {t("aiGatewayModelPoolCandidatesCount", {
                 count: candidateCount,
                 defaultValue: "{{count}} candidate(s)",
               })}
             </span>
+            <span className="opacity-30">·</span>
+            <Server className="h-3.5 w-3.5 shrink-0 opacity-70" />
             <span>
               {t("aiGatewayModelPoolSourcesCount", {
                 count: sourceCount,
@@ -203,82 +277,24 @@ export function ModelPoolCard({
               })}
             </span>
           </div>
-          <div className="flex items-center gap-0.5">
-            <button
-              type="button"
-              data-testid={`ai-gateway-model-pool-copy-${pool.id}`}
-              onClick={() => void handleCopy()}
-              aria-label={t("aiGatewayModelPoolCopyAria", "Copy public model ID")}
-              title={t("aiGatewayModelPoolCopyAria", "Copy public model ID")}
-              className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+
+          {distinctProviders.length > 0 ? (
+            <div
+              data-testid={`ai-gateway-model-pool-providers-${pool.id}`}
+              className="flex flex-wrap items-center gap-1 pt-0.5"
             >
-              {copied ? (
-                <Check className="h-3.5 w-3.5 text-emerald-500" />
-              ) : (
-                <Copy className="h-3.5 w-3.5" />
-              )}
-            </button>
-            <button
-              type="button"
-              data-testid={`ai-gateway-model-pool-edit-${pool.id}`}
-              onClick={() => onEdit(pool)}
-              aria-label={t("aiGatewayModelPoolEditAria", {
-                name: pool.name,
-                defaultValue: "Edit model pool {{name}}",
-              })}
-              title={t("aiGatewayModelPoolEditAria", {
-                name: pool.name,
-                defaultValue: "Edit model pool {{name}}",
-              })}
-              className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              data-testid={`ai-gateway-model-pool-log-${pool.id}`}
-              onClick={() => onOpenLogs(pool.model)}
-              aria-label={t("aiGatewayModelPoolLogAria", {
-                model: pool.model,
-                defaultValue: "View request logs for {{model}}",
-              })}
-              title={t("aiGatewayModelPoolLogAria", {
-                model: pool.model,
-                defaultValue: "View request logs for {{model}}",
-              })}
-              className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-            >
-              <ScrollText className="h-3.5 w-3.5" />
-            </button>
-            <div className="relative">
-              <button
-                type="button"
-                data-testid={`ai-gateway-model-pool-menu-${pool.id}`}
-                aria-label={t("aiGatewayModelPoolMoreAria", "More actions")}
-                aria-expanded={menuOpen}
-                onClick={() => setMenuOpen((value) => !value)}
-                className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-              >
-                <MoreVertical className="h-3.5 w-3.5" />
-              </button>
-              {menuOpen ? (
-                <div className="absolute right-0 z-30 mt-1 min-w-[140px] rounded-lg border border-border/80 bg-popover p-1 shadow-lg">
-                  <button
-                    type="button"
-                    data-testid={`ai-gateway-model-pool-delete-${pool.id}`}
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setConfirmingDelete(true);
-                    }}
-                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs text-destructive transition hover:bg-destructive/10"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    <span>{t("aiGatewayModelPoolDelete", "Delete")}</span>
-                  </button>
-                </div>
-              ) : null}
+              {distinctProviders.map((item) => (
+                <span
+                  key={item.id}
+                  className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                  title={item.name}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary/60" />
+                  <span className="truncate max-w-[120px]">@{item.name}</span>
+                </span>
+              ))}
             </div>
-          </div>
+          ) : null}
         </div>
 
         {fallbackModels.length > 0 ? (
@@ -403,46 +419,51 @@ export function ModelPoolCard({
           </div>
         ) : null}
 
-        {/* Pool-configured reasoning capability; nothing is inferred from sources */}
+        {/* Pool-configured reasoning capability; compact inline badges */}
         {reasoningEfforts.length > 0 ||
         defaultEffortRaw !== "" ||
         coverageRow ? (
-          <div className="mt-2.5 space-y-1.5 rounded-lg border border-border/60 bg-muted/20 p-2">
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1 shrink-0 font-medium text-foreground/80">
+              <Sparkles className="h-3 w-3 text-primary/70 shrink-0" />
+              <span className="text-[11px]">{t("aiGatewayReasoningEfforts", "Reasoning")}:</span>
+            </div>
+
             {reasoningEfforts.length > 0 ? (
               <div
                 data-testid={`ai-gateway-model-pool-reasoning-support-${pool.id}`}
-                className="flex flex-wrap items-center gap-1"
+                className="flex items-center gap-1"
               >
-                <span className="text-[10px] font-medium text-muted-foreground">
-                  {t("aiGatewayReasoningEfforts", "Reasoning efforts")}:
-                </span>
                 {reasoningEfforts.map((effort) => (
                   <span
                     key={effort}
-                    className="inline-flex items-center rounded border border-border/80 bg-background px-1.5 py-0.2 font-mono text-[10px] font-medium text-foreground/85 leading-tight"
+                    className="inline-flex items-center rounded border border-border/70 bg-background px-1.5 py-0.2 font-mono text-[10px] font-medium text-foreground/85 leading-tight"
                   >
                     {effort}
                   </span>
                 ))}
               </div>
             ) : null}
+
             {defaultEffortRaw !== "" ? (
-              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                <span>{t("aiGatewayModelPoolReasoningDefaultLabel", "Reasoning default")}:</span>
+              <div className="flex items-center gap-1 text-[11px]">
+                <span className="opacity-30">·</span>
+                <span className="opacity-70">{t("aiGatewayModelPoolReasoningDefaultLabel", "Default")}:</span>
                 <span
                   data-testid={`ai-gateway-model-pool-reasoning-default-${pool.id}`}
-                  className="rounded bg-background px-1.5 py-0.2 font-mono font-medium text-foreground/85"
+                  className="font-mono text-[10px] font-medium text-foreground/85"
                 >
                   {defaultLabel}
                 </span>
               </div>
             ) : null}
+
             {coverageRow ? (
-              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                <span>{t("aiGatewayModelPoolReasoningCoverageLabel", "Static coverage")}:</span>
+              <div className="flex items-center gap-1 text-[11px]">
+                <span className="opacity-30">·</span>
                 <span
                   data-testid={`ai-gateway-model-pool-reasoning-coverage-${pool.id}`}
-                  className="font-medium text-foreground/85"
+                  className="font-medium text-foreground/85 text-[10px]"
                 >
                   <span className="font-mono">{coverageRow.effort}</span>{" "}
                   {t("aiGatewayModelPoolReasoningCoverageValue", {
@@ -453,41 +474,6 @@ export function ModelPoolCard({
                 </span>
               </div>
             ) : null}
-          </div>
-        ) : null}
-
-        {/* Delete confirmation */}
-        {confirmingDelete ? (
-          <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/5 p-2.5">
-            <div className="text-xs font-medium text-foreground">
-              {t(
-                "aiGatewayModelPoolDeleteConfirmBody",
-                'Delete model pool "{{name}}"? This cannot be undone.',
-                { name: pool.name },
-              )}
-            </div>
-            <div className="mt-2 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmingDelete(false)}
-                disabled={busy}
-                className="inline-flex h-7 items-center rounded-md border border-border/80 bg-background px-2.5 text-[11px] font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
-              >
-                {t("aiGatewayModelPoolDeleteCancel", "Cancel")}
-              </button>
-              <button
-                type="button"
-                data-testid="ai-gateway-model-pool-delete-confirm"
-                onClick={() => {
-                  setConfirmingDelete(false);
-                  onDelete(pool.id);
-                }}
-                disabled={busy}
-                className="inline-flex h-7 items-center rounded-md bg-destructive px-2.5 text-[11px] font-medium text-destructive-foreground transition hover:bg-destructive/90 disabled:opacity-50"
-              >
-                {t("aiGatewayModelPoolDeleteConfirmButton", "Delete")}
-              </button>
-            </div>
           </div>
         ) : null}
       </div>

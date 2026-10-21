@@ -204,9 +204,9 @@ describe("ModelPoolCard", () => {
     expect(within(card).getByText("free-model")).toBeInTheDocument();
   });
 
-  it("exposes copy, log, edit and more-menu controls", async () => {
+  it("exposes copy, log and enable controls, while edit is triggered by clicking name", async () => {
     const card = await renderConsole();
-    for (const suffix of ["copy", "log", "edit", "menu"]) {
+    for (const suffix of ["copy", "log", "name"]) {
       expect(
         within(card).getByTestId(`ai-gateway-model-pool-${suffix}-${POOL_ID}`),
       ).toBeInTheDocument();
@@ -255,6 +255,15 @@ describe("ModelPoolCard", () => {
     // Candidate counts and source counts are still summarized
     expect(within(card).getByText(/candidate/i)).toBeInTheDocument();
     expect(within(card).getByText(/source/i)).toBeInTheDocument();
+  });
+
+  it("renders distinct source provider pill tags when configured", async () => {
+    const card = await renderConsole();
+    const providersContainer = within(card).getByTestId(
+      `ai-gateway-model-pool-providers-${POOL_ID}`,
+    );
+    expect(providersContainer).toBeInTheDocument();
+    expect(within(providersContainer).getByText("@Provider A")).toBeInTheDocument();
   });
 
   it("clicking the model pool name opens the edit dialog", async () => {
@@ -308,10 +317,10 @@ describe("ModelPoolCard", () => {
     );
   });
 
-  it("edit reopens the saved name, public id and weights", async () => {
+  it("clicking name reopens the saved name, public id and weights in edit dialog", async () => {
     const card = await renderConsole();
     fireEvent.click(
-      within(card).getByTestId(`ai-gateway-model-pool-edit-${POOL_ID}`),
+      within(card).getByTestId(`ai-gateway-model-pool-name-${POOL_ID}`),
     );
 
     const dialog = await screen.findByTestId("model-pool-dialog");
@@ -322,14 +331,15 @@ describe("ModelPoolCard", () => {
     expect(screen.getByRole("spinbutton", { name: /local-a2/i })).toHaveValue(1);
   });
 
-  it("deletes through the more-menu confirm and touches no ordinary provider", async () => {
+  it("deletes through the edit dialog confirm and touches no ordinary provider", async () => {
     const card = await renderConsole();
     fireEvent.click(
-      within(card).getByTestId(`ai-gateway-model-pool-menu-${POOL_ID}`),
+      within(card).getByTestId(`ai-gateway-model-pool-name-${POOL_ID}`),
     );
-    fireEvent.click(
-      screen.getByTestId(`ai-gateway-model-pool-delete-${POOL_ID}`),
+    const deleteBtn = await screen.findByTestId(
+      `ai-gateway-model-pool-delete-${POOL_ID}`,
     );
+    fireEvent.click(deleteBtn);
     fireEvent.click(screen.getByTestId("ai-gateway-model-pool-delete-confirm"));
 
     await waitFor(() =>
