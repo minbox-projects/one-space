@@ -26,16 +26,16 @@ struct CapturingVerifier {
 }
 
 impl CapturingVerifier {
-    fn new(captured: Arc<Mutex<CapturedTlsData>>) -> Self {
+    fn new(captured: Arc<Mutex<CapturedTlsData>>, provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let default_verifier =
-            rustls::client::WebPkiServerVerifier::builder(Arc::new(root_store))
+            rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(root_store), provider.clone())
                 .build()
                 .unwrap_or_else(|_| {
                     // Fallback to empty if builder fails
                     let empty_store = rustls::RootCertStore::empty();
-                    rustls::client::WebPkiServerVerifier::builder(Arc::new(empty_store))
+                    rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(empty_store), provider)
                         .build()
                         .expect("fallback verifier")
                 });
@@ -141,11 +141,16 @@ pub async fn inspect_ssl(domain: &str, port: u16) -> Result<SslCheckResult, Stri
     .map_err(|_| format!("Connection timeout to {}:{}", clean_domain, port))?
     .map_err(|e| format!("TCP connection failed to {}:{}: {}", clean_domain, port, e))?;
 
-    // 3. Build TLS client config with CapturingVerifier
-    let captured = Arc::new(Mutex::new(CapturedTlsData::default()));
-    let verifier = Arc::new(CapturingVerifier::new(captured.clone()));
+    // 3. Build TLS client config with explicit ring provider and CapturingVerifier
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
 
-    let client_config = ClientConfig::builder()
+    let captured = Arc::new(Mutex::new(CapturedTlsData::default()));
+    let verifier = Arc::new(CapturingVerifier::new(captured.clone(), provider.clone()));
+
+    let client_config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("TLS protocol configuration error: {}", e))?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();

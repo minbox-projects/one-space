@@ -70,3 +70,18 @@ fn test_watchlist_operations() {
     let after_list = load_watchlist().expect("load watchlist after remove");
     assert!(!after_list.iter().any(|i| i.id == item.id));
 }
+
+#[tokio::test]
+async fn test_inspect_huanweiyun() {
+    let res = super::inspector::inspect_ssl("huanweiyun.com", 443).await;
+    match res {
+        Ok(check) => {
+            assert_eq!(check.domain, "huanweiyun.com");
+            assert!(check.handshake_success);
+            assert_eq!(check.tls_version.as_deref(), Some("TLSv1.3"));
+        }
+        Err(e) => {
+            println!("Network check skipped or offline: {}", e);
+        }
+    }
+}

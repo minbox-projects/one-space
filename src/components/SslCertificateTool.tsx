@@ -8,6 +8,7 @@ import {
   Download,
   FileCode2,
   Globe,
+  History,
   Layers,
   Loader2,
   Plus,
@@ -40,6 +41,18 @@ import {
 } from "@/lib/sslCertificate";
 
 type ActiveTab = "check" | "issue";
+
+const SSL_CHECK_HISTORY_KEY = "onespace:ssl-check-history";
+
+function sanitizeDomainInput(domain: string): string {
+  return domain
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .split("/")[0]
+    .split(":")[0]
+    .trim()
+    .toLowerCase();
+}
 
 export function SslCertificateTool() {
   const { pushToast } = useToast();
@@ -106,20 +119,56 @@ export function SslCertificateTool() {
     loadIssuedData();
   }, [loadWatchlistData, loadIssuedData]);
 
+  const [historyDomains, setHistoryDomains] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem(SSL_CHECK_HISTORY_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const recordHistoryDomain = (rawDomain: string) => {
+    const clean = sanitizeDomainInput(rawDomain);
+    if (!clean) return;
+    setHistoryDomains((prev) => {
+      const next = [clean, ...prev.filter((d) => d.toLowerCase() !== clean)].slice(0, 10);
+      try {
+        localStorage.setItem(SSL_CHECK_HISTORY_KEY, JSON.stringify(next));
+      } catch (err) {
+        console.error("Failed to save ssl check history", err);
+      }
+      return next;
+    });
+  };
+
+  const handleClearHistory = () => {
+    try {
+      localStorage.removeItem(SSL_CHECK_HISTORY_KEY);
+    } catch (err) {
+      console.error("Failed to clear ssl check history", err);
+    }
+    setHistoryDomains([]);
+  };
+
   // Handle immediate check
   const handleCheck = async (domainToTest?: string) => {
-    const domain = (domainToTest || checkDomain).trim();
-    if (!domain) {
+    const rawDomain = (domainToTest || checkDomain).trim();
+    if (!rawDomain) {
       pushToast({ title: "请输入需要检测的域名", kind: "warning" });
       return;
     }
+    const clean = sanitizeDomainInput(rawDomain);
+    recordHistoryDomain(clean);
+    setCheckDomain(clean);
+
     const port = parseInt(checkPort, 10) || 443;
     setIsChecking(true);
     setCheckError(null);
     setCheckResult(null);
 
     try {
-      const res = await sslCheckCertificate(domain, port);
+      const res = await sslCheckCertificate(clean, port);
       setCheckResult(res);
       pushToast({ title: `TLS 握手检测成功: ${res.domain}`, kind: "success" });
     } catch (e: any) {
@@ -402,23 +451,61 @@ export function SslCertificateTool() {
                 </button>
               </form>
 
-              {/* 快捷示例 */}
-              <div className="mt-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                <span>快速试用:</span>
-                {["github.com", "cloudflare.com", "apple.com"].map((d) => (
+              {/* 最近检测历史域名列表 */}
+              {historyDomains.length > 0 ? (
+                <div
+                  data-testid="ssl-check-history-list"
+                  className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"
+                >
+                  <span className="flex items-center gap-1 font-medium text-slate-600 dark:text-slate-300">
+                    <History className="h-3.5 w-3.5 text-slate-400" />
+                    最近检测:
+                  </span>
+                  {historyDomains.map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      data-testid={`ssl-history-item-${d}`}
+                      onClick={() => {
+                        setCheckDomain(d);
+                        handleCheck(d);
+                      }}
+                      className="inline-flex items-center rounded-md border border-slate-200/80 bg-slate-50 px-2 py-0.5 text-xs font-mono text-slate-700 transition hover:border-emerald-500/50 hover:bg-emerald-50 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-emerald-500/50 dark:hover:bg-emerald-950/40 dark:hover:text-emerald-300"
+                      title={`再次检测 ${d}`}
+                    >
+                      {d}
+                    </button>
+                  ))}
                   <button
-                    key={d}
                     type="button"
-                    onClick={() => {
-                      setCheckDomain(d);
-                      handleCheck(d);
-                    }}
-                    className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 hover:bg-slate-100 hover:text-emerald-600 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+                    data-testid="ssl-history-clear"
+                    onClick={handleClearHistory}
+                    title="清空检测历史"
+                    className="ml-1 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] text-slate-400 transition hover:bg-slate-100 hover:text-rose-500 dark:hover:bg-slate-800 dark:hover:text-rose-400"
                   >
-                    {d}
+                    <Trash2 className="h-3 w-3" />
+                    清空
                   </button>
-                ))}
-              </div>
+                </div>
+              ) : (
+                /* 快捷示例 */
+                <div className="mt-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  <span>快速试用:</span>
+                  {["github.com", "cloudflare.com", "apple.com"].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        setCheckDomain(d);
+                        handleCheck(d);
+                      }}
+                      className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 hover:bg-slate-100 hover:text-emerald-600 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+                    >
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* 检测结果展现 */}

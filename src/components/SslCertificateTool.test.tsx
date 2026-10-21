@@ -137,4 +137,37 @@ describe("SslCertificateTool", () => {
     expect(screen.getByText("查看与复制配置")).toBeInTheDocument();
     expect(screen.getByText("导出 Nginx 文件包")).toBeInTheDocument();
   });
+
+  it("records check history, allows re-testing by clicking history pill, and clears history", async () => {
+    const user = userEvent.setup();
+    window.localStorage.clear();
+    await act(async () => {
+      renderWithProviders(<SslCertificateTool />);
+    });
+
+    const input = screen.getByPlaceholderText(/输入域名/);
+    await user.type(input, "huanweiyun.com");
+    const checkBtn = screen.getByRole("button", { name: "立即检测" });
+    await user.click(checkBtn);
+
+    // Verify history pill is displayed
+    expect(await screen.findByTestId("ssl-history-item-huanweiyun.com")).toBeInTheDocument();
+
+    // Type a second domain and check
+    await user.clear(input);
+    await user.type(input, "saas.legutech.com");
+    await user.click(checkBtn);
+
+    expect(await screen.findByTestId("ssl-history-item-saas.legutech.com")).toBeInTheDocument();
+
+    // Click the first history pill to re-test
+    const huanweiPill = screen.getByTestId("ssl-history-item-huanweiyun.com");
+    await user.click(huanweiPill);
+    expect(input).toHaveValue("huanweiyun.com");
+
+    // Clear history
+    const clearBtn = screen.getByTestId("ssl-history-clear");
+    await user.click(clearBtn);
+    expect(screen.queryByTestId("ssl-check-history-list")).not.toBeInTheDocument();
+  });
 });
