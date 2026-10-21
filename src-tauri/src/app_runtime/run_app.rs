@@ -120,6 +120,7 @@ pub fn run() {
             // an immediate startup scan, independent of WebViews, the listener
             // and the template-refresh preference.
             ai_gateway::start_daily_reset_scanner(app.handle().clone());
+            ssl_certificate::start_ssl_scheduler(app.handle().clone());
             ssh_tunnels::start_system_wake_observer();
             ssh_tunnels::start_sleep_resume_monitor();
             ssh_tunnels::start_tunnel_watchdog(app.handle().clone());
@@ -224,6 +225,8 @@ pub fn run() {
             sftp::sftp_start_log_tail,
             sftp::sftp_stop_log_tail,
             ssl_certificate::ssl_check_certificate,
+            ssl_certificate::ssl_get_config,
+            ssl_certificate::ssl_save_config,
             ssl_certificate::ssl_watchlist_list,
             ssl_certificate::ssl_watchlist_add,
             ssl_certificate::ssl_watchlist_remove,

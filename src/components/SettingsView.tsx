@@ -40,6 +40,7 @@ import {
   Newspaper,
   Route,
   Network,
+  Clock,
 } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "./ThemeProvider";
@@ -70,6 +71,11 @@ import {
   aiGatewayUsageRetentionSave,
   notifyTemplateAutoRefreshIntervalChanged,
 } from "@/lib/aiGateway";
+import {
+  sslGetConfig,
+  sslSaveConfig,
+  type SslConfig,
+} from "@/lib/sslCertificate";
 
 interface SyncPolicy {
   providers: boolean;
@@ -323,6 +329,7 @@ type SettingsTab =
   | "proxy"
   | "protocol-router"
   | "ai-gateway"
+  | "ssl-certificate"
   | "shortcuts"
   | "ai"
   | "appearance"
@@ -338,6 +345,7 @@ const SETTINGS_TABS: SettingsTab[] = [
   "proxy",
   "protocol-router",
   "ai-gateway",
+  "ssl-certificate",
   "shortcuts",
   "ai",
   "appearance",
@@ -612,6 +620,18 @@ export function SettingsView({
     useState("60");
   const [savedTemplateAutoRefreshMinutes, setSavedTemplateAutoRefreshMinutes] =
     useState(60);
+  const [sslConfig, setSslConfig] = useState<SslConfig>({
+    autoCheckEnabled: true,
+    checkTimes: ["09:00"],
+    alertDaysThreshold: 30,
+  });
+  const [savedSslConfig, setSavedSslConfig] = useState<SslConfig>({
+    autoCheckEnabled: true,
+    checkTimes: ["09:00"],
+    alertDaysThreshold: 30,
+  });
+  const [newCheckTimeInput, setNewCheckTimeInput] = useState("09:00");
+  const [sslAlertDaysInput, setSslAlertDaysInput] = useState("30");
   const [newSkillSource, setNewSkillSource] = useState<SkillSourceConfig>({
     id: "",
     name: "",
@@ -675,6 +695,7 @@ export function SettingsView({
     loadConfig();
     void loadProtocolRouter();
     void loadAiGateway();
+    void loadSslConfig();
   }, []);
 
   useEffect(() => {
@@ -961,6 +982,19 @@ export function SettingsView({
       const normalizedMinutes = Number.isFinite(minutes) ? Number(minutes) : 60;
       setSavedTemplateAutoRefreshMinutes(normalizedMinutes);
       setTemplateAutoRefreshInput(String(normalizedMinutes));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const loadSslConfig = async () => {
+    try {
+      const cfg = await sslGetConfig();
+      if (cfg) {
+        setSslConfig(cfg);
+        setSavedSslConfig(cfg);
+        setSslAlertDaysInput(String(cfg.alertDaysThreshold || 30));
+      }
     } catch (e) {
       console.error(e);
     }
@@ -1726,6 +1760,21 @@ export function SettingsView({
         next[tab] = retentionDirty || refreshDirty;
         return;
       }
+      if (tab === "ssl-certificate") {
+        const thresholdNum = parseInt(sslAlertDaysInput.trim(), 10);
+        const savedThreshold = savedSslConfig?.alertDaysThreshold ?? 30;
+        const thresholdDirty =
+          isNaN(thresholdNum)
+            ? sslAlertDaysInput.trim() !== String(savedThreshold)
+            : thresholdNum !== savedThreshold;
+        const configDirty =
+          sslConfig.autoCheckEnabled !==
+            (savedSslConfig?.autoCheckEnabled ?? true) ||
+          JSON.stringify(sslConfig.checkTimes) !==
+            JSON.stringify(savedSslConfig?.checkTimes ?? ["09:00"]);
+        next[tab] = thresholdDirty || configDirty;
+        return;
+      }
       if (tab === "news") {
         const current = getTabSnapshot(tab, config, proxyConfig);
         const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig);
@@ -1758,6 +1807,9 @@ export function SettingsView({
     savedUsageRetentionDays,
     templateAutoRefreshInput,
     savedTemplateAutoRefreshMinutes,
+    sslConfig,
+    savedSslConfig,
+    sslAlertDaysInput,
   ]);
 
   const currentTabDirty = tabDirtyMap[activeTab];
@@ -1891,6 +1943,68 @@ export function SettingsView({
         setMessage({
           type: "success",
           text: t("aiGatewaySettingsSaved", "AI Gateway settings saved."),
+        });
+        setTimeout(() => {
+          setMessage({ type: "", text: "" });
+        }, 3000);
+        return;
+      }
+
+      if (activeTab === "ssl-certificate") {
+        const parsedThreshold = parseInt(sslAlertDaysInput.trim(), 10);
+        if (
+          isNaN(parsedThreshold) ||
+          parsedThreshold < 1 ||
+          parsedThreshold > 365
+        ) {
+          setMessage({
+            type: "error",
+            text: t(
+              "sslAlertThresholdInvalid",
+              "告警阈值必须是 1 到 365 之间的整数",
+            ),
+          });
+          return;
+        }
+        const payloadToSave: SslConfig = {
+          ...sslConfig,
+          alertDaysThreshold: parsedThreshold,
+        };
+        const saved = await runUserAction(
+          actionContext,
+          {
+            source: "settings",
+            category: "ssl-certificate",
+            action: "save-ssl-config",
+            target: { tab: "settings", section: "ssl-certificate" },
+            dedupeKey: "settings:ssl-certificate:save",
+            confirm: {
+              message: t(
+                "confirmSaveSslConfig",
+                "Save changes to SSL Certificate settings?",
+              ),
+              title: t("confirmSaveSslConfigTitle", "Save SSL Certificate settings"),
+              okLabel: t("save", "Save"),
+              cancelLabel: t("cancel", "Cancel"),
+              kind: "warning",
+            },
+            success: {
+              title: t("settingsSectionSavedTitle", "Settings saved"),
+              summary: t("currentSectionSavedSuccess", "Current section saved."),
+            },
+            error: {
+              title: t("settingsSaveFailedTitle", "Failed to save settings"),
+            },
+          },
+          async () => sslSaveConfig(payloadToSave),
+        );
+        if (saved === null) return;
+        setSslConfig(saved);
+        setSavedSslConfig(saved);
+        setSslAlertDaysInput(String(saved.alertDaysThreshold));
+        setMessage({
+          type: "success",
+          text: t("currentSectionSavedSuccess", "Current section saved."),
         });
         setTimeout(() => {
           setMessage({ type: "", text: "" });
@@ -2113,6 +2227,35 @@ export function SettingsView({
         );
         if (!confirmed) return;
         await loadAiGateway();
+        setMessage({
+          type: "success",
+          text: t(
+            "currentSectionResetSuccess",
+            "Current section has been reset.",
+          ),
+        });
+        setTimeout(() => {
+          setMessage({ type: "", text: "" });
+        }, 3000);
+        return;
+      }
+
+      if (activeTab === "ssl-certificate") {
+        const confirmed = await confirmDialog(
+          t(
+            "confirmResetSettingsSection",
+            "Discard unsaved changes in this settings section and reload the saved values?",
+          ),
+          {
+            title: t("confirmResetSettingsSectionTitle", "Reset settings"),
+            okLabel: t("reset", "Reset"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+        );
+        if (!confirmed) return;
+        await loadSslConfig();
+        setSslAlertDaysInput(String(savedSslConfig.alertDaysThreshold));
         setMessage({
           type: "success",
           text: t(
@@ -2398,6 +2541,11 @@ export function SettingsView({
       id: "ai-gateway",
       name: t("aiGatewaySettings", "AI Gateway"),
       icon: Network,
+    },
+    {
+      id: "ssl-certificate",
+      name: t("sslCertificate", "SSL Certificate"),
+      icon: ShieldCheck,
     },
     { id: "shortcuts", name: t("shortcuts", "Shortcuts"), icon: KeyboardIcon },
     { id: "ai", name: t("aiSessions", "AI Terminal"), icon: Terminal },
@@ -5898,6 +6046,177 @@ export function SettingsView({
                           className="w-full rounded-xl border bg-background px-4 py-2.5 text-sm"
                         />
                       </label>
+                    </div>
+                  </section>
+                </div>
+              )}
+
+              {activeTab === "ssl-certificate" && (
+                <div className="space-y-6">
+                  <section className="space-y-4">
+                    <div className="flex flex-col gap-1">
+                      <h2 className="text-lg font-semibold">
+                        {t("sslCertificateSettingsTitle", "SSL 证书巡检与告警设置")}
+                      </h2>
+                      <p className="text-sm text-muted-foreground">
+                        {t(
+                          "sslCertificateSettingsDesc",
+                          "配置域名 SSL 证书的每日自动巡检时间节点与临期告警阈值。",
+                        )}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border bg-card p-6 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="text-sm font-semibold text-foreground">
+                            {t("sslAutoCheckEnabled", "启用每日自动巡检")}
+                          </h4>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {t(
+                              "sslAutoCheckEnabledDesc",
+                              "开启后，系统将在设定的时间节点自动对关注列表中的域名进行 TLS 握手探测。",
+                            )}
+                          </p>
+                        </div>
+                        <Switch
+                          checked={sslConfig.autoCheckEnabled}
+                          onCheckedChange={(checked) =>
+                            setSslConfig((prev) => ({
+                              ...prev,
+                              autoCheckEnabled: checked,
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border bg-card p-6 shadow-sm space-y-4">
+                      <div>
+                        <h4 className="text-sm font-semibold text-foreground">
+                          {t("sslCheckTimesTitle", "每日自动巡检时间节点")}
+                        </h4>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {t(
+                            "sslCheckTimesDesc",
+                            "支持配置多个 24 小时制“时:分”时间节点（例如 09:00、18:00）。",
+                          )}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {sslConfig.checkTimes.map((timeStr) => (
+                          <span
+                            key={timeStr}
+                            className="inline-flex items-center gap-1.5 rounded-lg border bg-muted/60 px-3 py-1 text-xs font-mono font-medium text-foreground"
+                          >
+                            <Clock className="w-3.5 h-3.5 text-muted-foreground" />
+                            {timeStr}
+                            {sslConfig.checkTimes.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSslConfig((prev) => ({
+                                    ...prev,
+                                    checkTimes: prev.checkTimes.filter(
+                                      (t) => t !== timeStr,
+                                    ),
+                                  }))
+                                }
+                                className="ml-1 rounded p-0.5 hover:bg-muted text-muted-foreground hover:text-rose-500 transition-colors"
+                                title={t("delete", "删除")}
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2">
+                        <input
+                          type="time"
+                          value={newCheckTimeInput}
+                          onChange={(e) => setNewCheckTimeInput(e.target.value)}
+                          className="rounded-lg border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const trimmed = newCheckTimeInput.trim();
+                            if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(trimmed)) {
+                              pushToast({
+                                title: t(
+                                  "invalidTimeFormat",
+                                  "时间格式无效，请输入 HH:mm 格式",
+                                ),
+                                kind: "error",
+                              });
+                              return;
+                            }
+                            if (sslConfig.checkTimes.includes(trimmed)) {
+                              pushToast({
+                                title: t(
+                                  "duplicateTimeNode",
+                                  "该时间节点已存在",
+                                ),
+                                kind: "info",
+                              });
+                              return;
+                            }
+                            const updated = [
+                              ...sslConfig.checkTimes,
+                              trimmed,
+                            ].sort();
+                            setSslConfig((prev) => ({
+                              ...prev,
+                              checkTimes: updated,
+                            }));
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          {t("addCheckTime", "添加时间节点")}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border bg-card p-6 shadow-sm space-y-4">
+                      <div>
+                        <h4 className="text-sm font-semibold text-foreground">
+                          {t("sslAlertThresholdTitle", "临期告警阈值（天）")}
+                        </h4>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {t(
+                            "sslAlertThresholdDesc",
+                            "当证书剩余天数小于等于该天数时，自动标记为临期并生成消息中心通知。",
+                          )}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          min="1"
+                          max="365"
+                          value={sslAlertDaysInput}
+                          onChange={(e) => setSslAlertDaysInput(e.target.value)}
+                          className="w-32 rounded-lg border bg-background px-3 py-1.5 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+                        />
+                        <span className="text-xs text-muted-foreground">天</span>
+                      </div>
+
+                      <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 p-3.5 text-xs text-amber-700 dark:text-amber-400">
+                        <p className="font-semibold">
+                          {t("sslDailyReminderNotice", "⚡ 每日提醒机制说明：")}
+                        </p>
+                        <p className="mt-1 text-[11px] leading-relaxed">
+                          {t(
+                            "sslDailyReminderNoticeDetail",
+                            "当证书剩余天数 <= 7 天且未续期时，系统每天都会在自动巡检后提醒并加入消息中心，直到证书续期恢复正常。",
+                          )}
+                        </p>
+                      </div>
                     </div>
                   </section>
                 </div>

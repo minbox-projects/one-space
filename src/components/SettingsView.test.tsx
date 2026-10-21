@@ -172,6 +172,16 @@ describe("SettingsView", () => {
       if (command === "update_shortcuts") {
         return null;
       }
+      if (command === "ssl_get_config") {
+        return {
+          autoCheckEnabled: true,
+          checkTimes: ["09:00"],
+          alertDaysThreshold: 30,
+        };
+      }
+      if (command === "ssl_save_config") {
+        return (args as { config: unknown }).config;
+      }
       throw new Error(`Unhandled command: ${command}`);
     });
   });
@@ -768,5 +778,47 @@ describe("SettingsView", () => {
       }
     ).config.sync_policy;
     expect(Object.keys(savedSyncPolicy)).not.toContain("workflow_presets");
+  });
+
+  it("renders SSL certificate settings and handles config update", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <SettingsView initialTab="ssl-certificate" onBack={() => {}} />,
+    );
+
+    expect(
+      await screen.findByText(
+        /SSL 证书巡检与告警设置|SSL Certificate Inspection & Alert Settings/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("09:00")).toBeInTheDocument();
+
+    const thresholdInput = screen.getByDisplayValue("30");
+    await user.clear(thresholdInput);
+    await user.type(thresholdInput, "15");
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+      ).toBeEnabled();
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+
+    const confirmButtons = screen.getAllByRole("button", { name: /Save|保存/ });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "ssl_save_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            alertDaysThreshold: 15,
+          }),
+        }),
+      );
+    });
   });
 });

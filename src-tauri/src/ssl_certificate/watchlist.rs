@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::{Local, NaiveDate};
 use uuid::Uuid;
 
+use super::config::load_config;
 use super::inspector::inspect_ssl;
 use super::types::{SslStatus, SslWatchItem, SslWatchItemInput};
 
@@ -51,11 +53,18 @@ pub fn add_watch_item(input: SslWatchItemInput) -> Result<SslWatchItem, String> 
         return Err("Domain cannot be empty".to_string());
     }
 
+    let config = load_config().unwrap_or_default();
+    let threshold = if input.alert_days_threshold > 0 {
+        input.alert_days_threshold
+    } else {
+        config.alert_days_threshold
+    };
+
     if let Some(existing) = items.iter_mut().find(|it| it.domain == clean_domain && it.port == input.port) {
         if let Some(alias) = input.alias {
             existing.alias = Some(alias);
         }
-        existing.alert_days_threshold = input.alert_days_threshold;
+        existing.alert_days_threshold = threshold;
         existing.enabled = true;
         let updated = existing.clone();
         save_watchlist(&items)?;
@@ -73,12 +82,13 @@ pub fn add_watch_item(input: SslWatchItemInput) -> Result<SslWatchItem, String> 
         port: input.port,
         alias: input.alias,
         enabled: true,
-        alert_days_threshold: input.alert_days_threshold,
+        alert_days_threshold: threshold,
         last_check_at: None,
         last_days_remaining: None,
         last_status: None,
         last_error: None,
         issuer_cn: None,
+        last_notified_date: None,
         created_at: now_ts,
     };
 
@@ -101,6 +111,12 @@ pub async fn check_watch_item(item: &mut SslWatchItem) {
 
     item.last_check_at = Some(now_ts);
 
+    let config = load_config().unwrap_or_default();
+    let threshold = config.alert_days_threshold;
+    item.alert_days_threshold = threshold;
+
+    let today_date = Local::now().format("%Y-%m-%d").to_string();
+
     match inspect_ssl(&item.domain, item.port).await {
         Ok(res) => {
             item.last_days_remaining = Some(res.days_remaining);
@@ -109,7 +125,7 @@ pub async fn check_watch_item(item: &mut SslWatchItem) {
 
             let status = if res.is_expired {
                 SslStatus::Expired
-            } else if res.days_remaining <= item.alert_days_threshold as i64 {
+            } else if res.days_remaining <= threshold as i64 {
                 SslStatus::ExpiringSoon
             } else if !res.is_valid {
                 SslStatus::Error
@@ -118,9 +134,36 @@ pub async fn check_watch_item(item: &mut SslWatchItem) {
             };
             item.last_status = Some(status);
 
-            // Trigger notification if expiring soon or expired
-            if item.enabled && (res.is_expired || res.days_remaining <= item.alert_days_threshold as i64) {
-                notify_expiration(item, res.days_remaining, res.is_expired);
+            if item.enabled {
+                if res.is_expired || res.days_remaining <= 7 {
+                    // 当 <= 7 天或已过期时，如果未续期，每天都需要提醒并加入消息中心
+                    if item.last_notified_date.as_deref() != Some(&today_date) {
+                        notify_expiration(item, res.days_remaining, res.is_expired, &today_date);
+                        item.last_notified_date = Some(today_date);
+                    }
+                } else if res.days_remaining <= threshold as i64 {
+                    // 7 < days_remaining <= threshold：首次告警或每隔至少 3 天提醒一次
+                    let should_notify = match &item.last_notified_date {
+                        None => true,
+                        Some(last_date) => {
+                            if let (Ok(last_d), Ok(curr_d)) = (
+                                NaiveDate::parse_from_str(last_date, "%Y-%m-%d"),
+                                NaiveDate::parse_from_str(&today_date, "%Y-%m-%d"),
+                            ) {
+                                (curr_d - last_d).num_days() >= 3
+                            } else {
+                                true
+                            }
+                        }
+                    };
+                    if should_notify {
+                        notify_expiration(item, res.days_remaining, res.is_expired, &today_date);
+                        item.last_notified_date = Some(today_date);
+                    }
+                } else {
+                    // 已续期且 > threshold，清空上次提醒日期标记
+                    item.last_notified_date = None;
+                }
             }
         }
         Err(e) => {
@@ -139,7 +182,7 @@ pub async fn check_all_watchlist() -> Result<Vec<SslWatchItem>, String> {
     Ok(items)
 }
 
-fn notify_expiration(item: &SslWatchItem, days_remaining: i64, is_expired: bool) {
+fn notify_expiration(item: &SslWatchItem, days_remaining: i64, is_expired: bool, today_date: &str) {
     let severity = if is_expired || days_remaining <= 7 {
         "error"
     } else {
@@ -148,6 +191,8 @@ fn notify_expiration(item: &SslWatchItem, days_remaining: i64, is_expired: bool)
 
     let title = if is_expired {
         format!("SSL 证书已过期: {}", item.domain)
+    } else if days_remaining <= 7 {
+        format!("SSL 证书紧急临期（仅剩 {} 天）: {}", days_remaining, item.domain)
     } else {
         format!("SSL 证书即将到期: {}", item.domain)
     };
@@ -157,19 +202,28 @@ fn notify_expiration(item: &SslWatchItem, days_remaining: i64, is_expired: bool)
             "域名 {}:{} 的 SSL 证书已过期，请立即续签并部署！",
             item.domain, item.port
         )
+    } else if days_remaining <= 7 {
+        format!(
+            "域名 {}:{} 的 SSL 证书仅剩 {} 天到期且尚未续签，请尽快处理！",
+            item.domain, item.port, days_remaining
+        )
     } else {
         format!(
-            "域名 {}:{} 的 SSL 证书仅剩 {} 天到期，请及时续签。",
+            "域名 {}:{} 的 SSL 证书仅剩 {} 天到期，请注意及时续签。",
             item.domain, item.port, days_remaining
         )
     };
 
-    let dedupe_key = format!(
-        "ssl_expire:{}:{}:{}",
-        item.domain,
-        item.port,
-        if is_expired { 0 } else { days_remaining / 3 }
-    );
+    let dedupe_key = if is_expired || days_remaining <= 7 {
+        format!("ssl_expire:{}:{}:{}", item.domain, item.port, today_date)
+    } else {
+        format!(
+            "ssl_expire:{}:{}:{}",
+            item.domain,
+            item.port,
+            days_remaining / 3
+        )
+    };
 
     let input = crate::messages::MessageCreateInput {
         source: "ssl_certificate".to_string(),

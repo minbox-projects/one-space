@@ -12,6 +12,7 @@ import {
   Layers,
   Loader2,
   Plus,
+  Clock,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -19,6 +20,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 
 import { useToast } from "./ToastProvider";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
@@ -30,12 +32,14 @@ import {
   sslCertificateList,
   sslCertificateVerifyAndFinalize,
   sslCheckCertificate,
+  sslGetConfig,
   sslWatchlistAdd,
   sslWatchlistCheckAll,
   sslWatchlistList,
   sslWatchlistRemove,
   type SslChallengeItem,
   type SslCheckResult,
+  type SslConfig,
   type SslIssuedCertificate,
   type SslWatchItem,
 } from "@/lib/sslCertificate";
@@ -69,6 +73,16 @@ export function SslCertificateTool() {
 
   const [watchlist, setWatchlist] = useState<SslWatchItem[]>([]);
   const [isCheckingAllWatchlist, setIsCheckingAllWatchlist] = useState(false);
+  const [sslConfig, setSslConfig] = useState<SslConfig | null>(null);
+
+  const loadSslConfigData = useCallback(async () => {
+    try {
+      const cfg = await sslGetConfig();
+      setSslConfig(cfg);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
 
   // === Tab 2: Issue & Management State ===
   const [issuedCerts, setIssuedCerts] = useState<SslIssuedCertificate[]>([]);
@@ -117,7 +131,16 @@ export function SslCertificateTool() {
   useEffect(() => {
     loadWatchlistData();
     loadIssuedData();
-  }, [loadWatchlistData, loadIssuedData]);
+    loadSslConfigData();
+
+    const unlistenPromise = listen("ssl-watchlist-updated", () => {
+      loadWatchlistData();
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [loadWatchlistData, loadIssuedData, loadSslConfigData]);
 
   const [historyDomains, setHistoryDomains] = useState<string[]>(() => {
     try {
@@ -186,7 +209,7 @@ export function SslCertificateTool() {
       await sslWatchlistAdd({
         domain: checkResult.domain,
         port: checkResult.port,
-        alertDaysThreshold: 30,
+        alertDaysThreshold: sslConfig?.alertDaysThreshold || 30,
       });
       pushToast({ title: `已将 ${checkResult.domain} 加入监控列表`, kind: "success" });
       loadWatchlistData();
@@ -737,7 +760,7 @@ export function SslCertificateTool() {
             {/* 关注列表看板 (Watchlist Dashboard) */}
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Bell className="h-4 w-4 text-emerald-600" />
                   <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                     关注列表与临期告警监控
@@ -745,6 +768,16 @@ export function SslCertificateTool() {
                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500 dark:bg-slate-800">
                     {watchlist.length} 个受控站点
                   </span>
+                  {sslConfig && (
+                    <div className="flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                      <Clock className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                      <span>
+                        {sslConfig.autoCheckEnabled
+                          ? `巡检: ${sslConfig.checkTimes.join(", ")} | 告警阈值: ${sslConfig.alertDaysThreshold}天`
+                          : "自动巡检已禁用"}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <button
@@ -765,8 +798,10 @@ export function SslCertificateTool() {
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {watchlist.map((item) => {
-                    const isExpiring = item.lastDaysRemaining !== undefined && item.lastDaysRemaining !== null && item.lastDaysRemaining <= item.alertDaysThreshold;
+                    const threshold = sslConfig?.alertDaysThreshold ?? item.alertDaysThreshold;
+                    const isExpiring = item.lastDaysRemaining !== undefined && item.lastDaysRemaining !== null && item.lastDaysRemaining <= threshold;
                     const isExpired = item.lastDaysRemaining !== undefined && item.lastDaysRemaining !== null && item.lastDaysRemaining <= 0;
+                    const isCritical = item.lastDaysRemaining !== undefined && item.lastDaysRemaining !== null && item.lastDaysRemaining > 0 && item.lastDaysRemaining <= 7;
 
                     return (
                       <div
@@ -774,23 +809,32 @@ export function SslCertificateTool() {
                         className={`group relative rounded-xl border p-4 transition-all ${
                           isExpired
                             ? "border-rose-300 bg-rose-50/40 dark:border-rose-900/50 dark:bg-rose-950/20"
+                            : isCritical
+                            ? "border-rose-300 bg-rose-50/40 dark:border-rose-900/50 dark:bg-rose-950/20"
                             : isExpiring
                             ? "border-amber-300 bg-amber-50/40 dark:border-amber-900/50 dark:bg-amber-950/20"
                             : "border-slate-200 bg-white hover:border-emerald-300 dark:border-slate-800 dark:bg-slate-800/60"
                         }`}
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <div className="font-semibold text-slate-900 dark:text-white">
+                          <div className="min-w-0 flex-1">
+                            <div
+                              className="truncate font-semibold text-slate-900 dark:text-white"
+                              title={`${item.domain}:${item.port}`}
+                            >
                               {item.domain}:{item.port}
                             </div>
                             {item.alias && (
-                              <div className="text-xs text-slate-400">{item.alias}</div>
+                              <div className="truncate text-xs text-slate-400" title={item.alias}>
+                                {item.alias}
+                              </div>
                             )}
                           </div>
                           <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                               isExpired
+                                ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
+                                : isCritical
                                 ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
                                 : isExpiring
                                 ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
@@ -799,6 +843,8 @@ export function SslCertificateTool() {
                           >
                             {isExpired
                               ? "已过期"
+                              : isCritical
+                              ? `剩余 ${item.lastDaysRemaining} 天 (每日提醒)`
                               : item.lastDaysRemaining !== undefined && item.lastDaysRemaining !== null
                               ? `剩余 ${item.lastDaysRemaining} 天`
                               : "未检测"}

@@ -62,8 +62,8 @@ pub use ai_workflow_profiles::{
 pub use ssl_certificate::{
     ssl_certificate_create_order, ssl_certificate_delete, ssl_certificate_doh_precheck,
     ssl_certificate_export, ssl_certificate_list, ssl_certificate_verify_and_finalize,
-    ssl_check_certificate, ssl_watchlist_add, ssl_watchlist_check_all, ssl_watchlist_list,
-    ssl_watchlist_remove,
+    ssl_check_certificate, ssl_get_config, ssl_save_config, ssl_watchlist_add,
+    ssl_watchlist_check_all, ssl_watchlist_list, ssl_watchlist_remove,
 };
 
 // Test-only discovery hook for the delegated `ble_lock` contract tests. The

@@ -61,6 +61,8 @@ pub struct SslWatchItem {
     pub last_status: Option<SslStatus>,
     pub last_error: Option<String>,
     pub issuer_cn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_notified_date: Option<String>,
     pub created_at: i64,
 }
 

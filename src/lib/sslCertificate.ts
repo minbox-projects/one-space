@@ -48,7 +48,14 @@ export interface SslWatchItem {
   lastStatus?: SslStatus;
   lastError?: string;
   issuerCn?: string;
+  lastNotifiedDate?: string;
   createdAt: number;
+}
+
+export interface SslConfig {
+  autoCheckEnabled: boolean;
+  checkTimes: string[];
+  alertDaysThreshold: number;
 }
 
 export interface SslWatchItemInput {
@@ -179,4 +186,12 @@ export async function sslCertificateExport(
       targetDir,
     },
   );
+}
+
+export async function sslGetConfig(): Promise<SslConfig> {
+  return invokeToolboxCommand<SslConfig>("ssl_get_config", {});
+}
+
+export async function sslSaveConfig(config: SslConfig): Promise<SslConfig> {
+  return invokeToolboxCommand<SslConfig>("ssl_save_config", { config });
 }

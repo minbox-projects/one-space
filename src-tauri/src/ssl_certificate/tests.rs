@@ -85,3 +85,33 @@ async fn test_inspect_huanweiyun() {
         }
     }
 }
+
+#[test]
+fn test_ssl_config_normalization() {
+    use super::config::{is_valid_hh_mm, normalize_config, SslConfig};
+
+    assert!(is_valid_hh_mm("00:00"));
+    assert!(is_valid_hh_mm("09:30"));
+    assert!(is_valid_hh_mm("23:59"));
+    assert!(!is_valid_hh_mm("24:00"));
+    assert!(!is_valid_hh_mm("12:60"));
+    assert!(!is_valid_hh_mm("9:30"));
+    assert!(!is_valid_hh_mm("invalid"));
+
+    let config = SslConfig {
+        auto_check_enabled: true,
+        check_times: vec![
+            "18:00".to_string(),
+            "09:00".to_string(),
+            "18:00".to_string(),
+            "invalid".to_string(),
+        ],
+        alert_days_threshold: 0,
+    };
+    let normalized = normalize_config(config);
+    assert_eq!(
+        normalized.check_times,
+        vec!["09:00".to_string(), "18:00".to_string()]
+    );
+    assert_eq!(normalized.alert_days_threshold, 30);
+}

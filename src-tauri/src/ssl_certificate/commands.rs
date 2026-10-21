@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use super::acme::{create_acme_order, verify_and_finalize_order};
+use super::config::{load_config, save_config, SslConfig};
 use super::dns_verifier::doh_check_txt;
 use super::inspector::inspect_ssl;
 use super::storage::{
@@ -86,4 +87,14 @@ pub fn ssl_certificate_export(id: String, target_dir: String) -> Result<SslExpor
         success: true,
         export_path,
     })
+}
+
+#[tauri::command]
+pub fn ssl_get_config() -> Result<SslConfig, String> {
+    load_config()
+}
+
+#[tauri::command]
+pub fn ssl_save_config(config: SslConfig) -> Result<SslConfig, String> {
+    save_config(&config)
 }

@@ -19,7 +19,7 @@ export const sslCertificateTool: ToolboxToolDescriptor = {
   aliases: [{ target: "ssl-certificate" }],
   surfaces: ["hub", "launcher-quick"],
   defaultVisible: true,
-  defaultOrder: 15,
+  defaultOrder: 18,
   loadComponent: () =>
     import("@/components/SslCertificateTool").then((m) => ({
       default: m.SslCertificateTool,

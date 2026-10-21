@@ -28,16 +28,23 @@ describe("SslCertificateTool", () => {
         return [
           {
             id: "watch-1",
-            domain: "example.com",
+            domain: "extremely-long-subdomain-name-for-testing-overflow-prevention.example.com",
             port: 443,
-            alias: "生产主站",
+            alias: "超长生产主站域名",
             enabled: true,
             alertDaysThreshold: 30,
-            lastDaysRemaining: 45,
-            lastStatus: "valid",
+            lastDaysRemaining: 5,
+            lastStatus: "expiring_soon",
             createdAt: 1700000000,
           },
         ];
+      }
+      if (command === "ssl_get_config") {
+        return {
+          autoCheckEnabled: true,
+          checkTimes: ["09:00", "18:00"],
+          alertDaysThreshold: 30,
+        };
       }
       if (command === "ssl_certificate_list") {
         return [
@@ -112,14 +119,23 @@ describe("SslCertificateTool", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders loaded watchlist and displays domain status", async () => {
+  it("renders loaded watchlist and displays domain status without wrapping", async () => {
     await act(async () => {
       renderWithProviders(<SslCertificateTool />);
     });
 
-    expect(screen.getByText("example.com:443")).toBeInTheDocument();
-    expect(screen.getByText("生产主站")).toBeInTheDocument();
-    expect(screen.getByText("剩余 45 天")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/巡检: 09:00, 18:00 \| 告警阈值: 30天/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "extremely-long-subdomain-name-for-testing-overflow-prevention.example.com:443",
+      ),
+    ).toBeInTheDocument();
+    const badge = screen.getByText("剩余 5 天 (每日提醒)");
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveClass("shrink-0");
+    expect(badge).toHaveClass("whitespace-nowrap");
   });
 
   it("can switch tabs to issue mode and view issued certificate list", async () => {

@@ -175,6 +175,8 @@ pub(super) fn shutdown_runtime_services() {
     super::run_app::ble_lock_native::shutdown_runtime();
     // Stop and kill all port tunnel processes on app shutdown.
     crate::tunnel::shutdown_all();
+    // Stop the process-owned SSL certificate scheduler.
+    crate::ssl_certificate::stop_ssl_scheduler();
 }
 
 #[tauri::command]
