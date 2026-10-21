@@ -15,7 +15,7 @@ describe("QuickSftpTool", () => {
 
     // 工具标题
     expect(
-      screen.getByRole("heading", { name: /SFTP|文件与日志追踪/i }),
+      screen.getByRole("heading", { name: /SFTP|SFTP 传输/i }),
     ).toBeInTheDocument();
 
     // 默认未连接，展示连接按钮而不是断开按钮

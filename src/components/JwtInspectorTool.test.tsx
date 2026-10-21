@@ -13,7 +13,7 @@ describe("JwtInspectorTool", () => {
   it("renders the tool shell and input textarea", () => {
     renderWithProviders(<JwtInspectorTool />);
     expect(
-      screen.getByRole("heading", { name: /JWT Inspector|JWT 调试器/i }),
+      screen.getByRole("heading", { name: /JWT Inspector|JWT 解析/i }),
     ).toBeInTheDocument();
     expect(
       screen.getByPlaceholderText(

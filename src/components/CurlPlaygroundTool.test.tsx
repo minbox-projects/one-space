@@ -13,7 +13,7 @@ describe("CurlPlaygroundTool", () => {
   it("renders the tool shell, method selector, and URL input", () => {
     renderWithProviders(<CurlPlaygroundTool />);
     expect(
-      screen.getByRole("heading", { name: /cURL Playground|cURL 快速调试/i }),
+      screen.getByRole("heading", { name: /cURL Playground|cURL 请求/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Send|发送/i })).toBeInTheDocument();
   });
