@@ -194,21 +194,6 @@ async fn spawn_plain_chat_upstream() -> (String, CapturedLog) {
     .await
 }
 
-/// A Chat upstream that succeeds on its first request and answers every later
-/// request with a 500 before any output byte, for the fallback-preference case.
-async fn spawn_flaky_chat_tool_upstream(next: Arc<AtomicUsize>) -> (String, CapturedLog) {
-    let calls = Arc::new(AtomicUsize::new(0));
-    spawn_mock_upstream(move |_captured| {
-        let call = calls.fetch_add(1, Ordering::SeqCst);
-        if call == 0 {
-            let n = next.fetch_add(1, Ordering::SeqCst) + 1;
-            MockReply::Json(200, chat_tool_call_body(&format!("call_{n}")))
-        } else {
-            MockReply::Json(500, json!({"error": {"message": "upstream unavailable"}}))
-        }
-    })
-    .await
-}
 
 // ---------------------------------------------------------------------------
 // Request helpers and capture inspection
@@ -596,20 +581,24 @@ async fn responses_non_streaming_tool_chain_prefers_the_preceding_candidate() {
     stop_server().await.expect("stop the listener");
 }
 
-/// When the held candidate fails before any output byte, the fallback candidate
-/// that actually delivered the tool call becomes the immediate next preference.
+/// A fallback-stage success closes any stale primary continuation preference and
+/// publishes no fallback preference; a later healthy or recovered regular
+/// candidate regains priority on the next request.
 #[tokio::test]
-async fn successful_fallback_becomes_the_next_continuation_preference() {
-    let _home = temp_home("pool-context-hold-fallback-preference");
+async fn pool_fallback_stage_success_closes_stale_primary_continuation_preference_and_publishes_none() {
+    let _home = temp_home("pool-context-hold-fallback-stage-preference");
     let port = free_port().await;
     let tag = tag();
     let provider_a = format!("pa-{tag}");
     let provider_b = format!("pb-{tag}");
+    let provider_f = format!("pf-{tag}");
     let alias = format!("free-fallback-{tag}");
     let session = format!("sess-fallback-{tag}");
+    let pool_id = format!("pool-fallback-{tag}");
     let next = Arc::new(AtomicUsize::new(0));
-    let (url_a, log_a) = spawn_flaky_chat_tool_upstream(next.clone()).await;
+    let (url_a, log_a) = spawn_chat_tool_upstream(next.clone()).await;
     let (url_b, log_b) = spawn_chat_tool_upstream(next.clone()).await;
+    let (url_f, log_f) = spawn_chat_tool_upstream(next.clone()).await;
 
     let provider_a_value = pool_provider(
         &provider_a,
@@ -625,8 +614,15 @@ async fn successful_fallback_becomes_the_next_continuation_preference() {
         vec![pool_key("key-b", "Key B", "sk-b", true)],
         vec![provider_mapping("local-b", "remote-b", "chat_completions")],
     );
+    let provider_f_value = pool_provider(
+        &provider_f,
+        "Provider Fallback",
+        &url_f,
+        vec![pool_key("key-f", "Key F", "sk-f", true)],
+        vec![provider_mapping("local-f", "remote-f", "chat_completions")],
+    );
     let pool = json!({
-        "id": format!("pool-fallback-{tag}"),
+        "id": pool_id,
         "name": "Free Modle",
         "model": alias,
         "enabled": true,
@@ -634,17 +630,45 @@ async fn successful_fallback_becomes_the_next_continuation_preference() {
             pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
             pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
         ],
+        "fallback_models": ["local-f"],
     });
     write_raw_gateway_config(&pool_config(
         port,
         single_key(),
-        vec![provider_a_value, provider_b_value],
+        vec![provider_a_value, provider_b_value, provider_f_value],
         vec![pool],
     ));
     start_server(None).await.expect("start the listener");
 
     let mut messages = vec![json!({"role": "user", "content": "weather?"})];
-    for round in 0..3 {
+    for round in 0..3usize {
+        if round == 1 {
+            cool_pool_candidate(
+                &PoolCandidateIdentity {
+                    pool_id: pool_id.clone(),
+                    provider_id: provider_a.clone(),
+                    local_model: "local-a".to_string(),
+                    upstream_model: "remote-a".to_string(),
+                    protocol: UpstreamProtocol::ChatCompletions,
+                    reasoning: None,
+                },
+                Some(Duration::from_secs(2)),
+            );
+            cool_pool_candidate(
+                &PoolCandidateIdentity {
+                    pool_id: pool_id.clone(),
+                    provider_id: provider_b.clone(),
+                    local_model: "local-b".to_string(),
+                    upstream_model: "remote-b".to_string(),
+                    protocol: UpstreamProtocol::ChatCompletions,
+                    reasoning: None,
+                },
+                Some(Duration::from_secs(2)),
+            );
+        }
+        if round == 2 {
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+        }
         let body = json!({
             "model": alias,
             "messages": messages.clone(),
@@ -661,31 +685,38 @@ async fn successful_fallback_becomes_the_next_continuation_preference() {
         .await;
         assert_eq!(
             status, 200,
-            "round {round} must be served before/after failover: {text}"
+            "round {round} must be served by a pool source: {text}"
         );
-        let call = chat_call(&parse(&text));
-        let call_id = call["id"].as_str().expect("call id").to_string();
-        messages.push(json!({"role": "assistant", "content": null, "tool_calls": [call.clone()]}));
+        let value = parse(&text);
+        assert_eq!(value["model"], alias, "the client must see the public alias");
+        let call = chat_call(&value);
+        let call_id = call["id"]
+            .as_str()
+            .expect("the response must carry a call id")
+            .to_string();
+        messages.push(json!({"role": "assistant", "content": null, "tool_calls": [call]}));
         messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
     }
 
-    let a_first_continuation = with_results(&log_a, 1);
-    assert!(
-        a_first_continuation.is_some(),
-        "the first continuation must attempt the held candidate {A} first, letting its 500 select the fallback"
-    );
+    // The excluded continuation was served by the configured fallback.
+    let fallback_round_one = with_results(&log_f, 1).map(|captured| forwarded_model(&captured));
     assert_eq!(
-        forwarded_model(&a_first_continuation.expect("checked above")),
-        "remote-a"
+        fallback_round_one.as_deref(),
+        Some("remote-f"),
+        "the excluded continuation must be served by the fallback"
     );
+    // A fallback-stage success publishes no fallback preference and closes any
+    // stale primary preference, so the fallback is not contacted afterwards.
     assert!(
-        with_results(&log_a, 2).is_none(),
-        "the second continuation must prefer the successful fallback {B}, not re-attempt {A}"
+        with_results(&log_f, 2).is_none(),
+        "a fallback-stage success must not publish a fallback preference: {}",
+        with_results(&log_f, 2).map(|c| forwarded_model(&c)).unwrap_or_default()
     );
-    let b_first = with_results(&log_b, 1).expect("the fallback must serve the first continuation");
-    assert_eq!(forwarded_model(&b_first), "remote-b");
-    let b_second = with_results(&log_b, 2).expect("the fallback must serve the second continuation");
-    assert_eq!(forwarded_model(&b_second), "remote-b");
+    // A later healthy or recovered regular candidate regains priority.
+    assert!(
+        with_results(&log_a, 2).is_some() || with_results(&log_b, 2).is_some(),
+        "an eligible regular candidate must have priority after recovery"
+    );
 
     stop_server().await.expect("stop the listener");
 }
@@ -5289,7 +5320,7 @@ async fn pool_fallback_serves_a_continuation_without_becoming_its_preference() {
             pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
             pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
         ],
-        "fallback": pool_candidate(&provider_f, "local-f", "remote-f", "chat_completions", Some(1)),
+        "fallback_models": ["local-f"],
     });
     write_raw_gateway_config(&pool_config(
         port,
@@ -5484,7 +5515,7 @@ async fn pool_cancelled_fallback_attempt_publishes_no_row_no_health_and_no_hold(
         "candidates": [
             pool_candidate(&provider_r, "local-r", "remote-r", "responses", Some(1)),
         ],
-        "fallback": pool_candidate(&provider_f, "local-f", "remote-f", "responses", Some(1)),
+        "fallback_models": ["local-f"],
     });
     write_raw_gateway_config(&pool_config(
         port,
@@ -5554,11 +5585,29 @@ async fn pool_cancelled_fallback_attempt_publishes_no_row_no_health_and_no_hold(
         .find(|status| status.id == pool_id)
         .expect("the pool status must exist");
     let fallback_status = status_row
-        .fallback
-        .expect("the pool must report its separate fallback status");
+        .fallback_models
+        .iter()
+        .find(|status| status.model == "local-f")
+        .expect("the pool must report its ordered fallback_models status");
     assert_eq!(
-        fallback_status.availability, "ready",
+        fallback_status.model, "local-f",
+        "the ordered fallback_models status must carry the trimmed model id: {fallback_status:?}"
+    );
+    assert!(
+        fallback_status.ready,
         "a cancellation must not publish a false health state: {fallback_status:?}"
+    );
+    assert!(
+        fallback_status.ready_sources >= 1,
+        "a cancellation must not clear ready source counts: {fallback_status:?}"
+    );
+    assert!(
+        fallback_status.total_sources >= 1,
+        "a cancellation must not clear total source counts: {fallback_status:?}"
+    );
+    assert!(
+        !fallback_status.sources.is_empty(),
+        "a cancellation must not clear expanded sources: {fallback_status:?}"
     );
 
     // The regular candidate becomes eligible again, so the continuation is
@@ -5611,4 +5660,312 @@ async fn pool_cancelled_fallback_attempt_publishes_no_row_no_health_and_no_hold(
         "a cancelled fallback attempt must not publish a continuation preference: {}",
         log_f.lock().expect("mock log").len()
     );
+}
+
+// ---------------------------------------------------------------------------
+// RED: stage identity must not be inferred from configuration overlap
+// ---------------------------------------------------------------------------
+
+/// A regular candidate whose exact local model is also reachable through the
+/// stored `fallback_models` list must still publish a primary continuation
+/// preference when it serves the request. Inferring the stage from the
+/// configuration overlap would reclassify that regular success as a fallback
+/// success and wrongly close the hold.
+#[tokio::test]
+async fn a_regular_success_overlapping_a_fallback_model_still_publishes_a_hold() {
+    let _home = temp_home("pool-context-hold-overlap-regular");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let alias = format!("free-overlap-regular-{tag}");
+    let session = format!("sess-overlap-regular-{tag}");
+    let pool_id = format!("pool-overlap-regular-{tag}");
+    let next = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_chat_tool_upstream(next.clone()).await;
+    let (url_b, log_b) = spawn_chat_tool_upstream(next.clone()).await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let pool = json!({
+        "id": pool_id,
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+        // Overlap: local-a is also reachable through the fallback list.
+        "fallback_models": ["local-a"],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    let mut messages = vec![json!({"role": "user", "content": "weather?"})];
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": messages.clone(), "tools": weather_tools()}),
+    )
+    .await;
+    assert_eq!(status, 200, "round 0 must be served: {text}");
+    let value = parse(&text);
+    let call = chat_call(&value);
+    let call_id = call["id"].as_str().expect("call id").to_string();
+    messages.push(json!({"role": "assistant", "content": null, "tool_calls": [call]}));
+    messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
+
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": messages.clone(), "tools": weather_tools()}),
+    )
+    .await;
+    assert_eq!(status, 200, "round 1 must be served: {text}");
+
+    // The regular candidate that served round 0 must also serve the recognized
+    // continuation, because a regular success is not a fallback success even
+    // when the same model is configured as a fallback.
+    assert!(
+        with_results(&log_a, 1).is_some(),
+        "the overlapping regular candidate must remain preferred for the continuation"
+    );
+    assert!(
+        with_results(&log_b, 1).is_none(),
+        "the continuation must not rotate away from the overlapping regular candidate"
+    );
+
+    stop_server().await.expect("stop the listener");
+}
+
+/// When the regular stage is exhausted and the fallback stage serves through a
+/// distinct fallback provider whose local model overlaps a regular candidate,
+/// that fallback success closes any stale primary preference and publishes no
+/// fallback preference. After the regular candidates recover, the next
+/// continuation is served by the ordinary next regular candidate (B), not by
+/// the stale primary (A) and not by the fallback (F).
+#[tokio::test]
+async fn a_fallback_success_overlapping_a_regular_model_closes_the_hold() {
+    let _home = temp_home("pool-context-hold-overlap-fallback");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_a = format!("pa-{tag}");
+    let provider_b = format!("pb-{tag}");
+    let provider_f = format!("pf-{tag}");
+    let alias = format!("free-overlap-fallback-{tag}");
+    let session = format!("sess-overlap-fallback-{tag}");
+    let pool_id = format!("pool-overlap-fallback-{tag}");
+    let next = Arc::new(AtomicUsize::new(0));
+    let (url_a, log_a) = spawn_chat_tool_upstream(next.clone()).await;
+    let (url_b, log_b) = spawn_chat_tool_upstream(next.clone()).await;
+    let (url_f, log_f) = spawn_chat_tool_upstream(next.clone()).await;
+
+    let provider_a_value = pool_provider(
+        &provider_a,
+        "Provider A",
+        &url_a,
+        vec![pool_key("key-a", "Key A", "sk-a", true)],
+        vec![provider_mapping("local-a", "remote-a", "chat_completions")],
+    );
+    let provider_b_value = pool_provider(
+        &provider_b,
+        "Provider B",
+        &url_b,
+        vec![pool_key("key-b", "Key B", "sk-b", true)],
+        vec![provider_mapping("local-b", "remote-b", "chat_completions")],
+    );
+    let provider_f_value = pool_provider(
+        &provider_f,
+        "Provider Fallback",
+        &url_f,
+        vec![pool_key("key-f", "Key F", "sk-f", true)],
+        vec![provider_mapping("local-a", "remote-f", "chat_completions")],
+    );
+    let pool = json!({
+        "id": pool_id,
+        "name": "Free Modle",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_a, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_b, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+        "fallback_models": ["local-a"],
+    });
+    write_raw_gateway_config(&pool_config(
+        port,
+        single_key(),
+        vec![provider_a_value, provider_b_value, provider_f_value],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start the listener");
+
+    let path = "/v1/chat/completions";
+    // Round 0: regular SWRR serves via A and publishes a hold on A.
+    let mut messages = vec![json!({"role": "user", "content": "weather?"})];
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": messages.clone(), "tools": weather_tools()}),
+    )
+    .await;
+    assert_eq!(status, 200, "round 0 must be served: {text}");
+    let value = parse(&text);
+    assert_eq!(value["model"], alias, "the client must see the public alias");
+    let call = chat_call(&value);
+    let call_id = call["id"]
+        .as_str()
+        .expect("the response must carry a call id")
+        .to_string();
+    messages.push(json!({"role": "assistant", "content": null, "tool_calls": [call]}));
+    messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
+
+    assert!(
+        with_results(&log_a, 0).is_some(),
+        "round 0 must be served by regular A"
+    );
+    assert_eq!(
+        forwarded_model(&with_results(&log_a, 0).expect("checked above")),
+        "remote-a"
+    );
+
+    // Cool exact identities A and B for about 2 seconds so the regular stage is
+    // exhausted.
+    cool_pool_candidate(
+        &PoolCandidateIdentity {
+            pool_id: pool_id.clone(),
+            provider_id: provider_a.clone(),
+            local_model: "local-a".to_string(),
+            upstream_model: "remote-a".to_string(),
+            protocol: UpstreamProtocol::ChatCompletions,
+            reasoning: None,
+        },
+        Some(Duration::from_secs(2)),
+    );
+    cool_pool_candidate(
+        &PoolCandidateIdentity {
+            pool_id: pool_id.clone(),
+            provider_id: provider_b.clone(),
+            local_model: "local-b".to_string(),
+            upstream_model: "remote-b".to_string(),
+            protocol: UpstreamProtocol::ChatCompletions,
+            reasoning: None,
+        },
+        Some(Duration::from_secs(2)),
+    );
+
+    // Round 1: fallback stage must serve through F.
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": messages.clone(), "tools": weather_tools()}),
+    )
+    .await;
+    assert_eq!(status, 200, "round 1 must be served by fallback: {text}");
+    let value = parse(&text);
+    assert_eq!(value["model"], alias, "the client must see the public alias");
+    let call = chat_call(&value);
+    let call_id = call["id"]
+        .as_str()
+        .expect("the response must carry a call id")
+        .to_string();
+    messages.push(json!({"role": "assistant", "content": null, "tool_calls": [call]}));
+    messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": "sunny"}));
+
+    assert!(
+        with_results(&log_f, 1).is_some(),
+        "round 1 must be served by fallback F"
+    );
+    assert_eq!(
+        forwarded_model(&with_results(&log_f, 1).expect("checked above")),
+        "remote-f"
+    );
+
+    // Sleep about 2.5 seconds so A and B are healthy again.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    // Round 2: must be served by regular B, not A and not F.
+    let (status, text) = post_json(
+        port,
+        path,
+        "Bearer local-key",
+        Some(&session),
+        None,
+        json!({"model": alias, "messages": messages.clone(), "tools": weather_tools()}),
+    )
+    .await;
+    assert_eq!(status, 200, "round 2 must be served: {text}");
+    let value = parse(&text);
+    assert_eq!(value["model"], alias, "the client must see the public alias");
+    let call = chat_call(&value);
+    assert!(
+        call["id"].as_str().is_some(),
+        "the response must carry a recognizable tool-call id"
+    );
+
+    // Explicit attempt counts.
+    assert_eq!(
+        log_a.lock().expect("mock log").len(),
+        1,
+        "regular A must be attempted only in round 0"
+    );
+    assert_eq!(
+        log_f.lock().expect("mock log").len(),
+        1,
+        "fallback F must be attempted only in round 1"
+    );
+    assert_eq!(
+        log_b.lock().expect("mock log").len(),
+        1,
+        "regular B must serve round 2"
+    );
+    assert!(
+        with_results(&log_b, 2).is_some(),
+        "round 2 must be served by regular B"
+    );
+    assert_eq!(
+        forwarded_model(&with_results(&log_b, 2).expect("checked above")),
+        "remote-b"
+    );
+    assert!(
+        with_results(&log_a, 2).is_none(),
+        "an open stale A hold would have served A in round 2"
+    );
+    assert!(
+        with_results(&log_f, 2).is_none(),
+        "a published fallback preference would have served F in round 2"
+    );
+
+    stop_server().await.expect("stop the listener");
 }

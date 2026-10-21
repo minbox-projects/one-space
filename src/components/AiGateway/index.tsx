@@ -1924,6 +1924,10 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             if (!open) setEditingPool(null);
           }}
           providers={config.providers}
+          aliases={[
+            ...readModelPools(config).map((item) => item.model),
+            ...(config.model_pool_reserved_models ?? []),
+          ]}
           templates={templates}
           pool={editingPool}
           poolStatus={

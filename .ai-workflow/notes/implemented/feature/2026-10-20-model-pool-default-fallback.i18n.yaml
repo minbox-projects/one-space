@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-20-model-pool-default-fallback.md
-2026-10-20-model-pool-default-fallback.md: bbbbb1d6190718c14763b7753ffbd8ab295ab130
-2026-10-20-model-pool-default-fallback.zh.md: f59481edf7c0f16ba7d784504d2a3eada26c0272
+2026-10-20-model-pool-default-fallback.md: 601dbc044e3f4306ba10e1d1a29c2f0ccea0ba33
+2026-10-20-model-pool-default-fallback.zh.md: ff6d0143f2cba07f9e13a9d08677b573ff1652ba

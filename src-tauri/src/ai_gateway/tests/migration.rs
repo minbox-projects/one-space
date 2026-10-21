@@ -307,7 +307,7 @@ fn legacy_config_read_drops_provider_runtime_keys() {
 fn current_version_config_read_is_side_effect_free() {
     let _home = isolated_temp_home("migration-current-version");
     let current = json!({
-        "schema_version": 3,
+        "schema_version": 4,
         "enabled": true,
         "providers": [{
             "id": "p",
@@ -977,7 +977,7 @@ fn replaced_legacy_usage_database_is_reopened_and_migrated_by_queries() {
 // ---------------------------------------------------------------------------
 
 /// Encoded current key-pool schema version.
-const KEY_POOL_SCHEMA_VERSION: u32 = 3;
+const KEY_POOL_SCHEMA_VERSION: u32 = 4;
 
 /// One migrated `Default` key entry for `value`.
 fn expected_default_key(value: &str) -> Value {
@@ -1242,7 +1242,12 @@ fn failed_key_pool_rewrite_keeps_previous_bytes_and_retries() {
 // ===========================================================================
 
 /// The schema version the Zen-to-Go migration advances to.
-const ZEN_TO_GO_SCHEMA_VERSION: u32 = 3;
+const ZEN_TO_GO_SCHEMA_VERSION: u32 = 4;
+
+/// The schema version the ordered fallback model list advances to. The
+/// legacy single provider-specific fallback migrates into a one-entry
+/// gateway-model list under this version gate.
+const ORDERED_FALLBACK_SCHEMA_VERSION: u32 = 4;
 
 /// One declared Chat Completions and one declared Responses id from the shipped
 /// Go baseline. Reading them at runtime keeps the fixtures independent of the
@@ -1960,13 +1965,14 @@ fn persisted_config_with_unknown_strategy_values_reads_with_generic_defaults() {
     );
 }
 
-/// The migration is gated by a schema-version bump to 3.
+/// The migration is gated by a schema-version bump to 4 for the ordered
+/// fallback model list.
 #[test]
-fn gateway_config_schema_version_advances_to_three() {
+fn gateway_config_schema_version_advances_to_four() {
     assert_eq!(
         crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
-        ZEN_TO_GO_SCHEMA_VERSION,
-        "the Zen-to-Go migration must be gated by schema version 3"
+        ORDERED_FALLBACK_SCHEMA_VERSION,
+        "the ordered fallback model list must be gated by schema version 4"
     );
 }
 
@@ -2637,4 +2643,377 @@ fn failed_backfill_after_partial_contributions_rolls_back_and_retries() {
 
     clear_usage_clock_for_test();
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Ordered fallback models: the one-time migration of the legacy single
+// provider-specific fallback into a gateway-model list (REQ-001 / REQ-005;
+// AC-001 and the migration half of AC-007).
+//
+// Every fixture below is raw JSON, so the assertions observe the persisted
+// shape instead of a typed member that does not exist yet. A RED is therefore
+// an observable mismatch (the legacy key survives, the list is missing, the
+// version is not stamped) and never a compilation failure.
+// ---------------------------------------------------------------------------
+
+/// The legacy single provider-specific fallback of the fixture below: a full
+/// candidate reference carrying its own reasoning declaration and weight, both
+/// of which a model-level list has no place for.
+fn legacy_pool_fallback_candidate() -> Value {
+    json!({
+        "provider_id": "p-b",
+        "local_model": "local-fallback",
+        "upstream_model": "remote-fallback",
+        "protocol": "chat_completions",
+        "weight": 3,
+        "reasoning": {
+            "profile": "openai_effort",
+            "values": ["high"],
+            "supports_disable": false,
+            "mappings": [{"effort": "high", "action": {"kind": "enum", "value": "high"}}]
+        }
+    })
+}
+
+/// A schema-3 configuration whose main pool carries the legacy single
+/// provider-specific fallback, a regular candidate with its own reasoning
+/// declaration and weight, a pool default reasoning preference, a sibling pool
+/// without any fallback, two providers with their own credentials and one
+/// price row.
+fn legacy_pool_fallback_config() -> Value {
+    json!({
+        "schema_version": 3,
+        "enabled": true,
+        "port": 17688,
+        "keys": [{
+            "id": "k-local",
+            "label": "k-local",
+            "value": "local-key",
+            "enabled": true,
+            "created_at": 1
+        }],
+        "providers": [
+            {
+                "id": "p-a",
+                "name": "Provider A",
+                "base_url": "https://a.example.invalid/v1",
+                "protocol": "chat_completions",
+                "enabled": true,
+                "keys": [{
+                    "id": "key-a",
+                    "name": "Key A",
+                    "value": "sk-secret-a",
+                    "enabled": true,
+                    "auto_marked": false,
+                    "failure_kind": null,
+                    "marked_at": null,
+                    "reason": null
+                }],
+                "mappings": [
+                    {
+                        "local_model": "local-regular",
+                        "upstream_model": "remote-regular",
+                        "protocol": "chat_completions",
+                        "enabled": true
+                    },
+                    {
+                        "local_model": "local-sibling",
+                        "upstream_model": "remote-sibling",
+                        "protocol": "chat_completions",
+                        "enabled": true
+                    }
+                ]
+            },
+            {
+                "id": "p-b",
+                "name": "Provider B",
+                "base_url": "https://b.example.invalid/v1",
+                "protocol": "chat_completions",
+                "enabled": true,
+                "keys": [{
+                    "id": "key-b",
+                    "name": "Key B",
+                    "value": "sk-secret-b",
+                    "enabled": true,
+                    "auto_marked": false,
+                    "failure_kind": null,
+                    "marked_at": null,
+                    "reason": null
+                }],
+                "mappings": [{
+                    "local_model": "local-fallback",
+                    "upstream_model": "remote-fallback",
+                    "protocol": "chat_completions",
+                    "enabled": true
+                }]
+            }
+        ],
+        "model_prices": [{
+            "provider_id": "p-a",
+            "upstream_model": "remote-regular",
+            "input": 1.5
+        }],
+        "model_pools": [
+            {
+                "id": "pool-main",
+                "name": "Main Pool",
+                "model": "main-model",
+                "enabled": true,
+                "default_reasoning_effort": "high",
+                "candidates": [{
+                    "provider_id": "p-a",
+                    "local_model": "local-regular",
+                    "upstream_model": "remote-regular",
+                    "protocol": "chat_completions",
+                    "weight": 7,
+                    "reasoning": {
+                        "profile": "openai_effort",
+                        "values": ["high"],
+                        "supports_disable": false,
+                        "mappings": [{"effort": "high", "action": {"kind": "enum", "value": "high"}}]
+                    }
+                }],
+                "fallback": legacy_pool_fallback_candidate()
+            },
+            {
+                "id": "pool-sibling",
+                "name": "Sibling Pool",
+                "model": "sibling-model",
+                "enabled": true,
+                "candidates": [{
+                    "provider_id": "p-a",
+                    "local_model": "local-sibling",
+                    "upstream_model": "remote-sibling",
+                    "protocol": "chat_completions",
+                    "weight": 2
+                }]
+            }
+        ],
+        "model_pool_reserved_models": ["retired-model"]
+    })
+}
+
+/// The persisted pool row with the given id.
+fn persisted_pool<'a>(on_disk: &'a Value, pool_id: &str) -> &'a Value {
+    on_disk
+        .get("model_pools")
+        .and_then(Value::as_array)
+        .and_then(|pools| {
+            pools
+                .iter()
+                .find(|pool| pool.get("id").and_then(Value::as_str) == Some(pool_id))
+        })
+        .unwrap_or_else(|| panic!("missing the persisted pool '{pool_id}': {on_disk}"))
+}
+
+/// The persisted fallback model list of one pool. A pool without any stored
+/// fallback model reads as an empty list.
+fn persisted_fallback_models(on_disk: &Value, pool_id: &str) -> Vec<String> {
+    persisted_pool(on_disk, pool_id)
+        .get("fallback_models")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// REQ-001 / REQ-005 / AC-001: a schema-3 pool with one provider-specific
+/// fallback migrates exactly once into a one-entry gateway-model list, stamps
+/// schema 4 and keeps every unrelated pool value: the regular candidates, their
+/// reasoning declarations and weights, the pool default reasoning preference,
+/// the sibling pool, the retired alias list, the providers with their
+/// credentials and the price table.
+#[test]
+fn legacy_pool_fallback_object_migrates_to_an_ordered_fallback_model_list() {
+    let _home = isolated_temp_home("migration-legacy-pool-fallback");
+    write_encrypted_config(&legacy_pool_fallback_config());
+
+    let migrated = read_config().expect("the legacy configuration must stay readable");
+    assert_eq!(
+        migrated.schema_version, ORDERED_FALLBACK_SCHEMA_VERSION,
+        "the migrated configuration must carry schema version 4"
+    );
+
+    let on_disk = decrypted_config_json();
+    assert_eq!(
+        on_disk.get("schema_version").and_then(Value::as_u64),
+        Some(u64::from(ORDERED_FALLBACK_SCHEMA_VERSION)),
+        "the migrated file must be stamped with schema version 4: {on_disk}"
+    );
+
+    let pool = persisted_pool(&on_disk, "pool-main");
+    assert_eq!(
+        pool.get("fallback_models"),
+        Some(&json!(["local-fallback"])),
+        "the legacy fallback must migrate to a one-entry gateway-model list: {pool}"
+    );
+    assert!(
+        pool.get("fallback").is_none(),
+        "the legacy fallback key must be removed by the migration: {pool}"
+    );
+
+    // The regular candidate keeps its identity, weight and reasoning
+    // declaration, and the pool default preference stays untouched.
+    let candidates = pool
+        .get("candidates")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("the migrated pool must keep its candidates: {pool}"));
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the regular candidates must survive the migration: {pool}"
+    );
+    let regular = &candidates[0];
+    assert_eq!(regular.get("provider_id"), Some(&json!("p-a")));
+    assert_eq!(regular.get("local_model"), Some(&json!("local-regular")));
+    assert_eq!(regular.get("upstream_model"), Some(&json!("remote-regular")));
+    assert_eq!(regular.get("protocol"), Some(&json!("chat_completions")));
+    assert_eq!(
+        regular.get("weight"),
+        Some(&json!(7)),
+        "the regular candidate's weight must be unchanged: {regular}"
+    );
+    assert_eq!(
+        regular.get("reasoning").and_then(|reasoning| reasoning.get("profile")),
+        Some(&json!("openai_effort")),
+        "the regular candidate's reasoning declaration must be unchanged: {regular}"
+    );
+    assert_eq!(
+        regular
+            .get("reasoning")
+            .and_then(|reasoning| reasoning.get("mappings"))
+            .and_then(Value::as_array)
+            .map(|mappings| mappings.len()),
+        Some(1),
+        "the regular candidate's reasoning mappings must be unchanged: {regular}"
+    );
+    assert_eq!(
+        pool.get("default_reasoning_effort"),
+        Some(&json!("high")),
+        "the pool default reasoning preference must be unchanged: {pool}"
+    );
+
+    // A pool without a legacy fallback migrates to an empty list.
+    assert!(
+        persisted_fallback_models(&on_disk, "pool-sibling").is_empty(),
+        "a pool without a legacy fallback must migrate to an empty list: {on_disk}"
+    );
+
+    // The unrelated pool, alias, provider and price values stay unchanged.
+    let sibling = persisted_pool(&on_disk, "pool-sibling");
+    assert_eq!(sibling.get("model"), Some(&json!("sibling-model")));
+    assert_eq!(sibling.get("name"), Some(&json!("Sibling Pool")));
+    assert_eq!(
+        sibling
+            .get("candidates")
+            .and_then(Value::as_array)
+            .map(|candidates| candidates[0].get("local_model").cloned()),
+        Some(Some(json!("local-sibling"))),
+        "the sibling pool's candidates must be unchanged: {sibling}"
+    );
+    assert_eq!(
+        on_disk.get("model_pool_reserved_models"),
+        Some(&json!(["retired-model"])),
+        "the retired alias list must be unchanged: {on_disk}"
+    );
+    let providers = on_disk
+        .get("providers")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("the migrated configuration must keep its providers: {on_disk}"));
+    assert_eq!(providers.len(), 2, "both providers must survive: {on_disk}");
+    assert_eq!(
+        providers[1]
+            .get("keys")
+            .and_then(Value::as_array)
+            .map(|keys| keys[0].get("value").cloned()),
+        Some(Some(json!("sk-secret-b"))),
+        "the provider credentials must be unchanged: {on_disk}"
+    );
+    assert_eq!(
+        on_disk
+            .get("model_prices")
+            .and_then(Value::as_array)
+            .map(|rows| rows[0].get("input").cloned()),
+        Some(Some(json!(1.5))),
+        "the price table must be unchanged: {on_disk}"
+    );
+}
+
+/// REQ-005 / AC-007: the migration runs exactly once. A second read of the
+/// migrated file neither rewrites it nor changes the migrated list.
+#[test]
+fn legacy_pool_fallback_migration_is_stamped_once_and_a_second_read_does_not_rewrite() {
+    let _home = isolated_temp_home("migration-legacy-pool-fallback-once");
+    write_encrypted_config(&legacy_pool_fallback_config());
+
+    read_config().expect("the first read must migrate the legacy configuration");
+    let bytes_after_migration = raw_config_bytes();
+    let migrated_once = decrypted_config_json();
+    assert_eq!(
+        persisted_fallback_models(&migrated_once, "pool-main"),
+        vec!["local-fallback".to_string()],
+        "the first read must migrate the legacy fallback: {migrated_once}"
+    );
+
+    read_config().expect("the second read must stay readable");
+    assert_eq!(
+        raw_config_bytes(),
+        bytes_after_migration,
+        "a second read must not rewrite the migrated configuration"
+    );
+    let migrated_twice = decrypted_config_json();
+    assert_eq!(
+        persisted_fallback_models(&migrated_twice, "pool-main"),
+        vec!["local-fallback".to_string()],
+        "a second read must keep the migrated list: {migrated_twice}"
+    );
+    assert_eq!(
+        migrated_twice.get("schema_version").and_then(Value::as_u64),
+        Some(u64::from(ORDERED_FALLBACK_SCHEMA_VERSION)),
+        "the migrated file must stay stamped with schema version 4: {migrated_twice}"
+    );
+}
+
+/// REQ-001 / AC-007: a current-version configuration with a missing or null
+/// fallback value reads as an empty list and is never rewritten, so a
+/// current-schema file keeps its exact bytes.
+#[test]
+fn current_version_pool_without_a_fallback_value_is_not_rewritten() {
+    let _home = isolated_temp_home("migration-current-version-pool");
+    let mut config = legacy_pool_fallback_config();
+    config["schema_version"] =
+        json!(crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION);
+    // The current-version file carries no legacy fallback at all, and its
+    // sibling pool carries an explicit null.
+    let pools = config["model_pools"].as_array_mut().expect("model pools");
+    let main = pools
+        .iter_mut()
+        .find(|pool| pool["id"] == "pool-main")
+        .expect("the main pool");
+    main.as_object_mut()
+        .expect("the main pool object")
+        .remove("fallback");
+    let sibling = pools
+        .iter_mut()
+        .find(|pool| pool["id"] == "pool-sibling")
+        .expect("the sibling pool");
+    sibling["fallback"] = json!(null);
+    write_encrypted_config(&config);
+    let bytes_before = raw_config_bytes();
+
+    let read = read_config().expect("the current-version configuration must stay readable");
+    assert_eq!(
+        read.schema_version,
+        crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
+        "a current-version configuration must keep its version"
+    );
+    assert_eq!(
+        raw_config_bytes(),
+        bytes_before,
+        "a current-version configuration must never be rewritten"
+    );
 }

@@ -15,7 +15,7 @@ use super::forwarding::{
     forward_non_streaming_with_protocol, open_streaming_response_with_protocol,
 };
 use super::model_pools::{
-    cool_pool_candidate, failure_label, is_configured_fallback, plan_pool_request,
+    cool_pool_candidate, expand_fallback_model_in, failure_label, plan_pool_request,
     pool_candidate_scope_failure, PoolFallbackStage, PoolPlan,
 };
 use super::openai_conversion::{self, include_usage_requested};
@@ -537,6 +537,11 @@ pub(in crate::ai_gateway) struct ForwardCapture {
     /// same-turn continuation preference and never reaches a response, the usage
     /// log or a command payload.
     pub(in crate::ai_gateway) served_tool_ids: Vec<String>,
+    /// Whether the delivered attempt came from the distinct fallback stage. Set
+    /// by the transport path that actually attempted the fallback source, never
+    /// inferred from configuration overlap, so an overlapping regular success
+    /// keeps its primary continuation preference.
+    pub(in crate::ai_gateway) fallback_stage: bool,
 }
 
 impl ForwardCapture {
@@ -548,6 +553,29 @@ impl ForwardCapture {
         } else {
             UsageResult::Success
         }
+    }
+}
+
+/// Exact source identity actually attempted by one request: real provider and
+/// original local/upstream pair plus effective protocol. The resolved reasoning
+/// control is deliberately excluded because it is request-scoped.
+type AttemptedSourceKey = (String, String, String, &'static str);
+
+fn attempted_source_key(provider: &GatewayUpstreamProvider) -> Option<AttemptedSourceKey> {
+    provider.pool_candidate.as_ref().map(|identity| {
+        (
+            identity.provider_id.trim().to_string(),
+            identity.local_model.trim().to_string(),
+            identity.upstream_model.trim().to_string(),
+            identity.protocol.endpoint_path(),
+        )
+    })
+}
+
+fn fallback_stage_key(stage: &PoolFallbackStage) -> Option<AttemptedSourceKey> {
+    match stage {
+        PoolFallbackStage::Ready(provider) => attempted_source_key(provider),
+        PoolFallbackStage::Probe(candidate) => attempted_source_key(&candidate.provider),
     }
 }
 
@@ -1337,7 +1365,7 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
         suppress_transport_failures,
         probe,
         attempts,
-        None,
+        &[],
     )
     .await
 }
@@ -1351,7 +1379,7 @@ async fn attempt_non_streaming_inner(
     suppress_transport_failures: bool,
     probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
-    fallback: Option<&PoolFallbackStage>,
+    fallback: &[PoolFallbackStage],
 ) -> HttpResponse {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -1365,6 +1393,10 @@ async fn attempt_non_streaming_inner(
     let mut retries: Vec<RetryCandidate> = Vec::new();
     // Whether this request has already used its single key probe.
     let mut key_probe_used = false;
+    // Exact source identities this request has already attempted, whether as a
+    // regular candidate, a probe or an earlier fallback source. The fallback
+    // queue skips an identity already present here.
+    let mut attempted_sources: HashSet<AttemptedSourceKey> = HashSet::new();
     // Last attempted provider/model, reported when every candidate is unavailable.
     let mut last_capture: Option<ForwardCapture> = None;
 
@@ -1401,6 +1433,9 @@ async fn attempt_non_streaming_inner(
                 clear_ttl_expired_key_runtime_state(&mut provider, &selected);
             }
             provider.attempt_key = selected.value.clone();
+            if let Some(key) = attempted_source_key(&provider) {
+                attempted_sources.insert(key);
+            }
             let upstream_protocol = attempt_target(&provider, requested, protocol)
                 .map(|(_, upstream)| upstream)
                 .unwrap_or(protocol);
@@ -1571,6 +1606,9 @@ async fn attempt_non_streaming_inner(
                 clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
             }
             candidate.provider.attempt_key = selected.value.clone();
+            if let Some(key) = attempted_source_key(&candidate.provider) {
+                attempted_sources.insert(key);
+            }
             let upstream_protocol = attempt_target(&candidate.provider, requested, protocol)
                 .map(|(_, upstream)| upstream)
                 .unwrap_or(protocol);
@@ -1744,6 +1782,9 @@ async fn attempt_non_streaming_inner(
                     clear_ttl_expired_key_runtime_state(&mut provider, &selected);
                 }
                 provider.attempt_key = selected.value.clone();
+                if let Some(key) = attempted_source_key(&provider) {
+                    attempted_sources.insert(key);
+                }
                 // The probed row is auto-disabled, so the normal served-row
                 // resolution skips it; forward under the row's own effective
                 // protocol so a converted probe reaches `/v1/messages`
@@ -1873,12 +1914,18 @@ async fn attempt_non_streaming_inner(
         }
     }
 
-    // Distinct last-stage fallback: one pass after every
-    // regular candidate, its finite retries and the regular probe are exhausted,
-    // sharing this request's single key-probe allowance and never entering the
-    // primary weighted order. It owns no delayed retry cycle, so a failed
-    // fallback attempt only settles the real source and ends the request.
-    if let Some(stage) = fallback {
+    // Distinct last-stage fallback queue, consumed only after every regular
+    // candidate, its finite retries and the regular probe are exhausted. Each
+    // queued source receives one provider pass sharing this request's single key
+    // probe allowance, and every source already attempted by this request is
+    // skipped without consuming the remaining sources of its model. The queue
+    // owns no delayed retry cycle.
+    for stage in fallback {
+        if let Some(key) = fallback_stage_key(stage) {
+            if attempted_sources.contains(&key) {
+                continue;
+            }
+        }
         match stage {
             PoolFallbackStage::Ready(provider_snapshot) => {
                 let mut provider = provider_snapshot.clone();
@@ -1910,6 +1957,9 @@ async fn attempt_non_streaming_inner(
                             clear_ttl_expired_key_runtime_state(&mut provider, &selected);
                         }
                         provider.attempt_key = selected.value.clone();
+                        if let Some(key) = attempted_source_key(&provider) {
+                            attempted_sources.insert(key);
+                        }
                         let (outcome, log) = attempt_candidate(
                             &provider,
                             path,
@@ -1922,12 +1972,15 @@ async fn attempt_non_streaming_inner(
                         .await;
                         attempts.push(log);
                         match outcome {
-                            AttemptResult::Success(response) => {
+                            AttemptResult::Success(mut response) => {
                                 if selected.probe {
                                     settle_key_probe_success(&mut provider, &selected);
                                 }
                                 settle_success(&mut health, &provider, requested, &model);
                                 health.apply();
+                                if let Some(capture) = response.capture.as_mut() {
+                                    capture.fallback_stage = true;
+                                }
                                 return response;
                             }
                             AttemptResult::ReturnToClient(response) => {
@@ -2049,6 +2102,9 @@ async fn attempt_non_streaming_inner(
                             clear_ttl_expired_key_runtime_state(&mut provider, &selected);
                         }
                         provider.attempt_key = selected.value.clone();
+                        if let Some(key) = attempted_source_key(&provider) {
+                            attempted_sources.insert(key);
+                        }
                         let (outcome, log) = attempt_candidate(
                             &provider,
                             path,
@@ -2061,12 +2117,15 @@ async fn attempt_non_streaming_inner(
                         .await;
                         attempts.push(log);
                         match outcome {
-                            AttemptResult::Success(response) => {
+                            AttemptResult::Success(mut response) => {
                                 if selected.probe {
                                     settle_key_probe_success(&mut provider, &selected);
                                 }
                                 health.record_probe_success(&candidate.target);
                                 health.apply();
+                                if let Some(capture) = response.capture.as_mut() {
+                                    capture.fallback_stage = true;
+                                }
                                 return response;
                             }
                             AttemptResult::ReturnToClient(response) => {
@@ -2228,7 +2287,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         suppress_transport_failures,
         probe,
         attempts,
-        None,
+        &[],
     )
     .await
 }
@@ -2243,7 +2302,7 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
     suppress_transport_failures: bool,
     probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
-    fallback: Option<&PoolFallbackStage>,
+    fallback: &[PoolFallbackStage],
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -2277,6 +2336,10 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
         .collect();
     // Whether this request has already used its single key probe.
     let mut key_probe_used = false;
+    // Exact source identities this request has already attempted, whether as a
+    // regular candidate, a probe or an earlier fallback source. The fallback
+    // queue skips an identity already present here.
+    let mut attempted_sources: HashSet<AttemptedSourceKey> = HashSet::new();
     // Read-only usage parser fed from the relay's own passthrough loop; it never
     // influences the bytes written to the caller.
     let mut usage = SseUsageAccumulator::default();
@@ -2290,10 +2353,12 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
     // candidate and bounded retry has failed. `_probe_guard` holds the
     // single-flight guard for the whole probe and releases it on return.
     let mut pending_probe: Option<ProbeCandidate> = probe.cloned();
-    // The configured fallback stage is taken only after every regular candidate,
-    // its finite retries and the regular probe are exhausted. Once taken, this
-    // request is in its fallback pass and never schedules another retry cycle.
-    let mut pending_fallback: Option<PoolFallbackStage> = fallback.cloned();
+    // The configured fallback queue is consumed only after every regular
+    // candidate, its finite retries and the regular probe are exhausted. Once
+    // taken, this request is in its fallback pass and never schedules another
+    // retry cycle; each queued source receives one provider pass.
+    let mut pending_fallback: VecDeque<PoolFallbackStage> =
+        fallback.iter().cloned().collect();
     let mut fallback_active = false;
     // Last key-scoped failure reason of an in-probe rotation, used to re-arm the
     // probe cooldown through the existing probe-failure path when no usable key
@@ -2350,9 +2415,10 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                 if _probe_guard.is_none() {
                     match try_acquire_probe_guard(&probe_candidate.target) {
                         Some(guard) => _probe_guard = Some(guard),
-                        // Another request already probes this mapping key: continue
-                        // to the exhausted path without an attempt.
-                        None => break,
+                        // Another request already probes this mapping key: skip
+                        // this attempt and let the next fallback source (if any)
+                        // continue the request.
+                        None => continue,
                     }
                 }
                 let mut provider = probe_candidate.provider.clone();
@@ -2362,7 +2428,8 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                     select_attempt_key(&provider, now_ts(), key_probe_used, &probe_attempted)
                 else {
                     // No usable key remains after consuming the key-scoped failures:
-                    // re-arm the probe cooldown and fall through to the exhausted path.
+                    // re-arm the probe cooldown and let the next fallback source (if
+                    // any) continue the request.
                     if let Some(reason) = probe_key_failure_reason.take() {
                         health.record_probe_failure(
                             &probe_candidate.target,
@@ -2372,7 +2439,7 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                         );
                         record_provider_failure(&mut failures, &failure_label(&provider), reason);
                     }
-                    break;
+                    continue;
                 };
                 (
                     RetryCandidate {
@@ -2387,10 +2454,17 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                     selected,
                     Some(probe_candidate.protocol),
                 )
-            } else if let Some(stage) = pending_fallback.take() {
-                // The regular stage is exhausted. The fallback receives one pass
-                // with the same request-wide key-probe allowance; no branch below
-                // reschedules this candidate for a delayed retry.
+            } else if let Some(stage) = pending_fallback.pop_front() {
+                // The regular stage is exhausted. A queued source already
+                // attempted by this request is skipped so the same model's
+                // remaining sources stay eligible; an attempted source receives
+                // one pass with the same request-wide key-probe allowance and is
+                // never rescheduled for a delayed retry.
+                if let Some(key) = fallback_stage_key(&stage) {
+                    if attempted_sources.contains(&key) {
+                        continue;
+                    }
+                }
                 fallback_active = true;
                 match stage {
                     PoolFallbackStage::Ready(snapshot) => {
@@ -2489,6 +2563,9 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
             clear_ttl_expired_key_runtime_state(&mut candidate.provider, &selected);
         }
         candidate.provider.attempt_key = selected.value.clone();
+        if let Some(key) = attempted_source_key(&candidate.provider) {
+            attempted_sources.insert(key);
+        }
         // A probe forwards under the probed row's own protocol (the row is
         // auto-disabled, so the normal served-row resolution skips it); every
         // other attempt keeps the resolved effective protocol.
@@ -3172,6 +3249,7 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                                 }
                                 health.apply();
                                 capture.status = status;
+                                capture.fallback_stage = fallback_active;
                                 capture.usage = native_usage
                                     .map(|canonical| canonical.tokens)
                                     .or_else(|| usage.usage());
@@ -3738,8 +3816,14 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 let messages_candidate = pool
                     .candidates
                     .iter()
-                    .chain(pool.fallback.iter())
-                    .any(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages);
+                    .any(|candidate| candidate.protocol == UpstreamProtocol::AnthropicMessages)
+                    || pool.fallback_models.iter().any(|model| {
+                        expand_fallback_model_in(&config.providers, model)
+                            .iter()
+                            .any(|candidate| {
+                                candidate.protocol == UpstreamProtocol::AnthropicMessages
+                            })
+                    });
                 // Validate the clean portable body with only this ingress's
                 // recognized controls removed, so the existing adapters keep
                 // their ordinary contract and every unrecognized reasoning
@@ -3849,7 +3933,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     };
     let pool_fallback = match &pool_plan {
         Some(PoolPlan::Ready { fallback, .. }) => fallback.clone(),
-        _ => None,
+        _ => Vec::new(),
     };
     let is_pool = pool_ordered.is_some();
 
@@ -4028,7 +4112,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     suppress_transport_failures,
                     probe.as_ref(),
                     &mut attempts,
-                    pool_fallback.as_ref(),
+                    &pool_fallback,
                 )
                 .await
             } else {
@@ -4042,7 +4126,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     suppress_transport_failures,
                     probe.as_ref(),
                     &mut attempts,
-                    pool_fallback.as_ref(),
+                    &pool_fallback,
                 )
                 .await
             }
@@ -4056,7 +4140,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 suppress_transport_failures,
                 probe.as_ref(),
                 &mut attempts,
-                pool_fallback.as_ref(),
+                &pool_fallback,
             )
             .await;
             let status = response.status;
@@ -4126,13 +4210,9 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     // A fallback delivery never becomes the next turn's preferred
                     // source. It closes any stale primary hold instead of
                     // publishing a fallback preference; a healthy regular success
-                    // keeps the existing continuation behavior.
-                    let served_is_fallback = config
-                        .model_pools
-                        .iter()
-                        .find(|pool| pool.id.trim() == identity.pool_id.trim())
-                        .is_some_and(|pool| is_configured_fallback(pool, identity));
-                    let record_tool_ids: &[String] = if served_is_fallback {
+                    // keeps the existing continuation behavior, even when its
+                    // exact local model is also reachable through a fallback.
+                    let record_tool_ids: &[String] = if capture.fallback_stage {
                         &[]
                     } else {
                         &capture.served_tool_ids

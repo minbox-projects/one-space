@@ -2949,15 +2949,17 @@ describe("模型池统一对外推理强度与自动绑定 (autoBindCandidateRea
 });
 
 // ---------------------------------------------------------------------------
-// Step 2 (default fallback model): the shared static reasoning catalog spans
-// the configured union of the regular candidates and the optional fallback,
-// exactly like the backend catalog, while a pool without a fallback keeps its
-// previous regular-only catalog.
+// Ordered fallback models: the shared static reasoning catalog spans the
+// configured union of the regular candidates and every provider mapping that
+// serves an ordered fallback gateway model. Every expanded source derives its
+// native control from its exact mapping and effective protocol, and `none` is
+// advertised only when that source declares it. Static support never depends on
+// transient cooldown or key readiness.
 //
-// AC-005 / REQ-003.
+// AC-004 / REQ-003.
 // ---------------------------------------------------------------------------
 
-describe("模型池静态推理目录的常规与回退并集（default fallback）", () => {
+describe("模型池静态推理目录按有序回退模型自动展开", () => {
   const regularProvider = provider({
     id: "p-a",
     name: "Provider A",
@@ -2965,11 +2967,43 @@ describe("模型池静态推理目录的常规与回退并集（default fallback
     mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
   });
 
-  const fallbackProvider = provider({
+  const chatFallbackProvider = provider({
     id: "p-b",
     name: "Provider B",
     protocol: "chat_completions",
-    mappings: [{ local_model: "local-b1", upstream_model: "remote-b1" }],
+    mappings: [
+      {
+        local_model: "local-b1",
+        upstream_model: "remote-b1",
+        reasoning_efforts: ["high", "none"],
+      },
+    ],
+  });
+
+  const responsesFallbackProvider = provider({
+    id: "p-c",
+    name: "Provider C",
+    protocol: "responses",
+    mappings: [
+      {
+        local_model: "local-b1",
+        upstream_model: "remote-b1-alt",
+        reasoning_efforts: ["medium"],
+      },
+    ],
+  });
+
+  const anthropicFallbackProvider = provider({
+    id: "p-d",
+    name: "Provider D",
+    protocol: "anthropic_messages",
+    mappings: [
+      {
+        local_model: "local-b2",
+        upstream_model: "remote-b2",
+        reasoning_efforts: ["max"],
+      },
+    ],
   });
 
   const regularCandidate = {
@@ -2980,20 +3014,7 @@ describe("模型池静态推理目录的常规与回退并集（default fallback
     weight: 1,
   };
 
-  const fallbackCandidate = {
-    provider_id: "p-b",
-    local_model: "local-b1",
-    upstream_model: "remote-b1",
-    protocol: "chat_completions" as const,
-    weight: 1,
-    reasoning: {
-      profile: "openai_effort",
-      values: ["high"],
-      mappings: [{ effort: "high", action: { kind: "enum", value: "high" } }],
-    },
-  };
-
-  /** A pool with one regular candidate and an optional configured fallback. */
+  /** A pool with one regular candidate and an ordered fallback model list. */
   function poolWith(overrides: Record<string, unknown>): GatewayModelPool {
     return {
       id: "pool-fallback",
@@ -3006,67 +3027,120 @@ describe("模型池静态推理目录的常规与回退并集（default fallback
     } as unknown as GatewayModelPool;
   }
 
-  it("回退独有的档位出现在共享静态目录中，覆盖计数按常规与回退的并集统计", () => {
+  function coverageRow(
+    catalog: ReturnType<typeof aiGatewayModule.poolReasoningCatalog>,
+    effort: string,
+  ) {
+    return catalog.reasoning_coverage.find((item) => item.effort === effort);
+  }
+
+  it("每个回退模型展开到全部服务商映射，并按精确映射的协议自动推导档位", () => {
     const catalog = aiGatewayModule.poolReasoningCatalog(
-      [regularProvider, fallbackProvider],
-      poolWith({ fallback: fallbackCandidate }),
+      [
+        regularProvider,
+        chatFallbackProvider,
+        responsesFallbackProvider,
+        anthropicFallbackProvider,
+      ],
+      poolWith({ fallback_models: ["local-b1", "local-b2"] }),
     );
 
-    // The fallback-only effort is advertised by the shared catalog.
-    expect(catalog.reasoning_efforts).toContain("high");
-    const row = catalog.reasoning_coverage.find(
-      (item) => item.effort === "high",
-    );
-    // One mapped candidate of the configured union (regular + fallback).
-    expect(row).toEqual({
+    // One regular candidate plus two mappings for local-b1 and one for local-b2.
+    expect(catalog.reasoning_efforts).toEqual(["medium", "high", "max", "none"]);
+    expect(coverageRow(catalog, "medium")).toEqual({
+      effort: "medium",
+      mapped_candidates: 1,
+      total_candidates: 4,
+    });
+    expect(coverageRow(catalog, "high")).toEqual({
       effort: "high",
       mapped_candidates: 1,
-      total_candidates: 2,
+      total_candidates: 4,
+    });
+    expect(coverageRow(catalog, "max")).toEqual({
+      effort: "max",
+      mapped_candidates: 1,
+      total_candidates: 4,
+    });
+    // `none` is an explicit disable only because the Chat mapping declares it.
+    expect(coverageRow(catalog, "none")).toEqual({
+      effort: "none",
+      mapped_candidates: 1,
+      total_candidates: 4,
     });
   });
 
-  it("回退按自身协议与声明参与并集，不借用其它来源的档位", () => {
-    const anthropicProvider = provider({
-      id: "p-c",
-      name: "Provider C",
+  it("只使用来源真实声明的档位，自动展开不会发明控制或借用其它来源", () => {
+    const declaredHigh = provider({
+      id: "p-b",
+      name: "Provider B",
+      protocol: "chat_completions",
+      mappings: [
+        {
+          local_model: "local-b1",
+          upstream_model: "remote-b1",
+          reasoning_efforts: ["high"],
+        },
+      ],
+    });
+    const undeclared = provider({
+      id: "p-e",
+      name: "Provider E",
+      protocol: "responses",
+      mappings: [
+        { local_model: "local-b2", upstream_model: "remote-b2" },
+      ],
+    });
+    const explicitNone = provider({
+      id: "p-f",
+      name: "Provider F",
       protocol: "anthropic_messages",
-      mappings: [{ local_model: "local-c1", upstream_model: "remote-c1" }],
+      mappings: [
+        {
+          local_model: "local-b3",
+          upstream_model: "remote-b3",
+          reasoning_efforts: ["none"],
+        },
+      ],
     });
 
     const catalog = aiGatewayModule.poolReasoningCatalog(
-      [regularProvider, anthropicProvider],
-      poolWith({
-        fallback: {
-          provider_id: "p-c",
-          local_model: "local-c1",
-          upstream_model: "remote-c1",
-          protocol: "anthropic_messages",
-          weight: 1,
-          reasoning: {
-            profile: "anthropic_effort_inherit",
-            values: ["high"],
-            mappings: [
-              { effort: "high", action: { kind: "enum", value: "high" } },
-            ],
-          },
-        },
-      }),
+      [regularProvider, declaredHigh, undeclared, explicitNone],
+      poolWith({ fallback_models: ["local-b1", "local-b2", "local-b3"] }),
     );
 
-    expect(catalog.reasoning_efforts).toContain("high");
+    expect(catalog.reasoning_efforts).toEqual(["high", "none"]);
+    expect(coverageRow(catalog, "high")?.mapped_candidates).toBe(1);
+    expect(coverageRow(catalog, "none")?.mapped_candidates).toBe(1);
+    expect(coverageRow(catalog, "max")?.mapped_candidates).toBe(0);
+    // The undeclared source contributes a candidate row but no invented control.
+    expect(catalog.reasoning_coverage.every((row) => row.total_candidates === 4)).toBe(
+      true,
+    );
   });
 
-  it("没有回退的池保持原有的常规候选静态目录", () => {
+  it("没有服务商映射的已存回退模型不产生虚假来源", () => {
     const catalog = aiGatewayModule.poolReasoningCatalog(
-      [regularProvider, fallbackProvider],
-      poolWith({}),
+      [regularProvider],
+      poolWith({ fallback_models: ["local-missing"] }),
     );
 
     expect(catalog.reasoning_efforts).toEqual([]);
-    const row = catalog.reasoning_coverage.find(
-      (item) => item.effort === "high",
+    expect(coverageRow(catalog, "high")).toEqual({
+      effort: "high",
+      mapped_candidates: 0,
+      total_candidates: 1,
+    });
+  });
+
+  it("没有回退列表的池保持常规候选静态目录", () => {
+    const catalog = aiGatewayModule.poolReasoningCatalog(
+      [regularProvider, chatFallbackProvider],
+      poolWith({ fallback_models: [] }),
     );
-    expect(row).toEqual({
+
+    expect(catalog.reasoning_efforts).toEqual([]);
+    expect(coverageRow(catalog, "high")).toEqual({
       effort: "high",
       mapped_candidates: 0,
       total_candidates: 1,

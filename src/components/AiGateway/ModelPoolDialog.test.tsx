@@ -2317,18 +2317,22 @@ describe("ModelPoolDialog 添加到候选模型时的自动推理强度绑定与
 });
 
 // ---------------------------------------------------------------------------
-// Step 2 (default fallback model): the pool dialog's optional fallback
-// selector, its save / reopen / replace / clear round trip, the static union
-// with the regular candidates, the separate regular-only readiness, the draft
-// preservation across a configuration refresh and a rejected save, the
-// keyboard-operable control and the bilingual labels.
+// Ordered fallback models: the pool dialog edits a list of gateway model IDs,
+// not provider-specific mappings. Options come from the aggregated model list,
+// aliases and already-selected IDs are excluded, and add / move / remove /
+// clear persist an ordered `fallback_models` string list. Saved-but-unavailable
+// IDs stay visible and clearable. A fallback model has no reasoning editor;
+// regular candidate reasoning editing is unchanged. Static coverage and the
+// concrete-default guard include auto-expanded fallback sources, while runtime
+// readiness remains regular-only. Unsaved order and ordinary candidate drafts
+// survive refreshes and rejected saves; cancel writes nothing.
 //
-// AC-001 / AC-005 / AC-008 · REQ-001 / REQ-003 / REQ-005.
+// AC-001 / AC-004 / AC-006 · REQ-001 / REQ-003 / REQ-004.
 // ---------------------------------------------------------------------------
 
 const FALLBACK_POOL_ID = "pool-fallback";
 
-/** The stored pool under edit: one regular candidate and an optional fallback. */
+/** The stored pool under edit: one regular candidate and an ordered fallback list. */
 function fallbackPoolFixture(overrides: Record<string, unknown> = {}) {
   return {
     id: FALLBACK_POOL_ID,
@@ -2349,87 +2353,83 @@ function fallbackPoolFixture(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** The fallback selector, located through its public accessible name. */
-function fallbackSelector(): HTMLElement {
-  const named = screen.queryAllByRole("combobox", {
-    name: /default fallback model/i,
-  });
-  if (named.length > 0) return named[0];
-  // Tolerate a different but still public test id: the control must be a form
-  // control, never a rendered value.
-  const candidates = screen.queryAllByTestId(/model-pool-fallback/i);
-  const control = candidates.find(
-    (element) =>
-      element.tagName === "SELECT" ||
-      element.getAttribute("role") === "combobox" ||
-      element.getAttribute("role") === "listbox",
-  );
-  if (control) return control;
-  throw new Error("the default fallback model selector is not rendered");
+/** The ordered fallback list container. */
+function fallbackList(): HTMLElement {
+  return screen.getByTestId("model-pool-fallback-list");
 }
 
-/** Every option the fallback selector currently offers, as visible text. */
+/** Every rendered fallback row, in display order; an empty list renders nothing. */
+function fallbackRows(): HTMLElement[] {
+  const list = screen.queryByTestId("model-pool-fallback-list");
+  return list ? within(list).queryAllByRole("listitem") : [];
+}
+
+/** Assert the full fallback order and that no extra row is rendered. */
+function expectFallbackOrder(expected: string[]) {
+  const text = fallbackList().textContent ?? "";
+  const positions = expected.map((model) => {
+    const index = text.indexOf(model);
+    expect(index, `${model} is not rendered in the fallback list`).toBeGreaterThanOrEqual(0);
+    return index;
+  });
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  expect(fallbackRows()).toHaveLength(expected.length);
+}
+
+/** One rendered fallback row by its gateway model ID. */
+function fallbackRow(model: string): HTMLElement {
+  const row = fallbackRows().find((item) => (item.textContent ?? "").includes(model));
+  if (!row) throw new Error(`the fallback model ${model} is not rendered`);
+  return row;
+}
+
+/** The control that adds one gateway model to the ordered fallback list. */
+function fallbackAddControl(): HTMLSelectElement {
+  return screen.getByRole("combobox", {
+    name: /add fallback model/i,
+  }) as HTMLSelectElement;
+}
+
+/** Every gateway model the add control currently offers. */
 function fallbackOptionTexts(): string[] {
-  const control = fallbackSelector();
-  if (control instanceof HTMLSelectElement) {
-    return Array.from(control.options).map((option) => option.textContent ?? "");
-  }
-  if (!document.querySelector('[role="listbox"]')) fireEvent.click(control);
-  return Array.from(document.querySelectorAll('[role="option"]')).map(
+  return Array.from(fallbackAddControl().options).map(
     (option) => option.textContent ?? "",
   );
 }
 
-/** Choose one fallback option by its visible text. */
-function chooseFallback(text: RegExp) {
-  const control = fallbackSelector();
-  if (control instanceof HTMLSelectElement) {
-    const option = Array.from(control.options).find((item) =>
-      text.test(item.textContent ?? ""),
-    );
-    if (!option) {
-      throw new Error(`no fallback option matches ${String(text)}`);
-    }
-    fireEvent.change(control, { target: { value: option.value } });
-    return;
-  }
-  if (!document.querySelector('[role="listbox"]')) fireEvent.click(control);
-  fireEvent.click(screen.getByRole("option", { name: text }));
-}
-
-/** The fallback option that is currently selected, as visible text. */
-function selectedFallbackText(): string {
-  const control = fallbackSelector();
-  if (control instanceof HTMLSelectElement) {
-    const selected = Array.from(control.options).find(
-      (option) => option.selected,
-    );
-    return selected?.textContent ?? "";
-  }
-  return control.textContent ?? "";
-}
-
-/**
- * The fallback candidate's own "high" binding select. It is identified by the
- * native level only the fallback's source mapping declares, so it never
- * collides with the regular candidate's own binding editor.
- */
-function fallbackHighSelect(): HTMLSelectElement {
-  const selects = screen.getAllByLabelText(
-    /mapping matrix: high/i,
-  ) as HTMLSelectElement[];
-  const match = selects.find((select) =>
-    Array.from(select.options).some((option) => option.value === "enum:max"),
+/** Add one gateway model through the public add control. */
+function addFallback(model: string) {
+  const control = fallbackAddControl();
+  const option = Array.from(control.options).find((item) =>
+    (item.textContent ?? "").includes(model),
   );
-  if (!match) {
-    throw new Error(
-      "the fallback candidate exposes no own reasoning binding editor",
-    );
-  }
-  return match;
+  if (!option) throw new Error(`no fallback option serves ${model}`);
+  fireEvent.change(control, { target: { value: option.value } });
 }
 
-describe("ModelPoolDialog 默认回退模型（Step 2）", () => {
+function moveFallback(model: string, direction: "up" | "down") {
+  fireEvent.click(
+    within(fallbackRow(model)).getByRole("button", {
+      name: new RegExp(`move fallback ${model} ${direction}`, "i"),
+    }),
+  );
+}
+
+function removeFallback(model: string) {
+  fireEvent.click(
+    within(fallbackRow(model)).getByRole("button", {
+      name: new RegExp(`remove fallback ${model}`, "i"),
+    }),
+  );
+}
+
+function clearFallbackModels() {
+  fireEvent.click(
+    screen.getByRole("button", { name: /clear fallback models?/i }),
+  );
+}
+
+describe("ModelPoolDialog 有序回退模型（Step 3）", () => {
   beforeEach(async () => {
     resetTauriMocks();
     await i18n.changeLanguage("en");
@@ -2440,107 +2440,67 @@ describe("ModelPoolDialog 默认回退模型（Step 2）", () => {
     installMock();
   });
 
-  /** Open the edit dialog of the stored fallback pool. */
-  async function openFallbackDialog(pool: unknown = fallbackPoolFixture()) {
-    mockState.config = buildConfig([pool]);
+  /** Render the console and open the stored pool's edit dialog. */
+  async function openEditedPool() {
     renderWithProviders(<AiGateway />);
     await screen.findByText("Provider A");
-    fireEvent.click(screen.getByRole("tab", { name: /Model pools/i }));
+    openModelPoolsTab();
     fireEvent.click(
       screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
     );
     return screen.findByTestId("model-pool-dialog");
   }
 
-  it("保存的载荷携带精确的回退身份与声明，重开可见，替换与清除都被持久化", async () => {
-    const pool = fallbackPoolFixture({
-      fallback: {
-        provider_id: "p-b",
-        local_model: "local-b1",
-        upstream_model: "remote-b1",
-        protocol: "responses",
-        weight: 1,
-        reasoning: {
-          profile: "openai_effort",
-          values: ["high"],
-          mappings: [
-            { effort: "high", action: { kind: "enum", value: "high" } },
-          ],
-        },
-      },
-    });
-    await openFallbackDialog(pool);
+  async function openFallbackDialog(pool: unknown = fallbackPoolFixture()) {
+    mockState.config = buildConfig([pool]);
+    return openEditedPool();
+  }
 
-    // The saved fallback is the current selection.
-    expect(selectedFallbackText()).toMatch(/local-b1/);
+  it("按网关模型 ID 有序新增、前后移动、移除与清空，并保存和重开顺序", async () => {
+    await openFallbackDialog(fallbackPoolFixture({ fallback_models: [] }));
 
-    // An identity that is already a regular candidate is never offered again.
-    const optionTexts = fallbackOptionTexts();
-    expect(optionTexts.some((text) => /local-b1/.test(text))).toBe(true);
-    expect(optionTexts.some((text) => /local-a1/.test(text))).toBe(false);
+    addFallback("local-b1");
+    addFallback("local-a2");
+    expectFallbackOrder(["local-b1", "local-a2"]);
 
-    // Saving keeps the exact identity and the pool-local declaration.
+    moveFallback("local-a2", "up");
+    expectFallbackOrder(["local-a2", "local-b1"]);
+
     fireEvent.click(screen.getByTestId("model-pool-save"));
     await waitFor(() => expect(upsertCalls()).toHaveLength(1));
-    const saved = upsertCalls()[0];
-    expect(saved.fallback).toMatchObject({
-      provider_id: "p-b",
-      local_model: "local-b1",
-      upstream_model: "remote-b1",
-      protocol: "responses",
-    });
-    expect(
-      (
-        saved.fallback as {
-          reasoning?: { mappings?: Array<{ effort: string }> };
-        }
-      ).reasoning?.mappings,
-    ).toEqual([{ effort: "high", action: { kind: "enum", value: "high" } }]);
+    const firstSave = upsertCalls()[0];
+    expect(firstSave.fallback_models).toEqual(["local-a2", "local-b1"]);
+    expect(firstSave.fallback).toBeUndefined();
+    // The payload stores gateway model IDs only, never a provider mapping.
+    for (const entry of firstSave.fallback_models as string[]) {
+      expect(typeof entry).toBe("string");
+    }
 
-    // Reopening the saved pool shows the persisted fallback again.
+    // Reopening restores the saved order.
     fireEvent.click(
       screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
     );
     await screen.findByTestId("model-pool-dialog");
-    expect(selectedFallbackText()).toMatch(/local-b1/);
+    expectFallbackOrder(["local-a2", "local-b1"]);
 
-    // Replacing it with another real mapping is persisted.
-    chooseFallback(/local-a2/);
+    removeFallback("local-a2");
     fireEvent.click(screen.getByTestId("model-pool-save"));
     await waitFor(() => expect(upsertCalls()).toHaveLength(2));
-    const replaced = upsertCalls()[1];
-    expect(replaced.fallback).toMatchObject({
-      provider_id: "p-a",
-      local_model: "local-a2",
-      upstream_model: "remote-a2",
-      protocol: "responses",
-    });
-    // The replacement never inherits the previous reference's declaration.
-    expect(
-      (
-        replaced.fallback as {
-          reasoning?: { mappings?: Array<{ effort: string }> };
-        }
-      ).reasoning?.mappings ?? [],
-    ).not.toContainEqual(expect.objectContaining({ effort: "high" }));
+    expect(upsertCalls()[1].fallback_models).toEqual(["local-b1"]);
 
-    // Clearing it through the none choice removes it from the payload.
+    // Clearing the list persists an empty ordered list.
     fireEvent.click(
       screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
     );
     await screen.findByTestId("model-pool-dialog");
-    chooseFallback(/none|no fallback/i);
+    clearFallbackModels();
+    expect(fallbackRows()).toHaveLength(0);
     fireEvent.click(screen.getByTestId("model-pool-save"));
     await waitFor(() => expect(upsertCalls()).toHaveLength(3));
-    // A cleared fallback is absent from the payload (an absent member and an
-    // explicit null both read as "no configured fallback").
-    const clearedFallback = upsertCalls()[2].fallback;
-    expect(clearedFallback === undefined || clearedFallback === null).toBe(
-      true,
-    );
+    expect(upsertCalls()[2].fallback_models).toEqual([]);
   });
 
-  it("静态覆盖按常规与回退的并集统计，运行时就绪只统计常规候选", async () => {
+  it("选项来自聚合网关模型，排除别名与已选回退，并显示去重服务商数", async () => {
     const providers = [
       {
         id: "p-a",
@@ -2549,9 +2509,11 @@ describe("ModelPoolDialog 默认回退模型（Step 2）", () => {
         default_model: null,
         protocol: "chat_completions",
         enabled: true,
-        // No usable key: the regular candidate is never runtime-ready.
-        keys: [],
-        mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
+        mappings: [
+          { local_model: "local-a1", upstream_model: "remote-a1" },
+          { local_model: "local-a2", upstream_model: "remote-a2" },
+          { local_model: "pool-model", upstream_model: "alias-upstream" },
+        ],
       },
       {
         id: "p-b",
@@ -2560,171 +2522,114 @@ describe("ModelPoolDialog 默认回退模型（Step 2）", () => {
         default_model: null,
         protocol: "responses",
         enabled: true,
-        keys: [],
         mappings: [{ local_model: "local-b1", upstream_model: "remote-b1" }],
       },
-    ];
-    const pool = fallbackPoolFixture({
-      default_reasoning_effort: "high",
-      fallback: {
-        provider_id: "p-b",
-        local_model: "local-b1",
-        upstream_model: "remote-b1",
-        protocol: "responses",
-        weight: 1,
-        reasoning: {
-          profile: "openai_effort",
-          values: ["high"],
-          mappings: [{ effort: "high", action: { kind: "enum", value: "high" } }],
-        },
-      },
-    });
-    mockState.config = {
-      ...(buildConfig([pool]) as unknown as Record<string, unknown>),
-      providers,
-      model_pools: [pool],
-    } as unknown as GatewayConfig;
-    mockState.statusPayload = [
       {
-        id: FALLBACK_POOL_ID,
-        name: "Pool One",
-        model: "pool-model",
+        id: "p-c",
+        name: "Provider C",
+        base_url: "https://api.c.example",
+        default_model: null,
+        protocol: "responses",
         enabled: true,
-        default_reasoning_effort: "high",
-        reasoning_efforts: ["high"],
-        reasoning_coverage: [
-          { effort: "low", mapped_candidates: 0, total_candidates: 2 },
-          { effort: "medium", mapped_candidates: 0, total_candidates: 2 },
-          { effort: "high", mapped_candidates: 1, total_candidates: 2 },
-          { effort: "xhigh", mapped_candidates: 0, total_candidates: 2 },
-          { effort: "max", mapped_candidates: 0, total_candidates: 2 },
-          { effort: "none", mapped_candidates: 0, total_candidates: 2 },
+        mappings: [{ local_model: "local-b1", upstream_model: "remote-b1-alt" }],
+      },
+      {
+        id: "p-alias",
+        name: "Provider Alias",
+        base_url: "https://api.alias.example",
+        default_model: null,
+        protocol: "chat_completions",
+        enabled: true,
+        mappings: [
+          { local_model: "other-pool", upstream_model: "other-upstream" },
+          { local_model: "retired-model", upstream_model: "retired-upstream" },
         ],
-        candidates: [
-          {
-            provider_id: "p-a",
-            provider_name: "Provider A",
-            local_model: "local-a1",
-            upstream_model: "remote-a1",
-            protocol: "chat_completions",
-            weight: 1,
-            ready: false,
-            availability: "no_usable_key",
-            reason: "no usable key",
-            cooling_until: null,
-          },
-        ],
-        fallback: {
-          provider_id: "p-b",
-          provider_name: "Provider B",
-          local_model: "local-b1",
-          upstream_model: "remote-b1",
-          protocol: "responses",
-          weight: 1,
-          ready: true,
-          availability: "ready",
-          reason: null,
-          cooling_until: null,
-        },
       },
     ];
+    const pool = fallbackPoolFixture({ fallback_models: [] });
+    const otherPool = {
+      id: "pool-other",
+      name: "Other Pool",
+      model: "other-pool",
+      enabled: true,
+      candidates: [],
+    };
+    mockState.config = {
+      ...(buildConfig([pool, otherPool], providers) as unknown as Record<
+        string,
+        unknown
+      >),
+      model_pool_reserved_models: ["retired-model"],
+      model_pools: [pool, otherPool],
+    } as unknown as GatewayConfig;
 
-    renderWithProviders(<AiGateway />);
-    await screen.findByText("Provider A");
-    fireEvent.click(screen.getByRole("tab", { name: /Model pools/i }));
-    fireEvent.click(
-      screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
-    );
-    await screen.findByTestId("model-pool-dialog");
+    await openEditedPool();
 
-    // The static coverage spans the regular candidate and the fallback.
-    expect(
-      screen.getByTestId("model-pool-reasoning-static-coverage"),
-    ).toHaveTextContent(
-      i18n.t("aiGatewayModelPoolReasoningCoverageValue", {
-        mapped: 1,
-        total: 2,
-      }),
-    );
-    // The runtime readiness stays regular-only: the fallback is not a regular
-    // candidate and never raises the regular ready count.
-    expect(
-      screen.getByTestId("model-pool-reasoning-runtime-readiness"),
-    ).toHaveTextContent(
-      i18n.t("aiGatewayModelPoolReasoningRuntimeReadyCount", {
-        ready: 0,
-        total: 1,
-      }),
-    );
-  });
-
-  it("回退选择器是一个具名、可聚焦且可用键盘操作的组合框", async () => {
-    const user = userEvent.setup();
-    await openFallbackDialog();
-
-    const control = screen.getByRole("combobox", {
-      name: /default fallback model/i,
-    });
-    expect(control).not.toBeDisabled();
-
-    // The control is reachable with the keyboard alone.
-    let tabs = 0;
-    while (document.activeElement !== control && tabs < 100) {
-      await user.tab();
-      tabs += 1;
+    const options = fallbackOptionTexts();
+    expect(options.some((text) => text.includes("local-b1"))).toBe(true);
+    expect(options.some((text) => text.includes("local-a2"))).toBe(true);
+    // The edited pool's own alias, another live pool alias and a retired alias
+    // are never offered as fallback models. A regular candidate stays selectable:
+    // overlap is handled by the request-scoped attempted-source skip.
+    for (const excluded of ["pool-model", "other-pool", "retired-model"]) {
+      expect(
+        options.some((text) => text.includes(excluded)),
+        `${excluded} must not be a fallback option`,
+      ).toBe(false);
     }
-    expect(control).toHaveFocus();
 
-    // A none choice is offered and the control is operable without a pointer.
+    addFallback("local-b1");
+    // Two enabled providers serve local-b1, reported as a distinct count.
+    expect(within(fallbackRow("local-b1")).getByText(/2 providers/i)).toBeInTheDocument();
+
+    // An already-added model is no longer offered for a duplicate entry.
     expect(
-      fallbackOptionTexts().some((text) => /none|no fallback/i.test(text)),
-    ).toBe(true);
-    chooseFallback(/local-b1/);
-    expect(selectedFallbackText()).toMatch(/local-b1/);
+      fallbackOptionTexts().some((text) => text.includes("local-b1")),
+    ).toBe(false);
+
+    // A regular candidate remains a legal fallback model and does not replace
+    // the regular candidate.
+    addFallback("local-a1");
+    expectFallbackOrder(["local-b1", "local-a1"]);
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    const saved = upsertCalls()[0];
+    expect(saved.fallback_models).toEqual(["local-b1", "local-a1"]);
+    expect(
+      (saved.candidates as Array<Record<string, unknown>>).map(
+        (candidate) => candidate.local_model,
+      ),
+    ).toContain("local-a1");
   });
 
-  it("来源已缺失的已存回退保持可见、可保留且可清除，且不被替代", async () => {
-    const pool = fallbackPoolFixture({
-      fallback: {
-        provider_id: "p-gone",
-        local_model: "local-gone",
-        upstream_model: "remote-gone",
-        protocol: "chat_completions",
-        weight: 1,
-      },
-    });
+  it("来源已消失的已存回退模型保持可见、可保留且可清除", async () => {
+    const pool = fallbackPoolFixture({ fallback_models: ["local-gone"] });
     await openFallbackDialog(pool);
 
-    // The missing reference stays visible as the current selection.
-    expect(selectedFallbackText()).toMatch(/local-gone/);
+    expectFallbackOrder(["local-gone"]);
+    expect(fallbackRow("local-gone").textContent).toMatch(/unavailable|no provider/i);
 
-    // An unrelated save retains it; no substitute is inferred.
+    // An unrelated save retains the saved gateway model ID unchanged.
     fireEvent.change(screen.getByTestId("model-pool-name-input"), {
       target: { value: "Renamed Pool" },
     });
     fireEvent.click(screen.getByTestId("model-pool-save"));
     await waitFor(() => expect(upsertCalls()).toHaveLength(1));
-    expect(upsertCalls()[0].fallback).toMatchObject({
-      provider_id: "p-gone",
-      local_model: "local-gone",
-      upstream_model: "remote-gone",
-    });
+    expect(upsertCalls()[0].fallback_models).toEqual(["local-gone"]);
 
-    // It stays clearable.
     fireEvent.click(
       screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
     );
     await screen.findByTestId("model-pool-dialog");
-    chooseFallback(/none|no fallback/i);
+    removeFallback("local-gone");
+    expect(fallbackRows()).toHaveLength(0);
     fireEvent.click(screen.getByTestId("model-pool-save"));
     await waitFor(() => expect(upsertCalls()).toHaveLength(2));
-    const clearedFallback = upsertCalls()[1].fallback;
-    expect(clearedFallback === undefined || clearedFallback === null).toBe(
-      true,
-    );
+    expect(upsertCalls()[1].fallback_models).toEqual([]);
   });
 
-  it("配置刷新与保存被拒都保留未保存的回退目标与推理草稿", async () => {
+  it("回退模型没有独立推理编辑器，常规候选推理编辑保持不变", async () => {
     const providers = [
       {
         id: "p-a",
@@ -2733,7 +2638,6 @@ describe("ModelPoolDialog 默认回退模型（Step 2）", () => {
         default_model: null,
         protocol: "chat_completions",
         enabled: true,
-        keys: [],
         mappings: [
           {
             local_model: "local-a1",
@@ -2749,7 +2653,6 @@ describe("ModelPoolDialog 默认回退模型（Step 2）", () => {
         default_model: null,
         protocol: "responses",
         enabled: true,
-        keys: [],
         mappings: [
           {
             local_model: "local-b1",
@@ -2759,15 +2662,243 @@ describe("ModelPoolDialog 默认回退模型（Step 2）", () => {
         ],
       },
     ];
-    const pool = fallbackPoolFixture();
+    const pool = fallbackPoolFixture({ fallback_models: ["local-b1"] });
+    mockState.config = {
+      ...(buildConfig([pool], providers) as unknown as Record<string, unknown>),
+      providers,
+      model_pools: [pool],
+    } as unknown as GatewayConfig;
+
+    await openEditedPool();
+    expectFallbackOrder(["local-b1"]);
+
+    // No fallback-specific reasoning control is created.
+    expect(
+      screen.queryByTestId("model-pool-reasoning-editor-p-b-local-b1"),
+    ).not.toBeInTheDocument();
+    // The regular candidate keeps its own reasoning editor.
+    expect(
+      screen.getByTestId("model-pool-reasoning-editor-p-a-local-a1"),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/mapping matrix: high/i), {
+      target: { value: "enum:high" },
+    });
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+
+    const saved = upsertCalls()[0];
+    const regular = (saved.candidates as Array<Record<string, unknown>>)[0];
+    expect(
+      (regular.reasoning as { mappings?: unknown }).mappings,
+    ).toContainEqual({ effort: "high", action: { kind: "enum", value: "high" } });
+    expect(saved.fallback_models).toEqual(["local-b1"]);
+    expect(saved.fallback).toBeUndefined();
+  });
+
+  it("静态覆盖把自动展开的回退来源计入并允许回退来源声明具体默认偏好", async () => {
+    const providers = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        base_url: "https://api.a.example",
+        default_model: null,
+        protocol: "chat_completions",
+        enabled: true,
+        mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
+      },
+      {
+        id: "p-b",
+        name: "Provider B",
+        base_url: "https://api.b.example",
+        default_model: null,
+        protocol: "responses",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-b1",
+            upstream_model: "remote-b1",
+            reasoning_efforts: ["high"],
+          },
+        ],
+      },
+    ];
+    const pool = fallbackPoolFixture({
+      default_reasoning_effort: "high",
+      fallback_models: ["local-b1"],
+    });
+    mockState.config = {
+      ...(buildConfig([pool], providers) as unknown as Record<string, unknown>),
+      providers,
+      model_pools: [pool],
+    } as unknown as GatewayConfig;
+    // Real per-model status: the regular mapping has no usable key while the
+    // fallback model is ready. Runtime readiness still counts regular only.
+    mockState.statusPayload = [
+      {
+        id: FALLBACK_POOL_ID,
+        name: "Pool One",
+        model: "pool-model",
+        enabled: true,
+        candidates: [
+          {
+            provider_id: "p-a",
+            provider_name: "Provider A",
+            local_model: "local-a1",
+            upstream_model: "remote-a1",
+            protocol: "chat_completions",
+            weight: 1,
+            ready: false,
+            availability: "no_usable_key",
+            reason: "no usable key",
+            cooling_until: null,
+          },
+        ],
+        fallback_models: [
+          {
+            model: "local-b1",
+            ready: true,
+            ready_sources: 1,
+            total_sources: 1,
+            sources: [
+              {
+                provider_id: "p-b",
+                provider_name: "Provider B",
+                local_model: "local-b1",
+                upstream_model: "remote-b1",
+                protocol: "responses",
+                ready: true,
+                availability: "ready",
+                reason: null,
+                cooling_until: null,
+              },
+            ],
+            reason: null,
+          },
+        ],
+      },
+    ];
+
+    await openEditedPool();
+
+    expect(
+      screen.getByTestId("model-pool-reasoning-static-coverage"),
+    ).toHaveTextContent(
+      i18n.t("aiGatewayModelPoolReasoningCoverageValue", {
+        mapped: 1,
+        total: 2,
+      }),
+    );
+    // Runtime readiness is still regular-only.
+    expect(
+      screen.getByTestId("model-pool-reasoning-runtime-readiness"),
+    ).toHaveTextContent(
+      i18n.t("aiGatewayModelPoolReasoningRuntimeReadyCount", {
+        ready: 0,
+        total: 1,
+      }),
+    );
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    expect(screen.queryByTestId("model-pool-error")).not.toBeInTheDocument();
+    expect(upsertCalls()[0].default_reasoning_effort).toBe("high");
+    expect(upsertCalls()[0].fallback_models).toEqual(["local-b1"]);
+  });
+
+  it("回退来源显式声明 none 时才把 none 默认偏好映射为禁用", async () => {
+    const providers = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        base_url: "https://api.a.example",
+        default_model: null,
+        protocol: "chat_completions",
+        enabled: true,
+        mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
+      },
+      {
+        id: "p-b",
+        name: "Provider B",
+        base_url: "https://api.b.example",
+        default_model: null,
+        protocol: "anthropic_messages",
+        enabled: true,
+        mappings: [
+          {
+            local_model: "local-b1",
+            upstream_model: "remote-b1",
+            reasoning_efforts: ["none"],
+          },
+        ],
+      },
+    ];
+    const pool = fallbackPoolFixture({
+      default_reasoning_effort: "none",
+      fallback_models: ["local-b1"],
+    });
+    mockState.config = {
+      ...(buildConfig([pool], providers) as unknown as Record<string, unknown>),
+      providers,
+      model_pools: [pool],
+    } as unknown as GatewayConfig;
+
+    await openEditedPool();
+
+    const noneRow = screen
+      .getByTestId("model-pool-reasoning-static-coverage")
+      .textContent;
+    expect(noneRow).toBe(
+      i18n.t("aiGatewayModelPoolReasoningCoverageValue", {
+        mapped: 1,
+        total: 2,
+      }),
+    );
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    expect(screen.queryByTestId("model-pool-error")).not.toBeInTheDocument();
+    expect(upsertCalls()[0].default_reasoning_effort).toBe("none");
+  });
+
+  it("配置刷新与保存被拒都保留未保存的回退顺序和常规候选草稿", async () => {
+    const providers = [
+      {
+        id: "p-a",
+        name: "Provider A",
+        base_url: "https://api.a.example",
+        default_model: null,
+        protocol: "chat_completions",
+        enabled: true,
+        mappings: [{ local_model: "local-a1", upstream_model: "remote-a1" }],
+      },
+      {
+        id: "p-b",
+        name: "Provider B",
+        base_url: "https://api.b.example",
+        default_model: null,
+        protocol: "responses",
+        enabled: true,
+        mappings: [{ local_model: "local-b1", upstream_model: "remote-b1" }],
+      },
+      {
+        id: "p-c",
+        name: "Provider C",
+        base_url: "https://api.c.example",
+        default_model: null,
+        protocol: "responses",
+        enabled: true,
+        mappings: [{ local_model: "local-c1", upstream_model: "remote-c1" }],
+      },
+    ];
+    const pool = fallbackPoolFixture({ fallback_models: ["local-b1"] });
     const refreshedConfig = {
-      ...(buildConfig([pool]) as unknown as Record<string, unknown>),
+      ...(buildConfig([pool], providers) as unknown as Record<string, unknown>),
       providers,
       model_pools: [pool],
     } as unknown as GatewayConfig;
     mockState.config = refreshedConfig;
 
-    // Capture the public config-update bridge (no private hook mock).
     const configHandlers: Array<(event: unknown) => void> = [];
     (
       listenMock as unknown as {
@@ -2787,83 +2918,80 @@ describe("ModelPoolDialog 默认回退模型（Step 2）", () => {
       },
     );
 
-    renderWithProviders(<AiGateway />);
-    await screen.findByText("Provider A");
-    fireEvent.click(screen.getByRole("tab", { name: /Model pools/i }));
-    fireEvent.click(
-      screen.getByTestId(`ai-gateway-model-pool-edit-${FALLBACK_POOL_ID}`),
-    );
-    await screen.findByTestId("model-pool-dialog");
-
-    // The public configuration-update bridge is live.
+    await openEditedPool();
     expect(configHandlers.length).toBeGreaterThan(0);
 
-    // Choose the fallback and bind one of its own native levels.
-    chooseFallback(/local-b1/);
-    expect(selectedFallbackText()).toMatch(/local-b1/);
-    fireEvent.change(fallbackHighSelect(), {
-      target: { value: "enum:max" },
-    });
-    expect(fallbackHighSelect().value).toBe("enum:max");
+    addFallback("local-c1");
+    moveFallback("local-c1", "up");
+    expectFallbackOrder(["local-c1", "local-b1"]);
+    const weight = screen.getByRole("spinbutton", { name: /local-a1 weight/i });
+    fireEvent.change(weight, { target: { value: "7" } });
+    expect(weight).toHaveValue(7);
 
-    // A configuration refresh must not drop the unsaved target or binding.
+    // A configuration refresh must not drop the unsaved order or draft.
     mockState.config = { ...refreshedConfig } as unknown as GatewayConfig;
     await act(async () => {
       for (const handler of configHandlers) handler({ payload: undefined });
     });
-    expect(selectedFallbackText()).toMatch(/local-b1/);
-    expect(fallbackHighSelect().value).toBe("enum:max");
+    expectFallbackOrder(["local-c1", "local-b1"]);
+    expect(
+      screen.getByRole("spinbutton", { name: /local-a1 weight/i }),
+    ).toHaveValue(7);
 
     // A rejected save keeps the whole draft and mutates nothing.
     const configBeforeSave = mockState.config;
-    mockState.upsertError = "the fallback reference is unknown";
+    mockState.upsertError = "the fallback list is unknown";
     fireEvent.click(screen.getByTestId("model-pool-save"));
     expect(await screen.findByTestId("model-pool-error")).toHaveTextContent(
       /unknown/i,
     );
-    // The save was attempted through the typed upsert command with the
-    // unsaved fallback target; the backend rejects it, so the stored
-    // configuration and its pool record stay untouched.
     expect(upsertCalls()).toHaveLength(1);
-    expect(upsertCalls()[0].fallback).toMatchObject({
-      provider_id: "p-b",
-      local_model: "local-b1",
-      upstream_model: "remote-b1",
-      protocol: "responses",
-    });
+    expect(upsertCalls()[0].fallback_models).toEqual(["local-c1", "local-b1"]);
+    expect(
+      (upsertCalls()[0].candidates as Array<Record<string, unknown>>)[0].weight,
+    ).toBe(7);
     expect(mockState.config).toBe(configBeforeSave);
-    expect(mockState.config.model_pools?.[0]?.fallback).toBeUndefined();
-    // The unsaved target and binding survive the rejection.
-    expect(selectedFallbackText()).toMatch(/local-b1/);
-    expect(fallbackHighSelect().value).toBe("enum:max");
+    expectFallbackOrder(["local-c1", "local-b1"]);
+
+    // Cancel performs no mutation.
+    fireEvent.click(screen.getByTestId("model-pool-cancel"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
   });
 
-  it("取消不写入任何回退变更", async () => {
-    await openFallbackDialog();
-    chooseFallback(/local-b1/);
+  it("回退模型添加控件具名、可聚焦并可用键盘操作", async () => {
+    const user = userEvent.setup();
+    await openFallbackDialog(fallbackPoolFixture({ fallback_models: [] }));
 
-    fireEvent.click(screen.getByTestId("model-pool-cancel"));
+    const control = fallbackAddControl();
+    expect(control).not.toBeDisabled();
 
-    await waitFor(() => {
-      expect(
-        invokeMock.mock.calls.some(
-          ([command]) => command === "ai_gateway_upsert_model_pool",
-        ),
-      ).toBe(false);
-    });
+    let tabs = 0;
+    while (document.activeElement !== control && tabs < 120) {
+      await user.tab();
+      tabs += 1;
+    }
+    expect(control).toHaveFocus();
+
+    const option = Array.from(control.options).find((item) =>
+      (item.textContent ?? "").includes("local-b1"),
+    );
+    expect(option).toBeDefined();
+    await user.selectOptions(control, option as HTMLOptionElement);
+    expectFallbackOrder(["local-b1"]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Step 2 (default fallback model): the fallback selector's label exists in
-// English and Chinese, the two bundles keep the same key set, and the new
-// keys are recorded in the shipped key lists.
+// The ordered fallback controls and validation copy exist in English and
+// Chinese, the two bundles keep the same key set, and the new keys are recorded
+// in the shipped key lists.
 //
-// AC-008 / REQ-005.
+// AC-006 · REQ-004.
 // ---------------------------------------------------------------------------
 
-/** English labels that identify the optional default fallback control. */
-const FALLBACK_LABEL_PATTERN = /default fallback|fallback model|fallback source/i;
+/** English labels that identify the ordered fallback controls. */
+const FALLBACK_LABEL_PATTERN =
+  /fallback (model|models|list|reason|source)|add fallback model|move fallback model|remove fallback model|clear fallback models?|default fallback model/i;
 
 function translationBundle(language: "en" | "zh"): Record<string, unknown> {
   return i18n.getResourceBundle(language, "translation") as Record<
@@ -2891,8 +3019,8 @@ function readKeyListFile(fileName: string): Set<string> {
   );
 }
 
-describe("默认回退模型的国际化键（Step 2）", () => {
-  it("en 与 zh 同时提供默认回退选择器的文案且两侧键集合一致", () => {
+describe("有序回退模型的国际化键（Step 3）", () => {
+  it("en 与 zh 同时提供回退控件文案且两侧键集合一致", () => {
     const enBundle = translationBundle("en");
     const zhBundle = translationBundle("zh");
 
@@ -2905,7 +3033,6 @@ describe("默认回退模型的国际化键（Step 2）", () => {
       expect(zhValue, `${key} 未翻译`).not.toBe(enBundle[key]);
     }
 
-    // The two bundles keep exactly the same key set.
     expect(
       Object.keys(zhBundle).filter((key) => !(key in enBundle)),
     ).toEqual([]);
@@ -2914,9 +3041,14 @@ describe("默认回退模型的国际化键（Step 2）", () => {
     ).toEqual([]);
   });
 
-  it("新增的回退键收录进 en_keys.txt 与 zh_keys.txt", () => {
+  it("新增的回退键收录进 en_keys.txt 与 zh_keys.txt 且两侧一致", () => {
     const enKeys = readKeyListFile("en_keys.txt");
     const zhKeys = readKeyListFile("zh_keys.txt");
+
+    expect({
+      onlyEn: [...enKeys].filter((key) => !zhKeys.has(key)),
+      onlyZh: [...zhKeys].filter((key) => !enKeys.has(key)),
+    }).toEqual({ onlyEn: [], onlyZh: [] });
 
     const fallbackKeys = fallbackLabelKeys(translationBundle("en"));
     expect(fallbackKeys.length).toBeGreaterThan(0);
@@ -2926,5 +3058,3 @@ describe("默认回退模型的国际化键（Step 2）", () => {
     }
   });
 });
-
-

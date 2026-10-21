@@ -25,7 +25,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { AiGateway } from "@/components/AiGateway";
 import { ModelPoolCard } from "./ModelPoolCard";
-import { protocolShortLabel } from "./gatewayShared";
 import {
   type GatewayConfig,
   type GatewayModelPool,
@@ -618,13 +617,12 @@ describe("ModelPoolCard 静态覆盖标注与就绪隔离（Step 4 repair）", (
 });
 
 // ---------------------------------------------------------------------------
-// Step 2 (default fallback model): the pool card identifies the configured
-// fallback — its provider, source, protocol and its own availability/reason —
-// separately from the regular candidates. A pool with zero ready regular
-// candidates and one ready fallback conveys both facts, and the labels work in
-// English and Chinese.
+// Ordered fallback models: the pool card lists the stored fallback gateway
+// models in order, separately from the regular candidates. Each model reports
+// its own readiness, expanded source count and bounded reason, while the
+// regular candidate and source counts stay regular-only.
 //
-// AC-008 / REQ-005.
+// AC-006 · REQ-004.
 // ---------------------------------------------------------------------------
 
 const FALLBACK_POOL_ID = "pool-fallback";
@@ -648,9 +646,21 @@ const FALLBACK_PROVIDERS = [
     enabled: true,
     mappings: [{ local_model: "local-b1", upstream_model: "remote-b1" }],
   },
+  {
+    id: "p-c",
+    name: "Provider C",
+    base_url: "https://api.c.example",
+    default_model: null,
+    protocol: "responses",
+    enabled: true,
+    mappings: [
+      { local_model: "local-b1", upstream_model: "remote-b1-alt" },
+      { local_model: "local-c1", upstream_model: "remote-c1" },
+    ],
+  },
 ] as unknown as GatewayUpstreamProvider[];
 
-/** A pool with one regular candidate and one configured fallback. */
+/** A pool with one regular candidate and an ordered model-level fallback list. */
 function fallbackCardPool(): GatewayModelPool {
   return {
     id: FALLBACK_POOL_ID,
@@ -666,20 +676,37 @@ function fallbackCardPool(): GatewayModelPool {
         weight: 1,
       },
     ],
-    fallback: {
-      provider_id: "p-b",
-      local_model: "local-b1",
-      upstream_model: "remote-b1",
-      protocol: "responses",
-      weight: 1,
-    },
+    fallback_models: ["local-b1", "local-c1"],
   } as unknown as GatewayModelPool;
 }
 
-/** A pool status whose regular candidate is not ready and whose fallback is. */
-function fallbackCardStatus(
-  fallbackOverrides: Record<string, unknown> = {},
-): GatewayModelPoolStatus {
+/** One expanded per-model fallback source record. */
+function fallbackSource(
+  providerId: string,
+  providerName: string,
+  upstreamModel: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    provider_id: providerId,
+    provider_name: providerName,
+    local_model: "local-b1",
+    upstream_model: upstreamModel,
+    protocol: "responses",
+    ready: true,
+    availability: "ready",
+    reason: null,
+    cooling_until: null,
+    ...overrides,
+  };
+}
+
+/**
+ * An ordered per-model fallback status. The first model is ready through one of
+ * its two expanded providers; the second model is unavailable and carries its
+ * own bounded reason.
+ */
+function fallbackCardStatus(): GatewayModelPoolStatus {
   return {
     id: FALLBACK_POOL_ID,
     name: "Pool One",
@@ -702,19 +729,37 @@ function fallbackCardStatus(
         cooling_until: 1_900_000_000,
       },
     ],
-    fallback: {
-      provider_id: "p-b",
-      provider_name: "Provider B",
-      local_model: "local-b1",
-      upstream_model: "remote-b1",
-      protocol: "responses",
-      weight: 1,
-      ready: true,
-      availability: "ready",
-      reason: null,
-      cooling_until: null,
-      ...fallbackOverrides,
-    },
+    fallback_models: [
+      {
+        model: "local-b1",
+        ready: true,
+        ready_sources: 1,
+        total_sources: 2,
+        sources: [
+          fallbackSource("p-b", "Provider B", "remote-b1"),
+          fallbackSource("p-c", "Provider C", "remote-b1-alt", {
+            ready: false,
+            availability: "source_disabled",
+            reason: "the second provider is disabled",
+          }),
+        ],
+      },
+      {
+        model: "local-c1",
+        ready: false,
+        ready_sources: 0,
+        total_sources: 1,
+        sources: [
+          fallbackSource("p-c", "Provider C", "remote-c1", {
+            local_model: "local-c1",
+            ready: false,
+            availability: "no_usable_key",
+            reason: "no usable key",
+          }),
+        ],
+        reason: "no usable key",
+      },
+    ],
   } as unknown as GatewayModelPoolStatus;
 }
 
@@ -732,61 +777,66 @@ function renderFallbackCard(status: GatewayModelPoolStatus) {
   );
 }
 
-describe("ModelPoolCard 默认回退展示（Step 2）", () => {
+describe("ModelPoolCard 有序回退模型展示（Step 3）", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
   });
 
-  it("零常规就绪且回退就绪时分别展示回退的来源、协议与可用性", () => {
+  it("按存储顺序展示每个回退模型，并各自携带就绪状态与服务商来源", () => {
     renderFallbackCard(fallbackCardStatus());
 
     const card = screen.getByTestId(`ai-gateway-model-pool-${FALLBACK_POOL_ID}`);
+    const fallback = within(card).getByTestId(
+      `ai-gateway-model-pool-fallback-${FALLBACK_POOL_ID}`,
+    );
+    const text = fallback.textContent ?? "";
 
-    // The configured fallback's provider, source and protocol are identified.
-    expect(within(card).getByText("local-b1")).toBeInTheDocument();
-    expect(within(card).getByText("remote-b1")).toBeInTheDocument();
-    expect(within(card).getByText("Provider B")).toBeInTheDocument();
-    expect(
-      within(card).getByText(protocolShortLabel("responses")),
-    ).toBeInTheDocument();
-
-    // The fallback is labelled separately and carries its own availability.
-    expect(card.textContent).toMatch(/fallback/i);
-    expect(card.textContent).toContain(i18n.t("aiGatewayModelPoolStatusReady"));
-
-    // The regular candidates stay regular-only: one regular candidate, and the
-    // cooling regular candidate is never presented as the ready one.
-    expect(within(card).getByText(/1 candidate/i)).toBeInTheDocument();
-    expect(within(card).getAllByText(/ready/i)).toHaveLength(1);
+    expect(text).toContain("local-b1");
+    expect(text).toContain("local-c1");
+    expect(text.indexOf("local-b1")).toBeLessThan(text.indexOf("local-c1"));
+    expect(text).toContain("Provider B");
+    expect(text).toContain("remote-b1");
+    expect(text).toContain(i18n.t("aiGatewayModelPoolStatusReady"));
+    // The first model reports its two expanded sources.
+    expect(text).toMatch(/1\s*\/\s*2|1 of 2|2 sources/i);
   });
 
-  it("回退不可用时单独展示它的原因", () => {
-    renderFallbackCard(
-      fallbackCardStatus({
-        ready: false,
-        availability: "source_disabled",
-        reason: "the fallback source provider is disabled",
-      }),
-    );
+  it("不可用的回退模型展示自己的可用性代码与原因，常规计数不被回退来源放大", () => {
+    renderFallbackCard(fallbackCardStatus());
 
     const card = screen.getByTestId(`ai-gateway-model-pool-${FALLBACK_POOL_ID}`);
-    expect(
-      within(card).getByText("the fallback source provider is disabled"),
-    ).toBeInTheDocument();
-    expect(card.textContent).toContain(
-      i18n.t("aiGatewayModelPoolStatusSourceDisabled"),
+    const fallback = within(card).getByTestId(
+      `ai-gateway-model-pool-fallback-${FALLBACK_POOL_ID}`,
     );
-    // The fallback identity stays visible even while it is unavailable.
-    expect(within(card).getByText("local-b1")).toBeInTheDocument();
+
+    expect(fallback.textContent).toContain(
+      i18n.t("aiGatewayModelPoolStatusNoUsableKey"),
+    );
+    expect(within(fallback).getByText("no usable key")).toBeInTheDocument();
+    expect(fallback.textContent).toContain("local-c1");
+
+    // One regular candidate from one provider; fallback sources never inflate it.
+    const regularCounts = within(card).getByText(/1 candidate/i).parentElement;
+    expect(regularCounts).not.toBeNull();
+    expect(
+      within(regularCounts as HTMLElement).getByText(/1 source/i),
+    ).toBeInTheDocument();
   });
 
-  it("回退展示在中文下同样可用", async () => {
+  it("有序回退展示在中文下同样可用", async () => {
     await i18n.changeLanguage("zh");
     renderFallbackCard(fallbackCardStatus());
 
     const card = screen.getByTestId(`ai-gateway-model-pool-${FALLBACK_POOL_ID}`);
-    expect(within(card).getByText("local-b1")).toBeInTheDocument();
-    expect(card.textContent).toContain(i18n.t("aiGatewayModelPoolStatusReady"));
-    expect(card.textContent).not.toContain("Ready");
+    const fallback = within(card).getByTestId(
+      `ai-gateway-model-pool-fallback-${FALLBACK_POOL_ID}`,
+    );
+
+    expect(fallback.textContent).toContain("local-b1");
+    expect(fallback.textContent).toContain("local-c1");
+    expect(fallback.textContent).toContain(
+      i18n.t("aiGatewayModelPoolStatusNoUsableKey"),
+    );
+    expect(fallback.textContent).not.toContain("Ready");
   });
 });

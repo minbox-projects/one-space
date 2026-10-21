@@ -33,8 +33,10 @@ pub const MAX_PROVIDER_WEIGHT: u32 = 100;
 /// `keys` pool; version 1 and older files are converted once by
 /// [`super::migration::migrate_legacy_config`]. Version 3 carries the
 /// `opencode-go` template identity and provider bindings, replacing the old
-/// `opencode-zen` built-in through the same version-gated migration.
-pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 3;
+/// `opencode-zen` built-in through the same version-gated migration. Version 4
+/// replaces a pool's single provider-specific `fallback` candidate with an
+/// ordered list of gateway local model ids.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 4;
 
 pub(in crate::ai_gateway) fn default_port() -> u16 {
     if cfg!(debug_assertions) {
@@ -759,11 +761,11 @@ impl Default for ModelPoolCandidate {
 /// always serialized so a legacy pool persists as `auto` without inferring a
 /// capability.
 ///
-/// `fallback` is the optional last-stage source the pool may use after every
-/// regular candidate is exhausted. It references the same real provider mapping
-/// shape as a regular candidate, including the pool-local reasoning declaration
-/// and the inclusive 1..=100 weight whose stored default is 1, but it never
-/// enters primary scheduling. An absent member means no configured fallback.
+/// `fallback_models` is the ordered list of gateway local model ids used after
+/// every regular candidate is exhausted. Each entry expands at request time to
+/// the provider mappings serving that local model, so a fallback stores no
+/// provider, upstream model, protocol, weight or fallback-local reasoning.
+/// An absent or empty list means no configured fallback.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelPool {
     pub id: String,
@@ -777,8 +779,8 @@ pub struct ModelPool {
     pub candidates: Vec<ModelPoolCandidate>,
     #[serde(default)]
     pub default_reasoning_effort: PoolDefaultReasoningEffort,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback: Option<ModelPoolCandidate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_models: Vec<String>,
 }
 
 impl Default for ModelPool {
@@ -790,7 +792,7 @@ impl Default for ModelPool {
             enabled: true,
             candidates: Vec::new(),
             default_reasoning_effort: PoolDefaultReasoningEffort::Auto,
-            fallback: None,
+            fallback_models: Vec::new(),
         }
     }
 }

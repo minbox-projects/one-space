@@ -60,6 +60,10 @@ struct PoolCandidateKey {
 struct PoolSchedulerKey {
     candidate: PoolCandidateKey,
     ingress: &'static str,
+    /// `None` for the primary pool order; the stored fallback model id for the
+    /// fallback queue. A fallback source therefore never shares accounting with
+    /// the primary order or with another fallback model.
+    fallback_model: Option<String>,
 }
 
 fn candidate_key(pool_id: &str, identity: &PoolCandidateIdentity) -> PoolCandidateKey {
@@ -83,15 +87,6 @@ fn candidate_key_of(pool_id: &str, candidate: &ModelPoolCandidate) -> PoolCandid
     }
 }
 
-/// Whether two stored references name the exact same source identity. The role
-/// (regular candidate or fallback) is deliberately not part of the identity.
-fn same_candidate_identity(left: &ModelPoolCandidate, right: &ModelPoolCandidate) -> bool {
-    left.provider_id.trim() == right.provider_id.trim()
-        && left.local_model.trim() == right.local_model.trim()
-        && left.upstream_model.trim() == right.upstream_model.trim()
-        && left.protocol == right.protocol
-}
-
 fn scheduler_key(
     pool_id: &str,
     identity: &PoolCandidateIdentity,
@@ -100,6 +95,20 @@ fn scheduler_key(
     PoolSchedulerKey {
         candidate: candidate_key(pool_id, identity),
         ingress,
+        fallback_model: None,
+    }
+}
+
+fn fallback_scheduler_key(
+    pool_id: &str,
+    identity: &PoolCandidateIdentity,
+    ingress: &'static str,
+    fallback_model: &str,
+) -> PoolSchedulerKey {
+    PoolSchedulerKey {
+        candidate: candidate_key(pool_id, identity),
+        ingress,
+        fallback_model: Some(fallback_model.trim().to_string()),
     }
 }
 
@@ -159,14 +168,13 @@ pub(in crate::ai_gateway) fn pool_provider_copy_count() -> usize {
 /// The plan for one request whose model is a current or retired pool alias.
 pub(in crate::ai_gateway) enum PoolPlan {
     /// The pool has at least one usable selected candidate (or an eligible
-    /// probe), or the configured fallback is the only reachable stage.
-    /// `ordered` is the pool SWRR order and never contains an ordinary or
-    /// unselected source; the fallback is carried separately and never enters
-    /// that order.
+    /// probe), or at least one reachable fallback source. `ordered` is the pool
+    /// SWRR order and never contains an ordinary or unselected source; the
+    /// fallback queue is carried separately and never enters that order.
     Ready {
         ordered: Vec<GatewayUpstreamProvider>,
         probe: Option<ProbeCandidate>,
-        fallback: Option<PoolFallbackStage>,
+        fallback: Vec<PoolFallbackStage>,
     },
     /// The alias fails closed before any ordinary route is considered.
     Fenced { message: String },
@@ -180,10 +188,10 @@ pub(in crate::ai_gateway) enum PoolPlan {
     },
 }
 
-/// One reachable configured fallback stage. A ready fallback is a single
-/// prepared source pass; a probe variant is the one shared half-open recovery
-/// attempt for an auto-disabled fallback mapping. Neither variant is part of the
-/// primary weighted order.
+/// One reachable fallback source. A ready source is a single prepared provider
+/// pass; a probe variant is the one shared half-open recovery attempt for an
+/// auto-disabled fallback mapping. Neither variant is part of the primary
+/// weighted order, and the request consumes the queue in stored model order.
 #[derive(Clone)]
 pub(in crate::ai_gateway) enum PoolFallbackStage {
     Ready(GatewayUpstreamProvider),
@@ -390,6 +398,78 @@ fn resolve_pool_candidates(
         .collect()
 }
 
+/// Expand one stored fallback gateway model to every provider mapping that
+/// serves its trimmed local model, preserving provider and mapping order.
+///
+/// Each expanded reference carries the exact provider, local/upstream pair and
+/// effective protocol, plus the native reasoning declaration derived from that
+/// mapping. The same exact identity is emitted once. Disabled providers and
+/// mappings are included so the status path can report their availability; the
+/// request path applies the ordinary source eligibility contract afterwards.
+pub(in crate::ai_gateway) fn expand_fallback_model_in(
+    providers: &[GatewayUpstreamProvider],
+    local_model: &str,
+) -> Vec<ModelPoolCandidate> {
+    let local_model = local_model.trim();
+    if local_model.is_empty() {
+        return Vec::new();
+    }
+    let mut seen: Vec<(String, String, String, &'static str)> = Vec::new();
+    let mut expanded = Vec::new();
+    for provider in providers {
+        let provider_id = provider.id.trim();
+        for mapping in &provider.mappings {
+            if mapping.local_model.trim() != local_model {
+                continue;
+            }
+            let upstream_model = mapping.upstream_model.trim();
+            if upstream_model.is_empty() {
+                continue;
+            }
+            let protocol = mapping.effective_protocol(provider.protocol);
+            let identity = (
+                provider_id.to_string(),
+                local_model.to_string(),
+                upstream_model.to_string(),
+                protocol.endpoint_path(),
+            );
+            if seen.contains(&identity) {
+                continue;
+            }
+            seen.push(identity);
+            expanded.push(ModelPoolCandidate {
+                provider_id: provider_id.to_string(),
+                local_model: local_model.to_string(),
+                upstream_model: upstream_model.to_string(),
+                protocol,
+                weight: 1,
+                reasoning: super::reasoning::auto_candidate_reasoning(mapping, protocol),
+            });
+        }
+    }
+    expanded
+}
+
+/// Expand a pool's ordered fallback model list into ordered per-model groups.
+/// Each group keeps the stored model id and the flattened candidate range, so
+/// every source of the first stored model precedes every source of the next.
+fn expand_pool_fallback_groups(
+    config: &GatewayConfig,
+    pool: &ModelPool,
+) -> (Vec<(String, usize, usize)>, Vec<ModelPoolCandidate>) {
+    let mut groups = Vec::new();
+    let mut expanded = Vec::new();
+    for model in &pool.fallback_models {
+        let model = model.trim().to_string();
+        let candidates = expand_fallback_model_in(&config.providers, &model);
+        let start = expanded.len();
+        let len = candidates.len();
+        expanded.extend(candidates);
+        groups.push((model, start, len));
+    }
+    (groups, expanded)
+}
+
 /// Plan a pool request for `alias`. Returns `None` when the alias is neither a
 /// current pool model nor a reserved retired alias, so the caller keeps the
 /// ordinary route.
@@ -428,14 +508,14 @@ pub(in crate::ai_gateway) fn plan_pool_request(
         });
     }
     // Resolve each candidate's native reasoning control (or rejection) before
-    // any scheduler/health mutation. An `auto` preference keeps every candidate
-    // and injects no control.
+    // any scheduler/health mutation. The configured union spans the regular
+    // candidates and every auto-expanded fallback source. An `auto` preference
+    // keeps every candidate and injects no control.
     let preference = super::reasoning::resolve_pool_preference(pool, request.requested);
+    let (fallback_groups, fallback_candidates) = expand_pool_fallback_groups(config, pool);
     let mut natives: Vec<Option<PoolNativeReasoning>> = Vec::with_capacity(pool.candidates.len());
-    // Outer `None` means no fallback is configured; the inner value is the
-    // fallback's resolved control for this request (`None` when it cannot serve
-    // the preference).
-    let fallback_native: Option<Option<PoolNativeReasoning>>;
+    let mut fallback_natives: Vec<Option<PoolNativeReasoning>> =
+        Vec::with_capacity(fallback_candidates.len());
     if let Some(preference) = preference {
         let mut declarations = 0usize;
         let mut valid = 0usize;
@@ -472,13 +552,16 @@ pub(in crate::ai_gateway) fn plan_pool_request(
             let native = classify(candidate);
             natives.push(native);
         }
-        fallback_native = pool.fallback.as_ref().map(|candidate| classify(candidate));
+        for candidate in &fallback_candidates {
+            let native = classify(candidate);
+            fallback_natives.push(native);
+        }
         if declarations == 0 {
             return Some(PoolPlan::Rejected {
                 status: 400,
                 code: "unsupported_reasoning_effort",
                 message: format!(
-                    "model pool '{alias}' does not support reasoning effort '{}': no selected candidate declares a mapping for it",
+                    "model pool '{alias}' does not support reasoning effort '{}': no selected candidate or fallback source declares a mapping for it",
                     preference.as_str()
                 ),
             });
@@ -515,10 +598,10 @@ pub(in crate::ai_gateway) fn plan_pool_request(
             .iter()
             .map(|candidate| Some(PoolNativeReasoning::provider_default(candidate.protocol)))
             .collect();
-        fallback_native = pool
-            .fallback
-            .as_ref()
-            .map(|candidate| Some(PoolNativeReasoning::provider_default(candidate.protocol)));
+        fallback_natives = fallback_candidates
+            .iter()
+            .map(|candidate| Some(PoolNativeReasoning::provider_default(candidate.protocol)))
+            .collect();
     }
     let resolved =
         resolve_pool_candidates(config, pool, alias, Some(protocol), Some(&natives), now);
@@ -531,7 +614,7 @@ pub(in crate::ai_gateway) fn plan_pool_request(
             candidate.available && candidate.prepared.is_some() && candidate.native.is_some()
         })
         .collect();
-    let mut ordered = pool_weighted_order(&healthy, &pool.id, protocol.endpoint_path());
+    let mut ordered = pool_weighted_order(&healthy, &pool.id, protocol.endpoint_path(), None);
     // A selected mapping whose only usable-key state is an eligible quota-key
     // probe is appended after the healthy primaries (in candidate order), so its
     // at-most-one key probe stays reachable without consuming a primary slot.
@@ -556,47 +639,23 @@ pub(in crate::ai_gateway) fn plan_pool_request(
     // At most one half-open probe (mapping or, only when no mapping probe is
     // eligible, a selected auto-disabled mapping) is permitted per pool request.
     let probe = pool_probe(&resolved, alias, protocol, now);
-    // The configured fallback is a distinct last stage: it is never appended to
-    // the primary weighted order or the primary probe. A ready fallback (or one
-    // whose only usable-key state is an eligible quota probe) is attempted after
-    // the regular stage; a mapping probe is offered only while the regular stage
-    // has no probe of its own, because the allowance is request-wide.
-    let fallback = pool.fallback.as_ref().and_then(|stored| {
-        let native = fallback_native.clone().flatten();
-        let resolved = resolve_candidate(config, pool, alias, stored, Some(protocol), native, now);
-        let prepared = resolved.prepared.clone()?;
-        if resolved.native.is_none() {
-            return None;
-        }
-        if resolved.available {
-            return Some(PoolFallbackStage::Ready(prepared));
-        }
-        if resolved.availability == "no_usable_key"
-            && find_key_probe_candidate(&prepared, now).is_some()
-        {
-            return Some(PoolFallbackStage::Ready(prepared));
-        }
-        if probe.is_none() && resolved.availability == "mapping_unavailable" {
-            return find_probe_candidate(
-                std::slice::from_ref(&prepared),
-                Some(alias),
-                resolved.identity.protocol,
-                &[],
-                now,
-            )
-            .map(|mut candidate| {
-                candidate.target = MappingTarget::new(
-                    &resolved.identity.provider_id,
-                    &resolved.identity.local_model,
-                    &resolved.identity.upstream_model,
-                );
-                candidate.protocol = resolved.identity.protocol;
-                PoolFallbackStage::Probe(candidate)
-            });
-        }
-        None
-    });
-    if ordered.is_empty() && probe.is_none() && fallback.is_none() {
+    // The expanded fallback list is a distinct last stage: it is never appended
+    // to the primary weighted order or the primary probe. Each stored model
+    // contributes its own SWRR order, and the groups stay concatenated so every
+    // source of an earlier model precedes every source of a later one. A mapping
+    // probe is offered only while the regular stage has no probe of its own.
+    let fallback = fallback_queue(
+        config,
+        pool,
+        alias,
+        protocol,
+        &fallback_candidates,
+        &fallback_natives,
+        &fallback_groups,
+        probe.is_none(),
+        now,
+    );
+    if ordered.is_empty() && probe.is_none() && fallback.is_empty() {
         return Some(PoolPlan::Fenced {
             message: pool_unavailable_message(alias, &resolved),
         });
@@ -663,13 +722,16 @@ fn pool_unavailable_message(alias: &str, resolved: &[ResolvedCandidate]) -> Stri
 /// (provider, original local/upstream pair and stored protocol) *and the ingress
 /// protocol*, so two pools, two same-provider models, and the Chat/Responses
 /// entries routing to the same stored candidate each own an independent cycle.
-/// An unavailable candidate is filtered before it can consume a slot. The
-/// returned primary candidate is first, followed by the remaining candidates in
-/// descending updated current-weight order.
+/// A `fallback_model` additionally isolates one stored fallback model's cycle
+/// from the primary order and from every other fallback model. An unavailable
+/// candidate is filtered before it can consume a slot. The returned primary
+/// candidate is first, followed by the remaining candidates in descending
+/// updated current-weight order.
 fn pool_weighted_order(
     candidates: &[&ResolvedCandidate],
     pool_id: &str,
     ingress: &'static str,
+    fallback_model: Option<&str>,
 ) -> Vec<GatewayUpstreamProvider> {
     if candidates.is_empty() {
         return Vec::new();
@@ -686,7 +748,12 @@ fn pool_weighted_order(
     }
     let keys: Vec<PoolSchedulerKey> = candidates
         .iter()
-        .map(|candidate| scheduler_key(pool_id, &candidate.identity, ingress))
+        .map(|candidate| match fallback_model {
+            Some(model) => {
+                fallback_scheduler_key(pool_id, &candidate.identity, ingress, model)
+            }
+            None => scheduler_key(pool_id, &candidate.identity, ingress),
+        })
         .collect();
     let tokens: Vec<String> = candidates
         .iter()
@@ -747,6 +814,119 @@ fn pool_weighted_order(
         }
     }
     ordered
+}
+
+/// Build the ordered fallback queue from the stored model groups.
+///
+/// Every stored model contributes its own equal-weight smooth weighted round
+/// robin order over its currently eligible sources, scoped to the pool, that
+/// fallback model and the ingress protocol. Sources whose only usable-key state
+/// is an eligible quota probe follow that model's ready sources, and the first
+/// auto-disabled mapping may lend the request-wide mapping probe while the
+/// regular stage has none. Groups stay concatenated, so a model's sources are
+/// all attempted before the next model becomes eligible.
+fn fallback_queue(
+    config: &GatewayConfig,
+    pool: &ModelPool,
+    alias: &str,
+    ingress: UpstreamProtocol,
+    candidates: &[ModelPoolCandidate],
+    natives: &[Option<PoolNativeReasoning>],
+    groups: &[(String, usize, usize)],
+    probe_allowed: bool,
+    now: u64,
+) -> Vec<PoolFallbackStage> {
+    let mut queue = Vec::new();
+    let mut mapping_probe_used = !probe_allowed;
+    for (model, start, len) in groups {
+        let end = (*start).saturating_add(*len).min(candidates.len());
+        let Some(group_candidates) = candidates.get(*start..end) else {
+            continue;
+        };
+        let Some(group_natives) = natives.get(*start..end) else {
+            continue;
+        };
+        let resolved: Vec<ResolvedCandidate> = group_candidates
+            .iter()
+            .zip(group_natives.iter())
+            .map(|(candidate, native)| {
+                resolve_candidate(
+                    config,
+                    pool,
+                    alias,
+                    candidate,
+                    Some(ingress),
+                    native.clone(),
+                    now,
+                )
+            })
+            .collect();
+        let healthy: Vec<&ResolvedCandidate> = resolved
+            .iter()
+            .filter(|candidate| {
+                candidate.available && candidate.prepared.is_some() && candidate.native.is_some()
+            })
+            .collect();
+        for prepared in pool_weighted_order(
+            &healthy,
+            &pool.id,
+            ingress.endpoint_path(),
+            Some(model.as_str()),
+        ) {
+            queue.push(PoolFallbackStage::Ready(prepared));
+        }
+        for candidate in &resolved {
+            if candidate.available
+                || candidate.availability != "no_usable_key"
+                || candidate.prepared.is_none()
+                || candidate.native.is_none()
+            {
+                continue;
+            }
+            let Some(prepared) = candidate.prepared.as_ref() else {
+                continue;
+            };
+            if find_key_probe_candidate(prepared, now).is_some() {
+                let cloned = prepared.clone();
+                #[cfg(test)]
+                note_pool_provider_copy();
+                queue.push(PoolFallbackStage::Ready(cloned));
+            }
+        }
+        if mapping_probe_used {
+            continue;
+        }
+        let probe_source = resolved.iter().find(|candidate| {
+            candidate.native.is_some()
+                && candidate.prepared.is_some()
+                && candidate.availability == "mapping_unavailable"
+                && pool_candidate_cooling(&candidate.identity).is_none()
+        });
+        let Some(resolved) = probe_source else {
+            continue;
+        };
+        let Some(prepared) = resolved.prepared.as_ref() else {
+            continue;
+        };
+        let Some(mut candidate) = find_probe_candidate(
+            std::slice::from_ref(prepared),
+            Some(alias),
+            resolved.identity.protocol,
+            &[],
+            now,
+        ) else {
+            continue;
+        };
+        candidate.target = MappingTarget::new(
+            &resolved.identity.provider_id,
+            &resolved.identity.local_model,
+            &resolved.identity.upstream_model,
+        );
+        candidate.protocol = resolved.identity.protocol;
+        queue.push(PoolFallbackStage::Probe(candidate));
+        mapping_probe_used = true;
+    }
+    queue
 }
 
 /// The single eligible half-open probe inside the pool's own candidate set.
@@ -928,58 +1108,86 @@ pub(in crate::ai_gateway) fn pool_candidate_cooling(
     Some(now_ts().saturating_add(seconds))
 }
 
-/// Prune pool scheduler and cooldown entries owned by pool/candidate removals
-/// after a successful configuration publication. A failed write never reaches
-/// this call.
+/// Prune pool scheduler and cooldown entries that this publication removed. A
+/// failed write never reaches this call.
+///
+/// Ownership is the union of regular candidate identities and every provider
+/// mapping that serves a stored fallback model, resolved against the published
+/// provider list. An identity kept in either role therefore survives, including
+/// one reached both as a regular candidate and through a fallback model. When the
+/// published configuration cannot be re-read, only removed pool ids are pruned
+/// so runtime state is retained rather than guessed away.
+///
+/// The tables are process-global and can also hold entries for a configuration
+/// outside the before/after pair, so an id is only considered when the pair
+/// itself contains it. A pool that appears on neither side keeps all of its
+/// scheduler and cooldown state.
 pub(in crate::ai_gateway) fn prune_removed_pools(before: &[ModelPool], after: &[ModelPool]) {
-    let mut removed_keys: Vec<PoolCandidateKey> = Vec::new();
-    let mut removed_pools: Vec<String> = Vec::new();
-    for old in before {
-        match after.iter().find(|pool| pool.id == old.id) {
-            None => removed_pools.push(old.id.trim().to_string()),
-            Some(new) => {
-                // An identity remains configured when it is kept in either role,
-                // so a reference moved between regular and fallback keeps its
-                // owned runtime state instead of being pruned as removed.
-                let kept = |candidate: &ModelPoolCandidate| {
-                    new.candidates
-                        .iter()
-                        .chain(new.fallback.iter())
-                        .any(|other| same_candidate_identity(other, candidate))
-                };
-                for candidate in &old.candidates {
-                    if !kept(candidate) {
-                        removed_keys.push(candidate_key_of(&old.id, candidate));
-                    }
-                }
-                if let Some(fallback) = old.fallback.as_ref() {
-                    if !kept(fallback) {
-                        removed_keys.push(candidate_key_of(&old.id, fallback));
-                    }
-                }
-            }
-        }
-    }
-    if removed_pools.is_empty() && removed_keys.is_empty() {
+    let touched_pools: HashSet<String> = before
+        .iter()
+        .chain(after.iter())
+        .map(|pool| pool.id.trim().to_string())
+        .filter(|pool_id| !pool_id.is_empty())
+        .collect();
+    if touched_pools.is_empty() {
         return;
     }
+    let removed_pools: HashSet<String> = before
+        .iter()
+        .filter(|old| !after.iter().any(|new| new.id == old.id))
+        .map(|pool| pool.id.trim().to_string())
+        .collect();
+    let published = super::storage::read_config_shared().ok();
+    let owned: Option<HashSet<PoolCandidateKey>> = published.as_ref().map(|config| {
+        config
+            .model_pools
+            .iter()
+            .flat_map(|pool| owned_candidate_keys(pool, &config.providers))
+            .collect()
+    });
     {
         let mut scheduler = pool_scheduler()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Prune every ingress variant of a removed pool/candidate.
-        scheduler.retain(|key, _| {
-            !removed_pools.contains(&key.candidate.pool_id)
-                && !removed_keys.contains(&key.candidate)
+        // Prune every ingress variant of a candidate this publication no longer
+        // owns; leave every other configuration's entries untouched.
+        scheduler.retain(|key, _| match owned.as_ref() {
+            Some(owned) => {
+                !touched_pools.contains(&key.candidate.pool_id)
+                    || owned.contains(&key.candidate)
+            }
+            None => !removed_pools.contains(&key.candidate.pool_id),
         });
     }
     {
         let mut cooldown = pool_cooldown()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cooldown
-            .retain(|key, _| !removed_pools.contains(&key.pool_id) && !removed_keys.contains(key));
+        cooldown.retain(|key, _| match owned.as_ref() {
+            Some(owned) => {
+                !touched_pools.contains(&key.pool_id) || owned.contains(key)
+            }
+            None => !removed_pools.contains(&key.pool_id),
+        });
     }
+}
+
+/// Every candidate identity one pool owns in the published configuration.
+fn owned_candidate_keys(
+    pool: &ModelPool,
+    providers: &[GatewayUpstreamProvider],
+) -> HashSet<PoolCandidateKey> {
+    let mut owned: HashSet<PoolCandidateKey> = pool
+        .candidates
+        .iter()
+        .map(|candidate| candidate_key_of(&pool.id, candidate))
+        .collect();
+    for model in &pool.fallback_models {
+        for candidate in expand_fallback_model_in(providers, model) {
+            owned.insert(candidate_key_of(&pool.id, &candidate));
+        }
+    }
+    owned
 }
 
 /// The caller-facing diagnostic label for one failed attempt.
@@ -1024,21 +1232,6 @@ pub(in crate::ai_gateway) fn reference_resolves_in(
                     && mapping.upstream_model.trim() == candidate.upstream_model.trim()
                     && mapping.effective_protocol(provider.protocol) == candidate.protocol
             })
-    })
-}
-
-/// Whether one resolved pool identity is the pool's configured fallback rather
-/// than one of its regular candidates. The role decides whether a delivered
-/// tool call may publish a continuation preference.
-pub(in crate::ai_gateway) fn is_configured_fallback(
-    pool: &ModelPool,
-    identity: &PoolCandidateIdentity,
-) -> bool {
-    pool.fallback.as_ref().is_some_and(|fallback| {
-        fallback.provider_id.trim() == identity.provider_id.trim()
-            && fallback.local_model.trim() == identity.local_model.trim()
-            && fallback.upstream_model.trim() == identity.upstream_model.trim()
-            && fallback.protocol == identity.protocol
     })
 }
 
@@ -1103,30 +1296,52 @@ pub(in crate::ai_gateway) fn validate_pool_upsert(
         }
         seen.push(tuple);
     }
-    if let Some(fallback) = pool.fallback.as_mut() {
-        fallback.provider_id = fallback.provider_id.trim().to_string();
-        fallback.local_model = fallback.local_model.trim().to_string();
-        fallback.upstream_model = fallback.upstream_model.trim().to_string();
-        if fallback.provider_id.is_empty() {
-            return Err("a model pool fallback requires a provider id".to_string());
+    // The ordered fallback list carries gateway local model ids only. Every
+    // entry is trimmed, nonblank and unique, may not name a current or retired
+    // pool alias, and a newly submitted entry must resolve to at least one
+    // provider mapping. An unchanged saved entry stays retainable and clearable
+    // after its source disappears.
+    let forbidden = {
+        let mut aliases = reserved_aliases(config);
+        aliases.insert(pool.model.clone());
+        aliases
+    };
+    let existing_pool = config
+        .model_pools
+        .iter()
+        .find(|stored| stored.id == pool.id);
+    let mut fallback_models: Vec<String> = Vec::with_capacity(pool.fallback_models.len());
+    for model in &pool.fallback_models {
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            return Err("a model pool fallback model must not be blank".to_string());
         }
-        if fallback.local_model.is_empty() || fallback.upstream_model.is_empty() {
-            return Err(
-                "a model pool fallback requires a nonblank local and upstream model".to_string(),
-            );
-        }
-        if fallback.weight < MIN_PROVIDER_WEIGHT || fallback.weight > MAX_PROVIDER_WEIGHT {
+        if fallback_models.contains(&model) {
             return Err(format!(
-                "fallback weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
+                "duplicate model pool fallback model '{model}'"
             ));
         }
-        if seen.contains(&candidate_tuple(fallback)) {
+        if forbidden.contains(&model) {
             return Err(format!(
-                "the fallback duplicates the regular model pool candidate '{} -> {}'",
-                fallback.local_model, fallback.upstream_model
+                "model pool fallback model '{model}' is a model-pool alias and cannot recurse into a pool"
             ));
         }
+        if expand_fallback_model_in(&config.providers, &model).is_empty() {
+            let retained = existing_pool.is_some_and(|stored| {
+                stored
+                    .fallback_models
+                    .iter()
+                    .any(|stored| stored.trim() == model)
+            });
+            if !retained {
+                return Err(format!(
+                    "model pool fallback model '{model}' is not served by any provider mapping"
+                ));
+            }
+        }
+        fallback_models.push(model);
     }
+    pool.fallback_models = fallback_models;
     for provider in &config.providers {
         for mapping in &provider.mappings {
             if mapping.local_model.trim() == pool.model {
@@ -1145,10 +1360,7 @@ pub(in crate::ai_gateway) fn validate_pool_upsert(
             ));
         }
     }
-    let existing = config
-        .model_pools
-        .iter()
-        .find(|pool| pool.id == incoming.id);
+    let existing = existing_pool;
     for candidate in &pool.candidates {
         if reference_resolves(config, candidate) {
             continue;
@@ -1166,21 +1378,6 @@ pub(in crate::ai_gateway) fn validate_pool_upsert(
                 candidate.upstream_model,
                 candidate.protocol.endpoint_path()
             ));
-        }
-    }
-    if let Some(fallback) = &pool.fallback {
-        if !reference_resolves(config, fallback) {
-            let retained = existing
-                .and_then(|stored| stored.fallback.as_ref())
-                .is_some_and(|stored| candidate_tuple(stored) == candidate_tuple(fallback));
-            if !retained {
-                return Err(format!(
-                    "model pool fallback references an unknown provider/mapping/protocol: {} -> {} ({})",
-                    fallback.local_model,
-                    fallback.upstream_model,
-                    fallback.protocol.endpoint_path()
-                ));
-            }
         }
     }
     super::reasoning::validate_pool_reasoning(config, existing, &pool)?;
@@ -1232,6 +1429,39 @@ pub struct ModelPoolReasoningCoverage {
     pub total_candidates: usize,
 }
 
+/// Nonsecret readiness of one expanded provider mapping serving a fallback
+/// gateway model. It carries no key, endpoint, header or message body.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelPoolFallbackSourceStatus {
+    pub provider_id: String,
+    pub provider_name: Option<String>,
+    pub local_model: String,
+    pub upstream_model: String,
+    pub protocol: UpstreamProtocol,
+    pub ready: bool,
+    pub availability: String,
+    pub reason: Option<String>,
+    pub cooling_until: Option<u64>,
+}
+
+/// Nonsecret readiness of one stored fallback gateway model and every provider
+/// mapping that currently serves it, in the stored list order.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelPoolFallbackModelStatus {
+    /// The trimmed gateway local model id stored in the pool.
+    pub model: String,
+    /// Whether at least one expanded source can serve right now.
+    pub ready: bool,
+    /// Number of expanded sources that are ready.
+    pub ready_sources: usize,
+    /// Number of known provider mappings serving the model.
+    pub total_sources: usize,
+    pub sources: Vec<ModelPoolFallbackSourceStatus>,
+    /// Bounded nonsecret explanation when no source is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Nonsecret readiness of one stored pool for the UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelPoolStatus {
@@ -1247,10 +1477,9 @@ pub struct ModelPoolStatus {
     pub reasoning_coverage: Vec<ModelPoolReasoningCoverage>,
     /// Regular candidate readiness; always regular-only.
     pub candidates: Vec<ModelPoolCandidateStatus>,
-    /// Readiness of the optional last-stage fallback, reported separately from
-    /// the regular candidates. Absent when the pool configures no fallback.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fallback: Option<ModelPoolCandidateStatus>,
+    /// Ordered per-model readiness of the stored fallback list. Empty when the
+    /// pool configures no fallback model.
+    pub fallback_models: Vec<ModelPoolFallbackModelStatus>,
 }
 
 /// Nonsecret status of one stored candidate reference. The regular and fallback
@@ -1279,6 +1508,70 @@ fn candidate_status(
     }
 }
 
+/// Nonsecret status of one expanded fallback source mapping.
+fn fallback_source_status(
+    config: &GatewayConfig,
+    stored: &ModelPoolCandidate,
+    resolved: &ResolvedCandidate,
+) -> ModelPoolFallbackSourceStatus {
+    let provider_name = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == resolved.identity.provider_id)
+        .map(|provider| provider.name.clone());
+    ModelPoolFallbackSourceStatus {
+        provider_id: stored.provider_id.trim().to_string(),
+        provider_name,
+        local_model: stored.local_model.trim().to_string(),
+        upstream_model: stored.upstream_model.trim().to_string(),
+        protocol: stored.protocol,
+        ready: resolved.available,
+        availability: resolved.availability.to_string(),
+        reason: resolved.reason.clone(),
+        cooling_until: resolved.cooling_until,
+    }
+}
+
+/// Build one fallback model's status record from every provider mapping that
+/// serves it, independent of any request ingress.
+fn fallback_model_status(
+    config: &GatewayConfig,
+    pool: &ModelPool,
+    alias: &str,
+    model: &str,
+    now: u64,
+) -> ModelPoolFallbackModelStatus {
+    let model = model.trim().to_string();
+    let expanded = expand_fallback_model_in(&config.providers, &model);
+    let sources: Vec<ModelPoolFallbackSourceStatus> = expanded
+        .iter()
+        .map(|candidate| {
+            let resolved = resolve_candidate(config, pool, alias, candidate, None, None, now);
+            fallback_source_status(config, candidate, &resolved)
+        })
+        .collect();
+    let ready_sources = sources.iter().filter(|source| source.ready).count();
+    let total_sources = sources.len();
+    let reason = if ready_sources > 0 {
+        None
+    } else if total_sources == 0 {
+        Some("no provider mapping serves this fallback model".to_string())
+    } else {
+        sources
+            .iter()
+            .find_map(|source| source.reason.clone())
+            .or_else(|| Some("no expanded source is currently available".to_string()))
+    };
+    ModelPoolFallbackModelStatus {
+        model,
+        ready: ready_sources > 0,
+        ready_sources,
+        total_sources,
+        sources,
+        reason,
+    }
+}
+
 /// Build the nonsecret per-pool/per-candidate status from the current
 /// configuration and the process-memory cooldown deadlines. No network or quota
 /// probe is issued and nothing is persisted.
@@ -1298,12 +1591,13 @@ pub(in crate::ai_gateway) fn pool_status(config: &GatewayConfig) -> Vec<ModelPoo
                 .zip(resolved.iter())
                 .map(|(stored, resolved)| candidate_status(config, stored, resolved))
                 .collect();
-            // The fallback is resolved independently of any request ingress, so
-            // its status reflects only the stored reference's own readiness.
-            let fallback = pool.fallback.as_ref().map(|stored| {
-                let resolved = resolve_candidate(config, pool, alias, stored, None, None, now);
-                candidate_status(config, stored, &resolved)
-            });
+            // Each stored fallback model is resolved independently of any request
+            // ingress, so its record reflects only its own expanded readiness.
+            let fallback_models = pool
+                .fallback_models
+                .iter()
+                .map(|model| fallback_model_status(config, pool, alias, model, now))
+                .collect();
             ModelPoolStatus {
                 id: pool.id.clone(),
                 name: pool.name.trim().to_string(),
@@ -1321,7 +1615,7 @@ pub(in crate::ai_gateway) fn pool_status(config: &GatewayConfig) -> Vec<ModelPoo
                     })
                     .collect(),
                 candidates,
-                fallback,
+                fallback_models,
             }
         })
         .collect()
