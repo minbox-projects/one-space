@@ -126,6 +126,7 @@
         "src/components/BleLockTool.tsx",
         "src/components/Bookmarks.tsx",
         "src/components/ConfirmDialogProvider.tsx",
+        "src/components/CurlPlaygroundTool.tsx",
         "src/components/Documentation.tsx",
         "src/components/FileSharingTool.tsx",
         "src/components/FishPond.tsx",
@@ -145,6 +146,7 @@
         "src/components/Games/Wordle/WordleGame.tsx",
         "src/components/JsonParserTool.tsx",
         "src/components/JttDataParserTool.tsx",
+        "src/components/JwtInspectorTool.tsx",
         "src/components/Launcher.tsx",
         "src/components/MCPImportExport.tsx",
         "src/components/MCPServers/index.tsx",
@@ -163,6 +165,7 @@
         "src/components/PortTunnelTool/index.tsx",
         "src/components/ProtocolRouterTool.tsx",
         "src/components/QuickAiSessionBar.tsx",
+        "src/components/QuickSftpTool.tsx",
         "src/components/RandomPasswordTool.tsx",
         "src/components/SettingsView.tsx",
         "src/components/ShortLinkTool.tsx",
@@ -231,6 +234,7 @@
         "src/lib/aiUsage.ts",
         "src/lib/aiWorkflowProfiles.ts",
         "src/lib/bleLock.ts",
+        "src/lib/curlParser.ts",
         "src/lib/externalActions.ts",
         "src/lib/fileSharing.ts",
         "src/lib/gmail.ts",
@@ -247,6 +251,7 @@
         "src/lib/jttDataParser/testUtils.ts",
         "src/lib/jttDataParser/types.ts",
         "src/lib/jttInputHistory.ts",
+        "src/lib/jwtInspector.ts",
         "src/lib/launcherToolOrder.ts",
         "src/lib/launcherToolVisibility.ts",
         "src/lib/md5.ts",
@@ -282,13 +287,16 @@
         "src/toolbox/plugins/ai-workflow-model-switcher.ts",
         "src/toolbox/plugins/ble-lock.ts",
         "src/toolbox/plugins/bookmarks.ts",
+        "src/toolbox/plugins/curl-playground.ts",
         "src/toolbox/plugins/file-sharing.ts",
         "src/toolbox/plugins/json-parser.ts",
         "src/toolbox/plugins/jtt-data-parser.ts",
+        "src/toolbox/plugins/jwt-inspector.ts",
         "src/toolbox/plugins/md5-encryption.ts",
         "src/toolbox/plugins/notes.ts",
         "src/toolbox/plugins/port-tunnel.ts",
         "src/toolbox/plugins/protocol-router.ts",
+        "src/toolbox/plugins/quick-sftp.ts",
         "src/toolbox/plugins/random-password.ts",
         "src/toolbox/plugins/short-link.ts",
         "src/toolbox/plugins/snippets.ts",
@@ -1239,6 +1247,12 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/CurlPlaygroundTool.tsx",
+          "name": "CurlPlaygroundTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/Documentation.tsx",
           "name": "Documentation",
           "kind": "function",
@@ -1389,6 +1403,12 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/JwtInspectorTool.tsx",
+          "name": "JwtInspectorTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/Launcher.tsx",
           "name": "Launcher",
           "kind": "function",
@@ -1493,6 +1513,12 @@
         {
           "file": "src/components/QuickAiSessionBar.tsx",
           "name": "QuickAiSessionBar",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/QuickSftpTool.tsx",
+          "name": "QuickSftpTool",
           "kind": "function",
           "visibility": "public"
         },
@@ -4545,6 +4571,48 @@
           "visibility": "public"
         },
         {
+          "file": "src/lib/curlParser.ts",
+          "name": "CodeExportLanguage",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/curlParser.ts",
+          "name": "KeyValuePair",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/curlParser.ts",
+          "name": "ParsedHttpRequest",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/curlParser.ts",
+          "name": "buildEffectiveUrl",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/curlParser.ts",
+          "name": "generateCode",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/curlParser.ts",
+          "name": "parseCurlCommand",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/curlParser.ts",
+          "name": "tokenizeCurl",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/lib/externalActions.ts",
           "name": "isLikelyLocalPath",
           "kind": "function",
@@ -5579,6 +5647,72 @@
         {
           "file": "src/lib/jttInputHistory.ts",
           "name": "loadJttInputHistory",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "JwtHeader",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "JwtLifecycle",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "JwtLifecycleStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "JwtParseResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "JwtSubjectContext",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "base64UrlToBytes",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "decodeBase64Url",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "extractLifecycle",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "extractSubjectContext",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "parseJwt",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/jwtInspector.ts",
+          "name": "verifyJwtSignature",
           "kind": "function",
           "visibility": "public"
         },
@@ -7359,6 +7493,12 @@
           "visibility": "public"
         },
         {
+          "file": "src/toolbox/plugins/curl-playground.ts",
+          "name": "curlPlaygroundTool",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
           "file": "src/toolbox/plugins/file-sharing.ts",
           "name": "fileSharingTool",
           "kind": "variable",
@@ -7373,6 +7513,12 @@
         {
           "file": "src/toolbox/plugins/jtt-data-parser.ts",
           "name": "jttDataParserTool",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/plugins/jwt-inspector.ts",
+          "name": "jwtInspectorTool",
           "kind": "variable",
           "visibility": "public"
         },
@@ -7397,6 +7543,12 @@
         {
           "file": "src/toolbox/plugins/protocol-router.ts",
           "name": "protocolRouterTool",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/plugins/quick-sftp.ts",
+          "name": "quickSftpTool",
           "kind": "variable",
           "visibility": "public"
         },
@@ -7619,9 +7771,11 @@
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
         "src/components/BackupManager.test.tsx",
         "src/components/BleLockTool.test.tsx",
+        "src/components/CurlPlaygroundTool.test.tsx",
         "src/components/FileSharingTool.test.tsx",
         "src/components/JsonParserTool.test.tsx",
         "src/components/JttDataParserTool.test.tsx",
+        "src/components/JwtInspectorTool.test.tsx",
         "src/components/Launcher.test.tsx",
         "src/components/Md5EncryptionTool.test.tsx",
         "src/components/MoreToolsHub.test.tsx",
@@ -7630,6 +7784,7 @@
         "src/components/PortTunnelTool/index.test.tsx",
         "src/components/ProtocolRouterTool.test.tsx",
         "src/components/QuickAiSessionBar.test.tsx",
+        "src/components/QuickSftpTool.test.tsx",
         "src/components/RandomPasswordTool.test.tsx",
         "src/components/SettingsView.test.tsx",
         "src/components/ShortLinkTool.test.tsx",
@@ -7653,6 +7808,7 @@
         "src/lib/aiGatewayAlertBadges.test.ts",
         "src/lib/aiWorkflowProfiles.test.ts",
         "src/lib/bleLock.test.ts",
+        "src/lib/curlParser.test.ts",
         "src/lib/externalActions.test.ts",
         "src/lib/fileSharing.test.ts",
         "src/lib/jttDataParser/hex.test.ts",
@@ -7664,6 +7820,7 @@
         "src/lib/jttDataParser/lexing.test.ts",
         "src/lib/jttDataParser/result.test.ts",
         "src/lib/jttInputHistory.test.ts",
+        "src/lib/jwtInspector.test.ts",
         "src/lib/launcherToolOrder.test.ts",
         "src/lib/launcherToolVisibility.test.ts",
         "src/lib/md5.test.ts",
@@ -8214,6 +8371,11 @@
         },
         {
           "kind": "imports",
+          "from": "src/components/CurlPlaygroundTool.tsx#CurlPlaygroundTool",
+          "to": "src/components/ToastProvider.tsx#useToast"
+        },
+        {
+          "kind": "imports",
           "from": "src/components/FileSharingTool.tsx#FileSharingTool",
           "to": "src/components/ToastProvider.tsx#useToast"
         },
@@ -8335,6 +8497,11 @@
         {
           "kind": "imports",
           "from": "src/components/JttDataParserTool.tsx#JttDataParserTool",
+          "to": "src/components/ToastProvider.tsx#useToast"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/JwtInspectorTool.tsx#JwtInspectorTool",
           "to": "src/components/ToastProvider.tsx#useToast"
         },
         {
@@ -8531,6 +8698,11 @@
           "kind": "imports",
           "from": "src/components/QuickAiSessionBar.tsx#QuickAiSessionBar",
           "to": "src/components/AiEnvironments/ToolIcon.tsx#ToolIcon"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/QuickSftpTool.tsx#QuickSftpTool",
+          "to": "src/components/ToastProvider.tsx#useToast"
         },
         {
           "kind": "imports",
@@ -10664,6 +10836,11 @@
         },
         {
           "kind": "imports",
+          "from": "src/toolbox/plugins/curl-playground.ts#curlPlaygroundTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
           "from": "src/toolbox/plugins/file-sharing.ts#fileSharingTool",
           "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
         },
@@ -10675,6 +10852,11 @@
         {
           "kind": "imports",
           "from": "src/toolbox/plugins/jtt-data-parser.ts#jttDataParserTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/plugins/jwt-inspector.ts#jwtInspectorTool",
           "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
         },
         {
@@ -10695,6 +10877,11 @@
         {
           "kind": "imports",
           "from": "src/toolbox/plugins/protocol-router.ts#protocolRouterTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/plugins/quick-sftp.ts#quickSftpTool",
           "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
         },
         {
@@ -10745,6 +10932,11 @@
         {
           "kind": "imports",
           "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/curl-playground.ts#curlPlaygroundTool"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
           "to": "src/toolbox/plugins/file-sharing.ts#fileSharingTool"
         },
         {
@@ -10756,6 +10948,11 @@
           "kind": "imports",
           "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
           "to": "src/toolbox/plugins/jtt-data-parser.ts#jttDataParserTool"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/jwt-inspector.ts#jwtInspectorTool"
         },
         {
           "kind": "imports",
@@ -10776,6 +10973,11 @@
           "kind": "imports",
           "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
           "to": "src/toolbox/plugins/protocol-router.ts#protocolRouterTool"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/quick-sftp.ts#quickSftpTool"
         },
         {
           "kind": "imports",
@@ -10953,6 +11155,8 @@
         "src/components/BleLockTool.tsx",
         "src/components/Bookmarks.tsx",
         "src/components/ConfirmDialogProvider.tsx",
+        "src/components/CurlPlaygroundTool.test.tsx",
+        "src/components/CurlPlaygroundTool.tsx",
         "src/components/Documentation.tsx",
         "src/components/FileSharingTool.test.tsx",
         "src/components/FileSharingTool.tsx",
@@ -10975,6 +11179,8 @@
         "src/components/JsonParserTool.tsx",
         "src/components/JttDataParserTool.test.tsx",
         "src/components/JttDataParserTool.tsx",
+        "src/components/JwtInspectorTool.test.tsx",
+        "src/components/JwtInspectorTool.tsx",
         "src/components/Launcher.test.tsx",
         "src/components/Launcher.tsx",
         "src/components/MCPImportExport.tsx",
@@ -11001,6 +11207,8 @@
         "src/components/ProtocolRouterTool.tsx",
         "src/components/QuickAiSessionBar.test.tsx",
         "src/components/QuickAiSessionBar.tsx",
+        "src/components/QuickSftpTool.test.tsx",
+        "src/components/QuickSftpTool.tsx",
         "src/components/RandomPasswordTool.test.tsx",
         "src/components/RandomPasswordTool.tsx",
         "src/components/SettingsView.test.tsx",
@@ -11093,6 +11301,8 @@
         "src/lib/aiWorkflowProfiles.ts",
         "src/lib/bleLock.test.ts",
         "src/lib/bleLock.ts",
+        "src/lib/curlParser.test.ts",
+        "src/lib/curlParser.ts",
         "src/lib/externalActions.test.ts",
         "src/lib/externalActions.ts",
         "src/lib/fileSharing.test.ts",
@@ -11120,6 +11330,8 @@
         "src/lib/jttDataParser/types.ts",
         "src/lib/jttInputHistory.test.ts",
         "src/lib/jttInputHistory.ts",
+        "src/lib/jwtInspector.test.ts",
+        "src/lib/jwtInspector.ts",
         "src/lib/launcherToolOrder.test.ts",
         "src/lib/launcherToolOrder.ts",
         "src/lib/launcherToolVisibility.test.ts",
@@ -11172,13 +11384,16 @@
         "src/toolbox/plugins/ai-workflow-model-switcher.ts",
         "src/toolbox/plugins/ble-lock.ts",
         "src/toolbox/plugins/bookmarks.ts",
+        "src/toolbox/plugins/curl-playground.ts",
         "src/toolbox/plugins/file-sharing.ts",
         "src/toolbox/plugins/json-parser.ts",
         "src/toolbox/plugins/jtt-data-parser.ts",
+        "src/toolbox/plugins/jwt-inspector.ts",
         "src/toolbox/plugins/md5-encryption.ts",
         "src/toolbox/plugins/notes.ts",
         "src/toolbox/plugins/port-tunnel.ts",
         "src/toolbox/plugins/protocol-router.ts",
+        "src/toolbox/plugins/quick-sftp.ts",
         "src/toolbox/plugins/random-password.ts",
         "src/toolbox/plugins/short-link.ts",
         "src/toolbox/plugins/snippets.ts",

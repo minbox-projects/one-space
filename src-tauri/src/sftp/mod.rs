@@ -21,18 +21,54 @@ pub struct RemoteFileEntry {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SftpDirectoryResult {
+    pub current_path: String,
+    pub entries: Vec<RemoteFileEntry>,
+}
+
 /**
- * 解析 Linux `ls -la` 输出格式
+ * 远程路径安全转义，支持 Shell 波浪号（~）扩展与防命令注入
  */
-pub fn parse_ls_output(base_dir: &str, output: &str) -> Vec<RemoteFileEntry> {
-    let mut entries = Vec::new();
-    let normalized_base = if base_dir.ends_with('/') {
-        base_dir.to_string()
+pub fn quote_remote_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "~" {
+        "\"$HOME\"".to_string()
+    } else if trimmed == "~/" {
+        "\"$HOME/\"".to_string()
+    } else if let Some(sub) = trimmed.strip_prefix("~/") {
+        let escaped = sub.replace('\'', "'\\''");
+        format!("\"$HOME/\"'{}'", escaped)
     } else {
-        format!("{base_dir}/")
+        let escaped = trimmed.replace('\'', "'\\''");
+        format!("'{}'", escaped)
+    }
+}
+
+/**
+ * 解析 Linux `ls -la` 输出格式（首行为 pwd 解析的实际绝对路径）
+ */
+pub fn parse_ls_output(base_dir: &str, output: &str) -> SftpDirectoryResult {
+    let mut resolved_dir = base_dir.to_string();
+    let mut entries = Vec::new();
+    let mut lines = output.lines().peekable();
+
+    // 如果第一行是以 '/' 开头的绝对路径（由 pwd 输出）
+    if let Some(&first_line) = lines.peek() {
+        let trimmed = first_line.trim();
+        if trimmed.starts_with('/') {
+            resolved_dir = trimmed.to_string();
+            lines.next();
+        }
+    }
+
+    let normalized_base = if resolved_dir.ends_with('/') {
+        resolved_dir.clone()
+    } else {
+        format!("{resolved_dir}/")
     };
 
-    for line in output.lines() {
+    for line in lines {
         let line = line.trim();
         if line.is_empty() || line.starts_with("total") {
             continue;
@@ -50,8 +86,6 @@ pub fn parse_ls_output(base_dir: &str, output: &str) -> Vec<RemoteFileEntry> {
         let size = parts[4].parse::<u64>().unwrap_or(0);
 
         // 文件名可能带有空格，截取最后部分
-        // long-iso: drwxr-xr-x 2 root root 4096 2026-10-21 14:30 name
-        // 传统: drwxr-xr-x 2 root root 4096 Oct 21 14:30 name
         let (modified, name) = if parts.len() >= 9 && parts[5].contains('-') {
             let mod_time = format!("{} {}", parts[5], parts[6]);
             let file_name = parts[7..].join(" ");
@@ -87,24 +121,29 @@ pub fn parse_ls_output(base_dir: &str, output: &str) -> Vec<RemoteFileEntry> {
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
-    entries
+    SftpDirectoryResult {
+        current_path: resolved_dir,
+        entries,
+    }
 }
 
 #[tauri::command]
 pub async fn sftp_list_directory(
     host: String,
     remote_path: String,
-) -> Result<Vec<RemoteFileEntry>, String> {
+) -> Result<SftpDirectoryResult, String> {
     let clean_path = if remote_path.trim().is_empty() {
         "~".to_string()
     } else {
         remote_path.trim().to_string()
     };
 
-    // 兼容 Linux 各类发行版与 macOS 的 ls 格式
+    let target_quoted = quote_remote_path(&clean_path);
+
+    // 先进入目录并获取真实 pwd 绝对路径，再执行 ls -la
     let remote_cmd = format!(
-        "ls -la --time-style=long-iso '{}' 2>/dev/null || ls -la '{}'",
-        clean_path, clean_path
+        "cd {} && pwd && (ls -la --time-style=long-iso . 2>/dev/null || ls -la .)",
+        target_quoted
     );
 
     let output = std::process::Command::new("ssh")
@@ -137,7 +176,8 @@ pub async fn sftp_read_file(
     max_bytes: Option<usize>,
 ) -> Result<String, String> {
     let limit = max_bytes.unwrap_or(256 * 1024); // 默认最多读 256KB 预览
-    let remote_cmd = format!("head -c {} '{}'", limit, remote_path);
+    let path_quoted = quote_remote_path(&remote_path);
+    let remote_cmd = format!("head -c {} {}", limit, path_quoted);
 
     let output = std::process::Command::new("ssh")
         .arg("-o")
@@ -217,7 +257,8 @@ pub async fn sftp_start_log_tail(
     // 先停止已存在的相同 tail_id
     sftp_stop_log_tail(tail_id.clone()).await.ok();
 
-    let remote_cmd = format!("tail -n 100 -f '{}'", remote_path);
+    let path_quoted = quote_remote_path(&remote_path);
+    let remote_cmd = format!("tail -n 100 -f {}", path_quoted);
     let mut child = Command::new("ssh")
         .arg("-o")
         .arg("BatchMode=yes")
@@ -274,8 +315,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_quote_remote_path() {
+        assert_eq!(quote_remote_path("~"), "\"$HOME\"");
+        assert_eq!(quote_remote_path("~/"), "\"$HOME/\"");
+        assert_eq!(quote_remote_path("~/logs"), "\"$HOME/\"'logs'");
+        assert_eq!(quote_remote_path("/var/log"), "'/var/log'");
+        assert_eq!(quote_remote_path("dir's name"), "'dir'\\''s name'");
+    }
+
+    #[test]
     fn test_parse_ls_output() {
-        let sample_output = r#"
+        let sample_output = r#"/var/log
 total 24
 drwxr-xr-x  3 root root 4096 2026-10-21 14:30 .
 drwxr-xr-x 10 root root 4096 2026-10-20 09:12 ..
@@ -284,20 +334,21 @@ drwxr-xr-x  2 root root 4096 2026-10-21 14:30 nginx
 -rw-r--r--  1 root root  512 2026-10-20 11:00 config.yml
 "#;
 
-        let entries = parse_ls_output("/var/log", sample_output);
-        assert_eq!(entries.len(), 3);
+        let res = parse_ls_output("~", sample_output);
+        assert_eq!(res.current_path, "/var/log");
+        assert_eq!(res.entries.len(), 3);
 
         // 目录在前
-        assert_eq!(entries[0].name, "nginx");
-        assert!(entries[0].is_dir);
-        assert_eq!(entries[0].path, "/var/log/nginx");
+        assert_eq!(res.entries[0].name, "nginx");
+        assert!(res.entries[0].is_dir);
+        assert_eq!(res.entries[0].path, "/var/log/nginx");
 
         // 文件在后
-        assert_eq!(entries[1].name, "app.log");
-        assert!(!entries[1].is_dir);
-        assert_eq!(entries[1].size, 1024);
-        assert_eq!(entries[1].path, "/var/log/app.log");
+        assert_eq!(res.entries[1].name, "app.log");
+        assert!(!res.entries[1].is_dir);
+        assert_eq!(res.entries[1].size, 1024);
+        assert_eq!(res.entries[1].path, "/var/log/app.log");
 
-        assert_eq!(entries[2].name, "config.yml");
+        assert_eq!(res.entries[2].name, "config.yml");
     }
 }

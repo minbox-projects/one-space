@@ -32,6 +32,11 @@ interface RemoteFileEntry {
   path: string;
 }
 
+interface SftpDirectoryResult {
+  current_path: string;
+  entries: RemoteFileEntry[];
+}
+
 interface SshHostOption {
   name: string;
   host_name: string;
@@ -110,13 +115,13 @@ export function QuickSftpTool() {
     setError(null);
     try {
       if (isToolboxInvokeAvailable()) {
-        const entries = await invoke<RemoteFileEntry[]>("sftp_list_directory", {
+        const res = await invoke<SftpDirectoryResult>("sftp_list_directory", {
           host: activeHost,
           remotePath: path,
         });
-        setFiles(entries);
-        setCurrentPath(path);
-        setPathInput(path);
+        setFiles(res.entries);
+        setCurrentPath(res.current_path);
+        setPathInput(res.current_path);
       } else {
         // Mock 测试数据
         setFiles([
