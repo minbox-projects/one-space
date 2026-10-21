@@ -7,11 +7,13 @@ import {
   FolderOpen,
   FolderSync,
   Loader2,
+  Plug,
   Radio,
   RefreshCw,
   Search,
   Server,
   Terminal,
+  Unplug,
   X,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -46,6 +48,33 @@ interface SshHostOption {
 
 const DEFAULT_BOOKMARKS = ["~", "/var/log", "/etc", "/tmp"];
 
+const getMockDirectoryEntries = (basePath: string): RemoteFileEntry[] => [
+  {
+    name: "nginx",
+    is_dir: true,
+    size: 4096,
+    permissions: "drwxr-xr-x",
+    modified: "2026-10-21 14:00",
+    path: `${basePath}/nginx`,
+  },
+  {
+    name: "app.log",
+    is_dir: false,
+    size: 102400,
+    permissions: "-rw-r--r--",
+    modified: "2026-10-21 15:30",
+    path: `${basePath}/app.log`,
+  },
+  {
+    name: "config.json",
+    is_dir: false,
+    size: 1240,
+    permissions: "-rw-r--r--",
+    modified: "2026-10-20 09:12",
+    path: `${basePath}/config.json`,
+  },
+];
+
 export function QuickSftpTool() {
   const { t } = useTranslation();
   const { pushToast } = useToast();
@@ -58,6 +87,11 @@ export function QuickSftpTool() {
   const [hosts, setHosts] = useState<SshHostOption[]>([]);
   const [selectedHost, setSelectedHost] = useState("");
   const [customHostInput, setCustomHostInput] = useState("");
+
+  // 连接状态
+  const [isConnected, setIsConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [connectedHost, setConnectedHost] = useState<string | null>(null);
 
   // 目录浏览
   const [currentPath, setCurrentPath] = useState("~");
@@ -106,10 +140,91 @@ export function QuickSftpTool() {
       .catch(() => {});
   }, []);
 
+  // 建立连接
+  const handleConnect = async (targetPath = pathInput || "~") => {
+    const activeHost = selectedHost || customHostInput.trim();
+    if (!activeHost) {
+      pushToast({
+        title: t("sftpSelectHostPrompt", "Please select or enter an SSH host"),
+        kind: "warning",
+      });
+      return;
+    }
+
+    setConnecting(true);
+    setError(null);
+    try {
+      if (isToolboxInvokeAvailable()) {
+        const res = await invoke<SftpDirectoryResult>("sftp_list_directory", {
+          host: activeHost,
+          remotePath: targetPath,
+        });
+        if (res && Array.isArray(res.entries)) {
+          setFiles(res.entries);
+          setCurrentPath(res.current_path || targetPath);
+          setPathInput(res.current_path || targetPath);
+        } else {
+          setFiles(getMockDirectoryEntries(targetPath));
+          setCurrentPath(targetPath);
+          setPathInput(targetPath);
+        }
+      } else {
+        setFiles(getMockDirectoryEntries(targetPath));
+        setCurrentPath(targetPath);
+        setPathInput(targetPath);
+      }
+      setIsConnected(true);
+      setConnectedHost(activeHost);
+      pushToast({
+        title: t("sftpConnectedToast", "Connected to remote host"),
+        description: activeHost,
+        kind: "success",
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setIsConnected(false);
+      setConnectedHost(null);
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  // 断开连接
+  const handleDisconnect = () => {
+    if (tailSession && isToolboxInvokeAvailable()) {
+      invoke("sftp_stop_log_tail", { tailId: tailSession.id }).catch(() => {});
+    }
+    setTailSession(null);
+    setFiles([]);
+    setIsConnected(false);
+    setConnectedHost(null);
+    setError(null);
+  };
+
+  // 切换 Host 处理
+  const handleHostChange = (newHost: string) => {
+    setSelectedHost(newHost);
+    if (isConnected) {
+      handleDisconnect();
+    }
+  };
+
+  const handleCustomHostChange = (newVal: string) => {
+    setCustomHostInput(newVal);
+    if (isConnected) {
+      handleDisconnect();
+    }
+  };
+
   // 加载目录
   const loadDirectory = async (path: string) => {
-    const activeHost = selectedHost || customHostInput.trim();
+    const activeHost = connectedHost || selectedHost || customHostInput.trim();
     if (!activeHost) return;
+
+    if (!isConnected) {
+      await handleConnect(path);
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -119,37 +234,17 @@ export function QuickSftpTool() {
           host: activeHost,
           remotePath: path,
         });
-        setFiles(res.entries);
-        setCurrentPath(res.current_path);
-        setPathInput(res.current_path);
+        if (res && Array.isArray(res.entries)) {
+          setFiles(res.entries);
+          setCurrentPath(res.current_path || path);
+          setPathInput(res.current_path || path);
+        } else {
+          setFiles(getMockDirectoryEntries(path));
+          setCurrentPath(path);
+          setPathInput(path);
+        }
       } else {
-        // Mock 测试数据
-        setFiles([
-          {
-            name: "nginx",
-            is_dir: true,
-            size: 4096,
-            permissions: "drwxr-xr-x",
-            modified: "2026-10-21 14:00",
-            path: `${path}/nginx`,
-          },
-          {
-            name: "app.log",
-            is_dir: false,
-            size: 102400,
-            permissions: "-rw-r--r--",
-            modified: "2026-10-21 15:30",
-            path: `${path}/app.log`,
-          },
-          {
-            name: "config.json",
-            is_dir: false,
-            size: 1240,
-            permissions: "-rw-r--r--",
-            modified: "2026-10-20 09:12",
-            path: `${path}/config.json`,
-          },
-        ]);
+        setFiles(getMockDirectoryEntries(path));
         setCurrentPath(path);
         setPathInput(path);
       }
@@ -167,16 +262,17 @@ export function QuickSftpTool() {
     void loadDirectory(path);
   };
 
-  // 切换 Host 时刷新目录
-  useEffect(() => {
-    if (selectedHost || customHostInput) {
-      void loadDirectory(currentPath);
+  // 选择书签快捷路径
+  const handleSelectBookmark = (bm: string) => {
+    setPathInput(bm);
+    if (isConnected) {
+      navigateToDirectory(bm);
     }
-  }, [selectedHost]);
+  };
 
   // 返回上一级
   const handleGoParent = () => {
-    if (currentPath === "/" || currentPath === "~") return;
+    if (!isConnected || currentPath === "/" || currentPath === "~") return;
     const parent = currentPath.substring(0, currentPath.lastIndexOf("/")) || "/";
     navigateToDirectory(parent);
   };
@@ -310,15 +406,15 @@ export function QuickSftpTool() {
         {/* 服务器选择与书签快捷条 */}
         <div className="rounded-lg border bg-card p-3 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Server className="h-4 w-4 text-primary" />
-              <span className="text-xs font-semibold">
+            <div className="flex flex-wrap items-center gap-2">
+              <Server className="h-4 w-4 text-primary shrink-0" />
+              <span className="text-xs font-semibold shrink-0">
                 {t("sftpSelectHost", "SSH Host")}:
               </span>
               {hosts.length > 0 ? (
                 <select
                   value={selectedHost}
-                  onChange={(e) => setSelectedHost(e.target.value)}
+                  onChange={(e) => handleHostChange(e.target.value)}
                   className="h-8 rounded-md border bg-background px-2.5 font-mono text-xs outline-none"
                 >
                   {hosts.map((h) => (
@@ -331,10 +427,47 @@ export function QuickSftpTool() {
                 <input
                   type="text"
                   value={customHostInput}
-                  onChange={(e) => setCustomHostInput(e.target.value)}
+                  onChange={(e) => handleCustomHostChange(e.target.value)}
                   placeholder="user@host or config alias"
                   className="h-8 rounded-md border bg-background px-2.5 font-mono text-xs outline-none"
                 />
+              )}
+
+              {/* 连接 / 断开 控制按钮 */}
+              {isConnected ? (
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    {t("sftpConnectedStatus", "已连接")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleDisconnect}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 transition-colors"
+                  >
+                    <Unplug className="h-3.5 w-3.5" />
+                    {t("sftpDisconnect", "断开连接")}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleConnect(pathInput)}
+                  disabled={connecting || (!selectedHost && !customHostInput.trim())}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                >
+                  {connecting ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {t("sftpConnecting", "连接中...")}
+                    </>
+                  ) : (
+                    <>
+                      <Plug className="h-3.5 w-3.5" />
+                      {t("sftpConnect", "连接 / 登录")}
+                    </>
+                  )}
+                </button>
               )}
             </div>
 
@@ -347,7 +480,7 @@ export function QuickSftpTool() {
                 <button
                   key={bm}
                   type="button"
-                  onClick={() => navigateToDirectory(bm)}
+                  onClick={() => handleSelectBookmark(bm)}
                   className="rounded-md border bg-background px-2 py-0.5 text-xs font-mono text-muted-foreground hover:bg-muted hover:text-foreground"
                 >
                   {bm}
@@ -361,8 +494,9 @@ export function QuickSftpTool() {
             <button
               type="button"
               onClick={handleGoParent}
+              disabled={!isConnected || currentPath === "/" || currentPath === "~"}
               title={t("sftpParentDir", "Parent Directory")}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border bg-background hover:bg-muted text-muted-foreground"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border bg-background hover:bg-muted text-muted-foreground disabled:opacity-40"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
@@ -370,7 +504,11 @@ export function QuickSftpTool() {
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                navigateToDirectory(pathInput);
+                if (isConnected) {
+                  navigateToDirectory(pathInput);
+                } else {
+                  void handleConnect(pathInput);
+                }
               }}
               className="flex-1"
             >
@@ -386,8 +524,8 @@ export function QuickSftpTool() {
             <button
               type="button"
               onClick={() => void loadDirectory(currentPath)}
-              disabled={loading}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium hover:bg-muted"
+              disabled={loading || !isConnected}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium hover:bg-muted disabled:opacity-40"
             >
               <RefreshCw
                 className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
@@ -403,23 +541,58 @@ export function QuickSftpTool() {
             <div className="flex items-center gap-2 font-medium">
               <FolderOpen className="h-4 w-4 text-primary" />
               <span>
-                {currentPath} ({filteredFiles.length} {t("sftpItems", "items")})
+                {isConnected ? currentPath : t("sftpNotConnectedLabel", "未连接")} ({isConnected ? filteredFiles.length : 0}{" "}
+                {t("sftpItems", "items")})
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <Search className="h-3.5 w-3.5 text-muted-foreground" />
-              <input
-                type="text"
-                value={searchFilter}
-                onChange={(e) => setSearchFilter(e.target.value)}
-                placeholder={t("sftpFilterPlaceholder", "Filter files...")}
-                className="h-7 w-40 rounded-md border bg-background px-2 text-xs outline-none"
-              />
-            </div>
+            {isConnected ? (
+              <div className="flex items-center gap-2">
+                <Search className="h-3.5 w-3.5 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={searchFilter}
+                  onChange={(e) => setSearchFilter(e.target.value)}
+                  placeholder={t("sftpFilterPlaceholder", "Filter files...")}
+                  className="h-7 w-40 rounded-md border bg-background px-2 text-xs outline-none"
+                />
+              </div>
+            ) : null}
           </div>
 
           <div className="max-h-96 overflow-y-auto">
-            {loading ? (
+            {!isConnected ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center text-xs text-muted-foreground space-y-3">
+                <div className="rounded-full bg-muted/60 p-4">
+                  <Server className="h-8 w-8 text-muted-foreground/60" />
+                </div>
+                <div className="space-y-1">
+                  <p className="font-medium text-foreground text-sm">
+                    {t("sftpNotConnectedTitle", "尚未连接远程服务器")}
+                  </p>
+                  <p className="text-muted-foreground max-w-sm">
+                    {t(
+                      "sftpNotConnectedDesc",
+                      "请在上方选择或输入 SSH 主机，然后点击「连接 / 登录」开始浏览远程目录和实时日志。",
+                    )}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleConnect(pathInput)}
+                  disabled={connecting || (!selectedHost && !customHostInput.trim())}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {connecting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Plug className="h-3.5 w-3.5" />
+                  )}
+                  {connecting
+                    ? t("sftpConnecting", "连接中...")
+                    : t("sftpConnectNow", "立即连接")}
+                </button>
+              </div>
+            ) : loading ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground text-xs gap-2">
                 <Loader2 className="h-4 w-4 animate-spin text-primary" />
                 <span>{t("sftpLoadingDir", "Reading remote directory...")}</span>
