@@ -854,7 +854,7 @@ export function SslCertificateTool() {
                         <div className="mt-3 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                           <span>
                             {item.lastCheckAt
-                              ? `上次检测: ${new Date(item.lastCheckAt * 1000).toLocaleDateString()}`
+                              ? `上次检测: ${new Date(item.lastCheckAt * 1000).toLocaleString()}`
                               : "待首次巡检"}
                           </span>
                           <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">

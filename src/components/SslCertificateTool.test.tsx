@@ -35,6 +35,7 @@ describe("SslCertificateTool", () => {
             alertDaysThreshold: 30,
             lastDaysRemaining: 5,
             lastStatus: "expiring_soon",
+            lastCheckAt: 1700000000,
             createdAt: 1700000000,
           },
         ];
@@ -136,6 +137,8 @@ describe("SslCertificateTool", () => {
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveClass("shrink-0");
     expect(badge).toHaveClass("whitespace-nowrap");
+    const expectedLastChecked = `上次检测: ${new Date(1700000000 * 1000).toLocaleString()}`;
+    expect(screen.getByText(expectedLastChecked)).toBeInTheDocument();
   });
 
   it("can switch tabs to issue mode and view issued certificate list", async () => {
