@@ -263,6 +263,7 @@
         "src/lib/protocolRouter.ts",
         "src/lib/runtimeStatus.ts",
         "src/lib/serviceProviders.ts",
+        "src/lib/sftp.ts",
         "src/lib/shortLink.ts",
         "src/lib/shortLinkHistory.ts",
         "src/lib/skills.ts",
@@ -6365,6 +6366,180 @@
           "visibility": "public"
         },
         {
+          "file": "src/lib/sftp.ts",
+          "name": "RemoteFileEntry",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpDeleteResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpDirectoryResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpDownloadInput",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpError",
+          "kind": "class",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpRetryParams",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpTransferProgressPayload",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpTransferStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpTransferType",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpTrashItem",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SftpUploadInput",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "SshHostOption",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "formatBytes",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "formatEta",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "formatSpeed",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "listenSftpTransferProgress",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpCancelTransfer",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpClearTrash",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpDeleteEntry",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpDownloadFile",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpGetDefaultDownloadDir",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpListDirectory",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpListTrash",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpReadFile",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpRestoreEntry",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpRestoreTrashItem",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpStartLogTail",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpStopLogTail",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sftp.ts",
+          "name": "sftpUploadFile",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/lib/shortLink.ts",
           "name": "SHORT_LINK_ERROR_CODES",
           "kind": "variable",
@@ -6756,6 +6931,12 @@
         },
         {
           "file": "src/lib/sslCertificate.ts",
+          "name": "SslConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sslCertificate.ts",
           "name": "SslIssuedCertificate",
           "kind": "interface",
           "visibility": "public"
@@ -6829,6 +7010,18 @@
         {
           "file": "src/lib/sslCertificate.ts",
           "name": "sslCheckCertificate",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sslCertificate.ts",
+          "name": "sslGetConfig",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/sslCertificate.ts",
+          "name": "sslSaveConfig",
           "kind": "function",
           "visibility": "public"
         },
@@ -7827,6 +8020,7 @@
         "src/lib/navigation.test.ts",
         "src/lib/runtimeStatus.test.ts",
         "src/lib/serviceProviders.test.ts",
+        "src/lib/sftp.test.ts",
         "src/lib/shortLink.test.ts",
         "src/lib/shortLinkHistory.test.ts",
         "src/lib/skills.test.ts",
@@ -8698,6 +8892,11 @@
           "kind": "imports",
           "from": "src/components/QuickAiSessionBar.tsx#QuickAiSessionBar",
           "to": "src/components/AiEnvironments/ToolIcon.tsx#ToolIcon"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/QuickSftpTool.tsx#QuickSftpTool",
+          "to": "src/components/ConfirmDialogProvider.tsx#useConfirmDialog"
         },
         {
           "kind": "imports",
@@ -11349,6 +11548,8 @@
         "src/lib/runtimeStatus.ts",
         "src/lib/serviceProviders.test.ts",
         "src/lib/serviceProviders.ts",
+        "src/lib/sftp.test.ts",
+        "src/lib/sftp.ts",
         "src/lib/shortLink.test.ts",
         "src/lib/shortLink.ts",
         "src/lib/shortLinkHistory.test.ts",

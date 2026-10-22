@@ -98,6 +98,7 @@ interface StorageConfig {
   main_shortcut?: string;
   quick_ai_shortcut?: string;
   default_ai_dir?: string;
+  default_sftp_download_dir?: string;
   claude_provider_launch_dir?: string;
   default_ai_model?: "claude" | "antigravity" | "codex" | "opencode";
   ai_terminal_app?: string;
@@ -1479,6 +1480,7 @@ export function SettingsView({
         return {
           launch_at_login: !!cfg.launch_at_login,
           message_retention_days: cfg.message_retention_days ?? 30,
+          default_sftp_download_dir: cfg.default_sftp_download_dir || "",
         };
       case "skills":
         return {
@@ -1575,6 +1577,7 @@ export function SettingsView({
       case "general":
         next.launch_at_login = draftCfg.launch_at_login;
         next.message_retention_days = draftCfg.message_retention_days;
+        next.default_sftp_download_dir = draftCfg.default_sftp_download_dir;
         break;
       case "skills":
         next.skills_sync_enabled = draftCfg.skills_sync_enabled;
@@ -1683,6 +1686,7 @@ export function SettingsView({
         case "general":
           next.launch_at_login = latestCfg.launch_at_login;
           next.message_retention_days = latestCfg.message_retention_days;
+          next.default_sftp_download_dir = latestCfg.default_sftp_download_dir;
           break;
         case "skills":
           next.skills_sync_enabled = latestCfg.skills_sync_enabled;
@@ -2386,6 +2390,20 @@ export function SettingsView({
       setMessage({ type: "error", text: errorToMessage(e) });
     } finally {
       setProtocolRouterBusy(false);
+    }
+  };
+
+  const handleSelectSftpDownloadDir = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+      });
+      if (selected && typeof selected === "string") {
+        setConfig((prev) => ({ ...prev, default_sftp_download_dir: selected }));
+      }
+    } catch (err: unknown) {
+      console.error(err);
     }
   };
 
@@ -4181,6 +4199,55 @@ export function SettingsView({
                           {t(
                             "messageRetentionDaysNote",
                             "Messages stay on this device and are not included in iCloud or Git sync.",
+                          )}
+                        </p>
+                      </div>
+
+                      <div className="space-y-2 border-t pt-5">
+                        <label className="text-sm font-medium text-muted-foreground">
+                          {t("defaultSftpDownloadDir", "SFTP 默认下载路径")}
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            readOnly
+                            className="flex-1 bg-muted/50 border rounded-xl px-4 py-2.5 text-sm text-muted-foreground font-mono truncate cursor-default"
+                            value={
+                              config.default_sftp_download_dir ||
+                              t(
+                                "defaultDownloadsDirPlaceholder",
+                                "默认下载至系统 Downloads 目录",
+                              )
+                            }
+                          />
+                          <button
+                            type="button"
+                            onClick={handleSelectSftpDownloadDir}
+                            className="px-4 py-2.5 bg-secondary text-secondary-foreground rounded-xl text-sm font-medium hover:bg-secondary/80 transition-all active:scale-95 flex items-center gap-1.5"
+                          >
+                            <FolderOpen className="w-4 h-4" />
+                            <span>{t("browseFolder", "浏览")}</span>
+                          </button>
+                          {config.default_sftp_download_dir ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  default_sftp_download_dir: "",
+                                }))
+                              }
+                              className="px-3 py-2.5 bg-muted text-muted-foreground rounded-xl text-sm font-medium hover:text-foreground hover:bg-muted/80 transition-all active:scale-95"
+                              title={t("resetDefault", "恢复默认")}
+                            >
+                              <Undo2 className="w-4 h-4" />
+                            </button>
+                          ) : null}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {t(
+                            "defaultSftpDownloadDirDesc",
+                            "SFTP 工具下载远程文件时的本地存储路径，未配置时自动保存至系统 Downloads 文件夹。",
                           )}
                         </p>
                       </div>

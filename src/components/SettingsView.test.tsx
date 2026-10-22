@@ -821,4 +821,22 @@ describe("SettingsView", () => {
       );
     });
   });
+
+  it("renders SFTP default download directory in general settings tab", async () => {
+    renderWithProviders(<SettingsView initialTab="general" onBack={() => {}} />);
+
+    expect(
+      await screen.findByText(
+        /SFTP 默认下载路径|SFTP Default Download Directory/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByDisplayValue(
+        /默认下载至系统 Downloads 目录|Default to system Downloads directory/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /浏览|Browse/i }),
+    ).toBeInTheDocument();
+  });
 });

@@ -18,6 +18,10 @@ type ToastInput = {
   description?: string;
   kind?: ToastKind;
   durationMs?: number;
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
 };
 
 type ToastRecord = ToastInput & {
@@ -51,7 +55,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const pushToast = useCallback(
-    ({ title, description, kind = "info", durationMs }: ToastInput) => {
+    ({ title, description, kind = "info", durationMs, action }: ToastInput) => {
       const id = crypto.randomUUID();
       const toast: ToastRecord = {
         id,
@@ -59,6 +63,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         description,
         kind,
         durationMs,
+        action,
       };
       setToasts((prev) => [...prev, toast].slice(-4));
       if (kind !== "loading") {
@@ -130,6 +135,20 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                     {toast.description ? (
                       <div className="mt-1 whitespace-pre-wrap break-words text-sm text-muted-foreground">
                         {toast.description}
+                      </div>
+                    ) : null}
+                    {toast.action ? (
+                      <div className="mt-2.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            toast.action?.onClick();
+                            dismissToast(toast.id);
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-primary/20 transition-colors"
+                        >
+                          {toast.action.label}
+                        </button>
                       </div>
                     ) : null}
                   </div>
