@@ -66,6 +66,17 @@ impl UptimeScheduler {
 
     fn start_background_loop(self: Arc<Self>, mut stop_rx: watch::Receiver<bool>) {
         tauri::async_runtime::spawn(async move {
+            // 启动时自动从 SQLite 中读取正在进行中的 active incident 预热状态机，防止应用重启引起的假新事件/重复警报
+            if let Ok(conn) = open_uptime_db() {
+                if let Ok(monitors) = load_monitors() {
+                    for m in monitors {
+                        if let Ok(Some(inc)) = get_active_incident(&conn, &m.id) {
+                            self.state_machine.hydrate_active_incident(&m.id, inc.started_at, &inc.cause);
+                        }
+                    }
+                }
+            }
+
             let mut prune_timer = tokio::time::interval(Duration::from_secs(3600));
             let mut tick_timer = tokio::time::interval(Duration::from_secs(5));
 

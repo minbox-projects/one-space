@@ -185,4 +185,105 @@ mod tests {
         assert!(matches!(trans3, Some(StateTransition::BecameUp { .. })));
         assert_eq!(registry.get_state(monitor_id).current_status, MonitorStatus::Up);
     }
+
+    #[test]
+    fn test_long_term_failure_no_repeated_alerts() {
+        let registry = StateMachineRegistry::new();
+        let monitor_id = "long-fail-mon";
+        let retry_count = 3;
+        let recover_count = 2;
+
+        let mut transitions = Vec::new();
+
+        // 模拟连续 10 次失败心跳（每 30 秒一次，总共持续 300 秒异常）
+        for i in 1..=10 {
+            let record = HeartbeatRecord {
+                id: None,
+                monitor_id: monitor_id.to_string(),
+                timestamp: 1000 + (i * 30),
+                status: MonitorStatus::Down,
+                response_time_ms: 1000,
+                status_code: Some(500),
+                error_message: Some("Internal Server Error".to_string()),
+                ssl_days_remaining: None,
+            };
+            if let Some(t) = registry.process_heartbeat(&record, retry_count, recover_count) {
+                transitions.push((i, t));
+            }
+        }
+
+        // 严密断言：仅在第 3 次（达到 retry_count 门槛）产生恰好 1 次 BecameDown 告警！
+        // 第 4 到第 10 次心跳绝对保持静默，绝不每 30 秒重复写消息或告警！
+        assert_eq!(transitions.len(), 1, "There must be exactly 1 alert during sustained outage");
+        assert_eq!(transitions[0].0, 3, "Alert must be triggered on the 3rd failure");
+        assert!(matches!(transitions[0].1, StateTransition::BecameDown { .. }));
+
+        // 接下来模拟服务恢复：连续 2 次成功心跳
+        let mut recover_transitions = Vec::new();
+        for i in 11..=15 {
+            let record = HeartbeatRecord {
+                id: None,
+                monitor_id: monitor_id.to_string(),
+                timestamp: 1000 + (i * 30),
+                status: MonitorStatus::Up,
+                response_time_ms: 50,
+                status_code: Some(200),
+                error_message: None,
+                ssl_days_remaining: None,
+            };
+            if let Some(t) = registry.process_heartbeat(&record, retry_count, recover_count) {
+                recover_transitions.push((i, t));
+            }
+        }
+
+        // 严密断言：仅在第 12 次（连续成功 2 次达到 recover_count）产生恰好 1 次 BecameUp 恢复告警！
+        // 第 13 到第 15 次心跳持续正常保持静默！
+        assert_eq!(recover_transitions.len(), 1, "There must be exactly 1 recovery notification");
+        assert_eq!(recover_transitions[0].0, 12, "Recovery must be triggered on the 2nd success");
+        assert!(matches!(recover_transitions[0].1, StateTransition::BecameUp { .. }));
+    }
+
+    #[test]
+    fn test_active_incident_hydration_prevents_duplicate_alert() {
+        let registry = StateMachineRegistry::new();
+        let monitor_id = "hydrated-mon";
+
+        // 模拟应用启动：从数据库发现该监控项此前已处于持续故障中
+        registry.hydrate_active_incident(monitor_id, 1000, "Historical server error");
+
+        // 随后的探测再次失败，验证由于已存在 active incident，不产生新的 BecameDown 告警
+        let record = HeartbeatRecord {
+            id: None,
+            monitor_id: monitor_id.to_string(),
+            timestamp: 2000,
+            status: MonitorStatus::Down,
+            response_time_ms: 1000,
+            status_code: Some(502),
+            error_message: Some("Bad Gateway".to_string()),
+            ssl_days_remaining: None,
+        };
+        let trans = registry.process_heartbeat(&record, 2, 2);
+        assert!(trans.is_none(), "Existing incident must not generate duplicate alert on restart");
+    }
+
+    #[test]
+    fn test_alert_cooldown_throttling() {
+        use crate::uptime_monitor::alerter::{can_dispatch_alert, reset_alert_throttle, ALERT_COOLDOWN_SECONDS};
+
+        reset_alert_throttle();
+        let monitor_id = "cooldown-mon";
+        let base_time = 1_700_000_000i64;
+
+        // 第一次告警：允许发出
+        assert!(can_dispatch_alert(monitor_id, "down", base_time));
+
+        // 30 秒后再次收到告警请求（未达到 300 秒冷却时间）：必须被拦截！
+        assert!(!can_dispatch_alert(monitor_id, "down", base_time + 30));
+
+        // 299 秒后（仍处于冷却期内）：仍然拦截！
+        assert!(!can_dispatch_alert(monitor_id, "down", base_time + ALERT_COOLDOWN_SECONDS - 1));
+
+        // 301 秒后（超过冷却期）：允许重新发出
+        assert!(can_dispatch_alert(monitor_id, "down", base_time + ALERT_COOLDOWN_SECONDS + 1));
+    }
 }

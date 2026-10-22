@@ -1,16 +1,57 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use serde_json::json;
 
 use super::types::MonitorTarget;
 use super::state_machine::StateTransition;
 
+/// 同一监控项在同一种状态下的最小告警静默保护间隔（秒），例如 5 分钟（300 秒）
+pub const ALERT_COOLDOWN_SECONDS: i64 = 300;
+
+static ALERT_THROTTLE: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
+
+pub fn can_dispatch_alert(monitor_id: &str, status_kind: &str, now: i64) -> bool {
+    let key = format!("{}:{}", monitor_id, status_kind);
+    let mut throttle = ALERT_THROTTLE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some(&last_time) = throttle.get(&key) {
+        if now.saturating_sub(last_time) < ALERT_COOLDOWN_SECONDS {
+            return false;
+        }
+    }
+    throttle.insert(key, now);
+    true
+}
+
+#[cfg(test)]
+pub fn reset_alert_throttle() {
+    if let Some(throttle) = ALERT_THROTTLE.get() {
+        throttle.lock().unwrap().clear();
+    }
+}
+
 pub async fn dispatch_transition_alert(
     target: &MonitorTarget,
     transition: &StateTransition,
     duration_sec: Option<i64>,
 ) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
     match transition {
         StateTransition::BecameDown { cause, .. } => {
+            if !can_dispatch_alert(&target.id, "down", now) {
+                log::warn!(
+                    "[Uptime Alert Suppressed] Down alert for monitor {} is within cooldown period",
+                    target.name
+                );
+                return;
+            }
             dispatch_alert(
                 target,
                 &format!("服务异常: {}", target.name),
@@ -20,6 +61,13 @@ pub async fn dispatch_transition_alert(
             .await;
         }
         StateTransition::BecameUp { .. } => {
+            if !can_dispatch_alert(&target.id, "up", now) {
+                log::warn!(
+                    "[Uptime Alert Suppressed] Up alert for monitor {} is within cooldown period",
+                    target.name
+                );
+                return;
+            }
             let duration_text = if let Some(dur) = duration_sec {
                 if dur > 60 {
                     format!(" (故障持续 {} 分 {} 秒)", dur / 60, dur % 60)
