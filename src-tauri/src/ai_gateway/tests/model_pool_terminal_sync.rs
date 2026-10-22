@@ -1177,12 +1177,11 @@ async fn pool_fallback_only_support_reaches_discovery_and_opencode_payload() {
     );
 }
 
-/// AC-011 (replay): an enabled pool with declared reasoning preferences must
-/// expose `interleaved = { field: "reasoning_content" }` on its OpenCode model
-/// row, so a resync cannot drop replay behavior. A legacy undeclared pool keeps
-/// no guessed reasoning/interleaved capabilities.
+/// Enabled pools expose `interleaved = { field: "reasoning_content" }` so
+/// OpenCode can replay history regardless of configured effort capabilities.
+/// An undeclared pool keeps no guessed reasoning capability or variants.
 #[tokio::test]
-async fn opencode_pool_row_with_declared_reasoning_includes_replay_interleaved() {
+async fn opencode_pool_rows_preserve_reasoning_replay_without_effort_declarations() {
     let _home = isolated_temp_home("pool-opencode-replay-interleaved");
     let mut config = gateway_config(19000);
     config.model_pools.push(reasoning_pool(
@@ -1225,9 +1224,14 @@ async fn opencode_pool_row_with_declared_reasoning_includes_replay_interleaved()
 
     let legacy = &models["legacy-model"];
     assert!(!legacy.is_null(), "legacy pool stays exposed: {models}");
+    assert_eq!(
+        legacy["interleaved"],
+        json!({ "field": "reasoning_content" }),
+        "an undeclared legacy pool must enable reasoning history replay: {legacy}"
+    );
     assert!(
-        legacy.get("interleaved").is_none(),
-        "an undeclared legacy pool must not gain guessed interleaving: {legacy}"
+        legacy.get("reasoning").is_none(),
+        "an undeclared legacy pool must not gain guessed reasoning capability: {legacy}"
     );
     assert!(
         legacy.get("variants").is_none(),
@@ -1266,46 +1270,45 @@ async fn opencode_pool_row_with_declared_reasoning_includes_replay_interleaved()
         "the complete captured row must not be pending: {opencode_current:?}"
     );
 
-    // Remove only replay metadata; everything else stays identical.
-    let mut stale = complete_provider.clone();
-    if let Some(model) = stale
-        .pointer_mut("/tool_config/models/replay-model")
-        .and_then(Value::as_object_mut)
-    {
-        model.remove("interleaved");
-    }
-    let targets = terminal_targets_from(
-        &config,
-        &json!({ "providers": [stale.clone()] }),
-        TerminalSyncProfile::RELEASE,
-    );
-    let opencode = targets
-        .iter()
-        .find(|target| target.tool == "opencode")
-        .expect("opencode target must exist");
-    assert!(
-        opencode.pending_sync,
-        "a synced row lacking replay metadata must be pending: {opencode:?}"
-    );
+    for alias in ["replay-model", "legacy-model"] {
+        // Remove only this pool's replay metadata; everything else stays identical.
+        let mut stale = complete_provider.clone();
+        stale["tool_config"]["models"][alias]
+            .as_object_mut()
+            .expect("pool model must be an object")
+            .remove("interleaved");
+        let targets = terminal_targets_from(
+            &config,
+            &json!({ "providers": [stale.clone()] }),
+            TerminalSyncProfile::RELEASE,
+        );
+        let opencode = targets
+            .iter()
+            .find(|target| target.tool == "opencode")
+            .expect("opencode target must exist");
+        assert!(
+            opencode.pending_sync,
+            "a synced row lacking {alias} replay metadata must be pending: {opencode:?}"
+        );
 
-    // A repeated sync with the stale provider restores interleaving and keeps
-    // the provider id.
-    let resynced = capture_payloads(
-        &json!({ "providers": [stale] }),
-        vec!["opencode".to_string()],
-    )
-    .await;
-    let restored = payload_for(&resynced, "opencode");
-    assert_eq!(
-        restored["id"].as_str(),
-        Some(provider_id.as_str()),
-        "resync must retain the provider id: {restored}"
-    );
-    assert_eq!(
-        restored["tool_config"]["models"]["replay-model"]["interleaved"],
-        json!({ "field": "reasoning_content" }),
-        "resync must restore replay interleaving: {restored}"
-    );
+        // A repeated sync restores interleaving and keeps the provider id.
+        let resynced = capture_payloads(
+            &json!({ "providers": [stale] }),
+            vec!["opencode".to_string()],
+        )
+        .await;
+        let restored = payload_for(&resynced, "opencode");
+        assert_eq!(
+            restored["id"].as_str(),
+            Some(provider_id.as_str()),
+            "resync must retain the provider id: {restored}"
+        );
+        assert_eq!(
+            restored["tool_config"]["models"][alias]["interleaved"],
+            json!({ "field": "reasoning_content" }),
+            "resync must restore {alias} replay interleaving: {restored}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

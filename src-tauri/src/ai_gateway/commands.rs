@@ -370,7 +370,7 @@ fn build_gateway_provider_with_pools(
         // coverage metadata as discovery. A pool never borrows a source model's
         // reasoning variants, never exposes a native mapped value, is never given
         // the Responses npm override, and fabricates no price/credential field. An
-        // unmapped legacy pool keeps no `variants` (REQ-005/AC-009). A disabled
+        // unmapped legacy pool keeps no `variants`. A disabled
         // pool is never exposed.
         for pool in pools.iter().filter(|pool| pool.enabled) {
             let Some(local_model) = non_empty(Some(pool.model.as_str())) else {
@@ -383,6 +383,16 @@ fn build_gateway_provider_with_pools(
             let catalog = super::reasoning::pool_reasoning_catalog(gateways, pool);
             let mut model = Map::new();
             model.insert("name".to_string(), Value::String(name));
+            // `interleaved` keeps historical reasoning replayable through the
+            // gateway's Chat adapter for every enabled pool row, including a pool
+            // that declares no selectable effort. It does not declare effort
+            // support or infer any upstream capability.
+            let mut interleaved = Map::new();
+            interleaved.insert(
+                "field".to_string(),
+                Value::String("reasoning_content".to_string()),
+            );
+            model.insert("interleaved".to_string(), Value::Object(interleaved));
             if !catalog.reasoning_efforts.is_empty() {
                 let mut variants = Map::new();
                 for effort in &catalog.reasoning_efforts {
@@ -390,15 +400,6 @@ fn build_gateway_provider_with_pools(
                     variant.insert("reasoningEffort".to_string(), Value::String(effort.clone()));
                     variants.insert(effort.clone(), Value::Object(variant));
                 }
-                // OpenCode replays non-empty reasoning by default but omits the
-                // field for tool turns without reasoning; interleaved makes the
-                // empty string explicit.
-                let mut interleaved = Map::new();
-                interleaved.insert(
-                    "field".to_string(),
-                    Value::String("reasoning_content".to_string()),
-                );
-                model.insert("interleaved".to_string(), Value::Object(interleaved));
                 model.insert("reasoning".to_string(), Value::Bool(true));
                 model.insert("variants".to_string(), Value::Object(variants));
             }
