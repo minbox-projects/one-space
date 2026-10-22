@@ -131,7 +131,7 @@
 
 - Vitest 卸载后未处理异常 `window is not defined`（`App.headerToolsStatus`）。
 - `retry_policy_zero_retry_after_ms_retries_immediately`。
-- `mcp_runtime legacy_sse_transport`（既有问题，属本计划范围之外）。
+- 休眠 MCP 会话运行时及其 `legacy_sse_transport` 用例已在后续未用代码审计清理中移除，该既有偶发失败不再适用；见 [未用代码审计清理](../.ai-workflow/notes/implemented/simplification/2026-10-22-unused-code-cleanup.md)。
 
 未执行 / 阻塞：原生 macOS GUI smoke（工具箱别名、快速窗口、草稿隐藏/显示）因无 GUI runner 而 BLOCKED/未执行；Windows 未测试。
 

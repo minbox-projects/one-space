@@ -42,7 +42,6 @@
         "eslint.config.js",
         "postcss.config.js",
         "tailwind.config.js",
-        "update_i18n.cjs",
         "vite.config.ts",
         "vitest.config.ts"
       ],
@@ -57,7 +56,6 @@
         "eslint.config.js",
         "postcss.config.js",
         "tailwind.config.js",
-        "update_i18n.cjs",
         "vite.config.ts",
         "vitest.config.ts"
       ],
@@ -71,7 +69,6 @@
       "entries": [
         "src/QuickAiApp.tsx",
         "src/components/AboutModal.tsx",
-        "src/components/AiEnvironments/AccordionItem.tsx",
         "src/components/AiEnvironments/CliVersionCards.tsx",
         "src/components/AiEnvironments/ConfigJsonEditor.tsx",
         "src/components/AiEnvironments/IconPicker.tsx",
@@ -250,10 +247,8 @@
         "src/components/toolbox/ToolStatusDot.tsx",
         "src/components/ui/badge.tsx",
         "src/components/ui/button.tsx",
-        "src/components/ui/card.tsx",
         "src/components/ui/command.tsx",
         "src/components/ui/dialog.tsx",
-        "src/components/ui/skeleton.tsx",
         "src/components/ui/switch.tsx",
         "src/components/ui/tooltip.tsx",
         "src/components/workspaceCapabilityContext.ts",
@@ -358,12 +353,6 @@
         {
           "file": "src/components/AboutModal.tsx",
           "name": "AboutModal",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/AiEnvironments/AccordionItem.tsx",
-          "name": "AccordionItem",
           "kind": "function",
           "visibility": "public"
         },
@@ -1222,7 +1211,7 @@
         {
           "file": "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
           "name": "AiWorkflowModelSwitcherProps",
-          "kind": "interface",
+          "kind": "type",
           "visibility": "public"
         },
         {
@@ -2475,12 +2464,6 @@
         },
         {
           "file": "src/components/Workspaces/types.ts",
-          "name": "WorkspaceCollectionState",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/Workspaces/types.ts",
           "name": "WorkspaceDetail",
           "kind": "type",
           "visibility": "public"
@@ -2505,12 +2488,6 @@
         },
         {
           "file": "src/components/Workspaces/types.ts",
-          "name": "WorkspaceInstalledCapabilityBase",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/Workspaces/types.ts",
           "name": "WorkspaceMcpBinding",
           "kind": "type",
           "visibility": "public"
@@ -2530,12 +2507,6 @@
         {
           "file": "src/components/Workspaces/types.ts",
           "name": "WorkspaceMcpScope",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/Workspaces/types.ts",
-          "name": "WorkspaceMessage",
           "kind": "type",
           "visibility": "public"
         },
@@ -2699,12 +2670,6 @@
           "file": "src/components/settings/common/SettingSelect.tsx",
           "name": "SettingSelect",
           "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/settings/common/SettingSelect.tsx",
-          "name": "SettingSelectOption",
-          "kind": "type",
           "visibility": "public"
         },
         {
@@ -3392,42 +3357,6 @@
           "visibility": "public"
         },
         {
-          "file": "src/components/ui/card.tsx",
-          "name": "Card",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardContent",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardDescription",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardFooter",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardHeader",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardTitle",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
           "file": "src/components/ui/command.tsx",
           "name": "Command",
           "kind": "variable",
@@ -3542,12 +3471,6 @@
           "visibility": "public"
         },
         {
-          "file": "src/components/ui/skeleton.tsx",
-          "name": "Skeleton",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
           "file": "src/components/ui/switch.tsx",
           "name": "Switch",
           "kind": "variable",
@@ -3610,12 +3533,6 @@
         {
           "file": "src/lib/actionDescriptors/backup.ts",
           "name": "buildCleanupBackupsActionDescriptor",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/actionDescriptors/backup.ts",
-          "name": "buildCreateBackupActionDescriptor",
           "kind": "function",
           "visibility": "public"
         },
@@ -4329,12 +4246,6 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
-          "name": "aiGatewayGetSettings",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
           "name": "aiGatewayModelPoolsStatus",
           "kind": "function",
           "visibility": "public"
@@ -4539,12 +4450,6 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
-          "name": "enabledModelPools",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
           "name": "expandModelPoolFallbackModel",
           "kind": "function",
           "visibility": "public"
@@ -4725,12 +4630,6 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
-          "name": "modelPoolCandidateFromMapping",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
           "name": "modelPoolCandidateKey",
           "kind": "function",
           "visibility": "public"
@@ -4744,18 +4643,6 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "modelPoolCandidateServesEffort",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
-          "name": "modelPoolReservedModels",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
-          "name": "modelPools",
           "kind": "function",
           "visibility": "public"
         },
@@ -5530,12 +5417,6 @@
         {
           "file": "src/lib/fileSharing.ts",
           "name": "FileSharingTransferState",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/fileSharing.ts",
-          "name": "FileSharingUpdate",
           "kind": "type",
           "visibility": "public"
         },
@@ -7701,12 +7582,6 @@
         },
         {
           "file": "src/lib/sshTunnels.ts",
-          "name": "sshCommonPortsList",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/sshTunnels.ts",
           "name": "sshHostsList",
           "kind": "function",
           "visibility": "public"
@@ -8098,12 +7973,6 @@
         {
           "file": "src/lib/terminalPermissions.ts",
           "name": "getInvokeErrorCode",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/terminalPermissions.ts",
-          "name": "getPermissionModeLabel",
           "kind": "function",
           "visibility": "public"
         },
@@ -12918,7 +12787,6 @@
         "src/QuickAiApp.tsx",
         "src/components/AboutModal.test.tsx",
         "src/components/AboutModal.tsx",
-        "src/components/AiEnvironments/AccordionItem.tsx",
         "src/components/AiEnvironments/AiEnvironments.test.tsx",
         "src/components/AiEnvironments/CliVersionCards.tsx",
         "src/components/AiEnvironments/ConfigJsonEditor.tsx",
@@ -13167,10 +13035,8 @@
         "src/components/toolbox/ToolStatusDot.tsx",
         "src/components/ui/badge.tsx",
         "src/components/ui/button.tsx",
-        "src/components/ui/card.tsx",
         "src/components/ui/command.tsx",
         "src/components/ui/dialog.tsx",
-        "src/components/ui/skeleton.tsx",
         "src/components/ui/switch.tsx",
         "src/components/ui/tooltip.tsx",
         "src/components/workspaceCapabilityContext.ts",
