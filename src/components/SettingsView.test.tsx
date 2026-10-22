@@ -839,4 +839,78 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: /浏览|Browse/i }),
     ).toBeInTheDocument();
   });
+
+  it("renders 5 main categories in the sidebar and supports navigation", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="general" onBack={() => {}} />);
+
+    // 5 main categories in the sidebar
+    expect(await screen.findByText(/常规与系统|General & System/i)).toBeInTheDocument();
+    expect(screen.getByText(/AI 与扩展生态|AI & Ecosystem/i)).toBeInTheDocument();
+    expect(screen.getByText(/网络与服务|Network & Services/i)).toBeInTheDocument();
+    expect(screen.getByText(/数据与安全|Data & Security/i)).toBeInTheDocument();
+    expect(screen.getByText(/资讯与订阅|News & Feeds|News/i)).toBeInTheDocument();
+
+    // Click on AI category
+    await user.click(screen.getByText(/AI 与扩展生态|AI & Ecosystem/i));
+    expect(await screen.findByText(/Default Model|默认模型/i)).toBeInTheDocument();
+
+    // Click on Network & Services category
+    await user.click(screen.getByText(/网络与服务|Network & Services/i));
+    expect(await screen.findByText(/Network Proxy Settings|网络代理/i)).toBeInTheDocument();
+  });
+
+  it("correctly routes legacy initialTab 'updates' to general category and updates sub-tab", async () => {
+    renderWithProviders(<SettingsView initialTab="updates" onBack={() => {}} />);
+
+    expect(await screen.findByText(/Automatic Updates|自动检查更新/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Check Frequency \(minutes\)|检查更新频率/i),
+    ).toBeInTheDocument();
+  });
+
+  it("correctly routes legacy initialTab 'skills' to AI category and skills sub-tab", async () => {
+    renderWithProviders(<SettingsView initialTab="skills" onBack={() => {}} />);
+
+    expect(
+      await screen.findByText(/Enable Skills Auto Sync|启用 Skills 自动同步/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Git Repository Skills Sources|Git 仓库 Skills 源/i),
+    ).toBeInTheDocument();
+  });
+
+  it("clears dirty state and orange dot after saving AI terminal sessions settings", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="ai" onBack={() => {}} />);
+
+    expect(await screen.findByText(/Default Model|默认模型/i)).toBeInTheDocument();
+
+    // Verify initial clean state: no dirty dots
+    expect(screen.queryByLabelText("dirty")).not.toBeInTheDocument();
+
+    // 1. Change permission mode of claude to full_access
+    const selects = screen.getAllByRole("combobox");
+    await user.selectOptions(selects[0], "full_access");
+
+    // Now dirty dot should appear
+    expect(screen.getAllByLabelText("dirty").length).toBeGreaterThan(0);
+
+    // Click Save Settings button
+    await user.click(
+      screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+    );
+
+    // Confirm dialog
+    const confirmButtons = screen.getAllByRole("button", { name: /Save|保存/ });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    // Wait for save to complete and verify dirty dot is cleared
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Save Settings|保存设置/ }),
+      ).toBeDisabled();
+      expect(screen.queryByLabelText("dirty")).not.toBeInTheDocument();
+    });
+  });
 });
