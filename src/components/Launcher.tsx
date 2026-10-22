@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
+import { CustomSelect } from "@/components/common/CustomSelect";
 import type { SshTunnelsSnapshot } from "./sshTunnels/types";
 import { notifyMessage, safeRecordMessage } from "@/lib/messages";
 import { runUserAction } from "@/lib/userActions";
@@ -1090,27 +1091,33 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 {t("type", "Type")}
               </label>
-              <select
+              <CustomSelect<LauncherItem["type"]>
                 value={typeInput}
-                onChange={(e) =>
-                  setTypeInput(e.target.value as LauncherItem["type"])
-                }
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                <option value="app">
-                  {t("macApp", "Mac Application (open -a)")}
-                </option>
-                <option value="script">
-                  {t("shellCommand", "Shell Command")}
-                </option>
-                <option value="url">{t("websiteUrl", "Website URL")}</option>
-                <option value="folder">
-                  {t("localFolder", "Local Folder")}
-                </option>
-                <option value="internal">
-                  {t("internalAction", "Internal Action")}
-                </option>
-              </select>
+                onChange={(val) => setTypeInput(val)}
+                ariaLabel={t("type", "Type")}
+                options={[
+                  {
+                    value: "app",
+                    label: t("macApp", "Mac Application (open -a)"),
+                  },
+                  {
+                    value: "script",
+                    label: t("shellCommand", "Shell Command"),
+                  },
+                  {
+                    value: "url",
+                    label: t("websiteUrl", "Website URL"),
+                  },
+                  {
+                    value: "folder",
+                    label: t("localFolder", "Local Folder"),
+                  },
+                  {
+                    value: "internal",
+                    label: t("internalAction", "Internal Action"),
+                  },
+                ]}
+              />
             </div>
 
             {typeInput === "internal" ? (
@@ -1118,20 +1125,22 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
                 <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   {t("targetModule", "Target Module")}
                 </label>
-                <select
+                <CustomSelect
                   value={targetInput}
-                  onChange={(e) => setTargetInput(e.target.value)}
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                >
-                  <option value="">
-                    {t("selectModule", "Select module...")}
-                  </option>
-                  {INTERNAL_TARGETS.map((target) => (
-                    <option key={target.id} value={target.id}>
-                      {t(target.labelKey, target.fallback)}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setTargetInput(val)}
+                  ariaLabel={t("targetModule", "Target Module")}
+                  placeholder={t("selectModule", "Select module...")}
+                  options={[
+                    {
+                      value: "",
+                      label: t("selectModule", "Select module..."),
+                    },
+                    ...INTERNAL_TARGETS.map((target) => ({
+                      value: target.id,
+                      label: t(target.labelKey, target.fallback),
+                    })),
+                  ]}
+                />
               </div>
             ) : typeInput === "app" ? (
               <div className="space-y-2 md:col-span-2">

@@ -16,7 +16,6 @@ mod git;
 pub mod http_client;
 mod managed_assets;
 mod mcp_export;
-mod mcp_runtime;
 mod mcp_servers;
 mod mcp_templates;
 mod messages;
@@ -74,7 +73,7 @@ pub use uptime_monitor::{
 pub use webhook_catcher::{
     webhook_clear_requests, webhook_delete_endpoint, webhook_execute_replay,
     webhook_get_server_status, webhook_list_endpoints, webhook_list_requests,
-    webhook_save_endpoint, webhook_start_server, webhook_stop_server,
+    webhook_save_endpoint, webhook_start_server,
 };
 
 // Test-only discovery hook for the delegated `ble_lock` contract tests. The

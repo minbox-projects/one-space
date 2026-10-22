@@ -75,16 +75,12 @@ pub async fn doh_check_txt(record_name: &str, expected_value: &str) -> SslDohPre
 
 // Cloudflare DNS Automation
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct CfZoneItem {
     id: String,
-    name: String,
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct CfZonesResponse {
-    success: bool,
     result: Vec<CfZoneItem>,
 }
 
@@ -134,7 +130,7 @@ pub async fn cloudflare_add_txt_record(
         .await
         .map_err(|e| format!("Failed to reach Cloudflare API: {}", e))?;
 
-    let zones:板 = res
+    let zones: CfZonesResponse = res
         .json::<CfZonesResponse>()
         .await
         .map_err(|e| format!("Failed to parse Cloudflare zones response: {}", e))?;
@@ -204,4 +200,3 @@ pub async fn cloudflare_delete_txt_record(api_token: &str, handle: &str) -> Resu
     let _ = client.delete(&del_url).headers(headers).send().await;
     Ok(())
 }
-type 板 = CfZonesResponse;

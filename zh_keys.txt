@@ -469,8 +469,6 @@ continue
 copied
 copyRight
 copyToClipboard
-createBackup
-createFirstBackup
 createFirstBookmark
 createFirstNote
 createFirstSnippet
@@ -683,8 +681,6 @@ notes
 notesOptional
 notInstalled
 notInTauri
-noToolSelected
-noToolSelectedDesc
 notSet
 oldPassword
 openAppPlaceholder

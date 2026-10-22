@@ -3,6 +3,7 @@ import { Check, Copy, WandSparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ToolShell } from "@/components/toolbox/ToolShell";
 import { useToast } from "./ToastProvider";
+import { CustomSelect } from "@/components/common/CustomSelect";
 import { getToolboxTool } from "@/toolbox/registry";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 
@@ -41,21 +42,18 @@ export function JsonParserTool() {
     >
           <div className="space-y-4 rounded-lg border bg-card p-4">
             <div className="flex flex-wrap items-end justify-between gap-3">
-              <label className="grid gap-1.5 text-sm font-medium" htmlFor="json-parser-indent">
-                {t("jsonParserIndent", "Indentation")}
-                <select
-                  id="json-parser-indent"
-                  value={indent}
-                  onChange={(event) => setIndent(Number(event.target.value))}
-                  className="h-10 rounded-md border bg-background px-3 text-sm outline-none"
-                >
-                  {[2, 4, 8].map((value) => (
-                    <option key={value} value={value}>
-                      {t("jsonParserSpaces", "{{count}} spaces", { count: value })}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="grid gap-1.5 text-sm font-medium min-w-[130px]">
+                <span>{t("jsonParserIndent", "Indentation")}</span>
+                <CustomSelect
+                  value={String(indent)}
+                  onChange={(val) => setIndent(Number(val))}
+                  ariaLabel={t("jsonParserIndent", "Indentation")}
+                  options={[2, 4, 8].map((value) => ({
+                    value: String(value),
+                    label: t("jsonParserSpaces", "{{count}} spaces", { count: value }),
+                  }))}
+                />
+              </div>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"

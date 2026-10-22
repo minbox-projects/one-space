@@ -1,14 +1,13 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { History, RotateCcw, Trash2, Plus, AlertTriangle } from 'lucide-react';
+import { History, RotateCcw, Trash2 } from 'lucide-react';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
 import { errorToMessage, safeRecordMessage } from '@/lib/messages';
 import { runUserAction } from '@/lib/userActions';
 import {
   buildCleanupBackupsActionDescriptor,
-  buildCreateBackupActionDescriptor,
   buildDeleteBackupActionDescriptor,
   buildRestoreBackupActionDescriptor,
 } from '@/lib/actionDescriptors/backup';
@@ -24,22 +23,17 @@ interface BackupEntry {
   reason?: string;
 }
 
-interface BackupManagerProps {
-  activeTool?: string;
-}
-
-export function BackupManager({ activeTool }: BackupManagerProps) {
+export function BackupManager() {
   const { t } = useTranslation();
   const confirmDialog = useConfirmDialog();
   const { pushToast } = useToast();
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [restoring, setRestoring] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     loadBackups();
-  }, [activeTool]);
+  }, []);
 
   const actionContext = {
     t,
@@ -51,38 +45,12 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
   async function loadBackups() {
     setLoading(true);
     try {
-      const result = await invoke('list_backups', { 
-        tool: activeTool || undefined 
-      });
+      const result = await invoke('list_backups');
       setBackups(result as BackupEntry[]);
     } catch (e) {
       console.error('Failed to load backups:', e);
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function handleCreateBackup() {
-    if (!activeTool) return;
-
-    setCreating(true);
-    try {
-      const result = await runUserAction(
-        actionContext,
-        buildCreateBackupActionDescriptor(t, activeTool),
-        () =>
-          invoke('create_backup', {
-            tool: activeTool,
-            reason: 'Manual backup',
-          }),
-      );
-      if (result === null) return;
-      await loadBackups();
-    } catch (e) {
-      const detail = errorToMessage(e);
-      console.error('Failed to create backup', detail);
-    } finally {
-      setCreating(false);
     }
   }
 
@@ -157,7 +125,7 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
             {t('backupManager')}
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
-            {t('backupManagerDesc', { tool: activeTool || 'all tools' })}
+            {t('backupManagerDesc', { tool: t('allTools') })}
           </p>
         </div>
         <div className="flex gap-2">
@@ -167,30 +135,8 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
           >
             {t('cleanupOld')}
           </button>
-          <button
-            onClick={handleCreateBackup}
-            disabled={creating || !activeTool}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm flex items-center gap-2 hover:bg-primary/90 disabled:opacity-50"
-          >
-            <Plus className="w-4 h-4" />
-            {t('createBackup')}
-          </button>
         </div>
       </div>
-
-      {!activeTool && (
-        <div className="bg-amber-50 border border-amber-200 rounded-md p-4 mb-6 flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5" />
-          <div>
-            <p className="text-sm text-amber-800 font-medium">
-              {t('noToolSelected')}
-            </p>
-            <p className="text-xs text-amber-700 mt-1">
-              {t('noToolSelectedDesc')}
-            </p>
-          </div>
-        </div>
-      )}
 
       {loading ? (
         <div className="text-center py-12 text-muted-foreground">{t('loadingBackups')}</div>
@@ -201,14 +147,6 @@ export function BackupManager({ activeTool }: BackupManagerProps) {
           <p className="text-muted-foreground mb-4">
             {t('noBackupsFoundDesc')}
           </p>
-          {activeTool && (
-            <button
-              onClick={handleCreateBackup}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"
-            >
-              {t('createFirstBackup')}
-            </button>
-          )}
         </div>
       ) : (
         <div className="space-y-3">

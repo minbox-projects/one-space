@@ -38,33 +38,6 @@ fn protocol_router_service_provider_uri_rejects_legacy_single_segment_route() {
 }
 
 #[test]
-fn parses_openai_models_catalog() {
-    let value = json!({
-        "object": "list",
-        "data": [
-            { "id": "kimi-k2.6", "object": "model", "created": 1, "owned_by": "moonshot" },
-            { "id": "gpt-5.1", "object": "model", "created": 2, "owned_by": "openai" }
-        ]
-    });
-    let models = parse_openai_models_catalog(&value, None).unwrap();
-    assert_eq!(models.len(), 2);
-    assert_eq!(models[0].id, "kimi-k2.6");
-    assert_eq!(models[1].owned_by.as_deref(), Some("openai"));
-}
-
-#[test]
-fn parses_opencode_go_fixture_shape() {
-    let value = json!({
-        "object": "list",
-        "data": [
-            { "id": "claude-sonnet-4", "object": "model", "created": 0, "owned_by": "opencode-go" }
-        ]
-    });
-    let models = parse_openai_models_catalog(&value, Some("go:")).unwrap();
-    assert_eq!(models[0].id, "go:claude-sonnet-4");
-}
-
-#[test]
 fn opencode_go_style_routes_should_use_openai_responses_endpoint() {
     let provider = crate::app_store::ServiceProviderRecord {
         id: "opencode-go".to_string(),

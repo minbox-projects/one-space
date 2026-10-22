@@ -414,24 +414,6 @@ pub async fn skills_reconcile(
 }
 
 #[tauri::command]
-pub async fn skills_rescan_local(
-    _app: tauri::AppHandle,
-) -> Result<ApiOk<Vec<SkillRecord>>, String> {
-    let _job = match acquire_job_key("rescan:local")? {
-        Some(v) => v,
-        None => {
-            let state = load_local_skills_state()?;
-            return api_ok(state.skills.clone(), state.revision);
-        }
-    };
-    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-    let mut state = load_local_skills_state()?;
-    rebuild_local_installed_from_models(&mut state)?;
-    let state = save_local_skills_state(state)?;
-    api_ok(state.skills.clone(), state.revision)
-}
-
-#[tauri::command]
 pub async fn skills_rescan_mirror(
     _app: tauri::AppHandle,
 ) -> Result<ApiOk<Vec<SkillRecord>>, String> {

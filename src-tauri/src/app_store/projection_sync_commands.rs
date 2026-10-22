@@ -1,10 +1,9 @@
 use super::{
-    api_error, api_ok, apply_projection, enqueue_sync_event, get_meta, load_migration_state,
-    load_outbox_state, load_service_providers_state, load_sessions_state,
-    lock_sessions_state_write, materialize_isolated_claude_profile_async, now_ts,
-    process_sync_queue, process_sync_queue_impl, rollback_from_backup, run_migration_impl,
-    save_migration_state, save_sessions_state, session_to_legacy, ApiErr, ApiMeta, ApiOk,
-    OutboxState, SessionRecord, SessionsState, SCHEMA_VERSION,
+    api_error, api_ok, apply_projection, enqueue_sync_event, get_meta, load_outbox_state,
+    load_service_providers_state, load_sessions_state, lock_sessions_state_write,
+    materialize_isolated_claude_profile_async, now_ts, process_sync_queue,
+    process_sync_queue_impl, run_migration_impl, save_sessions_state, session_to_legacy, ApiErr,
+    ApiOk, SessionRecord, SessionsState,
 };
 use serde_json::{json, Value};
 use tauri::Emitter;
@@ -68,28 +67,6 @@ pub async fn sync_run_now(app: tauri::AppHandle) -> Result<ApiOk<Value>, ApiErr>
     api_ok(
         serde_json::to_value(outbox).map_err(|e| api_error("serialize_error", e.to_string()))?,
         get_meta().map_err(|e| api_error("io_error", e))?,
-    )
-}
-
-#[tauri::command]
-pub fn sync_status() -> Result<ApiOk<OutboxState>, ApiErr> {
-    let outbox = load_outbox_state().map_err(|e| api_error("io_error", e))?;
-    api_ok(outbox, get_meta().map_err(|e| api_error("io_error", e))?)
-}
-
-#[tauri::command]
-pub fn migration_rollback(backup_id: String) -> Result<ApiOk<Value>, ApiErr> {
-    rollback_from_backup(&backup_id).map_err(|e| api_error("rollback_failed", e))?;
-    let mut state = load_migration_state().map_err(|e| api_error("io_error", e))?;
-    state.migrated = false;
-    state.last_error = None;
-    save_migration_state(&state).map_err(|e| api_error("io_error", e))?;
-    api_ok(
-        json!({ "rolled_back": true, "backup_id": backup_id }),
-        get_meta().unwrap_or(ApiMeta {
-            schema_version: SCHEMA_VERSION,
-            revision: 0,
-        }),
     )
 }
 

@@ -52,7 +52,6 @@
         "eslint.config.js",
         "postcss.config.js",
         "tailwind.config.js",
-        "update_i18n.cjs",
         "vite.config.ts",
         "vitest.config.ts"
       ],
@@ -67,7 +66,6 @@
         "eslint.config.js",
         "postcss.config.js",
         "tailwind.config.js",
-        "update_i18n.cjs",
         "vite.config.ts",
         "vitest.config.ts"
       ],
@@ -81,7 +79,6 @@
       "entries": [
         "src/QuickAiApp.tsx",
         "src/components/AboutModal.tsx",
-        "src/components/AiEnvironments/AccordionItem.tsx",
         "src/components/AiEnvironments/CliVersionCards.tsx",
         "src/components/AiEnvironments/ConfigJsonEditor.tsx",
         "src/components/AiEnvironments/IconPicker.tsx",
@@ -230,6 +227,7 @@
         "src/components/Workspaces/hooks/useWorkspaceSubagentsPanelState.ts",
         "src/components/Workspaces/index.tsx",
         "src/components/Workspaces/types.ts",
+        "src/components/common/CustomSelect.tsx",
         "src/components/settings/SettingsContainer.tsx",
         "src/components/settings/SettingsSidebar.tsx",
         "src/components/settings/common/EcoSourceManager.tsx",
@@ -237,6 +235,7 @@
         "src/components/settings/common/RetentionChips.tsx",
         "src/components/settings/common/SettingCard.tsx",
         "src/components/settings/common/SettingRow.tsx",
+        "src/components/settings/common/SettingSelect.tsx",
         "src/components/settings/common/SubTabNavigation.tsx",
         "src/components/settings/helpers.ts",
         "src/components/settings/sections/AiEcoSection.tsx",
@@ -258,10 +257,8 @@
         "src/components/toolbox/ToolStatusDot.tsx",
         "src/components/ui/badge.tsx",
         "src/components/ui/button.tsx",
-        "src/components/ui/card.tsx",
         "src/components/ui/command.tsx",
         "src/components/ui/dialog.tsx",
-        "src/components/ui/skeleton.tsx",
         "src/components/ui/switch.tsx",
         "src/components/ui/tooltip.tsx",
         "src/components/workspaceCapabilityContext.ts",
@@ -366,12 +363,6 @@
         {
           "file": "src/components/AboutModal.tsx",
           "name": "AboutModal",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/AiEnvironments/AccordionItem.tsx",
-          "name": "AccordionItem",
           "kind": "function",
           "visibility": "public"
         },
@@ -1230,7 +1221,7 @@
         {
           "file": "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.tsx",
           "name": "AiWorkflowModelSwitcherProps",
-          "kind": "interface",
+          "kind": "type",
           "visibility": "public"
         },
         {
@@ -2483,12 +2474,6 @@
         },
         {
           "file": "src/components/Workspaces/types.ts",
-          "name": "WorkspaceCollectionState",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/Workspaces/types.ts",
           "name": "WorkspaceDetail",
           "kind": "type",
           "visibility": "public"
@@ -2513,12 +2498,6 @@
         },
         {
           "file": "src/components/Workspaces/types.ts",
-          "name": "WorkspaceInstalledCapabilityBase",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/Workspaces/types.ts",
           "name": "WorkspaceMcpBinding",
           "kind": "type",
           "visibility": "public"
@@ -2538,12 +2517,6 @@
         {
           "file": "src/components/Workspaces/types.ts",
           "name": "WorkspaceMcpScope",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/Workspaces/types.ts",
-          "name": "WorkspaceMessage",
           "kind": "type",
           "visibility": "public"
         },
@@ -2592,6 +2565,30 @@
         {
           "file": "src/components/Workspaces/types.ts",
           "name": "WorkspaceView",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/common/CustomSelect.tsx",
+          "name": "CustomSelect",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/common/CustomSelect.tsx",
+          "name": "CustomSelectOption",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/common/CustomSelect.tsx",
+          "name": "CustomSelectProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/common/CustomSelect.tsx",
+          "name": "CustomSelectSize",
           "kind": "type",
           "visibility": "public"
         },
@@ -2677,6 +2674,18 @@
           "file": "src/components/settings/common/SettingRow.tsx",
           "name": "SettingRowProps",
           "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingSelect.tsx",
+          "name": "SettingSelect",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingSelect.tsx",
+          "name": "SettingSelectProps",
+          "kind": "type",
           "visibility": "public"
         },
         {
@@ -3358,42 +3367,6 @@
           "visibility": "public"
         },
         {
-          "file": "src/components/ui/card.tsx",
-          "name": "Card",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardContent",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardDescription",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardFooter",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardHeader",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ui/card.tsx",
-          "name": "CardTitle",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
           "file": "src/components/ui/command.tsx",
           "name": "Command",
           "kind": "variable",
@@ -3508,12 +3481,6 @@
           "visibility": "public"
         },
         {
-          "file": "src/components/ui/skeleton.tsx",
-          "name": "Skeleton",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
           "file": "src/components/ui/switch.tsx",
           "name": "Switch",
           "kind": "variable",
@@ -3576,12 +3543,6 @@
         {
           "file": "src/lib/actionDescriptors/backup.ts",
           "name": "buildCleanupBackupsActionDescriptor",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/actionDescriptors/backup.ts",
-          "name": "buildCreateBackupActionDescriptor",
           "kind": "function",
           "visibility": "public"
         },
@@ -3785,6 +3746,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "DEFAULT_GATEWAY_SETTINGS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "GATEWAY_GENERIC_TEMPLATE_POLICY",
           "kind": "variable",
           "visibility": "public"
@@ -3918,6 +3885,12 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "GatewayProviderTemplateView",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "GatewaySettings",
           "kind": "interface",
           "visibility": "public"
         },
@@ -4379,6 +4352,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "aiGatewaySaveSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "aiGatewaySetDefaultKey",
           "kind": "function",
           "visibility": "public"
@@ -4512,12 +4491,6 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "draftToPriceRow",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
-          "name": "enabledModelPools",
           "kind": "function",
           "visibility": "public"
         },
@@ -4715,12 +4688,6 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
-          "name": "modelPoolCandidateFromMapping",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
           "name": "modelPoolCandidateKey",
           "kind": "function",
           "visibility": "public"
@@ -4739,18 +4706,6 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
-          "name": "modelPoolReservedModels",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
-          "name": "modelPools",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
           "name": "newModelPoolId",
           "kind": "function",
           "visibility": "public"
@@ -4758,6 +4713,12 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "normalizeDraftDays",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "normalizeGatewaySettings",
           "kind": "function",
           "visibility": "public"
         },
@@ -5544,12 +5505,6 @@
         {
           "file": "src/lib/fileSharing.ts",
           "name": "FileSharingTransferState",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/fileSharing.ts",
-          "name": "FileSharingUpdate",
           "kind": "type",
           "visibility": "public"
         },
@@ -7715,12 +7670,6 @@
         },
         {
           "file": "src/lib/sshTunnels.ts",
-          "name": "sshCommonPortsList",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/sshTunnels.ts",
           "name": "sshHostsList",
           "kind": "function",
           "visibility": "public"
@@ -8112,12 +8061,6 @@
         {
           "file": "src/lib/terminalPermissions.ts",
           "name": "getInvokeErrorCode",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/terminalPermissions.ts",
-          "name": "getPermissionModeLabel",
           "kind": "function",
           "visibility": "public"
         },
@@ -8915,7 +8858,9 @@
         "src/components/Workspaces/Workspaces.test.tsx",
         "src/components/Workspaces/helpers/workspaceCapabilityHelpers.test.ts",
         "src/components/Workspaces/helpers/workspaceHelpers.test.ts",
+        "src/components/common/CustomSelect.test.tsx",
         "src/components/modelOptions.test.ts",
+        "src/components/settings/common/SettingSelect.test.tsx",
         "src/components/sshTunnels/SshCommonPortManagerDialog.test.tsx",
         "src/components/toolbox/ToolShell.test.tsx",
         "src/components/toolbox/ToolStatusBadge.test.tsx",
@@ -11943,6 +11888,11 @@
         {
           "kind": "imports",
           "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/common/SettingSelect.tsx#SettingSelect"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
           "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabItem"
         },
         {
@@ -12114,6 +12064,11 @@
           "kind": "imports",
           "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
           "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
+          "to": "src/components/settings/common/SettingSelect.tsx#SettingSelect"
         },
         {
           "kind": "imports",
@@ -12921,7 +12876,6 @@
         "src/QuickAiApp.tsx",
         "src/components/AboutModal.test.tsx",
         "src/components/AboutModal.tsx",
-        "src/components/AiEnvironments/AccordionItem.tsx",
         "src/components/AiEnvironments/AiEnvironments.test.tsx",
         "src/components/AiEnvironments/CliVersionCards.tsx",
         "src/components/AiEnvironments/ConfigJsonEditor.tsx",
@@ -13134,6 +13088,8 @@
         "src/components/Workspaces/hooks/useWorkspaceSubagentsPanelState.ts",
         "src/components/Workspaces/index.tsx",
         "src/components/Workspaces/types.ts",
+        "src/components/common/CustomSelect.test.tsx",
+        "src/components/common/CustomSelect.tsx",
         "src/components/modelOptions.test.ts",
         "src/components/settings/SettingsContainer.tsx",
         "src/components/settings/SettingsSidebar.tsx",
@@ -13142,6 +13098,8 @@
         "src/components/settings/common/RetentionChips.tsx",
         "src/components/settings/common/SettingCard.tsx",
         "src/components/settings/common/SettingRow.tsx",
+        "src/components/settings/common/SettingSelect.test.tsx",
+        "src/components/settings/common/SettingSelect.tsx",
         "src/components/settings/common/SubTabNavigation.tsx",
         "src/components/settings/helpers.ts",
         "src/components/settings/sections/AiEcoSection.tsx",
@@ -13167,10 +13125,8 @@
         "src/components/toolbox/ToolStatusDot.tsx",
         "src/components/ui/badge.tsx",
         "src/components/ui/button.tsx",
-        "src/components/ui/card.tsx",
         "src/components/ui/command.tsx",
         "src/components/ui/dialog.tsx",
-        "src/components/ui/skeleton.tsx",
         "src/components/ui/switch.tsx",
         "src/components/ui/tooltip.tsx",
         "src/components/workspaceCapabilityContext.ts",

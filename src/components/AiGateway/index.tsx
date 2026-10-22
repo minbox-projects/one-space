@@ -57,7 +57,6 @@ import {
   aiGatewayUsageStats,
   localAnthropicMessagesUrl,
   localBaseUrl,
-  modelPools as readModelPools,
   providerKeyPool,
   resolveDefaultKeyId,
   type CreateProviderFromTemplateRequest,
@@ -268,7 +267,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
 
   // Tab counts are derived from the loaded configuration only; header/status
   // refreshes must not repeat the aggregation or pool filtering work.
-  const modelPoolsForView = useMemo(() => readModelPools(config), [config]);
+  const modelPoolsForView = useMemo(() => config?.model_pools ?? [], [config]);
   const aggregatedModelCount = useMemo(
     () => aggregateModels(config?.providers ?? []).length,
     [config],
@@ -952,7 +951,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
 
   const handleDeletePool = (poolId: string) => {
     const name =
-      readModelPools(config).find((pool) => pool.id === poolId)?.name ?? poolId;
+      (config?.model_pools ?? []).find((pool) => pool.id === poolId)?.name ?? poolId;
     return runAction(
       async () => {
         await applyConfig(await aiGatewayDeleteModelPool(poolId));
@@ -1659,7 +1658,6 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
                 if (pool) void handleTogglePoolEnabled(pool, enabled);
               }}
               onEditPool={(pool) => handleOpenEditPool(pool)}
-              onDeletePool={(poolId) => void handleDeletePool(poolId)}
               onOpenPoolLogs={(model) => handleOpenPoolLogs(model)}
             />
           ) : null}
@@ -1929,7 +1927,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
           }}
           providers={config.providers}
           aliases={[
-            ...readModelPools(config).map((item) => item.model),
+            ...(config?.model_pools ?? []).map((item) => item.model),
             ...(config.model_pool_reserved_models ?? []),
           ]}
           templates={templates}

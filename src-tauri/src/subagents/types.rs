@@ -1,5 +1,4 @@
 use super::{bool_true, now_ts};
-use crate::config::SubagentSourceConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -287,23 +286,6 @@ pub struct ApiOk<T> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SubagentsConfigPayload {
-    pub subagents_sync_enabled: bool,
-    pub subagents_sync_interval_minutes: u64,
-    pub subagents_new_badge_hours: u64,
-    #[serde(default)]
-    pub subagents_sources: Vec<SubagentSourceConfig>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SubagentsSourcesExportPayload {
-    pub version: u32,
-    pub exported_at: String,
-    #[serde(default)]
-    pub subagents_sources: Vec<SubagentSourceConfig>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InstallInput {
     pub source_id: String,
     pub subagent_ref: String,
@@ -312,39 +294,6 @@ pub struct InstallInput {
     pub scope: Option<String>,
     #[serde(default)]
     pub project_root: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocalScanInput {
-    pub root_path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocalSubagentCandidate {
-    pub rel_path: String,
-    pub subagent_id: String,
-    #[serde(default)]
-    pub dir_name: String,
-    pub source_id: String,
-    pub name: String,
-    pub description: String,
-    #[serde(default)]
-    pub declared_models: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocalImportSelection {
-    pub rel_path: String,
-    pub conflict_strategy: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocalImportInput {
-    pub root_path: String,
-    #[serde(default)]
-    pub models: Vec<String>,
-    #[serde(default)]
-    pub selections: Vec<LocalImportSelection>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -358,42 +307,6 @@ pub struct RepoImportFolderResult {
     pub subagent_id: String,
     pub source_id: String,
     pub source_rel_path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocalImportSkipped {
-    pub rel_path: String,
-    pub subagent_id: String,
-    pub model: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocalImportFailed {
-    pub rel_path: String,
-    pub subagent_id: Option<String>,
-    pub model: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocalImportRepoAdded {
-    pub repo_key: String,
-    pub subagent_id: String,
-    pub source_id: String,
-    pub source_rel_path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct LocalImportResult {
-    #[serde(default)]
-    pub repo_added: Vec<LocalImportRepoAdded>,
-    #[serde(default)]
-    pub installed: Vec<SubagentRecord>,
-    #[serde(default)]
-    pub skipped: Vec<LocalImportSkipped>,
-    #[serde(default)]
-    pub failed: Vec<LocalImportFailed>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -433,12 +346,6 @@ pub struct RepoReloadApplyInput {
     pub repo_key: String,
     #[serde(default)]
     pub sync_to_models: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct SubagentModelFilter {
-    pub model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

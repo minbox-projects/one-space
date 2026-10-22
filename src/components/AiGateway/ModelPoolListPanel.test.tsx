@@ -167,10 +167,9 @@ describe("ModelPoolListPanel", () => {
     expect(screen.getByText("Claude High Availability")).toBeInTheDocument();
   });
 
-  it("propagates toggle enabled, edit, delete, and open logs callbacks", () => {
+  it("propagates toggle enabled, edit, and open logs callbacks", () => {
     const onTogglePoolEnabled = vi.fn();
     const onEditPool = vi.fn();
-    const onDeletePool = vi.fn();
     const onOpenPoolLogs = vi.fn();
 
     renderWithProviders(
@@ -180,7 +179,6 @@ describe("ModelPoolListPanel", () => {
         poolStatuses={mockStatuses}
         onTogglePoolEnabled={onTogglePoolEnabled}
         onEditPool={onEditPool}
-        onDeletePool={onDeletePool}
         onOpenPoolLogs={onOpenPoolLogs}
       />,
     );

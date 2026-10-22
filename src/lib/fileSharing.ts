@@ -51,8 +51,6 @@ export type FileSharingSnapshot = {
   };
 };
 
-export type FileSharingUpdate = { kind: "session" | "transfer" };
-
 export class FileSharingError extends Error {
   constructor(message: string) {
     super(message);

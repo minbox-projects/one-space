@@ -252,6 +252,128 @@ export interface GatewayTerminalSyncRecord {
   synced_at: number;
 }
 
+export interface GatewaySettings {
+  bind_address: string;
+  enable_cors: boolean;
+  proxy_url?: string | null;
+  require_api_key_for_lan: boolean;
+
+  connect_timeout_secs: number;
+  read_timeout_secs: number;
+  request_budget_secs: number;
+  max_retries_per_provider: number;
+  retry_base_delay_ms: number;
+
+  failure_threshold: number;
+  probe_cooldown_secs: number;
+  key_quota_ttl_secs: number;
+
+  session_affinity_timeout_secs: number;
+  context_hold_timeout_secs: number;
+  custom_session_headers: string[];
+
+  daily_reset_offset_hours: number;
+  quota_cache_ttl_secs: number;
+
+  debug_logging: boolean;
+}
+
+export const DEFAULT_GATEWAY_SETTINGS: GatewaySettings = {
+  bind_address: "127.0.0.1",
+  enable_cors: true,
+  proxy_url: null,
+  require_api_key_for_lan: true,
+  connect_timeout_secs: 10,
+  read_timeout_secs: 60,
+  request_budget_secs: 120,
+  max_retries_per_provider: 3,
+  retry_base_delay_ms: 1000,
+  failure_threshold: 3,
+  probe_cooldown_secs: 60,
+  key_quota_ttl_secs: 1800,
+  session_affinity_timeout_secs: 1800,
+  context_hold_timeout_secs: 300,
+  custom_session_headers: [],
+  daily_reset_offset_hours: 8,
+  quota_cache_ttl_secs: 60,
+  debug_logging: false,
+};
+
+export function normalizeGatewaySettings(
+  settings?: Partial<GatewaySettings> | null,
+): GatewaySettings {
+  if (!settings || typeof settings !== "object") {
+    return { ...DEFAULT_GATEWAY_SETTINGS };
+  }
+  return {
+    bind_address:
+      typeof settings.bind_address === "string"
+        ? settings.bind_address
+        : DEFAULT_GATEWAY_SETTINGS.bind_address,
+    enable_cors:
+      typeof settings.enable_cors === "boolean"
+        ? settings.enable_cors
+        : DEFAULT_GATEWAY_SETTINGS.enable_cors,
+    proxy_url:
+      typeof settings.proxy_url === "string"
+        ? settings.proxy_url
+        : settings.proxy_url === null
+        ? null
+        : DEFAULT_GATEWAY_SETTINGS.proxy_url,
+    require_api_key_for_lan:
+      typeof settings.require_api_key_for_lan === "boolean"
+        ? settings.require_api_key_for_lan
+        : DEFAULT_GATEWAY_SETTINGS.require_api_key_for_lan,
+
+    connect_timeout_secs: Number.isFinite(settings.connect_timeout_secs)
+      ? Number(settings.connect_timeout_secs)
+      : DEFAULT_GATEWAY_SETTINGS.connect_timeout_secs,
+    read_timeout_secs: Number.isFinite(settings.read_timeout_secs)
+      ? Number(settings.read_timeout_secs)
+      : DEFAULT_GATEWAY_SETTINGS.read_timeout_secs,
+    request_budget_secs: Number.isFinite(settings.request_budget_secs)
+      ? Number(settings.request_budget_secs)
+      : DEFAULT_GATEWAY_SETTINGS.request_budget_secs,
+    max_retries_per_provider: Number.isFinite(settings.max_retries_per_provider)
+      ? Number(settings.max_retries_per_provider)
+      : DEFAULT_GATEWAY_SETTINGS.max_retries_per_provider,
+    retry_base_delay_ms: Number.isFinite(settings.retry_base_delay_ms)
+      ? Number(settings.retry_base_delay_ms)
+      : DEFAULT_GATEWAY_SETTINGS.retry_base_delay_ms,
+
+    failure_threshold: Number.isFinite(settings.failure_threshold)
+      ? Number(settings.failure_threshold)
+      : DEFAULT_GATEWAY_SETTINGS.failure_threshold,
+    probe_cooldown_secs: Number.isFinite(settings.probe_cooldown_secs)
+      ? Number(settings.probe_cooldown_secs)
+      : DEFAULT_GATEWAY_SETTINGS.probe_cooldown_secs,
+    key_quota_ttl_secs: Number.isFinite(settings.key_quota_ttl_secs)
+      ? Number(settings.key_quota_ttl_secs)
+      : DEFAULT_GATEWAY_SETTINGS.key_quota_ttl_secs,
+
+    session_affinity_timeout_secs: Number.isFinite(
+      settings.session_affinity_timeout_secs,
+    )
+      ? Number(settings.session_affinity_timeout_secs)
+      : DEFAULT_GATEWAY_SETTINGS.session_affinity_timeout_secs,
+    context_hold_timeout_secs: Number.isFinite(settings.context_hold_timeout_secs)
+      ? Number(settings.context_hold_timeout_secs)
+      : DEFAULT_GATEWAY_SETTINGS.context_hold_timeout_secs,
+    custom_session_headers: Array.isArray(settings.custom_session_headers)
+      ? settings.custom_session_headers
+      : [],
+
+    daily_reset_offset_hours: Number.isFinite(settings.daily_reset_offset_hours)
+      ? Number(settings.daily_reset_offset_hours)
+      : DEFAULT_GATEWAY_SETTINGS.daily_reset_offset_hours,
+    quota_cache_ttl_secs: Number.isFinite(settings.quota_cache_ttl_secs)
+      ? Number(settings.quota_cache_ttl_secs)
+      : DEFAULT_GATEWAY_SETTINGS.quota_cache_ttl_secs,
+
+    debug_logging: Boolean(settings.debug_logging),
+  };
+}
+
 export interface GatewayConfig {
   enabled: boolean;
   port: number;
@@ -273,6 +395,8 @@ export interface GatewayConfig {
    * from reusing a retired alias.
    */
   model_pool_reserved_models?: string[];
+  /** Dynamic gateway operational settings */
+  settings?: GatewaySettings;
 }
 
 export interface GatewayStatus {
@@ -740,6 +864,10 @@ export function formatGatewayTimestamp(ts: number | null | undefined): string | 
 
 export function aiGatewayGetConfig() {
   return invoke<GatewayConfig>("ai_gateway_get_config");
+}
+
+export function aiGatewaySaveSettings(settings: GatewaySettings, port?: number) {
+  return invoke<GatewayConfig>("ai_gateway_save_settings", { settings, port: port ?? null });
 }
 
 export function aiGatewayUpsertProvider(
@@ -1877,27 +2005,6 @@ export interface GatewayModelPoolStatus {
   fallback_models?: GatewayModelPoolFallbackModelStatus[];
 }
 
-/** Read the stored model pools; a legacy/missing collection yields an empty list. */
-export function modelPools(
-  config: GatewayConfig | null | undefined,
-): GatewayModelPool[] {
-  return config?.model_pools ?? [];
-}
-
-/** Stored pools with the user's enabled intent on, preserving stored order. */
-export function enabledModelPools(
-  config: GatewayConfig | null | undefined,
-): GatewayModelPool[] {
-  return modelPools(config).filter((pool) => pool.enabled);
-}
-
-/** The minimal alias reservation; a legacy/missing collection yields an empty list. */
-export function modelPoolReservedModels(
-  config: GatewayConfig | null | undefined,
-): string[] {
-  return config?.model_pool_reserved_models ?? [];
-}
-
 /**
  * Whether one candidate-local mapping is structurally valid for its declared
  * profile. Unknown profiles and unsupported action shapes never produce a
@@ -2250,24 +2357,6 @@ export function modelPoolCandidateKey(
     candidate.upstream_model,
     candidate.protocol,
   ].join("\u0001");
-}
-
-/** Build the exact pool reference for one provider mapping, defaulting weight to 1. */
-export function modelPoolCandidateFromMapping(
-  provider: GatewayUpstreamProvider,
-  mapping: GatewayModelMapping,
-  weight = 1,
-): GatewayModelPoolCandidate | null {
-  const localModel = mapping.local_model.trim();
-  const upstreamModel = mapping.upstream_model.trim();
-  if (!localModel || !upstreamModel) return null;
-  return {
-    provider_id: provider.id,
-    local_model: localModel,
-    upstream_model: upstreamModel,
-    protocol: mapping.protocol ?? provider.protocol ?? "chat_completions",
-    weight,
-  };
 }
 
 /** Generate a fresh opaque pool id; the backend stores it verbatim. */

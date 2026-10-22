@@ -32,7 +32,6 @@ type ModelPoolCardProps = {
   busy?: boolean;
   onToggleEnabled: (poolId: string, enabled: boolean) => void;
   onEdit: (pool: GatewayModelPool) => void;
-  onDelete?: (poolId: string) => void;
   onOpenLogs: (model: string) => void;
 };
 

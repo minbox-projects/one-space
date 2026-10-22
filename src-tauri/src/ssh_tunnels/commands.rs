@@ -17,13 +17,6 @@ use std::collections::HashSet;
 use tauri::AppHandle;
 
 #[tauri::command]
-pub fn ssh_tunnel_groups_list() -> Result<Vec<SshTunnelGroupView>, String> {
-    let mut groups = load_state()?.groups;
-    sort_groups(&mut groups);
-    Ok(groups.iter().map(to_group_view).collect())
-}
-
-#[tauri::command]
 pub fn ssh_tunnel_group_upsert(
     app: AppHandle,
     input: SshTunnelGroupUpsertInput,
@@ -82,13 +75,6 @@ pub fn ssh_tunnel_group_delete(app: AppHandle, id: String) -> Result<(), String>
     })?;
     emit_tunnels_updated(&app);
     Ok(())
-}
-
-#[tauri::command]
-pub fn ssh_common_ports_list() -> Result<Vec<SshCommonPortView>, String> {
-    let mut state = load_state()?;
-    sort_common_ports(&mut state.common_ports);
-    Ok(state.common_ports.iter().map(to_common_port_view).collect())
 }
 
 #[tauri::command]
@@ -173,13 +159,6 @@ pub fn ssh_common_port_delete(app: AppHandle, id: String) -> Result<(), String> 
     })?;
     emit_tunnels_updated(&app);
     Ok(())
-}
-
-#[tauri::command]
-pub fn ssh_tunnels_list() -> Result<Vec<SshTunnelView>, String> {
-    let mut records = load_records()?;
-    sort_tunnels(&mut records);
-    Ok(records.iter().map(to_view).collect())
 }
 
 #[tauri::command]

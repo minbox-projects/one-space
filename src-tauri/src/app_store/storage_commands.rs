@@ -189,29 +189,6 @@ pub fn claude_profile_list() -> Result<ApiOk<Value>, ApiErr> {
 }
 
 #[tauri::command]
-pub fn claude_profile_resolve(query: String) -> Result<ApiOk<Value>, ApiErr> {
-    let state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;
-    let profile = crate::claude_profiles::resolve_claude_profile_sp(&state, &query)
-        .ok_or_else(|| api_error("not_found", format!("Claude profile not found: {query}")))?;
-    let config_dir = crate::claude_profiles::get_claude_profiles_dir()
-        .map(|d| d.join(crate::claude_profiles::resolve_claude_dir_name_sp(&profile)))
-        .map_err(|e| api_error("io_error", e))?;
-    let mut obj = serde_json::to_value(&profile)
-        .map_err(|e| api_error("serialize_error", e.to_string()))?
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    obj.insert(
-        "claude_config_dir".to_string(),
-        Value::String(config_dir.to_string_lossy().to_string()),
-    );
-    api_ok(
-        Value::Object(obj),
-        get_meta().map_err(|e| api_error("io_error", e))?,
-    )
-}
-
-#[tauri::command]
 pub fn claude_profile_set_default(profile_id: String) -> Result<ApiOk<Value>, ApiErr> {
     validate_provider_uuid_param(&profile_id).map_err(|e| api_error("invalid_payload", e))?;
     let mut state = load_service_providers_state().map_err(|e| api_error("io_error", e))?;

@@ -4,7 +4,7 @@ use super::{GatewayUpstreamProvider, UpstreamProtocol};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 /// Parsed upstream response for a non-streaming attempt.
@@ -15,30 +15,70 @@ pub(in crate::ai_gateway) struct UpstreamJsonResponse {
     pub(in crate::ai_gateway) headers: HeaderMap,
 }
 
-/// Bound only the connect phase (the repo's `proxy.rs` uses 10s) so a
-/// blackholed/unroutable upstream fails fast instead of hanging.
-const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+#[derive(Clone, PartialEq, Eq)]
+struct ClientConfigKey {
+    connect_timeout_secs: u32,
+    read_timeout_secs: u32,
+    proxy_url: Option<String>,
+}
 
-/// Idle read timeout (waiting for the first byte, then per read): applied to
-/// each read and reset after every successful read. Measured slow reasoning
-/// models take 2.7s-10.8s to emit their first byte, so the budget must
-/// accommodate that long and jittery first-byte latency; 10s classified those
-/// live upstreams as failures. The cost, accepted deliberately: an upstream
-/// that connects but never sends anything is only judged a retryable failure
-/// after 60s, so switching to the next candidate can take that long. Because
-/// the budget resets on every successful read, an active long response or
-/// stream is still never truncated by a fixed total deadline.
-const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(60);
+fn get_shared_client(settings: &super::GatewaySettings) -> Arc<Client> {
+    static CACHED_CLIENT: OnceLock<RwLock<(ClientConfigKey, Arc<Client>)>> = OnceLock::new();
+    let cache = CACHED_CLIENT.get_or_init(|| {
+        let default_settings = super::GatewaySettings::default();
+        let key = ClientConfigKey {
+            connect_timeout_secs: default_settings.connect_timeout_secs,
+            read_timeout_secs: default_settings.read_timeout_secs,
+            proxy_url: default_settings.proxy_url.clone(),
+        };
+        let client = build_client_from_key(&key);
+        RwLock::new((key, Arc::new(client)))
+    });
 
-fn shared_client() -> &'static Client {
-    static CLIENT: OnceLock<Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        Client::builder()
-            .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
-            .read_timeout(UPSTREAM_READ_TIMEOUT)
-            .build()
-            .expect("build AI Gateway upstream HTTP client")
-    })
+    let current_key = ClientConfigKey {
+        connect_timeout_secs: settings.connect_timeout_secs,
+        read_timeout_secs: settings.read_timeout_secs,
+        proxy_url: settings.proxy_url.clone(),
+    };
+
+    if let Ok(read) = cache.read() {
+        if read.0 == current_key {
+            return Arc::clone(&read.1);
+        }
+    }
+
+    if let Ok(mut write) = cache.write() {
+        if write.0 == current_key {
+            return Arc::clone(&write.1);
+        }
+        let new_client = Arc::new(build_client_from_key(&current_key));
+        *write = (current_key, Arc::clone(&new_client));
+        return new_client;
+    }
+
+    Arc::new(build_client_from_key(&current_key))
+}
+
+fn build_client_from_key(key: &ClientConfigKey) -> Client {
+    let mut builder = Client::builder()
+        .connect_timeout(Duration::from_secs(key.connect_timeout_secs as u64))
+        .read_timeout(Duration::from_secs(key.read_timeout_secs as u64));
+
+    if let Some(ref proxy_url) = key.proxy_url {
+        let trimmed = proxy_url.trim();
+        if !trimmed.is_empty() {
+            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+
+    builder.build().unwrap_or_else(|_| Client::new())
+}
+
+#[allow(dead_code)]
+fn shared_client() -> Arc<Client> {
+    get_shared_client(&super::GatewaySettings::default())
 }
 
 pub(in crate::ai_gateway) fn join_url(base: &str, path: &str) -> String {
@@ -106,6 +146,7 @@ fn build_request(
     stream: bool,
     client_headers: &HashMap<String, String>,
     upstream_protocol: UpstreamProtocol,
+    settings: &super::GatewaySettings,
 ) -> Result<reqwest::RequestBuilder, String> {
     let converted = upstream_protocol == UpstreamProtocol::AnthropicMessages
         && is_conversion_path(path);
@@ -148,7 +189,8 @@ fn build_request(
         Some(native) => super::reasoning::inject_native_controls(rewritten, native)?,
         None => rewritten,
     };
-    let mut request = shared_client().post(url);
+    let client = get_shared_client(settings);
+    let mut request = client.post(url);
     // Forward unknown client headers (e.g. vendor session headers) so upstream
     // requirements like `x-opencode-session` survive the relay. Invalid names
     // or values are skipped rather than failing the whole request.
@@ -198,6 +240,7 @@ pub(in crate::ai_gateway) async fn forward_non_streaming_with_protocol(
     model: &str,
     client_headers: &HashMap<String, String>,
     upstream_protocol: UpstreamProtocol,
+    settings: &super::GatewaySettings,
 ) -> Result<UpstreamJsonResponse, String> {
     let request = build_request(
         provider,
@@ -207,6 +250,7 @@ pub(in crate::ai_gateway) async fn forward_non_streaming_with_protocol(
         false,
         client_headers,
         upstream_protocol,
+        settings,
     )?;
     let response = request.send().await.map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
@@ -236,6 +280,7 @@ pub(in crate::ai_gateway) async fn open_streaming_response_with_protocol(
     model: &str,
     client_headers: &HashMap<String, String>,
     upstream_protocol: UpstreamProtocol,
+    settings: &super::GatewaySettings,
 ) -> Result<reqwest::Response, String> {
     let request = build_request(
         provider,
@@ -245,6 +290,7 @@ pub(in crate::ai_gateway) async fn open_streaming_response_with_protocol(
         true,
         client_headers,
         upstream_protocol,
+        settings,
     )?;
     request.send().await.map_err(|e| e.to_string())
 }
@@ -257,6 +303,7 @@ pub(in crate::ai_gateway) async fn forward_non_streaming(
     model: &str,
     client_headers: &HashMap<String, String>,
 ) -> Result<UpstreamJsonResponse, String> {
+    let default_settings = super::GatewaySettings::default();
     forward_non_streaming_with_protocol(
         provider,
         path,
@@ -270,6 +317,7 @@ pub(in crate::ai_gateway) async fn forward_non_streaming(
         } else {
             UpstreamProtocol::ChatCompletions
         },
+        &default_settings,
     )
     .await
 }

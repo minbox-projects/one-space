@@ -1,8 +1,8 @@
 use super::{
     ensure_within, has_path_traversal, hash_dir, is_duplicate_clone_file, is_ignored_name,
-    local_skill_id, local_source_id, make_repo_key, normalize_rel_path, now_ts, record_scope,
-    repo_storage_dir, resolve_skill_target_dir, safe_slug, skills_cache_root, CatalogSkill,
-    LocalSkillCandidate, RepositoryRecord, SkillRecord, SkillsLocalState, SkillsState, MODELS,
+    make_repo_key, now_ts, record_scope, repo_storage_dir,
+    resolve_skill_target_dir, safe_slug, skills_cache_root, CatalogSkill,
+    RepositoryRecord, SkillRecord, SkillsLocalState, SkillsState, MODELS,
 };
 use crate::config::{SkillSourceConfig, StorageConfig};
 use std::collections::HashMap;
@@ -444,46 +444,6 @@ pub(in crate::skills) fn find_skill_dirs(
         }
     }
     Ok(())
-}
-
-pub(in crate::skills) fn find_local_skill_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = vec![];
-    if base.join("SKILL.md").exists() {
-        out.push(PathBuf::from("."));
-    }
-    find_skill_dirs(base, base, &mut out)?;
-    out.sort_by(|a, b| normalize_rel_path(a).cmp(&normalize_rel_path(b)));
-    Ok(out)
-}
-
-pub(in crate::skills) fn scan_local_candidates(
-    root_can: &Path,
-) -> Result<Vec<LocalSkillCandidate>, String> {
-    let source_id = local_source_id(root_can);
-    let skill_dirs = find_local_skill_dirs(root_can)?;
-    let mut out = vec![];
-    for rel in skill_dirs {
-        let rel_str = normalize_rel_path(&rel);
-        let abs = if rel_str == "." {
-            root_can.to_path_buf()
-        } else {
-            root_can.join(&rel)
-        };
-        let md = abs.join("SKILL.md");
-        let md_content = fs::read_to_string(&md).map_err(|e| e.to_string())?;
-        let (name, description, declared_models) = parse_skill_md(&md_content, &[]);
-        let dir_name = parse_required_skill_dir_name(&md_content).unwrap_or_default();
-        out.push(LocalSkillCandidate {
-            rel_path: rel_str.clone(),
-            skill_id: local_skill_id(&source_id, &rel_str),
-            dir_name,
-            source_id: source_id.clone(),
-            name,
-            description,
-            declared_models,
-        });
-    }
-    Ok(out)
 }
 
 pub(in crate::skills) fn copy_dir_secure_internal(

@@ -1,9 +1,9 @@
 use crate::subagents::{
     ensure_within, find_definition_markdown, is_duplicate_clone_file, is_ignored_name,
-    is_markdown_file, local_source_id, local_subagent_id, make_repo_key, normalize_rel_path,
-    normalized_project_root_value, now_ts, parse_required_subagent_dir_name, parse_subagent_md,
-    record_scope, resolve_subagent_target_dir, source_entry_markdown_path, LocalSubagentCandidate,
-    RepositoryRecord, SubagentRecord, SubagentsLocalState, SubagentsState,
+    is_markdown_file, make_repo_key, normalize_rel_path, normalized_project_root_value, now_ts,
+    parse_required_subagent_dir_name, record_scope, resolve_subagent_target_dir,
+    source_entry_markdown_path, RepositoryRecord,
+    SubagentRecord, SubagentsLocalState, SubagentsState,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -224,49 +224,6 @@ pub(in crate::subagents) fn parse_frontmatter_value(
     None
 }
 
-pub(in crate::subagents) fn find_subagent_dirs(
-    base: &Path,
-    current: &Path,
-    out: &mut Vec<PathBuf>,
-) -> Result<(), String> {
-    let entries = fs::read_dir(current).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
-        if is_ignored_name(name) {
-            continue;
-        }
-        let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if meta.file_type().is_symlink() {
-            continue;
-        }
-        if meta.is_dir() {
-            let subagent_md = find_definition_markdown(&path);
-            if subagent_md.is_some() {
-                let rel = path
-                    .strip_prefix(base)
-                    .map_err(|e| e.to_string())?
-                    .to_path_buf();
-                out.push(rel);
-            } else {
-                find_subagent_dirs(base, &path, out)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(in crate::subagents) fn find_local_subagent_dirs(base: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = vec![];
-    if find_definition_markdown(base).is_some() {
-        out.push(PathBuf::from("."));
-    }
-    find_subagent_dirs(base, base, &mut out)?;
-    out.sort_by(|a, b| normalize_rel_path(a).cmp(&normalize_rel_path(b)));
-    Ok(out)
-}
-
 pub(in crate::subagents) fn find_catalog_entries(
     base: &Path,
     current: &Path,
@@ -320,37 +277,6 @@ pub(in crate::subagents) fn find_catalog_subagent_entries(
     Ok(out)
 }
 
-pub(in crate::subagents) fn scan_local_candidates(
-    root_can: &Path,
-) -> Result<Vec<LocalSubagentCandidate>, String> {
-    let source_id = local_source_id(root_can);
-    let subagent_dirs = find_local_subagent_dirs(root_can)?;
-    let mut out = vec![];
-    for rel in subagent_dirs {
-        let rel_str = normalize_rel_path(&rel);
-        let abs = if rel_str == "." {
-            root_can.to_path_buf()
-        } else {
-            root_can.join(&rel)
-        };
-        let md = find_definition_markdown(&abs)
-            .ok_or_else(|| "subagents/invalid_subagent_dir".to_string())?;
-        let md_content = fs::read_to_string(&md).map_err(|e| e.to_string())?;
-        let (name, description, declared_models) = parse_subagent_md(&md_content, &[]);
-        let dir_name = parse_required_subagent_dir_name(&md_content).unwrap_or_default();
-        out.push(LocalSubagentCandidate {
-            rel_path: rel_str.clone(),
-            subagent_id: local_subagent_id(&source_id, &rel_str),
-            dir_name,
-            source_id: source_id.clone(),
-            name,
-            description,
-            declared_models,
-        });
-    }
-    Ok(out)
-}
-
 pub(in crate::subagents) fn copy_dir_secure_internal(
     src_root: &Path,
     src: &Path,
@@ -391,15 +317,6 @@ pub(in crate::subagents) fn copy_dir_secure_internal(
         }
     }
     Ok(())
-}
-
-#[allow(dead_code)]
-pub(in crate::subagents) fn copy_dir_secure(src: &Path, dst: &Path) -> Result<(), String> {
-    let dst_root = dst
-        .parent()
-        .map(|v| v.to_path_buf())
-        .unwrap_or_else(|| dst.to_path_buf());
-    copy_dir_secure_internal(src, src, &dst_root, dst)
 }
 
 pub(in crate::subagents) fn replace_dir_atomic(src: &Path, dst: &Path) -> Result<(), String> {

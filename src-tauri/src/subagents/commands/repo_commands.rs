@@ -9,10 +9,10 @@ use crate::subagents::{
     reconcile_internal, remove_codex_project_agent_entry, remove_existing_record_dir_if_moved,
     replace_dir_atomic, repo_storage_dir, resolve_subagent_target_dir, save_local_subagents_state,
     save_subagents_state, scope_project_match, source_entry_exists, source_subagent_abs_path,
-    subagents_sync_now, trigger_storage_sync, upsert_codex_project_agent_entry,
-    upsert_repo_dir_name, upsert_repository_from_dir, ApiOk, RepoSetModelInput,
-    RepoSubagentKeyInput, RepositorySubagentView, SubagentRecord, SubagentsSyncState,
-    INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+    trigger_storage_sync, upsert_codex_project_agent_entry, upsert_repo_dir_name,
+    upsert_repository_from_dir, ApiOk, RepoSetModelInput, RepoSubagentKeyInput,
+    RepositorySubagentView, SubagentRecord, SubagentsSyncState, INSTALL_SCOPE_GLOBAL,
+    INSTALL_SCOPE_PROJECT, MODELS,
 };
 use std::fs;
 
@@ -70,27 +70,6 @@ pub fn subagents_repo_list_with_update(
     )?;
     let list = build_repository_views(&shared_state, &installed, true);
     api_ok(list, combined_revision(&shared_state, &local_state))
-}
-
-#[tauri::command]
-pub async fn subagents_repo_refresh(
-    app: tauri::AppHandle,
-) -> Result<ApiOk<Vec<RepositorySubagentView>>, String> {
-    let _ = subagents_sync_now(app.clone()).await?;
-    let shared_state = load_subagents_state()?;
-    let local_state = load_local_subagents_state()?;
-    let list = build_repository_views(&shared_state, &local_state.subagents, true);
-    api_ok(list, combined_revision(&shared_state, &local_state))
-}
-
-#[tauri::command]
-pub fn subagents_repo_refresh_background(app: tauri::AppHandle) -> Result<ApiOk<bool>, String> {
-    std::thread::spawn(move || {
-        let _ = tauri::async_runtime::block_on(subagents_repo_refresh(app));
-    });
-    let shared_state = load_subagents_state()?;
-    let local_state = load_local_subagents_state()?;
-    api_ok(true, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]

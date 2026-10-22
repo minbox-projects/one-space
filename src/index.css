@@ -71,142 +71,6 @@
   }
 }
 
-/* AI Environments accordion */
-.acc-item {
-  border-bottom: 1px solid hsl(var(--border));
-  transition: background 0.1s;
-}
-.acc-item:hover {
-  background: hsl(var(--muted) / 0.3);
-}
-.acc-item.open {
-  background: transparent;
-  border-bottom: none;
-}
-.acc-item.open + .acc-item {
-  border-top: 1px solid hsl(var(--primary) / 0.2);
-}
-.acc-panel {
-  display: none;
-}
-.acc-item.open .acc-panel {
-  display: block;
-}
-
-/* Accordion header */
-.accordion-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 18px;
-  border-bottom: 1px solid hsl(var(--border));
-  background: hsl(var(--muted) / 0.5);
-}
-.accordion-header .title {
-  font-size: 12px;
-  font-weight: 600;
-  color: hsl(var(--muted-foreground));
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-/* Accordion row */
-.acc-row {
-  display: flex;
-  align-items: center;
-  padding: 14px 18px;
-  gap: 14px;
-  cursor: pointer;
-  min-height: 64px;
-  transition: background 0.1s;
-}
-
-/* Chevron */
-.acc-chevron {
-  width: 16px;
-  height: 16px;
-  color: hsl(var(--muted-foreground));
-  flex-shrink: 0;
-  transition: transform 0.2s ease;
-}
-.acc-item.open .acc-chevron {
-  transform: rotate(180deg);
-  color: hsl(var(--primary));
-}
-
-/* Avatar */
-.acc-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 18px;
-  position: relative;
-  background: #1c1917;
-  color: #ffffff;
-}
-.acc-avatar .running-dot {
-  position: absolute;
-  bottom: -1px;
-  right: -1px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #16a34a;
-  border: 2px solid #1c1917;
-}
-.acc-item.open .acc-avatar .running-dot {
-  border-color: hsl(var(--primary) / 0.1);
-}
-.acc-avatar.warn { background: #fef2f2; color: #dc2626; }
-
-/* 统一工具图标头像：muted 淡色背景 */
-.acc-avatar.tool-icon-avatar {
-  background: hsl(var(--muted) / 0.5);
-  color: hsl(var(--muted-foreground));
-}
-
-/* Info area */
-.acc-info {
-  flex: 1;
-  min-width: 0;
-}
-.acc-name-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.acc-name {
-  font-size: 15px;
-  font-weight: 600;
-}
-.acc-badges {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 3px;
-}
-.acc-meta {
-  font-size: 12px;
-  color: hsl(var(--muted-foreground));
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 4px;
-  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
-}
-
-/* Actions */
-.acc-actions {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-}
 .acc-btn {
   height: 28px;
   padding: 0 10px;
@@ -230,16 +94,6 @@
   width: 12px;
   height: 12px;
 }
-.acc-btn-launch {
-  background: hsl(var(--primary));
-  color: hsl(var(--primary-foreground));
-  border-color: hsl(var(--primary));
-}
-.acc-btn-launch:hover {
-  background: hsl(var(--primary));
-  opacity: 0.9;
-}
-
 /* Badge pills */
 .badge-pill {
   display: inline-flex;
@@ -318,11 +172,29 @@
   outline: none;
   width: 100%;
 }
+.field select {
+  cursor: pointer;
+}
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
   border-color: hsl(var(--primary));
   box-shadow: 0 0 0 2px hsl(var(--primary) / 0.5);
+}
+
+/* 全局统一原生 select 现代化基准外观，消除操作系统默认双箭头并对齐 Lucide ChevronDown 样式 */
+select:not(.sr-only) {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1rem 1rem;
+  padding-right: 2.25rem !important;
+}
+
+.dark select:not(.sr-only) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 .field input[disabled] {
   background: hsl(var(--muted) / 0.4);
@@ -545,12 +417,10 @@
 @media (max-width: 900px) {
   .field-grid { grid-template-columns: repeat(2, 1fr); }
   .field-grid.col-4 { grid-template-columns: repeat(2, 1fr); }
-  .acc-panel { padding-left: 18px !important; }
 }
 @media (max-width: 640px) {
   .field-grid { grid-template-columns: 1fr; }
   .field-grid.col-4 { grid-template-columns: 1fr 1fr; }
-  .acc-actions { flex-wrap: wrap; }
 }
 
 /* Hairline borders & subtle surface textures */

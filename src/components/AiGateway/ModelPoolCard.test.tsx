@@ -442,7 +442,6 @@ function renderCard(overrides: {
       status={overrides.status ?? cardStatus()}
       onToggleEnabled={vi.fn()}
       onEdit={vi.fn()}
-      onDelete={vi.fn()}
       onOpenLogs={vi.fn()}
     />,
   );
@@ -781,7 +780,6 @@ function renderFallbackCard(status: GatewayModelPoolStatus) {
       status={status}
       onToggleEnabled={vi.fn()}
       onEdit={vi.fn()}
-      onDelete={vi.fn()}
       onOpenLogs={vi.fn()}
     />,
   );

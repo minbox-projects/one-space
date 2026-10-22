@@ -1,6 +1,6 @@
 use super::{
     collect_files, get_source, normalize_rel_path, normalized_record_dir_name, record_local_dir,
-    record_project_root, record_scope, source_skill_abs_path, DiffBlock, InstalledSkillTarget,
+    record_project_root, record_scope, source_skill_abs_path, InstalledSkillTarget,
     ReloadChangedFile, ReloadTextDiff, SkillRecord,
 };
 use crate::config::StorageConfig;
@@ -17,34 +17,6 @@ pub(in crate::skills) fn skill_has_markdown_update(
     let remote_dir = source_skill_abs_path(source, &skill.source_rel_path).ok()?;
     let remote_md = crate::managed_assets::read_markdown_for_compare(&remote_dir.join("SKILL.md"))?;
     Some(local_md != remote_md)
-}
-
-pub(in crate::skills) fn calculate_changes(
-    local_md: &str,
-    remote_md: &str,
-) -> (Vec<u32>, Vec<u32>, Vec<DiffBlock>, Vec<DiffBlock>) {
-    let (before_lines, after_lines, before_blocks, after_blocks) =
-        crate::managed_assets::calculate_changes(local_md, remote_md);
-    (
-        before_lines,
-        after_lines,
-        before_blocks
-            .into_iter()
-            .map(|block| DiffBlock {
-                start_line: block.start_line,
-                end_line: block.end_line,
-                content: block.content,
-            })
-            .collect(),
-        after_blocks
-            .into_iter()
-            .map(|block| DiffBlock {
-                start_line: block.start_line,
-                end_line: block.end_line,
-                content: block.content,
-            })
-            .collect(),
-    )
 }
 
 pub(in crate::skills) fn collect_file_map(root: &Path) -> Result<HashMap<String, PathBuf>, String> {

@@ -1047,7 +1047,7 @@ export function MCPServers({
               </button>
             </div>
             <div className="flex-1 overflow-y-auto">
-              <BackupManager activeTool={undefined} />
+              <BackupManager />
             </div>
           </div>
         </div>

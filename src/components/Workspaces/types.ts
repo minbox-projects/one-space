@@ -88,11 +88,6 @@ export type WorkspaceSessionsListData = {
   model_options: string[];
 };
 
-export type WorkspaceMessage = {
-  type: "success" | "error";
-  text: string;
-};
-
 export type InstalledSkill = {
   id: string;
   model: ModelId;
@@ -117,16 +112,6 @@ export type InstalledSubagent = {
 
 export type CopyableSkill = InstalledSkill & { selection_key: string };
 export type CopyableSubagent = InstalledSubagent & { selection_key: string };
-
-export type WorkspaceCollectionState = {
-  loading: boolean;
-  workspacesInitialized: boolean;
-  workspaces: WorkspaceView[];
-  allTags: string[];
-  selectedTags: string[];
-  visibleWorkspaces: WorkspaceView[];
-  selectedWorkspaceTags: Set<string>;
-};
 
 export const DEFAULT_WORKSPACE_SESSIONS_QUERY: AiSessionsQueryState = {
   toolFilter: "all",
@@ -158,23 +143,6 @@ export type WorkspaceCapabilityPanelMessage = {
 } | null;
 
 export type WorkspaceDiscoveryMode = "recommended" | "repository";
-
-export type WorkspaceInstalledCapabilityBase<TModel extends string> = {
-  id: string;
-  dir_name?: string;
-  model: TModel;
-  models: TModel[];
-  name: string;
-  description: string;
-  source_id: string;
-  source_rel_path: string;
-  installed_at: number;
-  updated_at?: number;
-  has_update: boolean;
-  icon_seed: string;
-  scope?: "global" | "project";
-  project_root?: string | null;
-};
 
 export type WorkspaceCatalogCapabilityBase<TModel extends string> = {
   source_id: string;

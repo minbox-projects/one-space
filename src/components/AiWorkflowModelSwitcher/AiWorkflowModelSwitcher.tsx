@@ -41,6 +41,7 @@ import {
   type ValidEffort,
 } from "@/lib/aiWorkflowProfiles";
 import { getToolboxTool } from "@/toolbox/registry";
+import type { ToolboxNavigationProps } from "@/toolbox/types";
 import { useConfirmDialog } from "../ConfirmDialogProvider";
 import { useToast } from "../ToastProvider";
 import { ToolErrorBanner } from "@/components/toolbox/ToolErrorBanner";
@@ -54,9 +55,7 @@ import {
 } from "../ui/dialog";
 import { SearchableModelCombobox } from "./SearchableModelCombobox";
 
-export interface AiWorkflowModelSwitcherProps {
-  isVisible?: boolean;
-}
+export type AiWorkflowModelSwitcherProps = ToolboxNavigationProps;
 
 const PROFILE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i;
 

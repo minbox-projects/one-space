@@ -1,37 +1,6 @@
 import type { TFunction } from "i18next";
 import type { ActionDescriptor } from "@/lib/userActions";
 
-export function buildCreateBackupActionDescriptor(
-  t: TFunction,
-  activeTool: string,
-): ActionDescriptor {
-  return {
-    source: "backup",
-    category: "backup",
-    action: "create-backup",
-    target: { tab: "mcp-servers", entity_id: activeTool },
-    dedupeKey: `backup:create:${activeTool}`,
-    metadata: { active_tool: activeTool },
-    confirm: {
-      message: t("confirmCreateBackup", "Create a manual backup now?"),
-      title: t("createBackup", "Create Backup"),
-      okLabel: t("createBackup", "Create Backup"),
-      cancelLabel: t("cancel", "Cancel"),
-      kind: "warning",
-    },
-    success: {
-      title: t("backupCreatedMessageTitle", "Backup created"),
-      summary: t(
-        "backupCreatedMessageSummary",
-        "Backup created successfully.",
-      ),
-    },
-    error: {
-      title: t("backupCreateFailedMessageTitle", "Failed to create backup"),
-    },
-  };
-}
-
 export function buildRestoreBackupActionDescriptor(
   t: TFunction,
   entryId: string,

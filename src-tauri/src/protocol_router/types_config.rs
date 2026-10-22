@@ -31,18 +31,6 @@ pub(in crate::protocol_router) fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct CatalogModel {
-    pub id: String,
-    #[serde(default)]
-    pub object: Option<String>,
-    #[serde(default)]
-    pub created: Option<u64>,
-    #[serde(default)]
-    pub owned_by: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMapping {
     pub claude_model: String,
     pub upstream_model: String,

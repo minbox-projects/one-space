@@ -96,6 +96,47 @@ describe("SettingsView", () => {
       if (command === "get_storage_config") {
         return structuredClone(currentConfig);
       }
+      if (command === "ai_gateway_get_config") {
+        return {
+          enabled: false,
+          port: 17688,
+          providers: [],
+          keys: [],
+          default_key_id: null,
+          terminal_syncs: [],
+          settings: {
+            bind_address: "127.0.0.1",
+            enable_cors: true,
+            proxy_url: null,
+            require_api_key_for_lan: true,
+            connect_timeout_secs: 10,
+            read_timeout_secs: 120,
+            request_budget_secs: 180,
+            max_retries_per_provider: 3,
+            retry_base_delay_ms: 1000,
+            failure_threshold: 3,
+            probe_cooldown_secs: 60,
+            key_quota_ttl_secs: 1800,
+            session_affinity_timeout_secs: 1800,
+            context_hold_timeout_secs: 300,
+            custom_session_headers: [],
+            daily_reset_offset_hours: 8,
+            quota_cache_ttl_secs: 60,
+            debug_logging: false,
+          },
+        };
+      }
+      if (command === "ai_gateway_save_settings") {
+        return {
+          enabled: false,
+          port: args?.port ?? 17688,
+          providers: [],
+          keys: [],
+          default_key_id: null,
+          terminal_syncs: [],
+          settings: args?.settings,
+        };
+      }
       if (command === "ai_gateway_usage_retention_get") {
         return currentRetention;
       }
@@ -912,5 +953,43 @@ describe("SettingsView", () => {
       ).toBeDisabled();
       expect(screen.queryByLabelText("dirty")).not.toBeInTheDocument();
     });
+  });
+
+  it("renders AI gateway settings safely without white screen even when backend settings omits fields", async () => {
+    // Simulate backend returning settings with missing custom_session_headers or empty object
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_storage_config") {
+        return structuredClone(baseStorageConfig);
+      }
+      if (command === "ai_gateway_get_config") {
+        return {
+          enabled: true,
+          port: 17688,
+          providers: [],
+          keys: [],
+          default_key_id: null,
+          terminal_syncs: [],
+          settings: {
+            // custom_session_headers is deliberately omitted to simulate serde skip_serializing_if
+            bind_address: "127.0.0.1",
+            enable_cors: true,
+          },
+        };
+      }
+      if (command === "ai_gateway_usage_retention_get") {
+        return 90;
+      }
+      if (command === "ai_gateway_template_auto_refresh_get") {
+        return 60;
+      }
+      return {};
+    });
+
+    renderWithProviders(<SettingsView initialTab="ai-gateway" onBack={() => {}} />);
+
+    // Should render Network & Access Control, and Custom Session Headers safely without crashing
+    expect(await screen.findByText(/Network & Access Control|网络与访问控制/i)).toBeInTheDocument();
+    expect(screen.getByText(/Fault Tolerance & Circuit Breaking|容灾与熔断保护/i)).toBeInTheDocument();
+    expect(screen.getByText(/Session & Context Affinity|会话与上下文保持/i)).toBeInTheDocument();
   });
 });

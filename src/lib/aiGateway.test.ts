@@ -2634,44 +2634,6 @@ describe("服务商历史命令封装", () => {
 // ---------------------------------------------------------------------------
 
 describe("AI Gateway 模型池推理 DTO 容错与普通档位隔离（Step 4 guard）", () => {
-  it("modelPools 原样保留池局部默认与候选推理声明，不写入服务商记录", () => {
-    const pool = {
-      id: "pool-1",
-      name: "Pool",
-      model: "pool-model",
-      enabled: true,
-      default_reasoning_effort: "high",
-      candidates: [
-        {
-          provider_id: "p1",
-          local_model: "l",
-          upstream_model: "u",
-          protocol: "chat_completions",
-          weight: 1,
-          reasoning: {
-            profile: "openai_effort",
-            values: ["high"],
-            supports_disable: false,
-            mappings: [
-              { effort: "high", action: { kind: "enum", value: "high" } },
-            ],
-          },
-        },
-      ],
-    };
-    const cfg = config({ model_pools: [pool as never] });
-
-    const [stored] = aiGatewayModule.modelPools(cfg);
-    const storedRecord = stored as unknown as Record<string, unknown>;
-    expect(storedRecord.default_reasoning_effort).toBe("high");
-    const storedCandidates = storedRecord.candidates as Array<
-      Record<string, unknown>
-    >;
-    expect(storedCandidates[0].reasoning).toEqual(pool.candidates[0].reasoning);
-    // No persistent pool field leaks onto the provider/source contract.
-    expect(cfg.providers).toEqual([]);
-  });
-
   it("普通推理档位联合去重保留原始标识而不规范化", () => {
     const [entry] = aggregateModels([
       provider({
