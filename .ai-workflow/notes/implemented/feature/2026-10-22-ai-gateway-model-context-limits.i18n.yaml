@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-22-ai-gateway-model-context-limits.md
-2026-10-22-ai-gateway-model-context-limits.md: caed06aee13d1fa1b19f8217041b8b683b6bd1c7
-2026-10-22-ai-gateway-model-context-limits.zh.md: 00414eb553378f24920e625b93574b4d2cabbd44
+2026-10-22-ai-gateway-model-context-limits.md: 0fec7d72d7a79d8658d4e371130e5669d7dc3763
+2026-10-22-ai-gateway-model-context-limits.zh.md: fb523a3d1d45321365a2892f6d8332a4d65afc3e

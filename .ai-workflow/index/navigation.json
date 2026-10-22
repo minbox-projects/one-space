@@ -13328,22 +13328,40 @@
         "src-tauri/src/ai_gateway/templates.rs",
         "src-tauri/src/ai_gateway/types_config.rs"
       ],
-      "symbols": [],
+      "symbols": [
+        {
+          "file": "src-tauri/src/ai_gateway/commands.rs",
+          "name": "TerminalContextCoverage",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ai_gateway/commands.rs",
+          "name": "TerminalContextSummary",
+          "kind": "struct",
+          "visibility": "public"
+        }
+      ],
       "related_files": [
         "src-tauri/src/ai_gateway/model_pools.rs",
         "src-tauri/src/ai_gateway/provider_templates.json",
         "src-tauri/src/ai_gateway/reasoning.rs",
         "src-tauri/src/ai_gateway/selection.rs",
-        "src-tauri/src/ai_gateway/storage.rs"
+        "src-tauri/src/ai_gateway/storage.rs",
+        "src-tauri/src/app_store/provider_projection/claude.rs",
+        "src-tauri/src/app_store/provider_projection/codex.rs",
+        "src-tauri/src/claude_profiles.rs"
       ],
       "tests": [
         "src-tauri/src/ai_gateway/tests/context_limits.rs",
-        "src-tauri/src/ai_gateway/tests/templates.rs"
+        "src-tauri/src/ai_gateway/tests/context_terminal_sync.rs",
+        "src-tauri/src/ai_gateway/tests/templates.rs",
+        "src-tauri/src/app_store/tests/gateway_context_projection.rs"
       ],
       "depends_on": [],
       "relations": [],
       "owner_role": "backend",
-      "responsibility": "Declared AI Gateway model context windows, strict template inheritance and conservative public resolution",
+      "responsibility": "Declared AI Gateway model context windows, strict template inheritance, conservative public resolution and native terminal adaptation",
       "read_scope": [
         "src-tauri/src/ai_gateway.rs",
         "src-tauri/src/ai_gateway/commands.rs",
@@ -13355,8 +13373,13 @@
         "src-tauri/src/ai_gateway/storage.rs",
         "src-tauri/src/ai_gateway/templates.rs",
         "src-tauri/src/ai_gateway/tests/context_limits.rs",
+        "src-tauri/src/ai_gateway/tests/context_terminal_sync.rs",
         "src-tauri/src/ai_gateway/tests/templates.rs",
-        "src-tauri/src/ai_gateway/types_config.rs"
+        "src-tauri/src/ai_gateway/types_config.rs",
+        "src-tauri/src/app_store/provider_projection/claude.rs",
+        "src-tauri/src/app_store/provider_projection/codex.rs",
+        "src-tauri/src/app_store/tests/gateway_context_projection.rs",
+        "src-tauri/src/claude_profiles.rs"
       ],
       "shared_entry": false
     }

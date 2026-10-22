@@ -1,4 +1,4 @@
-use crate::app_store::{read_json_object, ServiceProviderRecord};
+use crate::app_store::{read_json_object, ServiceProviderRecord, StorageEngine};
 use serde_json::{Map, Value};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
@@ -210,6 +210,27 @@ pub(in crate::app_store) fn render_codex_at_home(
         doc.remove("model");
     }
 
+    // The synchronized window belongs to the selected managed model. An absent,
+    // cleared or newly selected model removes any stale managed scalar while
+    // leaving unrelated top-level keys untouched.
+    let selected_model = provider
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match selected_model.and_then(|_| {
+        provider
+            .tool_config
+            .get("model_context_window")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0 && *value <= i64::MAX as u64)
+    }) {
+        Some(window) => doc["model_context_window"] = toml_edit::value(window as i64),
+        None => {
+            doc.remove("model_context_window");
+        }
+    }
+
     for (k, toml_key) in [
         ("disable_response_storage", "disable_response_storage"),
         ("personality", "personality"),
@@ -275,8 +296,8 @@ pub(in crate::app_store) fn render_codex_reset_to_unmanaged_at_home(
         for key in [
             "base_url",
             "disable_response_storage",
+            "model_context_window",
             "personality",
-            "model_reasoning_effort",
             "model_reasoning_summary",
             "approval_policy",
             "sandbox_mode",
@@ -302,7 +323,9 @@ pub(in crate::app_store) fn render_codex_reset_to_unmanaged_at_home(
             }
         }
 
-        outputs.push((config_path, doc.to_string()));
+        let rendered = doc.to_string();
+        StorageEngine::atomic_write(&config_path, &rendered)?;
+        outputs.push((config_path, rendered));
     }
 
     Ok(outputs)

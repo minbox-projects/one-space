@@ -1,4 +1,5 @@
 use super::migration::migrate_legacy_files;
+use super::context_limits::resolve_public_context_window_from;
 use super::model_pools::{
     new_pool_id, pool_status, reserve_alias, reserved_aliases, validate_pool_upsert,
     ModelPoolStatus,
@@ -52,6 +53,29 @@ pub(in crate::ai_gateway) const SUPPORTED_TERMINAL_TOOLS: [&str; 3] =
 /// Stable marker key identifying a provider record written by AI Gateway. The
 /// accepted marker value is owned by the [`TerminalSyncProfile`].
 const GATEWAY_MARKER_KEY: &str = "ai_gateway_gateway";
+
+/// Application handle captured at gateway autostart/start so a synchronous save
+/// command can launch the same best-effort terminal refresh as an async caller.
+static GATEWAY_APP_HANDLE: std::sync::OnceLock<
+    std::sync::Mutex<Option<tauri::AppHandle>>,
+> = std::sync::OnceLock::new();
+
+fn gateway_app_handle_slot() -> &'static std::sync::Mutex<Option<tauri::AppHandle>> {
+    GATEWAY_APP_HANDLE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn capture_gateway_app_handle(app: tauri::AppHandle) {
+    *gateway_app_handle_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(app);
+}
+
+fn captured_gateway_app_handle() -> Option<tauri::AppHandle> {
+    gateway_app_handle_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
 
 /// Identity profile of the AI Gateway terminal-sync records.
 ///
@@ -160,6 +184,39 @@ pub struct TerminalTarget {
     /// credential value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_models: Option<ClaudeModelSelection>,
+    /// Expected native context configuration for this target. It never carries a
+    /// credential and never claims that a running CLI consumed the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<TerminalContextSummary>,
+}
+
+/// How many applicable public models or deduplicated Claude choices have a
+/// known declared context window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalContextCoverage {
+    pub total: usize,
+    pub known: usize,
+    pub unknown: usize,
+}
+
+/// Per-target expected native context configuration.
+///
+/// `mode` is `per_model`, `selected_model` or `shared_compaction`; `scope` is
+/// `generated_models`, `activation` or `global_and_isolated_settings`. Reasons
+/// are stable codes (`unknown_context`, `below_minimum`, `capped_at_1000000`,
+/// `incomplete_selection`) that explain an unavailable or adjusted value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalContextSummary {
+    pub mode: String,
+    pub scope: String,
+    pub coverage: TerminalContextCoverage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_context: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_context: Option<u32>,
+    pub reasons: Vec<String>,
 }
 
 pub(in crate::ai_gateway) fn is_supported_terminal_tool(tool: &str) -> bool {
@@ -360,6 +417,10 @@ fn build_gateway_provider_with_pools(
                     model.insert("provider".to_string(), Value::Object(provider));
                 }
 
+                if let Some(limit) = opencode_model_limit(gateways, pools, &local_model) {
+                    model.insert("limit".to_string(), limit);
+                }
+
                 models.insert(local_model, Value::Object(model));
             }
         }
@@ -433,53 +494,314 @@ fn build_gateway_provider_with_pools(
                         .collect(),
                 ),
             );
+            if let Some(limit) = opencode_model_limit(gateways, pools, &local_model) {
+                model.insert("limit".to_string(), limit);
+            }
             models.insert(local_model, Value::Object(model));
         }
         tool_config.insert("models".to_string(), Value::Object(models));
     } else {
         tool_config.insert("wire_api".to_string(), Value::String("chat".to_string()));
-        let ordinary = gateways
-            .iter()
-            .filter(|gateway| gateway.enabled)
-            .find_map(|gateway| {
-                gateway
-                    .mappings
-                    .iter()
-                    .filter(|mapping| mapping.enabled && !mapping.auto_disabled)
-                    .find_map(|mapping| non_empty(Some(mapping.local_model.as_str())))
-            })
-            .or_else(|| {
-                gateways
-                    .iter()
-                    .filter(|gateway| gateway.enabled)
-                    .find_map(|gateway| non_empty(gateway.default_model.as_deref()))
-            });
-        // Retain an already selected *enabled* pool alias on resync; a disabled
-        // or retired alias is not retainable, so an ordinary default wins.
-        let retained_pool = previous_model
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .filter(|value| {
-                pools
-                    .iter()
-                    .any(|pool| pool.enabled && pool.model.trim() == *value)
-            })
-            .map(str::to_string);
-        // A pool-only configuration (no ordinary model) uses the first enabled
-        // pool alias as its generated fallback; an ordinary default is never
-        // replaced just because a pool exists (REQ-008/AC-011).
-        let fallback_pool = pools
-            .iter()
-            .filter(|pool| pool.enabled)
-            .find_map(|pool| non_empty(Some(pool.model.as_str())));
-        let model = retained_pool.or(ordinary).or(fallback_pool);
+        let model = select_codex_model(gateways, pools, previous_model);
         if let Some(model) = model {
+            let context = resolve_public_context_window_from(
+                gateways,
+                pools,
+                &model,
+                UpstreamProtocol::ChatCompletions,
+            );
+            tool_config.insert(
+                "model_context_window".to_string(),
+                context.map_or(Value::Null, |value| json!(value)),
+            );
             object.insert("model".to_string(), Value::String(model));
+        } else {
+            // The managed scalar always travels so a merged canonical record can
+            // clear a value left by a previously selected model.
+            tool_config.insert("model_context_window".to_string(), Value::Null);
         }
     }
 
     object.insert("tool_config".to_string(), Value::Object(tool_config));
     Ok(Value::Object(object))
+}
+
+/// The model a Codex sync generates: a retained enabled pool alias, else the
+/// first enabled ordinary mapping, else an enabled provider default, else the
+/// first enabled pool alias.
+fn select_codex_model(
+    gateways: &[GatewayUpstreamProvider],
+    pools: &[ModelPool],
+    previous_model: Option<&str>,
+) -> Option<String> {
+    let ordinary = gateways
+        .iter()
+        .filter(|gateway| gateway.enabled)
+        .find_map(|gateway| {
+            gateway
+                .mappings
+                .iter()
+                .filter(|mapping| mapping.enabled && !mapping.auto_disabled)
+                .find_map(|mapping| non_empty(Some(mapping.local_model.as_str())))
+        })
+        .or_else(|| {
+            gateways
+                .iter()
+                .filter(|gateway| gateway.enabled)
+                .find_map(|gateway| non_empty(gateway.default_model.as_deref()))
+        });
+    // Retain an already selected *enabled* pool alias on resync; a disabled or
+    // retired alias is not retainable, so an ordinary default wins.
+    let retained_pool = previous_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| {
+            pools
+                .iter()
+                .any(|pool| pool.enabled && pool.model.trim() == *value)
+        })
+        .map(str::to_string);
+    // A pool-only configuration (no ordinary model) uses the first enabled pool
+    // alias as its generated fallback; an ordinary default is never replaced just
+    // because a pool exists.
+    let fallback_pool = pools
+        .iter()
+        .filter(|pool| pool.enabled)
+        .find_map(|pool| non_empty(Some(pool.model.as_str())));
+    retained_pool.or(ordinary).or(fallback_pool)
+}
+
+/// Resolve one OpenCode row's context under the protocol its generated row
+/// actually uses: the Chat adapter when servable, otherwise the Responses
+/// override.
+fn opencode_model_context(
+    gateways: &[GatewayUpstreamProvider],
+    pools: &[ModelPool],
+    local_model: &str,
+) -> Option<u32> {
+    let protocol = if gateway_protocol_servable(
+        gateways,
+        local_model,
+        UpstreamProtocol::ChatCompletions,
+    ) {
+        UpstreamProtocol::ChatCompletions
+    } else {
+        UpstreamProtocol::Responses
+    };
+    resolve_public_context_window_from(gateways, pools, local_model, protocol)
+}
+
+/// The OpenCode `limit` object for one generated model, or `None` when the
+/// conservative aggregate is unknown. `output: 0` keeps the native
+/// unspecified-output behavior without asserting another capability.
+fn opencode_model_limit(
+    gateways: &[GatewayUpstreamProvider],
+    pools: &[ModelPool],
+    local_model: &str,
+) -> Option<Value> {
+    let context = opencode_model_context(gateways, pools, local_model)?;
+    Some(json!({ "context": context, "output": 0 }))
+}
+
+fn coverage_from(values: impl IntoIterator<Item = Option<u32>>) -> TerminalContextCoverage {
+    let mut coverage = TerminalContextCoverage {
+        total: 0,
+        known: 0,
+        unknown: 0,
+    };
+    for value in values {
+        coverage.total += 1;
+        if value.filter(|value| *value > 0).is_some() {
+            coverage.known += 1;
+        } else {
+            coverage.unknown += 1;
+        }
+    }
+    coverage
+}
+
+/// Coverage over the same ordinary and pool models an OpenCode sync generates.
+fn opencode_context_summary(config: &GatewayConfig) -> TerminalContextSummary {
+    let mut models: Vec<String> = Vec::new();
+    for gateway in config.providers.iter().filter(|gateway| gateway.enabled) {
+        for mapping in gateway
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.enabled && !mapping.auto_disabled)
+        {
+            let Some(local_model) = non_empty(Some(mapping.local_model.as_str())) else {
+                continue;
+            };
+            if !models.iter().any(|existing| existing == &local_model) {
+                models.push(local_model);
+            }
+        }
+    }
+    for pool in config.model_pools.iter().filter(|pool| pool.enabled) {
+        let Some(local_model) = non_empty(Some(pool.model.as_str())) else {
+            continue;
+        };
+        if !models.iter().any(|existing| existing == &local_model) {
+            models.push(local_model);
+        }
+    }
+    let coverage = coverage_from(models.iter().map(|model| {
+        opencode_model_context(&config.providers, &config.model_pools, model)
+    }));
+    let reasons = if coverage.unknown > 0 {
+        vec!["unknown_context".to_string()]
+    } else {
+        Vec::new()
+    };
+    TerminalContextSummary {
+        mode: "per_model".to_string(),
+        scope: "generated_models".to_string(),
+        coverage,
+        selected_model: None,
+        raw_context: None,
+        applied_context: None,
+        reasons,
+    }
+}
+
+/// Coverage and effective scalar for the synchronized Codex selection only.
+fn codex_context_summary(config: &GatewayConfig) -> TerminalContextSummary {
+    let selected = select_codex_model(&config.providers, &config.model_pools, None);
+    let resolved = selected.as_deref().and_then(|model| {
+        resolve_public_context_window_from(
+            &config.providers,
+            &config.model_pools,
+            model,
+            UpstreamProtocol::ChatCompletions,
+        )
+    });
+    let coverage = if selected.is_some() {
+        coverage_from(std::iter::once(resolved))
+    } else {
+        TerminalContextCoverage {
+            total: 0,
+            known: 0,
+            unknown: 0,
+        }
+    };
+    let mut reasons = Vec::new();
+    if selected.is_none() {
+        reasons.push("incomplete_selection".to_string());
+    } else if resolved.is_none() {
+        reasons.push("unknown_context".to_string());
+    }
+    TerminalContextSummary {
+        mode: "selected_model".to_string(),
+        scope: "activation".to_string(),
+        coverage,
+        selected_model: selected,
+        raw_context: resolved,
+        applied_context: resolved,
+        reasons,
+    }
+}
+
+/// The shared Claude compaction target for the deduplicated choices.
+fn claude_context_summary(
+    config: &GatewayConfig,
+    selection: Option<&ClaudeModelSelection>,
+) -> TerminalContextSummary {
+    let Some(selection) = selection else {
+        return TerminalContextSummary {
+            mode: "shared_compaction".to_string(),
+            scope: "global_and_isolated_settings".to_string(),
+            coverage: TerminalContextCoverage {
+                total: 0,
+                known: 0,
+                unknown: 0,
+            },
+            selected_model: None,
+            raw_context: None,
+            applied_context: None,
+            reasons: vec!["incomplete_selection".to_string()],
+        };
+    };
+
+    let mut families: Vec<&str> = Vec::new();
+    let mut incomplete = false;
+    for choice in [&selection.haiku, &selection.sonnet, &selection.opus] {
+        let choice = choice.trim();
+        if choice.is_empty() {
+            incomplete = true;
+            continue;
+        }
+        if !families.contains(&choice) {
+            families.push(choice);
+        }
+    }
+    let default_model = selection.default_model.trim();
+    if default_model.is_empty() {
+        incomplete = true;
+    }
+
+    let family_values: Vec<Option<u32>> = families
+        .iter()
+        .map(|model| {
+            resolve_public_context_window_from(
+                &config.providers,
+                &config.model_pools,
+                model,
+                UpstreamProtocol::AnthropicMessages,
+            )
+        })
+        .collect();
+    let coverage = coverage_from(family_values.iter().copied());
+    let default_value = (!default_model.is_empty()).then(|| {
+        resolve_public_context_window_from(
+            &config.providers,
+            &config.model_pools,
+            default_model,
+            UpstreamProtocol::AnthropicMessages,
+        )
+    });
+    let all_known = !incomplete
+        && default_value.flatten().is_some()
+        && family_values.iter().all(|value| value.is_some());
+
+    let mut reasons = Vec::new();
+    if incomplete {
+        reasons.push("incomplete_selection".to_string());
+    }
+    if !incomplete && !all_known {
+        reasons.push("unknown_context".to_string());
+    }
+    let mut raw_context = None;
+    let mut applied_context = None;
+    if all_known {
+        let mut values: Vec<u32> = family_values.iter().flatten().copied().collect();
+        values.push(default_value.flatten().unwrap_or_default());
+        let minimum = values.into_iter().min().unwrap_or_default();
+        raw_context = Some(minimum);
+        if minimum >= 100_000 {
+            applied_context = Some(minimum.min(1_000_000));
+            if minimum > 1_000_000 {
+                reasons.push("capped_at_1000000".to_string());
+            }
+        } else {
+            reasons.push("below_minimum".to_string());
+        }
+    }
+
+    TerminalContextSummary {
+        mode: "shared_compaction".to_string(),
+        scope: "global_and_isolated_settings".to_string(),
+        coverage,
+        selected_model: None,
+        raw_context,
+        applied_context,
+        reasons,
+    }
+}
+
+/// A managed scalar comparison value: absent, JSON null and non-positive values
+/// all mean "not configured" without pretending to be a fresh declaration.
+fn context_scalar(value: Option<&Value>) -> Option<u64> {
+    value.and_then(Value::as_u64).filter(|value| *value > 0)
 }
 
 /// Read the four persisted Claude model choices back from a canonical,
@@ -541,6 +863,7 @@ fn build_claude_gateway_provider(
     api_key: &str,
     selection: &ClaudeModelSelection,
     code: &str,
+    auto_compact_window: Option<u32>,
     profile: TerminalSyncProfile,
 ) -> Value {
     let mapping = |family: &str, display_name: &str, upstream_model: &str| {
@@ -552,6 +875,12 @@ fn build_claude_gateway_provider(
     };
     let mut tool_config = Map::new();
     tool_config.insert(GATEWAY_MARKER_KEY.to_string(), profile.marker());
+    // The managed scalar always travels; `null` clears a threshold left by a
+    // previous selection while leaving unrelated Claude settings untouched.
+    tool_config.insert(
+        "claude_auto_compact_window".to_string(),
+        auto_compact_window.map_or(Value::Null, |value| json!(value)),
+    );
 
     let mut object = Map::new();
     object.insert("id".to_string(), Value::String(provider_id.to_string()));
@@ -640,7 +969,11 @@ fn terminal_model_selection_drifted(tool: &str, stored: &Value, generated: &Valu
         "opencode" => {
             stored.pointer("/tool_config/models") != generated.pointer("/tool_config/models")
         }
-        "codex" => stored.get("model") != generated.get("model"),
+        "codex" => {
+            stored.get("model") != generated.get("model")
+                || context_scalar(stored.pointer("/tool_config/model_context_window"))
+                    != context_scalar(generated.pointer("/tool_config/model_context_window"))
+        }
         _ => true,
     }
 }
@@ -740,10 +1073,28 @@ pub fn ai_gateway_get_config() -> Result<GatewayConfig, String> {
 
 #[tauri::command]
 pub fn ai_gateway_upsert_provider(
-    mut provider: GatewayUpstreamProvider,
+    provider: GatewayUpstreamProvider,
     prices: Option<Vec<ModelPrice>>,
 ) -> Result<GatewayConfig, String> {
+    let (saved, context_changed) = save_provider_persist(provider, prices)?;
+    if context_changed {
+        refresh_previously_synced_tools_after_save(&saved);
+    }
+    Ok(saved)
+}
+
+/// Persist one provider save through the same validation and merge path every
+/// caller uses, returning whether any mapping's effective context changed.
+fn save_provider_persist(
+    mut provider: GatewayUpstreamProvider,
+    prices: Option<Vec<ModelPrice>>,
+) -> Result<(GatewayConfig, bool), String> {
     modify_config(|config| {
+        let previous_context = config
+            .providers
+            .iter()
+            .find(|stored| stored.id == provider.id.trim())
+            .map(provider_context_rows);
         if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
             return Err(format!(
                 "provider weight must be between {MIN_PROVIDER_WEIGHT} and {MAX_PROVIDER_WEIGHT}"
@@ -876,9 +1227,121 @@ pub fn ai_gateway_upsert_provider(
                 .retain(|row| row.provider_id.as_deref() != Some(provider_id.as_str()));
             config.model_prices.extend(normalized);
         }
-        Ok((true, ()))
-    })?;
-    read_config()
+        let next_context = config
+            .providers
+            .iter()
+            .find(|stored| stored.id == provider_id)
+            .map(provider_context_rows);
+        let context_changed = previous_context != next_context;
+        Ok((true, (config.clone(), context_changed)))
+    })
+}
+
+/// Stable comparison rows for one provider's declared context values.
+fn provider_context_rows(provider: &GatewayUpstreamProvider) -> Vec<(String, String, Option<u32>)> {
+    let mut rows: Vec<(String, String, Option<u32>)> = provider
+        .mappings
+        .iter()
+        .map(|mapping| {
+            (
+                mapping.local_model.trim().to_string(),
+                mapping.upstream_model.trim().to_string(),
+                mapping.context_window,
+            )
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// Stable snapshot of every provider's effective mapping contexts, used to
+/// decide whether a template save actually changed inherited values.
+fn provider_context_snapshot(
+    config: &GatewayConfig,
+) -> Vec<(String, Vec<(String, String, Option<u32>)>)> {
+    let mut snapshot: Vec<(String, Vec<(String, String, Option<u32>)>)> = config
+        .providers
+        .iter()
+        .map(|provider| (provider.id.clone(), provider_context_rows(provider)))
+        .collect();
+    snapshot.sort_by(|left, right| left.0.cmp(&right.0));
+    snapshot
+}
+
+/// Best-effort post-save refresh for tools that already carry the managed
+/// marker. The save already persisted, so a refresh failure never changes the
+/// caller's result.
+fn refresh_previously_synced_tools_after_save(config: &GatewayConfig) {
+    let Some(app) = captured_gateway_app_handle() else {
+        return;
+    };
+    let Ok(payload) = crate::app_store::service_providers_list() else {
+        return;
+    };
+    let tools = previously_synced_terminal_tools(
+        config,
+        &payload.data,
+        TerminalSyncProfile::current(),
+    );
+    if tools.is_empty() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let _ = apply_terminal_sync(app, tools, None).await;
+    });
+}
+
+/// Injectable provider-save composition: persist through the production save
+/// path, then refresh the previously synchronized tools at most once.
+#[cfg(test)]
+pub(in crate::ai_gateway) async fn apply_provider_save_with_terminal_refresh<F, Fut>(
+    provider: GatewayUpstreamProvider,
+    prices: Option<Vec<ModelPrice>>,
+    providers_data: &serde_json::Value,
+    terminal_sync: F,
+) -> Result<GatewayConfig, String>
+where
+    F: FnOnce(Vec<String>) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<Vec<TerminalSyncRecord>, String>> + Send,
+{
+    let (saved, context_changed) = save_provider_persist(provider, prices)?;
+    if context_changed {
+        let tools = previously_synced_terminal_tools(
+            &saved,
+            providers_data,
+            TerminalSyncProfile::current(),
+        );
+        if !tools.is_empty() {
+            let _ = terminal_sync(tools).await;
+        }
+    }
+    Ok(saved)
+}
+
+/// Injectable manual-template-save composition: persist through the production
+/// save path, then refresh the previously synchronized tools at most once.
+#[cfg(test)]
+pub(in crate::ai_gateway) async fn apply_template_save_with_terminal_refresh<F, Fut>(
+    template: ProviderTemplate,
+    providers_data: &serde_json::Value,
+    terminal_sync: F,
+) -> Result<Vec<ProviderTemplateView>, String>
+where
+    F: FnOnce(Vec<String>) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<Vec<TerminalSyncRecord>, String>> + Send,
+{
+    let (views, saved, context_changed) = save_template_persist(template)?;
+    if context_changed {
+        let tools = previously_synced_terminal_tools(
+            &saved,
+            providers_data,
+            TerminalSyncProfile::current(),
+        );
+        if !tools.is_empty() {
+            let _ = terminal_sync(tools).await;
+        }
+    }
+    Ok(views)
 }
 
 #[tauri::command]
@@ -1147,6 +1610,9 @@ pub async fn ai_gateway_start(app: tauri::AppHandle) -> Result<GatewayStatus, St
 pub(in crate::ai_gateway) async fn start_inner(
     app: Option<tauri::AppHandle>,
 ) -> Result<GatewayStatus, String> {
+    if let Some(handle) = app.as_ref() {
+        capture_gateway_app_handle(handle.clone());
+    }
     let status = start_server(app).await?;
     persist_enabled(true)?;
     Ok(status)
@@ -1165,6 +1631,7 @@ pub fn ai_gateway_status() -> Result<GatewayStatus, String> {
 }
 
 pub async fn ai_gateway_autostart(app: tauri::AppHandle) -> Result<GatewayStatus, String> {
+    capture_gateway_app_handle(app.clone());
     migrate_legacy_files();
     autostart(Some(app)).await
 }
@@ -1279,6 +1746,13 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
         } else {
             None
         };
+        let context = if tool == "opencode" {
+            opencode_context_summary(config)
+        } else if tool == "codex" {
+            codex_context_summary(config)
+        } else {
+            claude_context_summary(config, claude_models.as_ref())
+        };
         let pending_sync = match (synced, ledger) {
             (true, Some(record)) => {
                 let ledger_pending = terminal_sync_pending(
@@ -1287,7 +1761,11 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
                     &current_base_url,
                 );
                 let model_drifted = if tool == "claude" {
+                    let stored_context = managed.and_then(|stored| {
+                        context_scalar(stored.pointer("/tool_config/claude_auto_compact_window"))
+                    });
                     claude_models.is_none()
+                        || stored_context != context.applied_context.map(u64::from)
                 } else {
                     match (provider_id.as_deref(), managed) {
                         (Some(id), Some(stored)) => build_gateway_provider_with_pools(
@@ -1323,6 +1801,7 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
             synced_key_id: ledger.map(|record| record.synced_key_id.clone()),
             synced_at: ledger.map(|record| record.synced_at),
             claude_models,
+            context: Some(context),
         });
     }
     targets
@@ -1508,12 +1987,15 @@ where
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| derived_claude_code(&provider_id));
+            let auto_compact_window =
+                claude_context_summary(&config, Some(&selection)).applied_context;
             let payload = build_claude_gateway_provider(
                 &provider_id,
                 &origin,
                 &key_value,
                 &selection,
                 &code,
+                auto_compact_window,
                 profile,
             );
             planned.push(PlannedTool {
@@ -2146,9 +2628,25 @@ pub fn ai_gateway_restore_provider_model(
 pub fn ai_gateway_upsert_provider_template(
     template: ProviderTemplate,
 ) -> Result<Vec<ProviderTemplateView>, String> {
+    let (views, saved, context_changed) = save_template_persist(template)?;
+    if context_changed {
+        refresh_previously_synced_tools_after_save(&saved);
+    }
+    Ok(views)
+}
+
+/// Persist one manual template save, reporting whether any provider's inherited
+/// context changed. Bound mappings are updated by the existing save path; the
+/// comparison only decides whether a terminal refresh is warranted.
+fn save_template_persist(
+    template: ProviderTemplate,
+) -> Result<(Vec<ProviderTemplateView>, GatewayConfig, bool), String> {
     modify_config(|config| {
+        let before = provider_context_snapshot(config);
         let views = apply_upsert_provider_template(config, template, |_| Ok(()))?;
-        Ok((true, views))
+        let after = provider_context_snapshot(config);
+        let context_changed = before != after;
+        Ok((true, (views, config.clone(), context_changed)))
     })
 }
 

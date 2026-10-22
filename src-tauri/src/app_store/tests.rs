@@ -3,6 +3,7 @@ mod claude_projection;
 mod cli_workflows;
 mod codex_projection;
 mod favorites_permissions;
+mod gateway_context_projection;
 mod helpers;
 mod launcher_sync;
 mod migration_conversion;

@@ -11,7 +11,9 @@
 
 use super::model_pools::expand_fallback_model_in;
 use super::selection::can_convert_from;
-use super::{GatewayConfig, ModelPool, ModelPoolCandidate, UpstreamProtocol};
+use super::{
+    GatewayConfig, GatewayUpstreamProvider, ModelPool, ModelPoolCandidate, UpstreamProtocol,
+};
 
 /// One exact configured source identity: the owning provider, the public local
 /// model, the upstream model and the effective protocol. The same identity is
@@ -83,14 +85,13 @@ fn pool_candidate_serves(candidate: UpstreamProtocol, ingress: UpstreamProtocol)
 
 /// Resolve the exact mapping a stored pool candidate references.
 fn pool_candidate_context(
-    config: &GatewayConfig,
+    providers: &[GatewayUpstreamProvider],
     candidate: &ModelPoolCandidate,
 ) -> Option<Option<u32>> {
     let provider_id = candidate.provider_id.trim();
     let local_model = candidate.local_model.trim();
     let upstream_model = candidate.upstream_model.trim();
-    let provider = config
-        .providers
+    let provider = providers
         .iter()
         .find(|provider| provider.id == provider_id)?;
     let mapping = provider.mappings.iter().find(|mapping| {
@@ -105,7 +106,7 @@ fn pool_candidate_context(
 
 /// Aggregate every configured source of one pool alias.
 fn pool_context_window(
-    config: &GatewayConfig,
+    providers: &[GatewayUpstreamProvider],
     pool: &ModelPool,
     ingress: UpstreamProtocol,
 ) -> Option<u32> {
@@ -124,7 +125,7 @@ fn pool_context_window(
             candidate.upstream_model.trim().to_string(),
             candidate.protocol,
         );
-        match pool_candidate_context(config, candidate) {
+        match pool_candidate_context(providers, candidate) {
             Some(value) => aggregate.add(identity, value),
             None => aggregate.mark_unresolved(),
         }
@@ -134,7 +135,7 @@ fn pool_context_window(
         if model.is_empty() {
             continue;
         }
-        let expanded = expand_fallback_model_in(&config.providers, model);
+        let expanded = expand_fallback_model_in(providers, model);
         if expanded.is_empty() {
             aggregate.mark_unresolved();
             continue;
@@ -146,7 +147,7 @@ fn pool_context_window(
                 candidate.upstream_model.trim().to_string(),
                 candidate.protocol,
             );
-            match pool_candidate_context(config, &candidate) {
+            match pool_candidate_context(providers, &candidate) {
                 Some(value) => aggregate.add(identity, value),
                 None => aggregate.mark_unresolved(),
             }
@@ -164,13 +165,13 @@ fn pool_context_window(
 /// provider's value. When a provider's default model is itself the public model,
 /// an exact same-provider mapping declaration supplies its value.
 fn ordinary_context_window(
-    config: &GatewayConfig,
+    providers: &[GatewayUpstreamProvider],
     public_model: &str,
     ingress: UpstreamProtocol,
 ) -> Option<u32> {
     let mut aggregate = ContextAggregate::new();
     let mut has_explicit_source = false;
-    for provider in &config.providers {
+    for provider in providers {
         for mapping in &provider.mappings {
             if mapping.local_model.trim() != public_model {
                 continue;
@@ -195,7 +196,7 @@ fn ordinary_context_window(
 
     // A default-model route whose public id is the default model itself resolves
     // only from that same provider's exact upstream declaration.
-    for provider in &config.providers {
+    for provider in providers {
         let Some(default_model) = provider
             .default_model
             .as_deref()
@@ -234,8 +235,9 @@ fn ordinary_context_window(
 /// The conservative advertised total context window of `public_model` under
 /// `protocol`, or `None` when the model is not available there or any required
 /// configured source is unknown.
-pub(in crate::ai_gateway) fn resolve_public_context_window(
-    config: &GatewayConfig,
+pub(in crate::ai_gateway) fn resolve_public_context_window_from(
+    providers: &[GatewayUpstreamProvider],
+    pools: &[ModelPool],
     public_model: &str,
     protocol: UpstreamProtocol,
 ) -> Option<u32> {
@@ -243,12 +245,25 @@ pub(in crate::ai_gateway) fn resolve_public_context_window(
     if public_model.is_empty() {
         return None;
     }
-    if let Some(pool) = config
-        .model_pools
+    if let Some(pool) = pools
         .iter()
         .find(|pool| pool.model.trim() == public_model)
     {
-        return pool_context_window(config, pool, protocol);
+        return pool_context_window(providers, pool, protocol);
     }
-    ordinary_context_window(config, public_model, protocol)
+    ordinary_context_window(providers, public_model, protocol)
+}
+
+/// Resolve from a complete configuration.
+pub(in crate::ai_gateway) fn resolve_public_context_window(
+    config: &GatewayConfig,
+    public_model: &str,
+    protocol: UpstreamProtocol,
+) -> Option<u32> {
+    resolve_public_context_window_from(
+        &config.providers,
+        &config.model_pools,
+        public_model,
+        protocol,
+    )
 }

@@ -27,6 +27,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 mod templates;
 mod context_limits;
+mod context_terminal_sync;
 mod quota;
 mod go_usage;
 mod migration;

@@ -147,6 +147,25 @@ pub(in crate::app_store) fn render_claude_to_dir(
         env.remove("CLAUDE_CODE_EFFORT_LEVEL");
     }
 
+    // Shared compaction target. The managed key is a decimal string; absent,
+    // null or non-positive values remove it without touching other env keys.
+    match provider
+        .tool_config
+        .get("claude_auto_compact_window")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+    {
+        Some(window) => {
+            env.insert(
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+                Value::String(window.to_string()),
+            );
+        }
+        None => {
+            env.remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+        }
+    }
+
     settings.insert("env".to_string(), Value::Object(env));
 
     // Internal marker: track which onespace profile is applied to the global Claude config.
@@ -215,6 +234,7 @@ pub(in crate::app_store) fn render_claude_reset_to_unmanaged(
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
             "CLAUDE_CODE_EFFORT_LEVEL",
         ] {
             env.remove(key);

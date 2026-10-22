@@ -18,6 +18,8 @@ Status: implemented
 
 `src-tauri/src/ai_gateway/context_limits.rs` 以 `pub(in crate::ai_gateway)` 可见性提供 `resolve_public_context_window(&GatewayConfig, &str, UpstreamProtocol) -> Option<u32>`。它聚合跨服务商的普通别名、每个池候选以及展开的有序后备来源，并按服务商、本地模型、上游模型与生效协议组成的精确来源身份去重。只有当每个参与来源都声明已知正值时，聚合值才是它们的最小值；任何未知或无法解析的已配置来源都会让聚合变为未知。已配置但禁用与自动禁用的来源可以保守贡献，而 Key 标记、冷却、运行时健康与恢复绝不抬高对外上限。池别名在原生 Anthropic Messages 入站下不解析，`default_model` 后备路由只从同一服务商的精确上游声明解析。该解析器只读取声明式配置，不触碰路由或网络。
 
+原生终端适配只在各工具既有的写入路径上消费该解析器。OpenCode 生成模型把保守聚合值写成数值 `limit.context` 并固定 `output: 0`，聚合未知时整行不写 `limit` 对象；既有自由形式 `tool_config.models` 渲染整个模型对象，因此不新增伴随字段或渲染器改动。Codex 同步在既有手动激活/投影路径把当前选中模型的聚合值写成顶层整数 `model_context_window`，聚合未知时记录显式 `null`，使经合并的 canonical 记录清除陈旧标量。Claude 同步对默认选择与三个 family 选择去重后取最小值：已知最小值不低于 100000 时写成十进制字符串 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`，上限 1000000；低于下限的最小值、未知值或不完整选择会清除该受管键并报告原因，压缩本身保持启用，全局渲染器与承载创建和恢复的隔离 profile materializer 写同一值。每个终端目标暴露带 `mode`、`scope`、`TerminalContextCoverage` 计数与稳定原因码的 `TerminalContextSummary`；它绝不携带凭据，也绝不声称真实运行中的 CLI 已消费该值。
+
 ## Alternatives considered
 
 - 从模型名、价格、输出上限或最大完成 token 推导窗口：未采纳，因为这种值是猜测，可能高估服务商的真实容量。
@@ -34,4 +36,8 @@ Status: implemented
 - 对外公布是保守的：完整聚合报告所有已配置贡献者的最小值，任何必需的未知都让聚合保持未知，而不是借用更大的值。
 - [Provider Templates Drop Built-in Model Catalogs and Prices](../architecture/2026-09-19-provider-template-manual-model-sync.md) 的模板模型形状与远程同步合并事实被可选声明字段 `context_window` 及其归属规则部分取代；其精简目录、按模板手动同步、定价与退役决策继续有效。
 - `MEMORY.md` 与权威导航索引在同一变更中登记新模块、符号与测试路径，并同时刷新生成的导航视图与 Note 配对记录。
-- 本变更仅覆盖网关侧声明与解析；原生终端投影与操作者界面不在其已交付事实之内。
+- 原生配置既可加性写入也可清除：OpenCode 未知值省略 `limit`，Codex 未知值写显式 `null` 并移除受管标量，Claude 的不可用、低于下限或封顶值只清除或收窄受管键且压缩保持启用；无关原生字段与既有归属、标记和激活规则不变。
+- 仅上下文漂移现在也参与 `pending_sync`：OpenCode 模型清单缺少当前上限、Codex `model_context_window` 不一致，或 Claude 选择或压缩阈值不一致，都会把此前同步过的目标标记为待同步且不暴露 Key 材料。改变上下文的服务商保存或手动模板保存会在落盘后于锁外刷新此前同步过的工具一次，刷新失败绝不改变已保存的网关结果。
+- 行为覆盖位于 `src-tauri/src/ai_gateway/tests/context_terminal_sync.rs` 与 `src-tauri/src/app_store/tests/gateway_context_projection.rs`；它们使用隔离的临时 home 与注入来源，因此原生 GUI 与真实运行中的 CLI 仍未执行。
+- [Template Sync Best-Effort Refreshes Previously Synced Terminal Tools](2026-09-23-template-terminal-resync.md) 被部分取代：改变上下文的服务商保存与手动模板保存现在也会触发其一次性的 best-effort 刷新，而其模板同步触发、已同步工具谓词、顺序与吞错契约继续有效。[Gateway Terminal Sync Flags Model-Selection Drift as Pending](../bug-fix/2026-09-29-gateway-terminal-pending-model-drift.md) 被新增的 Codex 上下文字段与 Claude 选择/阈值比较部分取代，而其台账规则、Key 材料排除与只读计算继续有效。
+- 原生终端投影经各工具既有的写入路径交付；操作者界面展示仍不在这些已交付事实之内。

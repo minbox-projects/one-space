@@ -299,6 +299,25 @@ fn materialize_claude_settings_sp_with_router_start(
         env.remove("CLAUDE_CODE_EFFORT_LEVEL");
     }
 
+    // Shared compaction target, identical to the global settings renderer. The
+    // managed key is a decimal string; absent or null values remove it.
+    match provider
+        .tool_config
+        .get("claude_auto_compact_window")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+    {
+        Some(window) => {
+            env.insert(
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+                Value::String(window.to_string()),
+            );
+        }
+        None => {
+            env.remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+        }
+    }
+
     settings.insert("env".to_string(), Value::Object(env));
 
     let content =
