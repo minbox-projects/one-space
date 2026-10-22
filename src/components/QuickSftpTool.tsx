@@ -11,6 +11,7 @@ import {
   Folder,
   FolderOpen,
   FolderSync,
+  History,
   Loader2,
   Plug,
   Radio,
@@ -60,6 +61,8 @@ import {
 } from "@/lib/sftp";
 
 const DEFAULT_BOOKMARKS = ["~", "/var/log", "/etc", "/tmp", "~/.onespace_trash"];
+const SFTP_RECENT_CONNECTIONS_KEY = "onespace:sftp-recent-connections";
+const MAX_RECENT_CONNECTIONS = 6;
 
 const INITIAL_MOCK_ENTRIES: RemoteFileEntry[] = [
   {
@@ -107,6 +110,49 @@ export function QuickSftpTool() {
   const [isConnected, setIsConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [connectedHost, setConnectedHost] = useState<string | null>(null);
+
+  // 最近连接记录
+  const [recentConnections, setRecentConnections] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem(SFTP_RECENT_CONNECTIONS_KEY);
+      if (!stored) return [];
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed)
+        ? parsed.filter(
+            (item): item is string =>
+              typeof item === "string" && Boolean(item.trim()),
+          )
+        : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const addRecentConnection = (host: string) => {
+    const trimmed = host.trim();
+    if (!trimmed) return;
+    setRecentConnections((prev) => {
+      const next = [trimmed, ...prev.filter((h) => h !== trimmed)].slice(
+        0,
+        MAX_RECENT_CONNECTIONS,
+      );
+      try {
+        localStorage.setItem(SFTP_RECENT_CONNECTIONS_KEY, JSON.stringify(next));
+      } catch (err) {
+        console.error("Failed to save sftp recent connection", err);
+      }
+      return next;
+    });
+  };
+
+  const handleClearRecentConnections = () => {
+    try {
+      localStorage.removeItem(SFTP_RECENT_CONNECTIONS_KEY);
+    } catch (err) {
+      console.error("Failed to clear sftp recent connections", err);
+    }
+    setRecentConnections([]);
+  };
 
   // 目录浏览
   const [currentPath, setCurrentPath] = useState("~");
@@ -244,8 +290,15 @@ export function QuickSftpTool() {
   }, [t, pushToast]);
 
   // 建立连接
-  const handleConnect = async (targetPath = pathInput || "~") => {
-    const activeHost = selectedHost || customHostInput.trim();
+  const handleConnect = async (
+    targetPath = pathInput || "~",
+    hostOverride?: string,
+  ) => {
+    const activeHost = (
+      hostOverride ||
+      selectedHost ||
+      customHostInput
+    ).trim();
     if (!activeHost) {
       pushToast({
         title: t("sftpSelectHostPrompt", "Please select or enter an SSH host"),
@@ -275,6 +328,7 @@ export function QuickSftpTool() {
       }
       setIsConnected(true);
       setConnectedHost(activeHost);
+      addRecentConnection(activeHost);
       pushToast({
         title: t("sftpConnectedToast", "Connected to remote host"),
         description: activeHost,
@@ -299,6 +353,28 @@ export function QuickSftpTool() {
     setIsConnected(false);
     setConnectedHost(null);
     setError(null);
+    setCurrentPath("~");
+    currentPathRef.current = "~";
+    setPathInput("~");
+    setSearchFilter("");
+  };
+
+  // 快捷连接最近记录
+  const handleQuickConnect = async (host: string) => {
+    if (connecting) return;
+    if (isConnected && connectedHost === host) return;
+
+    const matchedHost = hosts.find((h) => h.name === host);
+    if (matchedHost) {
+      setSelectedHost(matchedHost.name);
+    } else {
+      setCustomHostInput(host);
+    }
+
+    if (isConnected) {
+      handleDisconnect();
+    }
+    await handleConnect("~", host);
   };
 
   // 切换 Host 处理
@@ -1190,6 +1266,52 @@ export function QuickSftpTool() {
             </div>
           </div>
 
+          {/* 最近连接记录快捷条 */}
+          {recentConnections.length > 0 ? (
+            <div
+              data-testid="sftp-recent-connections"
+              className="flex flex-wrap items-center gap-1.5 border-t pt-2 text-xs"
+            >
+              <div className="flex items-center gap-1 text-muted-foreground text-[11px] shrink-0">
+                <History className="h-3.5 w-3.5 shrink-0" />
+                <span>{t("sftpRecentConnections", "最近连接")}:</span>
+              </div>
+              {recentConnections.map((recHost) => {
+                const isCurrent = isConnected && connectedHost === recHost;
+                return (
+                  <button
+                    key={recHost}
+                    type="button"
+                    data-testid={`sftp-recent-item-${recHost}`}
+                    onClick={() => void handleQuickConnect(recHost)}
+                    disabled={connecting || isCurrent}
+                    title={t("sftpQuickConnectTo", "快捷连接至 {{host}}", {
+                      host: recHost,
+                    })}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-xs transition-colors ${
+                      isCurrent
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 cursor-default"
+                        : "border-border/80 bg-background text-foreground hover:border-primary/50 hover:bg-primary/5 hover:text-primary"
+                    } disabled:opacity-50`}
+                  >
+                    <Server className="h-3 w-3 shrink-0 opacity-70" />
+                    <span>{recHost}</span>
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                data-testid="sftp-clear-recent"
+                onClick={handleClearRecentConnections}
+                title={t("sftpClearRecent", "清空")}
+                className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-destructive transition-colors ml-auto sm:ml-1"
+              >
+                <Trash2 className="h-3 w-3" />
+                <span>{t("sftpClearRecent", "清空")}</span>
+              </button>
+            </div>
+          ) : null}
+
           {/* 路径与操作栏 */}
           <div className="flex items-center gap-2 border-t pt-2">
             <button
@@ -1331,6 +1453,29 @@ export function QuickSftpTool() {
                     ? t("sftpConnecting", "连接中...")
                     : t("sftpConnectNow", "立即连接")}
                 </button>
+
+                {recentConnections.length > 0 ? (
+                  <div className="pt-2 flex flex-col items-center gap-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      {t("sftpRecentConnections", "最近连接")}:
+                    </span>
+                    <div className="flex flex-wrap justify-center gap-1.5 max-w-md">
+                      {recentConnections.map((recHost) => (
+                        <button
+                          key={recHost}
+                          type="button"
+                          data-testid={`sftp-empty-recent-${recHost}`}
+                          onClick={() => void handleQuickConnect(recHost)}
+                          disabled={connecting}
+                          className="inline-flex items-center gap-1 rounded-md border bg-background px-2.5 py-1 font-mono text-xs hover:border-primary/50 hover:bg-primary/5 hover:text-primary transition-colors"
+                        >
+                          <Server className="h-3 w-3 opacity-70" />
+                          <span>{recHost}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : loading && files.length === 0 ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground text-xs gap-2">

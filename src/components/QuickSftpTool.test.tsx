@@ -8,6 +8,7 @@ describe("QuickSftpTool", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+    localStorage.clear();
   });
 
   it("renders initially in disconnected state without auto-connecting", () => {
@@ -427,5 +428,120 @@ describe("QuickSftpTool", () => {
 
     listSpy.mockRestore();
     clearSpy.mockRestore();
+  });
+
+  it("resets directory bar path input and search filter to default '~' when disconnected", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<QuickSftpTool />);
+
+    // 连接
+    const hostInput = screen.queryByPlaceholderText(/user@host or config alias/i);
+    if (hostInput) {
+      await user.type(hostInput, "test-user@192.168.1.100");
+    }
+    const connectBtn = screen.getByRole("button", {
+      name: /连接 \/ 登录|Connect \/ Login/i,
+    });
+    await user.click(connectBtn);
+
+    expect(await screen.findByText("app.log")).toBeInTheDocument();
+
+    // 导航到 /var/log 书签
+    const varLogBtn = screen.getByRole("button", { name: "/var/log" });
+    await user.click(varLogBtn);
+    const pathInput = screen.getByPlaceholderText(/~ or \/var\/log/i);
+    expect(pathInput).toHaveValue("/var/log");
+
+    // 输入搜索关键字
+    const searchInput = screen.getByPlaceholderText(/搜索过滤文件|Filter files/i);
+    await user.type(searchInput, "app");
+    expect(searchInput).toHaveValue("app");
+
+    // 点击断开连接
+    const disconnectBtn = screen.getByRole("button", {
+      name: /断开连接|Disconnect/i,
+    });
+    await user.click(disconnectBtn);
+
+    // 断开后目录栏恢复为 "~"
+    expect(pathInput).toHaveValue("~");
+    // 搜索框在未连接状态下不展示，文件列表清空
+    expect(screen.queryByPlaceholderText(/搜索过滤文件|Filter files/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("app.log")).not.toBeInTheDocument();
+  });
+
+  it("records recent connections into localStorage and displays them in toolbar and empty view", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<QuickSftpTool />);
+
+    // 连接第一个主机
+    const hostInput = screen.queryByPlaceholderText(/user@host or config alias/i);
+    if (hostInput) {
+      await user.type(hostInput, "prod-server");
+    }
+    const connectBtn = screen.getByRole("button", {
+      name: /连接 \/ 登录|Connect \/ Login/i,
+    });
+    await user.click(connectBtn);
+
+    expect(await screen.findByRole("button", { name: /断开连接|Disconnect/i })).toBeInTheDocument();
+
+    // 断开连接
+    const disconnectBtn = screen.getByRole("button", { name: /断开连接|Disconnect/i });
+    await user.click(disconnectBtn);
+
+    // 此时应该在最近连接栏和居中未连接区展示 prod-server
+    expect(await screen.findByTestId("sftp-recent-item-prod-server")).toBeInTheDocument();
+    expect(screen.getByTestId("sftp-empty-recent-prod-server")).toBeInTheDocument();
+
+    // 验证 localStorage 存在记录
+    const stored = JSON.parse(localStorage.getItem("onespace:sftp-recent-connections") || "[]");
+    expect(stored).toEqual(["prod-server"]);
+  });
+
+  it("supports quick connecting by clicking a recent connection item", async () => {
+    localStorage.setItem(
+      "onespace:sftp-recent-connections",
+      JSON.stringify(["quick-host-1", "quick-host-2"]),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<QuickSftpTool />);
+
+    // 未连接状态下应看到最近连接快捷项
+    const recentItem = await screen.findByTestId("sftp-recent-item-quick-host-1");
+    expect(recentItem).toBeInTheDocument();
+
+    // 点击 quick-host-1 快捷连接
+    await user.click(recentItem);
+
+    // 应该自动完成连接
+    expect(await screen.findByRole("button", { name: /断开连接|Disconnect/i })).toBeInTheDocument();
+    expect(screen.getByText("app.log")).toBeInTheDocument();
+
+    // 点击另一个快捷条目 quick-host-2 进行快捷切换
+    const recentItem2 = screen.getByTestId("sftp-recent-item-quick-host-2");
+    await user.click(recentItem2);
+
+    // 再次确认处于连接状态且保持连接
+    expect(await screen.findByRole("button", { name: /断开连接|Disconnect/i })).toBeInTheDocument();
+  });
+
+  it("clears recent connections when clicking clear recent button", async () => {
+    localStorage.setItem(
+      "onespace:sftp-recent-connections",
+      JSON.stringify(["host-to-clear"]),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<QuickSftpTool />);
+
+    expect(await screen.findByTestId("sftp-recent-item-host-to-clear")).toBeInTheDocument();
+
+    // 点击清空
+    const clearBtn = screen.getByTestId("sftp-clear-recent");
+    await user.click(clearBtn);
+
+    // 条目应消失且 localStorage 被清空
+    expect(screen.queryByTestId("sftp-recent-item-host-to-clear")).not.toBeInTheDocument();
+    expect(localStorage.getItem("onespace:sftp-recent-connections")).toBeNull();
   });
 });
