@@ -398,23 +398,41 @@ wire_api = "chat"
 model = "gpt-4o"
 model_provider = "onespace_gateway_codex"
 model_reasoning_effort = "high"
+project_doc_max_bytes = 65536
 
 [model_providers.onespace_gateway_codex]
 name = "AI Gateway"
 base_url = "http://127.0.0.1:19000/v1"
 wire_api = "chat"
+
+[model_providers.user_provider]
+name = "User Provider"
+base_url = "https://user.example.com/v1"
 "#,
         );
-        render_codex_reset_to_unmanaged_at_home(home).expect("reset Codex to unmanaged");
+        let mut unmanaged = codex_record(Value::Null);
+        unmanaged.env_managed = Some(false);
+        apply_projection(&unmanaged).expect("reset Codex to unmanaged");
         let doc = read_toml(&config_path);
         assert!(
             doc.get("model_context_window").is_none(),
             "unmanaged reset must remove the managed context scalar: {doc}"
         );
+        assert!(
+            doc.get("model_reasoning_effort").is_none(),
+            "unmanaged reset must remove the gateway-managed reasoning effort: {doc}"
+        );
         assert_eq!(
-            doc.get("model_reasoning_effort").and_then(|v| v.as_str()),
-            Some("high"),
-            "unmanaged reset must keep unrelated settings: {doc}"
+            doc.get("project_doc_max_bytes").and_then(|v| v.as_integer()),
+            Some(65536),
+            "an unrelated top-level TOML key must survive: {doc}"
+        );
+        assert!(
+            doc.get("model_providers")
+                .and_then(|v| v.as_table())
+                .and_then(|table| table.get("user_provider"))
+                .is_some(),
+            "an unrelated user provider table must survive: {doc}"
         );
     });
 }

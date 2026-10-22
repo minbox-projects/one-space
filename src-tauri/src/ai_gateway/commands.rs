@@ -665,8 +665,11 @@ fn opencode_context_summary(config: &GatewayConfig) -> TerminalContextSummary {
 }
 
 /// Coverage and effective scalar for the synchronized Codex selection only.
-fn codex_context_summary(config: &GatewayConfig) -> TerminalContextSummary {
-    let selected = select_codex_model(&config.providers, &config.model_pools, None);
+fn codex_context_summary(
+    config: &GatewayConfig,
+    previous_model: Option<&str>,
+) -> TerminalContextSummary {
+    let selected = select_codex_model(&config.providers, &config.model_pools, previous_model);
     let resolved = selected.as_deref().and_then(|model| {
         resolve_public_context_window_from(
             &config.providers,
@@ -1753,7 +1756,11 @@ pub(in crate::ai_gateway) fn terminal_targets_from(
         let context = if tool == "opencode" {
             opencode_context_summary(config)
         } else if tool == "codex" {
-            codex_context_summary(config)
+            // Match the generated sync selection: the owned record's current
+            // model can retain a previously selected enabled pool alias.
+            let previous_model = managed
+                .and_then(|provider| provider.get("model").and_then(Value::as_str));
+            codex_context_summary(config, previous_model)
         } else {
             claude_context_summary(config, claude_models.as_ref())
         };

@@ -1,4 +1,4 @@
-use crate::app_store::{read_json_object, ServiceProviderRecord, StorageEngine};
+use crate::app_store::{read_json_object, ServiceProviderRecord};
 use serde_json::{Map, Value};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
@@ -297,6 +297,7 @@ pub(in crate::app_store) fn render_codex_reset_to_unmanaged_at_home(
             "base_url",
             "disable_response_storage",
             "model_context_window",
+            "model_reasoning_effort",
             "personality",
             "model_reasoning_summary",
             "approval_policy",
@@ -323,9 +324,7 @@ pub(in crate::app_store) fn render_codex_reset_to_unmanaged_at_home(
             }
         }
 
-        let rendered = doc.to_string();
-        StorageEngine::atomic_write(&config_path, &rendered)?;
-        outputs.push((config_path, rendered));
+        outputs.push((config_path, doc.to_string()));
     }
 
     Ok(outputs)

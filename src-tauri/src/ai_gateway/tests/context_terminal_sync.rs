@@ -640,6 +640,77 @@ fn codex_target_reports_selected_window_and_pending_drift() {
 }
 
 #[test]
+fn codex_target_summary_reports_the_retained_enabled_pool_alias_on_resync() {
+    let mut config = gateway_config(PORT);
+    config.default_key_id = Some("k1".to_string());
+    config.providers[0].mappings = vec![
+        context_mapping("gpt-4o", "gpt-4o-2024", Some("GPT-4o"), Some(128000)),
+        context_mapping(
+            "pool-upstream",
+            "pool-upstream-2024",
+            Some("Pool Upstream"),
+            Some(256000),
+        ),
+    ];
+    config.model_pools.push(ModelPool {
+        id: "pool-free".to_string(),
+        name: "Free Model".to_string(),
+        model: "free-model".to_string(),
+        enabled: true,
+        candidates: vec![pool_candidate(
+            "g1",
+            "pool-upstream",
+            "pool-upstream-2024",
+            UpstreamProtocol::ChatCompletions,
+        )],
+        ..ModelPool::default()
+    });
+    config.terminal_syncs.push(TerminalSyncRecord {
+        provider_id: "gw-codex".to_string(),
+        tool: "codex".to_string(),
+        synced_key_id: "k1".to_string(),
+        synced_base_url: local_base_url(config.port),
+        synced_at: 1,
+    });
+
+    // The previously synchronized managed record selected an enabled pool
+    // alias, so a resync retains it instead of falling back to the ordinary
+    // default model.
+    let stored = json!({
+        "id": "gw-codex",
+        "tool": "codex",
+        "name": "AI Gateway",
+        "base_url": local_base_url(config.port),
+        "api_key": "previous-local-key",
+        "model": "free-model",
+        "tool_config": {
+            "ai_gateway_gateway": true,
+            "model_context_window": 256000
+        }
+    });
+    let targets = terminal_targets_from(
+        &config,
+        &json!({ "providers": [stored] }),
+        TerminalSyncProfile::RELEASE,
+    );
+    let summary = context_summary(target_for(&targets, "codex"));
+
+    assert_eq!(
+        summary["selected_model"], "free-model",
+        "the summary must report the retained pool alias, not the ordinary default: {summary}"
+    );
+    assert_eq!(
+        summary["raw_context"], 256000,
+        "the retained alias must report its conservative pool context: {summary}"
+    );
+    assert_eq!(summary["applied_context"], 256000);
+    assert_eq!(summary["coverage"]["total"], 1);
+    assert_eq!(summary["coverage"]["known"], 1);
+    assert_eq!(summary["coverage"]["unknown"], 0);
+    assert_eq!(summary["reasons"], json!([]));
+}
+
+#[test]
 fn claude_target_reports_shared_minimum_and_pending_drift() {
     let selection = claude_selection();
     let mut config = claude_config([Some(128000), Some(128000), Some(256000), Some(200000)]);
