@@ -157,6 +157,10 @@ pub struct ModelMapping {
     /// model's explicitly declared capabilities while the row still inherits them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
+    /// Declared total context window in tokens. Absent means unspecified; an
+    /// older configuration without the field reads as unknown rather than zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
     /// Runtime health: whether the row was automatically disabled after failures.
     /// Independent of `enabled` (the user's intent) and always serialized; an older
     /// config without the field reads as healthy.
@@ -181,6 +185,7 @@ impl Default for ModelMapping {
             protocol: None,
             display_name: None,
             reasoning_efforts: Vec::new(),
+            context_window: None,
             auto_disabled: false,
             disabled_reason: None,
             disabled_at: None,
@@ -852,6 +857,10 @@ pub struct ProviderTemplateModel {
     pub off_peaks: Vec<OffPeakPrice>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
+    /// Declared total context window in tokens. Absent means unspecified; an
+    /// older configuration without the field reads as unknown rather than zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 impl Default for ProviderTemplateModel {
@@ -868,6 +877,7 @@ impl Default for ProviderTemplateModel {
             output: 0.0,
             off_peaks: Vec::new(),
             reasoning_efforts: Vec::new(),
+            context_window: None,
         }
     }
 }

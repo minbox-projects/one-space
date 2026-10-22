@@ -753,17 +753,42 @@ pub fn ai_gateway_upsert_provider(
         // template before anything is staged; `None` (or a missing field)
         // unbinds. An unknown or deleted id is rejected without a write, so a
         // broken binding can never be persisted through the upsert.
-        if let Some(template_id) = provider.template_id.as_deref() {
-            let template_id = template_id.trim();
-            if template_id.is_empty() {
-                return Err("provider template id must not be blank".to_string());
+        let bound_template = match provider.template_id.as_deref() {
+            Some(template_id) => {
+                let template_id = template_id.trim();
+                if template_id.is_empty() {
+                    return Err("provider template id must not be blank".to_string());
+                }
+                Some(effective_template(config, template_id)?)
             }
-            effective_template(config, template_id)?;
-        }
+            None => None,
+        };
         // A key name is required and may repeat; reject before anything is staged.
         for key in &provider.keys {
             if key.name.trim().is_empty() {
                 return Err("an upstream key requires a non-blank name".to_string());
+            }
+        }
+        // A declared context window must be a positive token count; an invalid
+        // submitted value is rejected before any write.
+        for mapping in &provider.mappings {
+            if mapping.context_window == Some(0) {
+                return Err(format!(
+                    "mapping '{} -> {}' declares an invalid context window: expected a positive integer",
+                    mapping.local_model, mapping.upstream_model
+                ));
+            }
+        }
+        // A bound provider is read-only for this field: the submitted rows are
+        // canonicalized against the latest effective template, so a stale dialog
+        // can never establish an override. Unbinding keeps the submitted value.
+        if let Some(template) = &bound_template {
+            for mapping in &mut provider.mappings {
+                mapping.context_window = template
+                    .models
+                    .iter()
+                    .find(|model| model.upstream_model.trim() == mapping.upstream_model.trim())
+                    .and_then(|model| model.context_window);
             }
         }
         if provider.id.trim().is_empty() {

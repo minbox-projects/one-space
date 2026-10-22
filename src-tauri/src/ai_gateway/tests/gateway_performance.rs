@@ -857,6 +857,7 @@ fn pool_config(base_url: &str, target: UpstreamProtocol) -> GatewayConfig {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     let mut config = GatewayConfig::default();
     config.enabled = true;

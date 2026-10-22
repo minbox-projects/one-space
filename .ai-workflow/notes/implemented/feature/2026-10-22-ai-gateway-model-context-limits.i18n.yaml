@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-22-ai-gateway-model-context-limits.md
+2026-10-22-ai-gateway-model-context-limits.md: caed06aee13d1fa1b19f8217041b8b683b6bd1c7
+2026-10-22-ai-gateway-model-context-limits.zh.md: 00414eb553378f24920e625b93574b4d2cabbd44

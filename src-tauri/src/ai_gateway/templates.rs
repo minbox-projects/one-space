@@ -72,6 +72,8 @@ struct RawTemplateModel {
     off_peaks: Vec<OffPeakPrice>,
     #[serde(default)]
     reasoning_efforts: Vec<String>,
+    #[serde(default)]
+    context_window: Option<u32>,
 }
 
 fn parse_protocol(raw: &str) -> Option<UpstreamProtocol> {
@@ -166,6 +168,7 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
                 output: raw_model.output,
                 off_peaks: raw_model.off_peaks,
                 reasoning_efforts: raw_model.reasoning_efforts,
+                context_window: raw_model.context_window,
             });
         }
 
@@ -593,6 +596,82 @@ fn declared_reasoning_efforts(
     }
 }
 
+/// Parse one explicitly declared total-context field. `Ok(None)` is an explicit
+/// JSON `null`, `Ok(Some(value))` a positive integer no larger than `u32::MAX`,
+/// and any other JSON shape is malformed. The caller supplies the model id and
+/// field name so the error names the exact declaration.
+fn declared_context_value(
+    value: &Value,
+    identifier: &str,
+    field: &str,
+) -> Result<Option<u32>, String> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Number(number) => match number.as_u64() {
+            Some(parsed) if parsed > 0 && parsed <= u32::MAX as u64 => Ok(Some(parsed as u32)),
+            _ => Err(format!(
+                "model '{identifier}' declares an invalid {field}: expected a positive integer no larger than {}",
+                u32::MAX
+            )),
+        },
+        _ => Err(format!(
+            "model '{identifier}' declares an invalid {field}: expected a positive integer no larger than {} or null",
+            u32::MAX
+        )),
+    }
+}
+
+/// The total-context declaration of one source entry, distinguishing absence
+/// from an explicit `null`. Top-level `context_length` and nested `limit.context`
+/// are both supported; when both are present they must agree, including `null`.
+/// A missing/non-object `limit` parent, or an object without `context`, declares
+/// nothing. Any declared malformed value or a disagreement is an error.
+fn declared_context_window(
+    object: &serde_json::Map<String, Value>,
+    identifier: &str,
+) -> Result<Option<Option<u32>>, String> {
+    let top_level = object
+        .get("context_length")
+        .map(|value| declared_context_value(value, identifier, "context_length"))
+        .transpose()?;
+    let nested = match object.get("limit") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(limit)) => limit
+            .get("context")
+            .map(|value| declared_context_value(value, identifier, "limit.context"))
+            .transpose()?,
+        Some(_) => {
+            return Err(format!(
+                "model '{identifier}' declares an invalid limit: expected an object or null"
+            ))
+        }
+    };
+    match (top_level, nested) {
+        (None, None) => Ok(None),
+        (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
+        (Some(top), Some(nested)) if top == nested => Ok(Some(top)),
+        (Some(top), Some(nested)) => Err(format!(
+            "model '{identifier}' declares conflicting context windows: context_length is {} and limit.context is {}",
+            top.map_or_else(|| "null".to_string(), |value| value.to_string()),
+            nested.map_or_else(|| "null".to_string(), |value| value.to_string()),
+        )),
+    }
+}
+
+/// Whether a source object declares a total context window; called only after
+/// the entry has passed the existing identifier, hidden, endpoint and duplicate
+/// filters, so a rejected entry's malformed metadata never fails the sync.
+fn resolve_source_context_window(
+    object: &serde_json::Map<String, Value>,
+    identifier: &str,
+    previous: Option<&ProviderTemplateModel>,
+) -> Result<Option<u32>, String> {
+    Ok(match declared_context_window(object, identifier)? {
+        Some(declared) => declared,
+        None => previous.and_then(|model| model.context_window),
+    })
+}
+
 /// The property of a source entry that marks it hidden from clients; only an
 /// exact boolean `true` skips the entry.
 fn source_entry_is_hidden(object: &serde_json::Map<String, Value>) -> bool {
@@ -669,6 +748,7 @@ fn parse_model_list_source(
                 output: previous_model.map(|model| model.output).unwrap_or(0.0),
                 off_peaks: previous_model.map(|model| model.off_peaks.clone()).unwrap_or_default(),
                 reasoning_efforts: previous_model.map(|model| model.reasoning_efforts.clone()).unwrap_or_default(),
+                context_window: previous_model.and_then(|model| model.context_window),
             });
             continue;
         }
@@ -744,6 +824,8 @@ fn parse_model_list_source(
                 .map(|model| model.reasoning_efforts.clone())
                 .unwrap_or_default(),
         };
+        let context_window =
+            resolve_source_context_window(object, &identifier, previous_model)?;
         merged.push(ProviderTemplateModel {
             upstream_model: identifier,
             local_model: previous_model.and_then(|model| model.local_model.clone()),
@@ -756,6 +838,7 @@ fn parse_model_list_source(
             output: previous_model.map(|model| model.output).unwrap_or(0.0),
             off_peaks: previous_model.map(|model| model.off_peaks.clone()).unwrap_or_default(),
             reasoning_efforts,
+            context_window,
         });
     }
 
@@ -965,6 +1048,19 @@ fn propagate_to_derived(
             removed_by_provider.push((provider.id.clone(), removed));
         }
 
+        // Declared context is owned by the latest template for every remaining
+        // row: aliases, user-disabled rows and auto-disabled rows follow the
+        // first template model with the same trimmed upstream id, and a row the
+        // template no longer lists becomes unspecified. Mapping health and
+        // enablement are never changed here.
+        for mapping in &mut provider.mappings {
+            mapping.context_window = new_template
+                .models
+                .iter()
+                .find(|model| model.upstream_model.trim() == mapping.upstream_model.trim())
+                .and_then(|model| model.context_window);
+        }
+
         // Explicit capability maintenance runs before creation and on existing
         // rows only, so it never creates a mapping and never resurrects an
         // ignored model. A row whose set still equals the previous template
@@ -1055,6 +1151,7 @@ fn propagate_to_derived(
                             complete_model_display_name(None, &model.upstream_model)
                         }),
                     reasoning_efforts: model.reasoning_efforts.clone(),
+                    context_window: model.context_window,
                     ..Default::default()
                 });
             }
@@ -1410,6 +1507,7 @@ fn mapping_from_template(
             .map(str::to_string)
             .or_else(|| complete_model_display_name(None, &model.upstream_model)),
         reasoning_efforts: model.reasoning_efforts.clone(),
+        context_window: model.context_window,
         ..Default::default()
     }
 }
@@ -1637,8 +1735,18 @@ where
         .icon
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    for model in &template.models {
+        if model.context_window == Some(0) {
+            return Err(format!(
+                "model '{}' declares an invalid context window: expected a positive integer",
+                model.upstream_model
+            ));
+        }
+    }
 
-    config.deleted_template_ids.retain(|id| id != &template.id);
+    let saved_models = template.models.clone();
+    let mut next = config.clone();
+    next.deleted_template_ids.retain(|id| id != &template.id);
 
     let template_id = template.id.clone();
     let source = if template.source.trim().is_empty() {
@@ -1647,7 +1755,7 @@ where
         Some(template.source.clone())
     };
 
-    if let Some(state) = config
+    if let Some(state) = next
         .provider_templates
         .iter_mut()
         .find(|s| s.template_id == template_id)
@@ -1657,15 +1765,32 @@ where
             state.source = source;
         }
     } else {
-        config.provider_templates.push(ProviderTemplateState {
-            template_id,
+        next.provider_templates.push(ProviderTemplateState {
+            template_id: template_id.clone(),
             template: Some(template),
             synced_at: None,
             source,
         });
     }
 
-    write(config)?;
+    // A manual template save owns the inherited context of every bound mapping,
+    // including aliases and disabled rows. A mapping whose trimmed upstream id
+    // the template no longer lists becomes unspecified without retiring the row.
+    for provider in next
+        .providers
+        .iter_mut()
+        .filter(|provider| provider.template_id.as_deref() == Some(template_id.as_str()))
+    {
+        for mapping in &mut provider.mappings {
+            mapping.context_window = saved_models
+                .iter()
+                .find(|model| model.upstream_model.trim() == mapping.upstream_model.trim())
+                .and_then(|model| model.context_window);
+        }
+    }
+
+    write(&next)?;
+    *config = next;
     provider_template_views(config)
 }
 

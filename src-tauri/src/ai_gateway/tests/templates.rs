@@ -119,6 +119,7 @@ fn mapping_for(model: &ProviderTemplateModel, template: &ProviderTemplate) -> Mo
         },
         display_name: model.display_name.clone(),
         reasoning_efforts: Vec::new(),
+        context_window: None,
         auto_disabled: false,
         disabled_reason: None,
         disabled_at: None,
@@ -135,6 +136,7 @@ fn model_mapping(upstream_model: &str) -> ModelMapping {
         protocol: None,
         display_name: None,
         reasoning_efforts: Vec::new(),
+        context_window: None,
         auto_disabled: false,
         disabled_reason: None,
         disabled_at: None,
@@ -5895,5 +5897,104 @@ async fn fetch_commandcode_source_filters_efforts_to_the_provider_api_set() {
         ],
         "only the Provider API five-value set remains once in source order: {:?}",
         model.reasoning_efforts
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Declared total context metadata (REQ-002, AC-003)
+// ---------------------------------------------------------------------------
+
+/// The declared total context window of a template model, read from its
+/// persisted JSON shape. `None` means the model declares no value.
+fn template_model_context(model: &ProviderTemplateModel) -> Option<u64> {
+    serde_json::to_value(model)
+        .ok()
+        .and_then(|value| value.get("context_window").cloned())
+        .and_then(|value| value.as_u64())
+}
+
+/// REQ-002 / AC-003: the captured CommandCode catalog keeps its declared
+/// total context windows through the production model-list parser, without any
+/// live request.
+#[test]
+fn live_catalog_fixture_retains_the_captured_context_values() {
+    let models = sync_models(
+        serde_json::from_str(LIVE_MODEL_CATALOG_2026_09_20).expect("the fixture must parse"),
+    );
+
+    for (upstream_model, expected) in [
+        ("claude-sonnet-5", 1_000_000u64),
+        ("claude-haiku-4-5-20251001", 200_000),
+        ("gpt-5.6-sol", 1_050_000),
+    ] {
+        let model = models
+            .iter()
+            .find(|model| model.upstream_model == upstream_model)
+            .unwrap_or_else(|| panic!("the captured catalog must carry {upstream_model}"));
+        assert_eq!(
+            template_model_context(model),
+            Some(expected),
+            "the captured catalog value of {upstream_model} must survive the model-list parser"
+        );
+    }
+}
+
+/// REQ-002 / AC-003: the CommandCode client-capability join keeps the ordinary
+/// list's declared total context metadata and introduces no second request.
+#[tokio::test]
+async fn the_commandcode_join_preserves_the_ordinary_context_metadata() {
+    let template = commandcode_template(vec![]);
+    let ordinary = json!({"data": [
+        {
+            "id": "chat-a",
+            "name": "Chat A",
+            "context_length": 256000,
+            "supported_endpoints": ["/chat/completions"]
+        }
+    ]})
+    .to_string();
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [{"id": "chat-a", "reasoningEfforts": ["low", "high"]}]
+    })
+    .to_string();
+
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_in = seen.clone();
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        seen_in.lock().expect("url log").push(requested.clone());
+        let reply = if requested.contains("view=client") {
+            client.clone()
+        } else {
+            ordinary.clone()
+        };
+        async move { Ok::<String, String>(reply) }
+    })
+    .await
+    .expect("the CommandCode adapter must join both official sources");
+
+    assert_eq!(
+        *seen.lock().expect("url log"),
+        vec![
+            COMMANDCODE_ORDINARY_URL.to_string(),
+            COMMANDCODE_CLIENT_URL.to_string()
+        ],
+        "the capability join must introduce no extra request"
+    );
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+        .expect("the enriched ordinary body must sync");
+    let model = view
+        .template
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "chat-a")
+        .expect("chat-a must remain");
+    assert_eq!(
+        template_model_context(model),
+        Some(256000),
+        "the ordinary list's declared context window must survive the capability join"
     );
 }

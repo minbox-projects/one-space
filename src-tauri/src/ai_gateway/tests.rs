@@ -26,6 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 mod templates;
+mod context_limits;
 mod quota;
 mod go_usage;
 mod migration;
@@ -144,6 +145,7 @@ fn gateway_config_round_trips_and_encrypts_secrets_on_disk() {
             disabled_at: None,
             consecutive_failures: 0,
             last_error_at: None,
+            context_window: None,
         }];
         config.providers.push(first);
         config.keys.push(GatewayKey {
@@ -356,6 +358,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
 
     // 1. A matching row whose effective protocol equals the inbound protocol is served,
@@ -399,6 +402,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     assert!(matches!(
         resolve_model_for_protocol(&per_model, Some("local-r"), UpstreamProtocol::Responses),
@@ -425,6 +429,7 @@ fn resolve_model_for_protocol_prefers_matching_rows_and_rejects_other_protocols(
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     assert!(matches!(
         resolve_model_for_protocol(&blank_row, Some("local-blank"), UpstreamProtocol::ChatCompletions),
@@ -1227,6 +1232,7 @@ fn mapping(local_model: &str, upstream_model: &str, display_name: Option<&str>) 
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }
 }
 
@@ -1258,6 +1264,7 @@ async fn forwards_chat_completions_path_body_and_provider_auth() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -1431,6 +1438,7 @@ async fn provider_base_url_with_v1_does_not_double_the_version_segment() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -2031,6 +2039,7 @@ async fn models_endpoint_returns_local_union_without_upstream() {
             disabled_at: None,
             consecutive_failures: 0,
             last_error_at: None,
+            context_window: None,
         },
         ModelMapping {
             local_model: "local-b".to_string(),
@@ -2044,6 +2053,7 @@ async fn models_endpoint_returns_local_union_without_upstream() {
             disabled_at: None,
             consecutive_failures: 0,
             last_error_at: None,
+            context_window: None,
         },
     ];
     config.providers.push(provider);
@@ -4833,6 +4843,7 @@ async fn no_candidate_model_returns_all_unavailable_without_upstream_request() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     config.providers.push(p);
     super::storage::write_config(&config).unwrap();
@@ -6207,6 +6218,7 @@ async fn end_to_end_path_prefix_and_body_equivalence_for_chat_and_responses() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     };
     let mut chat_provider =
         upstream_provider("p1", "Provider One", &base_url, "upstream-secret", None);
@@ -6299,6 +6311,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
             disabled_at: None,
             consecutive_failures: 0,
             last_error_at: None,
+            context_window: None,
         },
         ModelMapping {
             local_model: "local-a".to_string(),
@@ -6312,6 +6325,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
             disabled_at: None,
             consecutive_failures: 0,
             last_error_at: None,
+            context_window: None,
         },
     ];
     let mut disabled = upstream_provider("p2", "Provider Two", &upstream_url, "sk", None);
@@ -6328,6 +6342,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     let mut auto_disabled = upstream_provider("p3", "Provider Three", &upstream_url, "sk", None);
     auto_disabled.mappings = vec![ModelMapping {
@@ -6342,6 +6357,7 @@ async fn end_to_end_models_union_and_unknown_route_error_shape() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     let no_model = upstream_provider("p4", "Provider Four", &upstream_url, "sk", None);
     config
@@ -8506,6 +8522,7 @@ async fn default_model_fallback_requires_a_matching_provider_protocol() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -8820,6 +8837,7 @@ async fn mapping_without_protocol_inherits_the_provider_protocol() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     config.providers.push(provider);
     super::storage::write_config(&config).unwrap();
@@ -9177,6 +9195,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     let mut responses_record = upstream_provider(
         "responses-record",
@@ -9198,6 +9217,7 @@ async fn cross_record_candidates_are_selected_by_each_records_protocol() {
         disabled_at: None,
         consecutive_failures: 0,
         last_error_at: None,
+        context_window: None,
     }];
     config.providers.push(chat_record);
     config.providers.push(responses_record);
@@ -22044,6 +22064,7 @@ async fn models_endpoint_excludes_auto_disabled_rows_that_are_unique() {
         disabled_at: Some(12345),
         consecutive_failures: 3,
         last_error_at: Some(12345),
+        context_window: None,
     };
     // Also carry a second row for the same provider's shared model.
     p_disabled.mappings = vec![
@@ -22060,6 +22081,7 @@ async fn models_endpoint_excludes_auto_disabled_rows_that_are_unique() {
             disabled_at: None,
             consecutive_failures: 0,
             last_error_at: None,
+            context_window: None,
         },
     ];
 
@@ -22144,6 +22166,7 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                 disabled_at: Some(99999),
                 consecutive_failures: 3,
                 last_error_at: Some(99999),
+                context_window: None,
             }],
             weight: 1,
             enabled: true,
@@ -22177,6 +22200,7 @@ fn ai_gateway_upsert_preserves_runtime_state_for_unchanged_key() {
                     disabled_at: None,
                     consecutive_failures: 0, // sender says zero — must be overridden.
                     last_error_at: None,
+                    context_window: None,
                 }],
                 weight: 1,
                 enabled: true,
@@ -22256,6 +22280,7 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
                     disabled_at: None,
                     consecutive_failures: 0,
                     last_error_at: None,
+                    context_window: None,
                 },
                 ModelMapping {
                     local_model: "local-b".to_string(),
@@ -22269,6 +22294,7 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
                     disabled_at: Some(88888),
                     consecutive_failures: 5,
                     last_error_at: Some(88888),
+                    context_window: None,
                 },
             ],
             weight: 1,
@@ -22305,6 +22331,7 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
                         disabled_at: None,
                         consecutive_failures: 0,
                         last_error_at: None,
+                        context_window: None,
                     },
                     // New trim key (local-b -> remote-c): must start fresh.
                     ModelMapping {
@@ -22319,6 +22346,7 @@ fn ai_gateway_upsert_clears_runtime_state_for_changed_key() {
                         disabled_at: None,
                         consecutive_failures: 0,
                         last_error_at: None,
+                        context_window: None,
                     },
                 ],
                 weight: 1,
@@ -22409,6 +22437,7 @@ fn ac_016_status_from_config_counts_rows_not_providers() {
                 disabled_at: Some(1),
                 consecutive_failures: 3,
                 last_error_at: Some(1),
+                context_window: None,
             },
             ModelMapping {
                 local_model: "bb".to_string(),
@@ -22422,6 +22451,7 @@ fn ac_016_status_from_config_counts_rows_not_providers() {
                 disabled_at: Some(2),
                 consecutive_failures: 5,
                 last_error_at: Some(2),
+                context_window: None,
             },
         ],
         weight: 1,
