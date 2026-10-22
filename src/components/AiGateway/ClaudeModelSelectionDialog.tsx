@@ -12,7 +12,7 @@ import type { ClaudeModelSelection } from "@/lib/aiGateway";
 import {
   CLAUDE_COMPACTION_CAP,
   CLAUDE_COMPACTION_MIN,
-  formatContextWindow,
+  formatContextWindowCompact,
   knownContextWindow,
 } from "@/lib/aiGateway";
 
@@ -221,22 +221,22 @@ export function ClaudeModelSelectionDialog({
             <div className="font-medium text-amber-600 dark:text-amber-400">
               {t(
                 "aiGatewayClaudeContextBelowMinimum",
-                "Unavailable: below the 100000 compaction minimum",
+                "Unavailable: below the 100K compaction minimum",
               )}
             </div>
           ) : (
             <div className="font-medium text-foreground/85">
               {capped
                 ? t("aiGatewayClaudeContextCapped", {
-                    value: formatContextWindow(applied),
-                    raw: formatContextWindow(minimum),
+                    value: formatContextWindowCompact(applied),
+                    raw: formatContextWindowCompact(minimum),
                     defaultValue:
-                      "Shared compaction threshold: {{value}} tokens (capped from {{raw}})",
+                      "Shared compaction threshold: {{value}} (capped from {{raw}})",
                   })
                 : t("aiGatewayClaudeContextShared", {
-                    value: formatContextWindow(applied),
+                    value: formatContextWindowCompact(applied),
                     defaultValue:
-                      "Shared compaction threshold: {{value}} tokens",
+                      "Shared compaction threshold: {{value}}",
                   })}
             </div>
           )}

@@ -786,6 +786,10 @@ pub struct ModelPool {
     pub default_reasoning_effort: PoolDefaultReasoningEffort,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback_models: Vec<String>,
+    /// Unified public context window limit in tokens. When set and > 0, overrides
+    /// the conservative candidate aggregate advertised to clients and terminal sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 impl Default for ModelPool {
@@ -798,6 +802,7 @@ impl Default for ModelPool {
             candidates: Vec::new(),
             default_reasoning_effort: PoolDefaultReasoningEffort::Auto,
             fallback_models: Vec::new(),
+            context_window: None,
         }
     }
 }

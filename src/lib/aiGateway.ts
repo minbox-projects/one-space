@@ -507,6 +507,18 @@ export const CONTEXT_WINDOW_MAX = 4294967295;
 export const CLAUDE_COMPACTION_MIN = 100000;
 export const CLAUDE_COMPACTION_CAP = 1000000;
 
+/** Commonly used context-window presets for operator convenience. */
+export const CONTEXT_WINDOW_PRESETS = [
+  "32K",
+  "64K",
+  "128K",
+  "200K",
+  "256K",
+  "512K",
+  "1M",
+  "2M",
+] as const;
+
 /** A declared value usable as a context window; `null`/zero means unspecified. */
 export function knownContextWindow(
   value: number | null | undefined,
@@ -523,6 +535,7 @@ export function knownContextWindow(
  * Parse an operator's context-window draft. Blank means unspecified, while a
  * nonnumeric, fractional or out-of-range value stays invalid so the caller can
  * keep the draft visible and block the save.
+ * Supports compact units such as "1M", "256K", "128k", "1.5M" as well as raw integers.
  */
 export function parseContextWindowInput(raw: string): {
   value: number | null;
@@ -530,21 +543,113 @@ export function parseContextWindowInput(raw: string): {
 } {
   const trimmed = raw.trim();
   if (trimmed === "") return { value: null, invalid: false };
-  if (!/^\d+$/.test(trimmed)) return { value: null, invalid: true };
-  const value = Number(trimmed);
-  if (
-    !Number.isSafeInteger(value) ||
-    value < CONTEXT_WINDOW_MIN ||
-    value > CONTEXT_WINDOW_MAX
-  ) {
-    return { value: null, invalid: true };
+
+  // Raw positive integer check
+  if (/^\d+$/.test(trimmed)) {
+    const value = Number(trimmed);
+    if (
+      !Number.isSafeInteger(value) ||
+      value < CONTEXT_WINDOW_MIN ||
+      value > CONTEXT_WINDOW_MAX
+    ) {
+      return { value: null, invalid: true };
+    }
+    return { value, invalid: false };
   }
-  return { value, invalid: false };
+
+  // Match compact human-friendly units: e.g. "1M", "256K", "128k", "1.5M"
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*([kmKM])$/);
+  if (match) {
+    const num = Number(match[1]);
+    const unit = match[2].toUpperCase();
+    if (!Number.isFinite(num) || num <= 0) {
+      return { value: null, invalid: true };
+    }
+    const multiplier = unit === "M" ? 1_000_000 : 1_000;
+    const value = Math.round(num * multiplier);
+    if (
+      !Number.isSafeInteger(value) ||
+      value < CONTEXT_WINDOW_MIN ||
+      value > CONTEXT_WINDOW_MAX
+    ) {
+      return { value: null, invalid: true };
+    }
+    return { value, invalid: false };
+  }
+
+  return { value: null, invalid: true };
 }
 
 /** Group a token count with deterministic separators for display. */
 export function formatContextWindow(value: number): string {
   return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/**
+ * Formats a context-window token count into commonly used compact units like "1M", "256K".
+ * Handles both decimal (1000) and binary (1024) thresholds gracefully.
+ * Returns an empty string for null, undefined, or non-positive values.
+ */
+export function formatContextWindowCompact(
+  value: number | null | undefined,
+): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+
+  // Megatoken boundaries (>= 1,000,000)
+  if (value >= 1_000_000) {
+    // Prefer clean decimal millions first: 1,000,000 -> 1M, 2,000,000 -> 2M
+    if (value % 1_000_000 === 0) {
+      return `${value / 1_000_000}M`;
+    }
+    // Binary megatokens: 1,048,576 -> 1M, 2,097,152 -> 2M
+    if (value % 1_048_576 === 0) {
+      return `${value / 1_048_576}M`;
+    }
+    // Round to 1 decimal place with proper rounding: e.g. 1,050,000 -> 1.1M, 1,500,000 -> 1.5M
+    const roundedMillions = Math.round((value / 1_000_000) * 10) / 10;
+    return `${roundedMillions}M`;
+  }
+
+  // Kilotoken boundaries (>= 1,000)
+  if (value >= 1_000) {
+    // Prefer clean decimal thousands first: 128,000 -> 128K, 256,000 -> 256K, 64,000 -> 64K
+    if (value % 1000 === 0) {
+      return `${value / 1000}K`;
+    }
+    // Binary kilotokens: 131,072 -> 128K, 65,536 -> 64K, 262,144 -> 256K, 4096 -> 4K
+    if (value % 1024 === 0) {
+      return `${value / 1024}K`;
+    }
+    // Round to 1 decimal place with proper rounding
+    const roundedKilos = Math.round((value / 1000) * 10) / 10;
+    if (roundedKilos >= 1000) {
+      return "1M";
+    }
+    return `${roundedKilos}K`;
+  }
+
+  return String(value);
+}
+
+/**
+ * Formats a context-window token count for standard model list and dialog displays:
+ * - Below 10,000 tokens: keeps raw comma-formatted number (e.g. 4,096, 8,192).
+ * - 10,000 to 999,999 tokens: compact kilotokens (e.g. 16K, 64K, 128K, 256K).
+ * - 1,000,000+ tokens: compact megatokens (e.g. 1M, 1.5M, 2M).
+ * Returns empty string when value is null, undefined, or non-positive.
+ */
+export function formatContextWindowDisplay(
+  value: number | null | undefined,
+): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+  if (value < 10_000) {
+    return formatContextWindow(value);
+  }
+  return formatContextWindowCompact(value);
 }
 
 /**
@@ -584,17 +689,23 @@ function resolveContextSource(
   providers: GatewayUpstreamProvider[],
   ref: ContextSourceRef,
 ): number | null {
+  const targetProviderId = ref.providerId?.trim() ?? "";
+  const targetLocal = ref.localModel?.trim() ?? "";
+  const targetUpstream = ref.upstreamModel?.trim() ?? "";
+  if (targetProviderId === "" || targetUpstream === "") return null;
+
   const provider = providers.find(
-    (entry) => entry.id.trim() === ref.providerId.trim(),
+    (entry) => (entry.id?.trim() ?? "") === targetProviderId,
   );
   if (!provider) return null;
-  const mapping = provider.mappings.find(
-    (entry) =>
-      entry.local_model.trim() === ref.localModel.trim() &&
-      entry.upstream_model.trim() === ref.upstreamModel.trim(),
-  );
+  const mapping = provider.mappings.find((entry) => {
+    const entryLocal = entry.local_model?.trim() ?? "";
+    const entryUpstream = entry.upstream_model?.trim() ?? "";
+    const localMatches = targetLocal === "" || entryLocal === targetLocal;
+    return localMatches && entryUpstream === targetUpstream;
+  });
   if (!mapping) return null;
-  if (effectiveMappingProtocol(provider, mapping) !== ref.protocol) return null;
+  if (ref.protocol && effectiveMappingProtocol(provider, mapping) !== ref.protocol) return null;
   return knownContextWindow(mapping.context_window);
 }
 
@@ -692,9 +803,18 @@ function expandFallbackModelRefs(
  */
 export function resolvePoolContextWindow(
   providers: GatewayUpstreamProvider[],
-  pool: GatewayModelPool | null | undefined,
+  pool:
+    | (Pick<GatewayModelPool, "candidates"> & {
+        context_window?: number | null;
+        fallback_models?: string[];
+      })
+    | null
+    | undefined,
 ): number | null {
   if (!pool) return null;
+  if (pool.context_window != null && pool.context_window > 0) {
+    return pool.context_window;
+  }
   const refs: ContextSourceRef[] = pool.candidates.map((candidate) => ({
     providerId: candidate.provider_id,
     localModel: candidate.local_model,
@@ -716,20 +836,26 @@ export function resolveMappingContextWindow(
   localModel: string,
   upstreamModel: string,
 ): number | null {
+  const targetProviderId = providerId?.trim() ?? "";
+  const targetLocal = localModel?.trim() ?? "";
+  const targetUpstream = upstreamModel?.trim() ?? "";
+  if (targetProviderId === "" || targetUpstream === "") return null;
+
   const provider = providers.find(
-    (entry) => entry.id.trim() === providerId.trim(),
+    (entry) => (entry.id?.trim() ?? "") === targetProviderId,
   );
   if (!provider) return null;
-  const mapping = provider.mappings.find(
-    (entry) =>
-      entry.local_model.trim() === localModel.trim() &&
-      entry.upstream_model.trim() === upstreamModel.trim(),
-  );
+  const mapping = provider.mappings.find((entry) => {
+    const entryLocal = entry.local_model?.trim() ?? "";
+    const entryUpstream = entry.upstream_model?.trim() ?? "";
+    const localMatches = targetLocal === "" || entryLocal === targetLocal;
+    return localMatches && entryUpstream === targetUpstream;
+  });
   if (!mapping) return null;
   return resolveContextSource(providers, {
-    providerId,
-    localModel,
-    upstreamModel,
+    providerId: targetProviderId,
+    localModel: targetLocal,
+    upstreamModel: targetUpstream,
     protocol: effectiveMappingProtocol(provider, mapping),
   });
 }
@@ -1921,6 +2047,8 @@ export interface GatewayModelPool {
   model: string;
   enabled: boolean;
   default_reasoning_effort?: string | null;
+  /** Configured unified public context window limit in tokens. Overrides conservative candidate minimum when set. */
+  context_window?: number | null;
   candidates: GatewayModelPoolCandidate[];
   /**
    * Ordered gateway local model ids used after every regular candidate is

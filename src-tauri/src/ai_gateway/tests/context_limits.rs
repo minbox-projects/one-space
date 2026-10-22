@@ -1034,6 +1034,32 @@ fn an_unresolved_pool_reference_makes_the_aggregate_unknown() {
     );
 }
 
+#[test]
+fn a_pool_with_explicit_context_window_overrides_candidate_aggregate() {
+    let mut config = GatewayConfig::default();
+    config.providers.push(manual_provider(
+        "p1",
+        vec![mapping("model-a", "model-a", Some(128000), true, false)],
+    ));
+    let mut pool = model_pool(
+        "pool-1",
+        "pool-alias",
+        vec![
+            pool_candidate("p1", "model-a", "model-a"),
+            pool_candidate("p-missing", "model-x", "model-x"),
+        ],
+    );
+    // Explicit unified context window overrides candidate minimum and missing sources
+    pool.context_window = Some(1050000);
+    config.model_pools.push(pool);
+
+    assert_eq!(
+        resolve_public_context_window(&config, "pool-alias", UpstreamProtocol::ChatCompletions),
+        Some(1050000),
+        "an explicit unified pool context window must be used directly"
+    );
+}
+
 /// REQ-003 / AC-004: an ordinary default-model fallback route resolves its
 /// metadata only from the same provider's own mapping declaration.
 #[test]

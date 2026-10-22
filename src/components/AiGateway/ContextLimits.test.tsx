@@ -10,12 +10,15 @@ import {
   type GatewayProviderTemplateView,
   type GatewayTerminalTarget,
   type GatewayUpstreamProvider,
+  modelPoolCandidateKey,
 } from "@/lib/aiGateway";
 import { ProviderTemplateEditDialog } from "./ProviderTemplateEditDialog";
 import { ProviderDetailDialog } from "./ProviderDetailDialog";
 import { ModelListPanel } from "./ModelListPanel";
 import { TerminalSyncPanel } from "./TerminalSyncPanel";
 import { ClaudeModelSelectionDialog } from "./ClaudeModelSelectionDialog";
+import { ModelPoolDialog } from "./ModelPoolDialog";
+import { ModelPoolCard } from "./ModelPoolCard";
 import { renderWithProviders } from "@/test/mocks/render";
 
 /**
@@ -88,12 +91,6 @@ function contextInput(index: number): HTMLElement {
   return screen.getByLabelText(
     new RegExp(`(context (window|tokens)|上下文窗口).*${index + 1}`, "i"),
   );
-}
-
-function digitPattern(value: number): RegExp {
-  const digits = String(value);
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, "[,\\s]?");
-  return new RegExp(`${grouped}(?!\\d)`);
 }
 
 function renderTemplateDialog(
@@ -298,7 +295,16 @@ describe("context window limits", () => {
   });
 
   describe("provider mapping editor", () => {
-    it("edits an unbound mapping's context and submits it", async () => {
+    it("keeps context input hidden in the mapping row until expanded", () => {
+      renderProviderDialog(
+        providerWith([
+          { local_model: "local-a", upstream_model: "upstream-a", context_window: 64000 },
+        ]),
+      );
+      expect(screen.queryByLabelText(/(context (window|tokens)|上下文窗口).*1/i)).not.toBeInTheDocument();
+    });
+
+    it("edits an unbound mapping's context in expanded details and submits it", async () => {
       const user = userEvent.setup();
       const { onSave } = renderProviderDialog(
         providerWith([
@@ -306,14 +312,23 @@ describe("context window limits", () => {
         ]),
       );
 
-      expect(contextInput(0)).toHaveValue("64000");
+      // 未展开时不显示在列表中
+      expect(screen.queryByLabelText(/(context (window|tokens)|上下文窗口).*1/i)).not.toBeInTheDocument();
+
+      // 点击展开模型详情
+      fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
+
+      // 展开后以常用单位 64K 展示
+      expect(contextInput(0)).toHaveValue("64K");
+
+      // 支持输入常用单位如 128K
       await user.clear(contextInput(0));
-      await user.type(contextInput(0), "131072");
+      await user.type(contextInput(0), "128K");
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
       expect(onSave).toHaveBeenCalledTimes(1);
       const draft = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
-      expect((draft.mappings[0] as ContextMapping).context_window).toBe(131072);
+      expect((draft.mappings[0] as ContextMapping).context_window).toBe(128000);
     });
 
     it("clears an unbound mapping with a blank input", async () => {
@@ -324,6 +339,7 @@ describe("context window limits", () => {
         ]),
       );
 
+      fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
       await user.clear(contextInput(0));
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -331,6 +347,23 @@ describe("context window limits", () => {
       const mapping = (onSave.mock.calls[0][0] as GatewayUpstreamProvider)
         .mappings[0] as ContextMapping;
       expect(mapping.context_window ?? null).toBeNull();
+    });
+
+    it("supports quick preset pills in expanded details", async () => {
+      const { onSave } = renderProviderDialog(
+        providerWith([
+          { local_model: "local-a", upstream_model: "upstream-a" },
+        ]),
+      );
+
+      fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
+      fireEvent.click(screen.getByRole("button", { name: "256K" }));
+      expect(contextInput(0)).toHaveValue("256K");
+
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      expect(onSave).toHaveBeenCalledTimes(1);
+      const draft = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+      expect((draft.mappings[0] as ContextMapping).context_window).toBe(256000);
     });
 
     it("shows a bound mapping's inherited template value read-only", () => {
@@ -348,12 +381,15 @@ describe("context window limits", () => {
         { templates: [templateView(template)] },
       );
 
-      expect(contextInput(0)).toHaveValue("200000");
+      fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
+      expect(contextInput(0)).toHaveValue("200K");
       const inherited = contextInput(0) as HTMLInputElement;
       expect(inherited.readOnly || inherited.disabled).toBe(true);
       expect(
         screen.getByText(/inherited from.*Context Template/i),
       ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-1"));
       expect(contextInput(1)).toHaveValue("");
       expect(
         screen.getByText(/template model.*(missing|not found)|unspecified/i),
@@ -362,7 +398,7 @@ describe("context window limits", () => {
   });
 
   describe("model list", () => {
-    it("shows each source value and the conservative aggregate", () => {
+    it("shows each source value and the conservative aggregate with formatted units", () => {
       const providers = [
         providerWith(
           [{ local_model: "shared", upstream_model: "a-128k", context_window: 128000 }],
@@ -380,10 +416,34 @@ describe("context window limits", () => {
         .find((entry) => entry.getAttribute("data-model") === "shared");
       expect(row).toBeDefined();
       const upstreams = within(row!).getAllByTestId("ai-gateway-model-list-upstream");
-      expect(within(upstreams[0]).getByText(digitPattern(128000))).toBeInTheDocument();
-      expect(within(upstreams[1]).getByText(digitPattern(256000))).toBeInTheDocument();
+      expect(within(upstreams[0]).getByText(/128K/)).toBeInTheDocument();
+      expect(within(upstreams[1]).getByText(/256K/)).toBeInTheDocument();
       expect(within(row!).getByText(/conservative|effective context/i)).toBeInTheDocument();
-      expect(within(row!).getAllByText(digitPattern(128000)).length).toBeGreaterThan(0);
+      expect(within(row!).getAllByText(/128K/).length).toBeGreaterThan(0);
+    });
+
+    it("formats context windows below 10,000 as comma-separated and above 1,000,000 as M", () => {
+      const providers = [
+        providerWith(
+          [{ local_model: "small-ctx", upstream_model: "m-4k", context_window: 4096 }],
+          { id: "p1", name: "Provider One" },
+        ),
+        providerWith(
+          [{ local_model: "mega-ctx", upstream_model: "m-1m", context_window: 1000000 }],
+          { id: "p2", name: "Provider Two" },
+        ),
+      ];
+      renderWithProviders(<ModelListPanel providers={providers} />);
+
+      const smallRow = within(screen.getByTestId("ai-gateway-model-list"))
+        .getAllByTestId("ai-gateway-model-list-row")
+        .find((entry) => entry.getAttribute("data-model") === "small-ctx");
+      expect(within(smallRow!).getAllByText(/4,096 tokens/).length).toBeGreaterThan(0);
+
+      const megaRow = within(screen.getByTestId("ai-gateway-model-list"))
+        .getAllByTestId("ai-gateway-model-list-row")
+        .find((entry) => entry.getAttribute("data-model") === "mega-ctx");
+      expect(within(megaRow!).getAllByText(/1M tokens/).length).toBeGreaterThan(0);
     });
 
     it("marks an ordinary model incomplete when any contributing source is unknown", () => {
@@ -443,8 +503,39 @@ describe("context window limits", () => {
       const row = screen
         .getAllByTestId("ai-gateway-model-list-row")
         .find((entry) => entry.getAttribute("data-model") === "context-pool");
-      expect(within(row!).getAllByText(digitPattern(128000)).length).toBeGreaterThan(0);
+      expect(within(row!).getAllByText(/128K/).length).toBeGreaterThan(0);
       expect(within(row!).queryByRole("textbox")).not.toBeInTheDocument();
+    });
+
+    it("shows a pool's unified context window limit when explicitly configured", () => {
+      const providers = [
+        providerWith(
+          [{ local_model: "model-a", upstream_model: "upstream-a", context_window: 256000 }],
+          { id: "p1", name: "Provider One" },
+        ),
+      ];
+      const pool: GatewayModelPool = {
+        id: "pool-unified",
+        name: "Unified Pool",
+        model: "unified-pool",
+        enabled: true,
+        context_window: 1050000, // 1050K -> 格式化为 1.1M tokens
+        candidates: [
+          {
+            provider_id: "p1",
+            local_model: "model-a",
+            upstream_model: "upstream-a",
+            protocol: "chat_completions",
+            weight: 1,
+          },
+        ],
+      };
+      renderWithProviders(<ModelListPanel providers={providers} modelPools={[pool]} />);
+
+      const row = screen
+        .getAllByTestId("ai-gateway-model-list-row")
+        .find((entry) => entry.getAttribute("data-model") === "unified-pool");
+      expect(within(row!).getAllByText(/1\.1M tokens/).length).toBeGreaterThan(0);
     });
 
     it("keeps the hidden panel free of context rows", () => {
@@ -461,7 +552,7 @@ describe("context window limits", () => {
   });
 
   describe("terminal sync panel", () => {
-    it("describes OpenCode per-model coverage and unknown counts", async () => {
+    it("does not render context summary boxes on tool cards to keep the UI clean", () => {
       renderTerminalPanel([
         target("opencode", {
           mode: "per_model",
@@ -469,16 +560,6 @@ describe("context window limits", () => {
           coverage: { total: 3, known: 2, unknown: 1 },
           reasons: ["unknown_context"],
         }),
-      ]);
-
-      const row = screen.getByTestId("ai-gateway-target-opencode");
-      expect(within(row).getByText(/generated models?/i)).toBeInTheDocument();
-      expect(within(row).getByText(/2\s*(of|\/)\s*3/i)).toBeInTheDocument();
-      expect(within(row).getByText(/unknown context|1 unknown/i)).toBeInTheDocument();
-    });
-
-    it("shows Codex's selected model, applied value and manual activation scope", () => {
-      renderTerminalPanel([
         target("codex", {
           mode: "selected_model",
           scope: "activation",
@@ -488,40 +569,6 @@ describe("context window limits", () => {
           applied_context: 400000,
           reasons: [],
         }),
-      ]);
-
-      const row = screen.getByTestId("ai-gateway-target-codex");
-      expect(within(row).getByText(/selected model/i)).toBeInTheDocument();
-      expect(within(row).getByText("gpt-5")).toBeInTheDocument();
-      expect(within(row).getByText(digitPattern(400000))).toBeInTheDocument();
-      expect(within(row).getByText(/manual|activation/i)).toBeInTheDocument();
-      expect(
-        within(row).getByText(/does not activate|not automatically activate/i),
-      ).toBeInTheDocument();
-    });
-
-    it("marks an unknown Codex context without claiming an applied value", () => {
-      renderTerminalPanel([
-        target("codex", {
-          mode: "selected_model",
-          scope: "activation",
-          coverage: { total: 1, known: 0, unknown: 1 },
-          selected_model: "gpt-5-unknown",
-          raw_context: null,
-          applied_context: null,
-          reasons: ["unknown_context"],
-        }),
-      ]);
-
-      const row = screen.getByTestId("ai-gateway-target-codex");
-      expect(within(row).getByText("gpt-5-unknown")).toBeInTheDocument();
-      expect(within(row).getByText(/unknown context/i)).toBeInTheDocument();
-      expect(within(row).getByText(/manual|activation/i)).toBeInTheDocument();
-      expect(within(row).queryByText(/applied/i)).not.toBeInTheDocument();
-    });
-
-    it("shows Claude's shared threshold and new-session scope", () => {
-      renderTerminalPanel([
         target("claude", {
           mode: "shared_compaction",
           scope: "global_and_isolated_settings",
@@ -532,47 +579,260 @@ describe("context window limits", () => {
         }),
       ]);
 
-      const row = screen.getByTestId("ai-gateway-target-claude");
-      expect(within(row).getByText(/shared/i)).toBeInTheDocument();
-      expect(within(row).getAllByText(digitPattern(200000)).length).toBeGreaterThan(0);
-      expect(within(row).getByText(/new sessions?/i)).toBeInTheDocument();
-      expect(within(row).getByText(/running (CLI|session)/i)).toBeInTheDocument();
-      expect(within(row).getByText(/does not.*(consum|apply)/i)).toBeInTheDocument();
+      expect(screen.queryByTestId("ai-gateway-target-context-opencode")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("ai-gateway-target-context-codex")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("ai-gateway-target-context-claude")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("model pool dialog and card", () => {
+    it("displays context limit badges in candidate sources and selected candidate list", () => {
+      const providers = [
+        providerWith(
+          [
+            {
+              local_model: "claude-3-5",
+              upstream_model: "claude-3-5-sonnet",
+              protocol: "anthropic_messages",
+              context_window: 200000,
+            },
+            {
+              local_model: "gpt-4o",
+              upstream_model: "gpt-4o",
+              protocol: "chat_completions",
+              context_window: 128000,
+            },
+          ],
+          { id: "p1", name: "Provider One" },
+        ),
+      ];
+      const pool: GatewayModelPool = {
+        id: "pool-ctx",
+        name: "Test Pool",
+        model: "test-pool",
+        enabled: true,
+        candidates: [
+          {
+            provider_id: "p1",
+            local_model: "claude-3-5",
+            upstream_model: "claude-3-5-sonnet",
+            protocol: "anthropic_messages",
+            weight: 1,
+          },
+        ],
+      };
+
+      const claudeKey = modelPoolCandidateKey({
+        provider_id: "p1",
+        local_model: "claude-3-5",
+        upstream_model: "claude-3-5-sonnet",
+        protocol: "anthropic_messages",
+      });
+      const gptKey = modelPoolCandidateKey({
+        provider_id: "p1",
+        local_model: "gpt-4o",
+        upstream_model: "gpt-4o",
+        protocol: "chat_completions",
+      });
+
+      renderWithProviders(
+        <ModelPoolDialog
+          open
+          onOpenChange={vi.fn()}
+          providers={providers}
+          pool={pool}
+          onSave={vi.fn()}
+        />,
+      );
+
+      // 备选模型列表中展示上下文限制徽标（200K、128K）
+      expect(
+        screen.getByTestId(`model-pool-source-context-${claudeKey}`),
+      ).toHaveTextContent("200K");
+      expect(
+        screen.getByTestId(`model-pool-source-context-${gptKey}`),
+      ).toHaveTextContent("128K");
+
+      // 已选 candidate 卡片中展示上下文限制徽标
+      expect(
+        screen.getByTestId(`model-pool-selected-context-${claudeKey}`),
+      ).toHaveTextContent("200K");
     });
 
-    it("discloses the Claude 1000000 cap", () => {
-      renderTerminalPanel([
-        target("claude", {
-          mode: "shared_compaction",
-          scope: "global_and_isolated_settings",
-          coverage: { total: 3, known: 3, unknown: 0 },
-          raw_context: 1500000,
-          applied_context: 1000000,
-          reasons: ["capped_at_1000000"],
-        }),
-      ]);
+    it("supports selecting a unified public context limit via dropdown from deduplicated candidate limits, defaulting to max", async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      const providers = [
+        providerWith(
+          [
+            {
+              local_model: "claude-small",
+              upstream_model: "claude-small-v1",
+              protocol: "anthropic_messages",
+              context_window: 128000,
+            },
+            {
+              local_model: "claude-3-5",
+              upstream_model: "claude-3-5-sonnet",
+              protocol: "anthropic_messages",
+              context_window: 200000,
+            },
+            {
+              local_model: "claude-backup",
+              upstream_model: "claude-backup-sonnet",
+              protocol: "anthropic_messages",
+              context_window: 200000, // duplicate context
+            },
+          ],
+          { id: "p1", name: "Provider One" },
+        ),
+      ];
+      const pool: GatewayModelPool = {
+        id: "pool-ctx",
+        name: "Test Pool",
+        model: "test-pool",
+        enabled: true,
+        // pool 未指定 context_window，应默认使用已选模型的最大上下文长度 (200000)
+        candidates: [
+          {
+            provider_id: "p1",
+            local_model: "claude-small",
+            upstream_model: "claude-small-v1",
+            protocol: "anthropic_messages",
+            weight: 1,
+          },
+          {
+            provider_id: "p1",
+            local_model: "claude-3-5",
+            upstream_model: "claude-3-5-sonnet",
+            protocol: "anthropic_messages",
+            weight: 1,
+          },
+          {
+            provider_id: "p1",
+            local_model: "claude-backup",
+            upstream_model: "claude-backup-sonnet",
+            protocol: "anthropic_messages",
+            weight: 1,
+          },
+        ],
+      };
 
-      const row = screen.getByTestId("ai-gateway-target-claude");
-      expect(within(row).getByText(/capped/i)).toBeInTheDocument();
-      expect(within(row).getAllByText(digitPattern(1000000)).length).toBeGreaterThan(0);
+      renderWithProviders(
+        <ModelPoolDialog
+          open
+          onOpenChange={vi.fn()}
+          providers={providers}
+          pool={pool}
+          onSave={onSave}
+        />,
+      );
+
+      const select = screen.getByTestId("model-pool-context-select") as HTMLSelectElement;
+      // 选项只能从已选模型的上下文长度中去重选择：128000, 200000（200000 虽出现两次但已去重）
+      const options = Array.from(select.options).map((opt) => opt.value);
+      expect(options).toEqual(["128000", "200000"]);
+
+      // 默认使用已选模型的最大上下文长度
+      expect(select.value).toBe("200000");
+
+      // 用户切换选择为 128000
+      fireEvent.change(select, { target: { value: "128000" } });
+      expect(select.value).toBe("128000");
+
+      // 点击保存
+      fireEvent.click(screen.getByRole("button", { name: /save|保存/i }));
+      expect(onSave).toHaveBeenCalledTimes(1);
+      const savedPool = onSave.mock.calls[0][0] as GatewayModelPool;
+      expect(savedPool.context_window).toBe(128000);
     });
 
-    it("explains Claude's unavailable below-minimum and unknown cases", () => {
-      renderTerminalPanel([
-        target("claude", {
-          mode: "shared_compaction",
-          scope: "global_and_isolated_settings",
-          coverage: { total: 3, known: 2, unknown: 1 },
-          raw_context: 99999,
-          applied_context: null,
-          reasons: ["below_minimum", "unknown_context"],
-        }),
-      ]);
+    it("disables context limit dropdown when no selected candidate has a known limit and saves null", async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      const providers = [
+        providerWith(
+          [
+            {
+              local_model: "custom-no-limit",
+              upstream_model: "custom-upstream",
+              protocol: "anthropic_messages",
+              context_window: null,
+            },
+          ],
+          { id: "p1", name: "Provider One" },
+        ),
+      ];
+      const pool: GatewayModelPool = {
+        id: "pool-no-ctx",
+        name: "No Ctx Pool",
+        model: "no-ctx-pool",
+        enabled: true,
+        candidates: [
+          {
+            provider_id: "p1",
+            local_model: "custom-no-limit",
+            upstream_model: "custom-upstream",
+            protocol: "anthropic_messages",
+            weight: 1,
+          },
+        ],
+      };
 
-      const row = screen.getByTestId("ai-gateway-target-claude");
-      expect(within(row).getByText(/unavailable/i)).toBeInTheDocument();
-      expect(within(row).getByText(/below 100000|minimum/i)).toBeInTheDocument();
-      expect(within(row).getByText(/unknown/i)).toBeInTheDocument();
+      renderWithProviders(
+        <ModelPoolDialog
+          open
+          onOpenChange={vi.fn()}
+          providers={providers}
+          pool={pool}
+          onSave={onSave}
+        />,
+      );
+
+      const select = screen.getByTestId("model-pool-context-select") as HTMLSelectElement;
+      expect(select).toBeDisabled();
+      expect(select.value).toBe("");
+
+      fireEvent.click(screen.getByRole("button", { name: /save|保存/i }));
+      expect(onSave).toHaveBeenCalledTimes(1);
+      const savedPool = onSave.mock.calls[0][0] as GatewayModelPool;
+      expect(savedPool.context_window).toBeNull();
+    });
+
+    it("does not display context limit badges on model pool cards", () => {
+      const providers = [
+        providerWith(
+          [{ local_model: "claude-3-5", upstream_model: "claude-3-5-sonnet", context_window: 200000 }],
+          { id: "p1", name: "Provider One" },
+        ),
+      ];
+      const pool: GatewayModelPool = {
+        id: "pool-ctx",
+        name: "Test Pool",
+        model: "test-pool",
+        enabled: true,
+        candidates: [
+          {
+            provider_id: "p1",
+            local_model: "claude-3-5",
+            upstream_model: "claude-3-5-sonnet",
+            protocol: "anthropic_messages",
+            weight: 1,
+          },
+        ],
+      };
+
+      renderWithProviders(
+        <ModelPoolCard
+          pool={pool}
+          providers={providers}
+          onToggleEnabled={vi.fn()}
+          onEdit={vi.fn()}
+          onOpenLogs={vi.fn()}
+        />,
+      );
+
+      // 模型池卡片上不显示上下文限制信息
+      expect(screen.queryByTestId(/model-pool-.*-context/)).not.toBeInTheDocument();
+      expect(screen.queryByText("200K")).not.toBeInTheDocument();
     });
   });
 
@@ -608,18 +868,18 @@ describe("context window limits", () => {
       const first = renderClaudeDialog({ "cc-a": 99999, "cc-b": 100000, "cc-c": 1000000 });
       selectEverySlot(["cc-a", "cc-b", "cc-c"], "cc-a");
       expect(screen.getByText(/unavailable/i)).toBeInTheDocument();
-      expect(screen.getByText(/below 100000|minimum/i)).toBeInTheDocument();
+      expect(screen.getByText(/below 100K|minimum|低于 100K/i)).toBeInTheDocument();
       first.unmount();
 
       const second = renderClaudeDialog({ "cc-a": 99999, "cc-b": 100000, "cc-c": 1000000 });
       selectEverySlot(["cc-a", "cc-b", "cc-c"], "cc-b");
       expect(screen.getByText(/shared/i)).toBeInTheDocument();
-      expect(screen.getAllByText(digitPattern(100000)).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/100K/).length).toBeGreaterThan(0);
       second.unmount();
 
       const third = renderClaudeDialog({ "cc-a": 99999, "cc-b": 100000, "cc-c": 1000000 });
       selectEverySlot(["cc-a", "cc-b", "cc-c"], "cc-c");
-      expect(screen.getAllByText(digitPattern(1000000)).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/1M/).length).toBeGreaterThan(0);
       expect(screen.queryByText(/capped/i)).not.toBeInTheDocument();
       third.unmount();
     });
@@ -632,7 +892,8 @@ describe("context window limits", () => {
       });
       selectEverySlot(["cc-a", "cc-b", "cc-c"], "cc-b");
       expect(screen.getByText(/capped/i)).toBeInTheDocument();
-      expect(screen.getAllByText(digitPattern(1000000)).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/1M/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/1\.5M/).length).toBeGreaterThan(0);
       capped.unmount();
 
       renderClaudeDialog({ "cc-a": null, "cc-b": 100000 });
@@ -656,23 +917,18 @@ describe("context window limits", () => {
       expect(screen.getByText(/null.*清除/)).toBeInTheDocument();
     });
 
-    it("renders Chinese terminal scope without claiming a running CLI consumed it", async () => {
+    it("renders Chinese context details in expanded provider dialog", async () => {
       await i18n.changeLanguage("zh");
-      renderTerminalPanel([
-        target("claude", {
-          mode: "shared_compaction",
-          scope: "global_and_isolated_settings",
-          coverage: { total: 3, known: 3, unknown: 0 },
-          raw_context: 128000,
-          applied_context: 128000,
-          reasons: [],
-        }),
-      ]);
+      renderProviderDialog(
+        providerWith([
+          { local_model: "model-a", upstream_model: "model-a", enabled: true, context_window: 128000 },
+        ]),
+      );
 
-      const row = screen.getByTestId("ai-gateway-target-claude");
-      expect(within(row).getByText(/共享/)).toBeInTheDocument();
-      expect(within(row).getByText(/新会话/)).toBeInTheDocument();
-      expect(within(row).getByText(/运行中/)).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
+      expect(contextInput(0)).toHaveValue("128K");
+      expect(screen.getByText(/≈ 128,000 tokens/)).toBeInTheDocument();
+      expect(screen.getByText(/常用预设/)).toBeInTheDocument();
     });
 
     it("exposes the context input through its accessible label and keyboard entry", async () => {

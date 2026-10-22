@@ -16,7 +16,7 @@ import { SelectDropdown } from "./SelectDropdown";
 import {
   aggregateModels,
   AI_GATEWAY_DEFAULT_PORT,
-  formatContextWindow,
+  formatContextWindowDisplay,
   localBaseUrl,
   poolReasoningCatalog,
   resolveAggregatedModelName,
@@ -447,7 +447,7 @@ function ModelListPanelComponent({
                 </span>
                 <span className="font-mono font-medium text-foreground/85">
                   {t("aiGatewayModelListContextTokens", {
-                    value: formatContextWindow(contextWindow),
+                    value: formatContextWindowDisplay(contextWindow),
                     defaultValue: "{{value}} tokens",
                   })}
                 </span>
@@ -612,7 +612,7 @@ function ModelListPanelComponent({
                     >
                       {sourceContext
                         ? t("aiGatewayModelListContextTokens", {
-                            value: formatContextWindow(sourceContext),
+                            value: formatContextWindowDisplay(sourceContext),
                             defaultValue: "{{value}} tokens",
                           })
                         : t(

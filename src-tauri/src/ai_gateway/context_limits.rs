@@ -113,6 +113,9 @@ fn pool_context_window(
     if ingress == UpstreamProtocol::AnthropicMessages {
         return None;
     }
+    if let Some(explicit) = pool.context_window.filter(|v| *v > 0) {
+        return Some(explicit);
+    }
     let mut aggregate = ContextAggregate::new();
     for candidate in &pool.candidates {
         if !pool_candidate_serves(candidate.protocol, ingress) {

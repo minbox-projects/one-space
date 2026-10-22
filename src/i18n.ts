@@ -843,6 +843,16 @@ const resources = {
       aiGatewayModelPoolCancel: "Cancel",
       aiGatewayModelPoolErrorNameRequired: "Enter a pool name.",
       aiGatewayModelPoolErrorModelRequired: "Enter a public model ID.",
+      aiGatewayModelPoolContextLimitTitle: "Unified Context Window Limit",
+      aiGatewayModelPoolContextLimitDesc:
+        "Select the unified public context window for this model pool, used during AI terminal synchronization. Choices are derived from selected models; defaults to the maximum context window.",
+      aiGatewayModelPoolContextLimitPlaceholder:
+        "e.g. 1M, 256K, 128K (leave blank to inherit candidate conservative limit)",
+      aiGatewayModelPoolContextLimitDerivedHint:
+        "(Current candidate conservative limit: {{value}})",
+      aiGatewayModelPoolContextLimitNoOptions:
+        "No context limits detected from selected models",
+      aiGatewayModelPoolContextLimitMaxDefault: "Maximum (default)",
       aiGatewayModelPoolErrorSelectionRequired:
         "Select at least one source model.",
       aiGatewayModelPoolErrorWeightInvalid:
@@ -984,8 +994,14 @@ const resources = {
       aiGatewayReasoningEffortsDesc:
         "Add or remove the reasoning-effort identifiers this model advertises.",
       aiGatewayContextWindowLabel: "Context window (tokens) {{index}}",
+      aiGatewayContextWindowSectionTitle: "Context window limit",
+      aiGatewayContextWindowSectionDesc:
+        "Limit the maximum context window (tokens) for this model. Supports common units such as 1M, 256K, 128K, or raw tokens; leave blank for unlimited.",
+      aiGatewayContextWindowPlaceholder: "e.g. 1M, 256K, 128K (blank for unlimited)",
+      aiGatewayContextWindowQuickPreset: "Quick presets",
+      aiGatewayContextWindowApproxTokens: "≈ {{tokens}} tokens",
       aiGatewayContextWindowInvalid:
-        "Context window must be a whole number between 1 and 4294967295.",
+        "Context window must be a whole number between 1 and 4294967295 or a valid size like 1M, 256K.",
       aiGatewayContextWindowUnspecified: "Unspecified",
       aiGatewayContextWindowSourceOverwrite:
         "A valid model-list source value replaces the stored limit.",
@@ -1004,24 +1020,24 @@ const resources = {
         "Per-model coverage across generated models",
       aiGatewayTerminalContextCoverage: "{{known}} of {{total}} known",
       aiGatewayTerminalContextSelectedModel: "Selected model",
-      aiGatewayTerminalContextApplied: "Applied context: {{value}} tokens",
-      aiGatewayTerminalContextRaw: "Source value: {{value}} tokens",
+      aiGatewayTerminalContextApplied: "Applied context: {{value}}",
+      aiGatewayTerminalContextRaw: "Source value: {{value}}",
       aiGatewayTerminalContextManualScope:
         "Manual activation only; synchronization does not activate this tool.",
       aiGatewayTerminalContextUnknown: "Unknown context",
       aiGatewayTerminalContextShared: "Shared compaction target",
       aiGatewayTerminalContextNewSessions:
         "Applies to new sessions; a running CLI does not consume the new value.",
-      aiGatewayTerminalContextCapped: "Capped at {{cap}} tokens from {{raw}}",
-      aiGatewayTerminalContextBelowMinimum: "Below the 100000 minimum",
+      aiGatewayTerminalContextCapped: "Capped at {{cap}} from {{raw}}",
+      aiGatewayTerminalContextBelowMinimum: "Below the 100K minimum",
       aiGatewayTerminalContextIncompleteSelection: "Model selection incomplete",
       aiGatewayTerminalContextUnavailable: "Unavailable",
       aiGatewayClaudeContextShared:
-        "Shared compaction threshold: {{value}} tokens",
+        "Shared compaction threshold: {{value}}",
       aiGatewayClaudeContextCapped:
-        "Shared compaction threshold: {{value}} tokens (capped from {{raw}})",
+        "Shared compaction threshold: {{value}} (capped from {{raw}})",
       aiGatewayClaudeContextBelowMinimum:
-        "Unavailable: below the 100000 compaction minimum",
+        "Unavailable: below the 100K compaction minimum",
       aiGatewayClaudeContextUnknown:
         "Unavailable: unknown context for the selected models",
       aiGatewayClaudeContextIncomplete:
@@ -4948,6 +4964,15 @@ const resources = {
       aiGatewayModelPoolCancel: "取消",
       aiGatewayModelPoolErrorNameRequired: "请填写模型池名称。",
       aiGatewayModelPoolErrorModelRequired: "请填写公开模型 ID。",
+      aiGatewayModelPoolContextLimitTitle: "对外统一上下文限制",
+      aiGatewayModelPoolContextLimitDesc:
+        "选择模型池对外统一的上下文长度限制，集成同步到 AI 终端时将使用该值。仅能从已选模型的上下文长度中去重选择，默认使用最大上下文长度。",
+      aiGatewayModelPoolContextLimitPlaceholder:
+        "例如：1M, 256K, 128K（留空使用候选模型保守限制）",
+      aiGatewayModelPoolContextLimitDerivedHint:
+        "（当前候选模型保守上下文：{{value}}）",
+      aiGatewayModelPoolContextLimitNoOptions: "未检测到已选模型上下文长度",
+      aiGatewayModelPoolContextLimitMaxDefault: "最大值 (默认)",
       aiGatewayModelPoolErrorSelectionRequired: "请至少选择一个来源模型。",
       aiGatewayModelPoolErrorWeightInvalid: "权重必须为 1 到 100 的整数。",
       aiGatewayModelPoolSaved: "已保存模型池：{{name}}",
@@ -5084,8 +5109,14 @@ const resources = {
       aiGatewayReasoningEfforts: "推理档位",
       aiGatewayReasoningEffortsDesc: "添加或删除该模型支持的推理档位标识。",
       aiGatewayContextWindowLabel: "上下文窗口（tokens）{{index}}",
+      aiGatewayContextWindowSectionTitle: "模型上下文长度限制",
+      aiGatewayContextWindowSectionDesc:
+        "限制该模型的最大上下文窗口（Tokens）。支持填入常用单位如 1M、256K、128K 等，或绝对数值；留空表示不限制。",
+      aiGatewayContextWindowPlaceholder: "例如：1M, 256K, 128K（留空不限制）",
+      aiGatewayContextWindowQuickPreset: "常用预设",
+      aiGatewayContextWindowApproxTokens: "≈ {{tokens}} tokens",
       aiGatewayContextWindowInvalid:
-        "上下文窗口必须是 1 到 4294967295 之间的整数。",
+        "上下文窗口必须是 1 到 4294967295 之间的整数，或如 1M、256K 的常用单位格式。",
       aiGatewayContextWindowUnspecified: "未指定",
       aiGatewayContextWindowSourceOverwrite:
         "有效模型列表来源值会覆盖已存储的上限。",
@@ -5100,22 +5131,22 @@ const resources = {
       aiGatewayTerminalContextPerModel: "按模型覆盖已生成的模型",
       aiGatewayTerminalContextCoverage: "已覆盖 {{known}}/{{total}}",
       aiGatewayTerminalContextSelectedModel: "选中的模型",
-      aiGatewayTerminalContextApplied: "已应用上下文：{{value}} tokens",
-      aiGatewayTerminalContextRaw: "来源值：{{value}} tokens",
+      aiGatewayTerminalContextApplied: "已应用上下文：{{value}}",
+      aiGatewayTerminalContextRaw: "来源值：{{value}}",
       aiGatewayTerminalContextManualScope:
         "仅在手动激活时生效；同步不会自动激活此工具。",
       aiGatewayTerminalContextUnknown: "未知上下文",
       aiGatewayTerminalContextShared: "共享压缩目标",
       aiGatewayTerminalContextNewSessions:
         "仅对新会话生效；运行中的 CLI 不会自动消费新值。",
-      aiGatewayTerminalContextCapped: "已从 {{raw}} 封顶到 {{cap}} tokens",
-      aiGatewayTerminalContextBelowMinimum: "低于 100000 最小值",
+      aiGatewayTerminalContextCapped: "已从 {{raw}} 封顶到 {{cap}}",
+      aiGatewayTerminalContextBelowMinimum: "低于 100K 最小值",
       aiGatewayTerminalContextIncompleteSelection: "模型选择不完整",
       aiGatewayTerminalContextUnavailable: "不可用",
-      aiGatewayClaudeContextShared: "共享压缩阈值：{{value}} tokens",
+      aiGatewayClaudeContextShared: "共享压缩阈值：{{value}}",
       aiGatewayClaudeContextCapped:
-        "共享压缩阈值：{{value}} tokens（原值 {{raw}}，已封顶）",
-      aiGatewayClaudeContextBelowMinimum: "不可用：低于 100000 压缩最小值",
+        "共享压缩阈值：{{value}}（原值 {{raw}}，已封顶）",
+      aiGatewayClaudeContextBelowMinimum: "不可用：低于 100K 压缩最小值",
       aiGatewayClaudeContextUnknown: "不可用：所选模型的上下文未知",
       aiGatewayClaudeContextIncomplete: "不可用：请为每个槽位选择模型",
       aiGatewayClaudeContextCoverage: "覆盖：{{known}}/{{total}}",

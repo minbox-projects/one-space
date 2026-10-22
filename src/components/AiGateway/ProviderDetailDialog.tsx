@@ -30,7 +30,11 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
+  CONTEXT_WINDOW_PRESETS,
   draftToPriceRow,
+  formatContextWindow,
+  formatContextWindowCompact,
+  formatContextWindowDisplay,
   formatGatewayTimestamp,
   isMappingDeprecated,
   isProviderTemplateBindingBroken,
@@ -302,7 +306,7 @@ export function ProviderDetailDialog({
         ...mapping,
         contextDraft:
           mapping.context_window != null
-            ? String(mapping.context_window)
+            ? formatContextWindowDisplay(mapping.context_window)
             : "",
       })),
     );
@@ -683,14 +687,22 @@ export function ProviderDetailDialog({
           mapping.upstream_model,
         );
       } else {
-        const parsed = parseContextWindowInput(
+        const rawDraft =
           contextDraft ??
-            (mapping.context_window != null
-              ? String(mapping.context_window)
-              : ""),
-        );
-        if (parsed.invalid) invalidContextModel = mapping.upstream_model.trim();
-        contextWindow = parsed.value;
+          (mapping.context_window != null
+            ? formatContextWindowDisplay(mapping.context_window)
+            : "");
+        if (
+          mapping.context_window != null &&
+          (rawDraft.trim() === formatContextWindowDisplay(mapping.context_window) ||
+            rawDraft.trim() === formatContextWindowCompact(mapping.context_window))
+        ) {
+          contextWindow = mapping.context_window;
+        } else {
+          const parsed = parseContextWindowInput(rawDraft);
+          if (parsed.invalid) invalidContextModel = mapping.upstream_model.trim();
+          contextWindow = parsed.value;
+        }
       }
       return {
         ...mappingFields,
@@ -1804,60 +1816,6 @@ export function ProviderDetailDialog({
                         })}
                         className={`${mappingInputClass} min-w-[120px] flex-1`}
                       />
-                      <div className="flex min-w-[150px] shrink-0 flex-col gap-0.5">
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          value={
-                            isTemplateBound
-                              ? (resolveTemplateContextWindow(
-                                  boundTemplate,
-                                  mapping.upstream_model,
-                                )?.toString() ?? "")
-                              : (mapping.contextDraft ??
-                                (mapping.context_window != null
-                                  ? String(mapping.context_window)
-                                  : ""))
-                          }
-                          onChange={(event) =>
-                            updateMapping(index, {
-                              contextDraft: event.target.value,
-                            })
-                          }
-                          readOnly={isTemplateBound}
-                          disabled={isTemplateBound}
-                          placeholder={t(
-                            "aiGatewayContextWindowUnspecified",
-                            "Unspecified",
-                          )}
-                          aria-label={t("aiGatewayContextWindowLabel", {
-                            index: index + 1,
-                            defaultValue: `Context window (tokens) ${index + 1}`,
-                          })}
-                          className={`${mappingInputClass} min-w-[140px] font-mono read-only:bg-muted/50`}
-                        />
-                        {isTemplateBound ? (
-                          <span className="text-[10px] text-muted-foreground">
-                            {boundTemplate
-                              ? resolveTemplateContextWindow(
-                                  boundTemplate,
-                                  mapping.upstream_model,
-                                ) != null
-                                ? t("aiGatewayContextInheritedFrom", {
-                                    name: boundTemplate.name,
-                                    defaultValue: `Inherited from ${boundTemplate.name}`,
-                                  })
-                                : t(
-                                    "aiGatewayContextTemplateModelMissing",
-                                    "Template model not found; context unspecified",
-                                  )
-                              : t(
-                                  "aiGatewayContextBoundTemplateMissing",
-                                  "Template not found; context unspecified",
-                                )}
-                          </span>
-                        ) : null}
-                      </div>
                       <select
                         value={mapping.protocol ?? ""}
                         onChange={(event) =>
@@ -1938,6 +1896,155 @@ export function ProviderDetailDialog({
                             }
                           />
                         ) : null}
+
+                        {/* 模型上下文长度限制配置 */}
+                        <div
+                          data-testid={`ai-gateway-mapping-context-${index}`}
+                          className="space-y-2 rounded-lg border-t border-border/60 bg-muted/10 px-3 py-2.5"
+                        >
+                          <div className="flex items-center justify-between">
+                            <label
+                              htmlFor={`ai-gateway-context-input-${index}`}
+                              className="text-[11px] font-semibold text-foreground"
+                            >
+                              {t("aiGatewayContextWindowSectionTitle", "模型上下文长度限制")}
+                            </label>
+                            {isTemplateBound ? (
+                              <span className="text-[10px] text-muted-foreground">
+                                {boundTemplate
+                                  ? resolveTemplateContextWindow(
+                                      boundTemplate,
+                                      mapping.upstream_model,
+                                    ) != null
+                                    ? t("aiGatewayContextInheritedFrom", {
+                                        name: boundTemplate.name,
+                                        defaultValue: `Inherited from ${boundTemplate.name}`,
+                                      })
+                                    : t(
+                                        "aiGatewayContextTemplateModelMissing",
+                                        "Template model not found; context unspecified",
+                                      )
+                                  : t(
+                                      "aiGatewayContextBoundTemplateMissing",
+                                      "Template not found; context unspecified",
+                                    )}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            {t(
+                              "aiGatewayContextWindowSectionDesc",
+                              "Limit the maximum context window (tokens) for this model. Supports common units such as 1M, 256K, 128K, or raw tokens; leave blank for unlimited.",
+                            )}
+                          </p>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <input
+                              id={`ai-gateway-context-input-${index}`}
+                              type="text"
+                              value={
+                                isTemplateBound
+                                  ? (formatContextWindowDisplay(
+                                      resolveTemplateContextWindow(
+                                        boundTemplate,
+                                        mapping.upstream_model,
+                                      ),
+                                    ) || "")
+                                  : (mapping.contextDraft ??
+                                    (mapping.context_window != null
+                                      ? formatContextWindowDisplay(mapping.context_window)
+                                      : ""))
+                              }
+                              onChange={(event) =>
+                                updateMapping(index, {
+                                  contextDraft: event.target.value,
+                                })
+                              }
+                              readOnly={isTemplateBound}
+                              disabled={isTemplateBound}
+                              placeholder={t(
+                                "aiGatewayContextWindowPlaceholder",
+                                "例如：1M, 256K, 128K（留空不限制）",
+                              )}
+                              aria-label={t("aiGatewayContextWindowLabel", {
+                                index: index + 1,
+                                defaultValue: `Context window (tokens) ${index + 1}`,
+                              })}
+                              className={`${mappingInputClass} w-48 font-mono read-only:bg-muted/50`}
+                            />
+
+                            {(() => {
+                              const currentVal = isTemplateBound
+                                ? resolveTemplateContextWindow(boundTemplate, mapping.upstream_model)
+                                : parseContextWindowInput(
+                                    mapping.contextDraft ??
+                                      (mapping.context_window != null
+                                        ? formatContextWindowDisplay(mapping.context_window)
+                                        : ""),
+                                  ).value;
+                              if (currentVal != null) {
+                                return (
+                                  <span className="text-xs text-muted-foreground font-mono">
+                                    {t("aiGatewayContextWindowApproxTokens", {
+                                      tokens: formatContextWindow(currentVal),
+                                      defaultValue: `≈ ${formatContextWindow(currentVal)} tokens`,
+                                    })}
+                                  </span>
+                                );
+                              }
+                              return null;
+                            })()}
+                          </div>
+
+                          {!isTemplateBound ? (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                              <span className="text-[11px] text-muted-foreground mr-1">
+                                {t("aiGatewayContextWindowQuickPreset", "常用预设")}:
+                              </span>
+                              {CONTEXT_WINDOW_PRESETS.map((preset) => {
+                                const currentDraft = (
+                                  mapping.contextDraft ??
+                                  (mapping.context_window != null
+                                    ? formatContextWindowDisplay(mapping.context_window)
+                                    : "")
+                                ).trim().toUpperCase();
+                                const isSelected = currentDraft === preset;
+                                return (
+                                  <button
+                                    key={preset}
+                                    type="button"
+                                    onClick={() =>
+                                      updateMapping(index, {
+                                        contextDraft: preset,
+                                      })
+                                    }
+                                    className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-mono transition shadow-xs ${
+                                      isSelected
+                                        ? "bg-primary text-primary-foreground font-semibold"
+                                        : "border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground"
+                                    }`}
+                                  >
+                                    {preset}
+                                  </button>
+                                );
+                              })}
+                              {mapping.contextDraft || mapping.context_window != null ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateMapping(index, {
+                                      contextDraft: "",
+                                      context_window: null,
+                                    })
+                                  }
+                                  className="inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-destructive transition"
+                                >
+                                  {t("clear", "清除")}
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
                       <div
                         data-testid={`ai-gateway-mapping-efforts-${index}`}
                         className="space-y-2 rounded-lg border-t border-border/60 bg-muted/10 px-3 py-2.5"

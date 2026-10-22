@@ -4,6 +4,11 @@ import {
   AI_GATEWAY_KEY_AUTH_FAILED_EVENT,
   AI_GATEWAY_KEY_AUTH_TOAST_WINDOW_MS,
   aggregateModels,
+  parseContextWindowInput,
+  formatContextWindowCompact,
+  formatContextWindowDisplay,
+  resolvePoolContextWindow,
+  CONTEXT_WINDOW_PRESETS,
   aiGatewayConfigureTerminal,
   aiGatewayDeleteKey,
   aiGatewayDeleteProvider,
@@ -3106,6 +3111,142 @@ describe("模型池静态推理目录按有序回退模型自动展开", () => {
       effort: "high",
       mapped_candidates: 0,
       total_candidates: 1,
+    });
+  });
+
+  describe("formatContextWindowCompact and parseContextWindowInput", () => {
+    it("formatContextWindowDisplay 遵循分段格式化规则（<10000 保持千分位，>=10000 为 K，>=1000000 为 M）", () => {
+      expect(formatContextWindowDisplay(null)).toBe("");
+      expect(formatContextWindowDisplay(undefined)).toBe("");
+      expect(formatContextWindowDisplay(0)).toBe("");
+      expect(formatContextWindowDisplay(-1)).toBe("");
+
+      // 小于 10,000 保持千分位
+      expect(formatContextWindowDisplay(4096)).toBe("4,096");
+      expect(formatContextWindowDisplay(8192)).toBe("8,192");
+      expect(formatContextWindowDisplay(9999)).toBe("9,999");
+
+      // 大于等于 10,000 格式化为 K
+      expect(formatContextWindowDisplay(10000)).toBe("10K");
+      expect(formatContextWindowDisplay(16000)).toBe("16K");
+      expect(formatContextWindowDisplay(64000)).toBe("64K");
+      expect(formatContextWindowDisplay(128000)).toBe("128K");
+      expect(formatContextWindowDisplay(131072)).toBe("128K");
+      expect(formatContextWindowDisplay(256000)).toBe("256K");
+      expect(formatContextWindowDisplay(512000)).toBe("512K");
+
+      // 大于等于 1,000,000 格式化为 M（四舍五入至多 1 位小数）
+      expect(formatContextWindowDisplay(1000000)).toBe("1M");
+      expect(formatContextWindowDisplay(1048576)).toBe("1M");
+      expect(formatContextWindowDisplay(1040000)).toBe("1M");
+      expect(formatContextWindowDisplay(1050000)).toBe("1.1M");
+      expect(formatContextWindowDisplay(1060000)).toBe("1.1M");
+      expect(formatContextWindowDisplay(1500000)).toBe("1.5M");
+      expect(formatContextWindowDisplay(2000000)).toBe("2M");
+      expect(formatContextWindowDisplay(2097152)).toBe("2M");
+    });
+
+    it("formatContextWindowCompact 格式化常用上下文长度单位", () => {
+      expect(formatContextWindowCompact(null)).toBe("");
+      expect(formatContextWindowCompact(undefined)).toBe("");
+      expect(formatContextWindowCompact(0)).toBe("");
+      expect(formatContextWindowCompact(-100)).toBe("");
+
+      // K 级别十进制与二进制
+      expect(formatContextWindowCompact(4000)).toBe("4K");
+      expect(formatContextWindowCompact(4096)).toBe("4K");
+      expect(formatContextWindowCompact(8000)).toBe("8K");
+      expect(formatContextWindowCompact(8192)).toBe("8K");
+      expect(formatContextWindowCompact(16000)).toBe("16K");
+      expect(formatContextWindowCompact(16384)).toBe("16K");
+      expect(formatContextWindowCompact(32000)).toBe("32K");
+      expect(formatContextWindowCompact(32768)).toBe("32K");
+      expect(formatContextWindowCompact(64000)).toBe("64K");
+      expect(formatContextWindowCompact(65536)).toBe("64K");
+      expect(formatContextWindowCompact(128000)).toBe("128K");
+      expect(formatContextWindowCompact(131072)).toBe("128K");
+      expect(formatContextWindowCompact(200000)).toBe("200K");
+      expect(formatContextWindowCompact(256000)).toBe("256K");
+      expect(formatContextWindowCompact(262144)).toBe("256K");
+      expect(formatContextWindowCompact(400000)).toBe("400K");
+      expect(formatContextWindowCompact(512000)).toBe("512K");
+
+      // M 级别
+      expect(formatContextWindowCompact(1000000)).toBe("1M");
+      expect(formatContextWindowCompact(1048576)).toBe("1M");
+      expect(formatContextWindowCompact(1500000)).toBe("1.5M");
+      expect(formatContextWindowCompact(2000000)).toBe("2M");
+      expect(formatContextWindowCompact(2097152)).toBe("2M");
+
+      // 非整倍数四舍五入
+      expect(formatContextWindowCompact(12345)).toBe("12.3K");
+      expect(formatContextWindowCompact(1050000)).toBe("1.1M");
+    });
+
+    it("parseContextWindowInput 解析带单位与纯数字输入", () => {
+      // 空值
+      expect(parseContextWindowInput("")).toEqual({ value: null, invalid: false });
+      expect(parseContextWindowInput("   ")).toEqual({ value: null, invalid: false });
+
+      // 常用单位 K / M (大小写与空格支持)
+      expect(parseContextWindowInput("1M")).toEqual({ value: 1000000, invalid: false });
+      expect(parseContextWindowInput("1m")).toEqual({ value: 1000000, invalid: false });
+      expect(parseContextWindowInput("2M")).toEqual({ value: 2000000, invalid: false });
+      expect(parseContextWindowInput("1.5M")).toEqual({ value: 1500000, invalid: false });
+      expect(parseContextWindowInput("256K")).toEqual({ value: 256000, invalid: false });
+      expect(parseContextWindowInput("256k")).toEqual({ value: 256000, invalid: false });
+      expect(parseContextWindowInput("128K")).toEqual({ value: 128000, invalid: false });
+      expect(parseContextWindowInput("200K")).toEqual({ value: 200000, invalid: false });
+      expect(parseContextWindowInput("64 K")).toEqual({ value: 64000, invalid: false });
+
+      // 纯数字支持
+      expect(parseContextWindowInput("131072")).toEqual({ value: 131072, invalid: false });
+      expect(parseContextWindowInput("64000")).toEqual({ value: 64000, invalid: false });
+      expect(parseContextWindowInput("4096")).toEqual({ value: 4096, invalid: false });
+
+      // 非法输入
+      expect(parseContextWindowInput("abc")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("0")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("0K")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("-100")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("1.2.3")).toEqual({ value: null, invalid: true });
+    });
+
+    it("CONTEXT_WINDOW_PRESETS 包含常用上下文预设", () => {
+      expect(CONTEXT_WINDOW_PRESETS).toContain("128K");
+      expect(CONTEXT_WINDOW_PRESETS).toContain("200K");
+      expect(CONTEXT_WINDOW_PRESETS).toContain("256K");
+      expect(CONTEXT_WINDOW_PRESETS).toContain("1M");
+      expect(CONTEXT_WINDOW_PRESETS).toContain("2M");
+    });
+
+    it("resolvePoolContextWindow 优先使用模型池显式配置的对外统一上下文限制", () => {
+      const providers: any[] = [
+        {
+          id: "p1",
+          protocol: "chat_completions",
+          mappings: [
+            { local_model: "m1", upstream_model: "m1", context_window: 128000 },
+          ],
+        },
+      ];
+
+      // 未配置 context_window 时，返回候选模型保守有效上下文
+      const poolWithoutExplicit: any = {
+        id: "pool-1",
+        model: "free-model",
+        candidates: [
+          { provider_id: "p1", local_model: "m1", upstream_model: "m1", protocol: "chat_completions" },
+        ],
+      };
+      expect(resolvePoolContextWindow(providers, poolWithoutExplicit)).toBe(128000);
+
+      // 配置了 context_window 时（如 1050000），直接使用显式统一限制
+      const poolWithExplicit: any = {
+        ...poolWithoutExplicit,
+        context_window: 1050000,
+      };
+      expect(resolvePoolContextWindow(providers, poolWithExplicit)).toBe(1050000);
     });
   });
 });

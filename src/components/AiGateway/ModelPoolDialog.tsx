@@ -27,10 +27,13 @@ import {
   autoBindCandidateReasoning,
   CANONICAL_REASONING_EFFORTS,
   expandModelPoolFallbackModel,
+  formatContextWindow,
+  formatContextWindowDisplay,
   MODEL_POOL_AVAILABILITY_LABEL_KEYS,
   modelPoolCandidateKey,
   modelPoolCandidateServesEffort,
   newModelPoolId,
+  resolveMappingContextWindow,
   resolveModelPoolCandidateState,
   resolveModelPoolDefaultEffort,
   selectPoolReasoningCoverageRow,
@@ -314,6 +317,45 @@ export function ModelPoolDialog({
   const [selected, setSelected] = useState<DraftCandidate[]>(() =>
     (pool?.candidates ?? []).map(toDraft),
   );
+
+  // 只能从已选模型的上下文长度中去重选择
+  const candidateContextOptions = useMemo(() => {
+    const set = new Set<number>();
+    for (const candidate of selected) {
+      const cw = resolveMappingContextWindow(
+        providers,
+        candidate.provider_id,
+        candidate.local_model,
+        candidate.upstream_model,
+      );
+      if (cw != null && cw > 0) {
+        set.add(cw);
+      }
+    }
+    return Array.from(set).sort((a, b) => a - b);
+  }, [selected, providers]);
+
+  // 已选模型的最大上下文长度
+  const maxCandidateContext = useMemo(() => {
+    if (candidateContextOptions.length === 0) return null;
+    return Math.max(...candidateContextOptions);
+  }, [candidateContextOptions]);
+
+  // 用户手动指定的上下文限制（null 表示使用默认最大值）
+  const [manualContextWindow, setManualContextWindow] = useState<number | null>(
+    () => pool?.context_window ?? null,
+  );
+
+  // 最终生效的上下文限制：优先用户手动指定的有效值，否则默认使用已选模型的最大上下文长度
+  const effectiveContextWindow = useMemo(() => {
+    if (
+      manualContextWindow != null &&
+      candidateContextOptions.includes(manualContextWindow)
+    ) {
+      return manualContextWindow;
+    }
+    return maxCandidateContext;
+  }, [manualContextWindow, candidateContextOptions, maxCandidateContext]);
   const [weights, setWeights] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
     for (const candidate of pool?.candidates ?? []) {
@@ -1148,6 +1190,10 @@ export function ModelPoolDialog({
         ...(reasoning ? { reasoning } : {}),
       });
     }
+
+    const contextWindow: number | null =
+      candidateContextOptions.length > 0 ? effectiveContextWindow : null;
+
     setError(null);
     setSaving(true);
     try {
@@ -1157,6 +1203,7 @@ export function ModelPoolDialog({
         model: trimmedModel,
         enabled: pool?.enabled ?? true,
         default_reasoning_effort: defaultEffort,
+        context_window: contextWindow,
         candidates,
         fallback_models: fallbackModels,
       });
@@ -1277,6 +1324,88 @@ export function ModelPoolDialog({
               ))}
             </select>
           </label>
+
+          {/* Unified public context window limit */}
+          <div
+            data-testid="model-pool-context-limit-container"
+            className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                  <Layers className="h-3.5 w-3.5 text-cyan-600 dark:text-cyan-400" />
+                  <span>
+                    {t(
+                      "aiGatewayModelPoolContextLimitTitle",
+                      "Unified Context Window Limit",
+                    )}
+                  </span>
+                </div>
+                <p className="text-[10px] leading-relaxed text-muted-foreground">
+                  {t(
+                    "aiGatewayModelPoolContextLimitDesc",
+                    "Select the unified public context window for this model pool, used during AI terminal synchronization. Choices are derived from selected models; defaults to the maximum context window.",
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <select
+                data-testid="model-pool-context-select"
+                aria-label={t(
+                  "aiGatewayModelPoolContextLimitTitle",
+                  "Unified Context Window Limit",
+                )}
+                value={effectiveContextWindow ?? ""}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  setManualContextWindow(val ? Number(val) : null);
+                  setError(null);
+                }}
+                disabled={busy || saving || candidateContextOptions.length === 0}
+                className="h-9 min-w-64 rounded-lg border border-border/80 bg-background px-3 font-mono text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {candidateContextOptions.length === 0 ? (
+                  <option value="">
+                    {t(
+                      "aiGatewayModelPoolContextLimitNoOptions",
+                      "No context limits detected from selected models",
+                    )}
+                  </option>
+                ) : (
+                  candidateContextOptions.map((cw) => {
+                    const isMax = cw === maxCandidateContext;
+                    const displayLabel = formatContextWindowDisplay(cw);
+                    const exactTokens = formatContextWindow(cw);
+                    const suffix = isMax
+                      ? ` - ${t(
+                          "aiGatewayModelPoolContextLimitMaxDefault",
+                          "Maximum (default)",
+                        )}`
+                      : "";
+                    return (
+                      <option key={cw} value={cw}>
+                        {`${displayLabel} (${exactTokens} tokens)${suffix}`}
+                      </option>
+                    );
+                  })
+                )}
+              </select>
+
+              {effectiveContextWindow != null && (
+                <span
+                  data-testid="model-pool-context-approx"
+                  className="font-mono text-xs text-muted-foreground"
+                >
+                  {t("aiGatewayContextWindowApproxTokens", {
+                    tokens: formatContextWindow(effectiveContextWindow),
+                    defaultValue: `≈ ${formatContextWindow(effectiveContextWindow)} tokens`,
+                  })}
+                </span>
+              )}
+            </div>
+          </div>
 
           {/* Ordered fallback gateway models, separate from regular selection */}
           <div className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3">
@@ -1810,6 +1939,28 @@ export function ModelPoolDialog({
                                   >
                                     {protocolShortLabel(candidate.protocol)}
                                   </span>
+                                  {(() => {
+                                    const contextWindow = resolveMappingContextWindow(
+                                      providers,
+                                      candidate.provider_id,
+                                      candidate.local_model,
+                                      candidate.upstream_model,
+                                    );
+                                    if (!contextWindow) return null;
+                                    return (
+                                      <span
+                                        data-testid={`model-pool-source-context-${key}`}
+                                        className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300"
+                                        title={t(
+                                          "aiGatewayModelListEffectiveContext",
+                                          "Conservative effective context",
+                                        )}
+                                      >
+                                        <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                                        <span>{formatContextWindowDisplay(contextWindow)}</span>
+                                      </span>
+                                    );
+                                  })()}
                                   <span
                                     className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
                                       state.ready
@@ -1978,6 +2129,30 @@ export function ModelPoolDialog({
                       >
                         {protocolShortLabel(candidate.protocol)}
                       </span>
+
+                      {/* 上下文限制徽标 */}
+                      {(() => {
+                        const contextWindow = resolveMappingContextWindow(
+                          providers,
+                          candidate.provider_id,
+                          candidate.local_model,
+                          candidate.upstream_model,
+                        );
+                        if (!contextWindow) return null;
+                        return (
+                          <span
+                            data-testid={`model-pool-selected-context-${candidate.key}`}
+                            className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
+                            title={t(
+                              "aiGatewayModelListEffectiveContext",
+                              "Conservative effective context",
+                            )}
+                          >
+                            <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                            <span>{formatContextWindowDisplay(contextWindow)}</span>
+                          </span>
+                        );
+                      })()}
 
                       {/* 可用性状态徽标 */}
                       <span

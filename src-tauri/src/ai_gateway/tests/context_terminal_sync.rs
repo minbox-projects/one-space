@@ -276,6 +276,34 @@ async fn opencode_known_ordinary_and_pool_models_render_numeric_limits() {
 }
 
 #[tokio::test]
+async fn opencode_pool_model_uses_explicit_unified_context_limit() {
+    let _home = isolated_temp_home("ctx-opencode-pool-explicit");
+    let mut config = gateway_config(PORT);
+    config.providers[0].mappings = vec![
+        context_mapping("gpt-4o", "gpt-4o-2024", Some("GPT-4o"), Some(128000)),
+    ];
+    let mut pool = enabled_pool();
+    pool.context_window = Some(1050000);
+    config.model_pools.push(pool);
+    write_config(&config).expect("write gateway config");
+
+    let payloads = capture_with_selection(
+        &json!({ "providers": [] }),
+        vec!["opencode".to_string()],
+        TerminalSyncProfile::RELEASE,
+        None,
+    )
+    .await;
+    let opencode = payload_for(&payloads, "opencode");
+
+    let pool_model = opencode_model(opencode, "free-model");
+    assert_eq!(
+        pool_model["limit"]["context"], 1050000,
+        "a pool with explicit context window must advertise that limit to terminal sync: {opencode}"
+    );
+}
+
+#[tokio::test]
 async fn opencode_cleared_context_omits_the_limit_on_the_next_sync() {
     let _home = isolated_temp_home("ctx-opencode-cleared");
     let mut config = gateway_config(PORT);
