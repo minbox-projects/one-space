@@ -1279,6 +1279,10 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
     try {
       const nextViews = await aiGatewayUpsertProviderTemplate(template);
       setTemplates(nextViews);
+      // A manual template save can rewrite bound mappings and their projected
+      // terminal configuration, so reload configuration and target summaries
+      // rather than showing stale inherited values.
+      void loadConfigScoped();
       pushToast({
         title: t("aiGatewayTemplateSaved", "Template saved: {{name}}.", {
           name: template.name,

@@ -3749,8 +3749,32 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "CLAUDE_COMPACTION_CAP",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CLAUDE_COMPACTION_MIN",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "ClaudeModelSelection",
           "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CONTEXT_WINDOW_MAX",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CONTEXT_WINDOW_MIN",
+          "kind": "variable",
           "visibility": "public"
         },
         {
@@ -3931,6 +3955,18 @@
           "file": "src/lib/aiGateway.ts",
           "name": "GatewayTemplateSyncStrategy",
           "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "GatewayTerminalContextCoverage",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "GatewayTerminalContextSummary",
+          "kind": "interface",
           "visibility": "public"
         },
         {
@@ -4505,6 +4541,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "formatContextWindow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "formatGatewayDuration",
           "kind": "function",
           "visibility": "public"
@@ -4643,6 +4685,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "knownContextWindow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "localAnthropicMessagesUrl",
           "kind": "function",
           "visibility": "public"
@@ -4727,6 +4775,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "parseContextWindowInput",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "parsePriceNumber",
           "kind": "function",
           "visibility": "public"
@@ -4787,6 +4841,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "resolveMappingContextWindow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "resolveModelPoolCandidateState",
           "kind": "function",
           "visibility": "public"
@@ -4799,6 +4859,18 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "resolveOrdinaryContextWindow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "resolvePoolContextWindow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "resolveProviderPriceRow",
           "kind": "function",
           "visibility": "public"
@@ -4806,6 +4878,12 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "resolveProviderTemplate",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "resolveTemplateContextWindow",
           "kind": "function",
           "visibility": "public"
         },
@@ -8781,6 +8859,7 @@
         "src/components/AiGateway/AiGateway.performance.test.tsx",
         "src/components/AiGateway/AiGateway.test.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.test.tsx",
+        "src/components/AiGateway/ContextLimits.test.tsx",
         "src/components/AiGateway/MappingPriceEditor.test.tsx",
         "src/components/AiGateway/ModelListPanel.test.tsx",
         "src/components/AiGateway/ModelPoolCard.test.tsx",
@@ -12867,6 +12946,7 @@
         "src/components/AiGateway/AiGateway.test.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.test.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.tsx",
+        "src/components/AiGateway/ContextLimits.test.tsx",
         "src/components/AiGateway/LocalKeyDialog.tsx",
         "src/components/AiGateway/LocalKeyList.tsx",
         "src/components/AiGateway/MappingPriceEditor.test.tsx",

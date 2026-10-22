@@ -1089,7 +1089,7 @@ fn save_provider_persist(
     mut provider: GatewayUpstreamProvider,
     prices: Option<Vec<ModelPrice>>,
 ) -> Result<(GatewayConfig, bool), String> {
-    modify_config(|config| {
+    let context_changed = modify_config(|config| {
         let previous_context = config
             .providers
             .iter()
@@ -1233,8 +1233,12 @@ fn save_provider_persist(
             .find(|stored| stored.id == provider_id)
             .map(provider_context_rows);
         let context_changed = previous_context != next_context;
-        Ok((true, (config.clone(), context_changed)))
-    })
+        Ok((true, context_changed))
+    })?;
+    // The write path publishes a normalized, provider-scoped copy, so hand back
+    // that persisted value instead of the pre-normalization mutation clone.
+    let saved = read_config()?;
+    Ok((saved, context_changed))
 }
 
 /// Stable comparison rows for one provider's declared context values.

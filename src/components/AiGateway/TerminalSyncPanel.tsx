@@ -15,8 +15,10 @@ import {
 import {
   AI_GATEWAY_SUPPORTED_TERMINAL_TOOLS,
   aggregateModels,
+  formatContextWindow,
   formatGatewayTimestamp,
   resolveDefaultKeyId,
+  resolveOrdinaryContextWindow,
   type ClaudeModelSelection,
   type GatewayConfig,
   type GatewayTerminalTarget,
@@ -97,6 +99,14 @@ function TerminalSyncPanelComponent({
   );
 
   const claudeTarget = supportedTargets.find((target) => target.tool === "claude");
+  const claudeContextByModel = useMemo(() => {
+    const known: Record<string, number | null> = {};
+    if (!isActive) return known;
+    for (const model of claudeCandidateModels) {
+      known[model] = resolveOrdinaryContextWindow(config.providers, model);
+    }
+    return known;
+  }, [claudeCandidateModels, config.providers, isActive]);
   const claudeInitialSelection = (() => {
     const saved = claudeTarget?.claude_models;
     if (!saved) return null;
@@ -267,6 +277,7 @@ function TerminalSyncPanelComponent({
               target.synced_at !== null;
             const isSyncing = Boolean(syncingTools[target.tool]);
             const rowDisabled = isSyncing || defaultKeyMissing;
+            const context = target.context;
 
             return (
               <div
@@ -302,6 +313,135 @@ function TerminalSyncPanelComponent({
                       </span>
                     </span>
                   </div>
+                  {context ? (
+                    <div
+                      data-testid={`ai-gateway-target-context-${target.tool}`}
+                      className="mt-1.5 space-y-0.5 rounded-lg border border-border/60 bg-muted/20 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground"
+                    >
+                      {context.mode === "per_model" ? (
+                        <div>
+                          {t(
+                            "aiGatewayTerminalContextPerModel",
+                            "Per-model coverage across generated models",
+                          )}
+                        </div>
+                      ) : null}
+                      {context.mode === "selected_model" ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span>
+                            {t(
+                              "aiGatewayTerminalContextSelectedModel",
+                              "Selected model",
+                            )}
+                            :
+                          </span>
+                          <span className="font-mono font-medium text-foreground/85">
+                            {context.selected_model ??
+                              t("aiGatewayContextWindowUnspecified", "Unspecified")}
+                          </span>
+                        </div>
+                      ) : null}
+                      {context.mode === "selected_model" ? (
+                        <div>
+                          {t(
+                            "aiGatewayTerminalContextManualScope",
+                            "Manual activation only; synchronization does not activate this tool.",
+                          )}
+                        </div>
+                      ) : null}
+                      {context.mode === "shared_compaction" ? (
+                        <>
+                          <div>
+                            {t(
+                              "aiGatewayTerminalContextShared",
+                              "Shared compaction target",
+                            )}
+                          </div>
+                          {context.raw_context != null &&
+                          context.applied_context != null &&
+                          context.raw_context !== context.applied_context ? (
+                            <div>
+                              {t("aiGatewayTerminalContextRaw", {
+                                value: formatContextWindow(context.raw_context),
+                                defaultValue: "Source value: {{value}} tokens",
+                              })}
+                            </div>
+                          ) : null}
+                          {context.raw_context != null &&
+                          context.applied_context == null ? (
+                            <div className="font-medium text-amber-600 dark:text-amber-400">
+                              {t("aiGatewayTerminalContextUnavailable", "Unavailable")}
+                            </div>
+                          ) : null}
+                          {context.applied_context != null ? (
+                            <div>
+                              {t("aiGatewayTerminalContextApplied", {
+                                value: formatContextWindow(context.applied_context),
+                                defaultValue: "Applied context: {{value}} tokens",
+                              })}
+                            </div>
+                          ) : null}
+                          <div>
+                            {t(
+                              "aiGatewayTerminalContextNewSessions",
+                              "Applies to new sessions; a running CLI does not consume the new value.",
+                            )}
+                          </div>
+                        </>
+                      ) : null}
+                      {context.mode === "selected_model" &&
+                      context.applied_context != null ? (
+                        <div>
+                          {t("aiGatewayTerminalContextApplied", {
+                            value: formatContextWindow(context.applied_context),
+                            defaultValue: "Applied context: {{value}} tokens",
+                          })}
+                        </div>
+                      ) : null}
+                      {context.coverage.total > 0 ? (
+                        <div>
+                          {t("aiGatewayTerminalContextCoverage", {
+                            known: context.coverage.known,
+                            total: context.coverage.total,
+                            defaultValue: "{{known}} of {{total}} known",
+                          })}
+                        </div>
+                      ) : null}
+                      {context.reasons.map((reason) => {
+                        let text: string | null = null;
+                        if (reason === "unknown_context") {
+                          text = t("aiGatewayTerminalContextUnknown", "Unknown context");
+                        } else if (reason === "below_minimum") {
+                          text = t(
+                            "aiGatewayTerminalContextBelowMinimum",
+                            "Below the 100000 minimum",
+                          );
+                        } else if (reason === "capped_at_1000000") {
+                          text = t("aiGatewayTerminalContextCapped", {
+                            cap: formatContextWindow(1000000),
+                            raw:
+                              context.raw_context != null
+                                ? formatContextWindow(context.raw_context)
+                                : "—",
+                            defaultValue: "Capped at {{cap}} tokens from {{raw}}",
+                          });
+                        } else if (reason === "incomplete_selection") {
+                          text = t(
+                            "aiGatewayTerminalContextIncompleteSelection",
+                            "Model selection incomplete",
+                          );
+                        }
+                        return text ? (
+                          <div
+                            key={reason}
+                            className="text-amber-600 dark:text-amber-400"
+                          >
+                            {text}
+                          </div>
+                        ) : null;
+                      })}
+                    </div>
+                  ) : null}
                   {target.tool === "claude" ? (
                     <div
                       className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"
@@ -472,6 +612,7 @@ function TerminalSyncPanelComponent({
       <ClaudeModelSelectionDialog
         open={claudeDialogOpen}
         models={claudeCandidateModels}
+        contextByModel={claudeContextByModel}
         initialSelection={claudeInitialSelection}
         onSubmit={handleClaudeSubmit}
         onCancel={() => setClaudeDialogOpen(false)}

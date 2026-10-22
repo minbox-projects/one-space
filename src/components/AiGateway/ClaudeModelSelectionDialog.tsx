@@ -9,11 +9,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { ClaudeModelSelection } from "@/lib/aiGateway";
+import {
+  CLAUDE_COMPACTION_CAP,
+  CLAUDE_COMPACTION_MIN,
+  formatContextWindow,
+  knownContextWindow,
+} from "@/lib/aiGateway";
 
 type ClaudeModelSelectionDialogProps = {
   open: boolean;
   /** Candidate local mapping ids that a native Messages upstream can serve. */
   models: string[];
+  /** Declared context per candidate; absent/`null` means unknown. */
+  contextByModel?: Record<string, number | null>;
   /** Existing valid selection to reuse; absent/`null` starts empty. */
   initialSelection?: ClaudeModelSelection | null;
   busy?: boolean;
@@ -75,12 +83,16 @@ function isComplete(selection: ClaudeModelSelection): boolean {
 export function ClaudeModelSelectionDialog({
   open,
   models,
+  contextByModel,
   initialSelection,
   busy,
   onSubmit,
   onCancel,
 }: ClaudeModelSelectionDialogProps) {
   const { t } = useTranslation();
+  const selectableModels = Array.from(
+    new Set([...models, ...Object.keys(contextByModel ?? {})]),
+  );
   const [selection, setSelection] = useState<ClaudeModelSelection>(
     () => initialSelection ?? EMPTY_SELECTION,
   );
@@ -101,6 +113,31 @@ export function ClaudeModelSelectionDialog({
     if (busy || !isComplete(selection)) return;
     onSubmit({ ...selection });
   };
+
+  // The four slots may repeat one model id, so coverage and the shared minimum
+  // are computed over the deduplicated choices, exactly like the backend.
+  const selectedModels = Array.from(
+    new Set(
+      SLOTS.map(({ field }) => selection[field].trim()).filter(
+        (value) => value !== "",
+      ),
+    ),
+  );
+  const complete = isComplete(selection);
+  const declaredValues = selectedModels.map((model) =>
+    knownContextWindow(contextByModel?.[model]),
+  );
+  const allKnown =
+    complete && declaredValues.length > 0 && declaredValues.every((value) => value !== null);
+  const minimum = allKnown
+    ? Math.min(...(declaredValues as number[]))
+    : null;
+  const applied =
+    minimum !== null && minimum >= CLAUDE_COMPACTION_MIN
+      ? Math.min(minimum, CLAUDE_COMPACTION_CAP)
+      : null;
+  const capped = minimum !== null && minimum > CLAUDE_COMPACTION_CAP;
+  const coverageKnown = declaredValues.filter((value) => value !== null).length;
 
   return (
     <Dialog
@@ -142,7 +179,7 @@ export function ClaudeModelSelectionDialog({
                 <option value="">
                   {t("aiGatewayClaudeModelPlaceholder", "Select a local model")}
                 </option>
-                {models.map((model) => (
+                {selectableModels.map((model) => (
                   <option
                     key={model}
                     value={model}
@@ -158,6 +195,60 @@ export function ClaudeModelSelectionDialog({
               </select>
             </div>
           ))}
+        </div>
+
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="claude-context-summary"
+          className="space-y-1 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
+        >
+          {!complete ? (
+            <div>
+              {t(
+                "aiGatewayClaudeContextIncomplete",
+                "Unavailable: select a model for every slot",
+              )}
+            </div>
+          ) : minimum === null ? (
+            <div className="font-medium text-amber-600 dark:text-amber-400">
+              {t(
+                "aiGatewayClaudeContextUnknown",
+                "Unavailable: unknown context for the selected models",
+              )}
+            </div>
+          ) : applied === null ? (
+            <div className="font-medium text-amber-600 dark:text-amber-400">
+              {t(
+                "aiGatewayClaudeContextBelowMinimum",
+                "Unavailable: below the 100000 compaction minimum",
+              )}
+            </div>
+          ) : (
+            <div className="font-medium text-foreground/85">
+              {capped
+                ? t("aiGatewayClaudeContextCapped", {
+                    value: formatContextWindow(applied),
+                    raw: formatContextWindow(minimum),
+                    defaultValue:
+                      "Shared compaction threshold: {{value}} tokens (capped from {{raw}})",
+                  })
+                : t("aiGatewayClaudeContextShared", {
+                    value: formatContextWindow(applied),
+                    defaultValue:
+                      "Shared compaction threshold: {{value}} tokens",
+                  })}
+            </div>
+          )}
+          {complete && selectedModels.length > 0 ? (
+            <div>
+              {t("aiGatewayClaudeContextCoverage", {
+                known: coverageKnown,
+                total: selectedModels.length,
+                defaultValue: "Coverage: {{known}} of {{total}} known",
+              })}
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter className="flex flex-row items-center justify-end gap-2 pt-2">

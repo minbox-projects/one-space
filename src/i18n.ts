@@ -984,6 +984,50 @@ const resources = {
       aiGatewayReasoningEfforts: "Reasoning efforts",
       aiGatewayReasoningEffortsDesc:
         "Add or remove the reasoning-effort identifiers this model advertises.",
+      aiGatewayContextWindowLabel: "Context window (tokens) {{index}}",
+      aiGatewayContextWindowInvalid:
+        "Context window must be a whole number between 1 and 4294967295.",
+      aiGatewayContextWindowUnspecified: "Unspecified",
+      aiGatewayContextWindowSourceOverwrite:
+        "A valid model-list source value replaces the stored limit.",
+      aiGatewayContextWindowSourceMissing:
+        "A missing source field preserves the existing value.",
+      aiGatewayContextWindowExplicitNull: "An explicit null clears the value.",
+      aiGatewayContextInheritedFrom: "Inherited from {{name}}",
+      aiGatewayContextTemplateModelMissing:
+        "Template model not found; context unspecified",
+      aiGatewayContextBoundTemplateMissing:
+        "Template not found; context unspecified",
+      aiGatewayModelListEffectiveContext: "Conservative effective context",
+      aiGatewayModelListContextIncomplete: "Incomplete — unknown context",
+      aiGatewayModelListContextTokens: "{{value}} tokens",
+      aiGatewayTerminalContextPerModel:
+        "Per-model coverage across generated models",
+      aiGatewayTerminalContextCoverage: "{{known}} of {{total}} known",
+      aiGatewayTerminalContextSelectedModel: "Selected model",
+      aiGatewayTerminalContextApplied: "Applied context: {{value}} tokens",
+      aiGatewayTerminalContextRaw: "Source value: {{value}} tokens",
+      aiGatewayTerminalContextManualScope:
+        "Manual activation only; synchronization does not activate this tool.",
+      aiGatewayTerminalContextUnknown: "Unknown context",
+      aiGatewayTerminalContextShared: "Shared compaction target",
+      aiGatewayTerminalContextNewSessions:
+        "Applies to new sessions; a running CLI does not consume the new value.",
+      aiGatewayTerminalContextCapped: "Capped at {{cap}} tokens from {{raw}}",
+      aiGatewayTerminalContextBelowMinimum: "Below the 100000 minimum",
+      aiGatewayTerminalContextIncompleteSelection: "Model selection incomplete",
+      aiGatewayTerminalContextUnavailable: "Unavailable",
+      aiGatewayClaudeContextShared:
+        "Shared compaction threshold: {{value}} tokens",
+      aiGatewayClaudeContextCapped:
+        "Shared compaction threshold: {{value}} tokens (capped from {{raw}})",
+      aiGatewayClaudeContextBelowMinimum:
+        "Unavailable: below the 100000 compaction minimum",
+      aiGatewayClaudeContextUnknown:
+        "Unavailable: unknown context for the selected models",
+      aiGatewayClaudeContextIncomplete:
+        "Unavailable: select a model for every slot",
+      aiGatewayClaudeContextCoverage: "Coverage: {{known}} of {{total}} known",
       aiGatewayReasoningEffortPlaceholder: "e.g. high",
       aiGatewayReasoningEffortAdd: "Add",
       aiGatewayReasoningEffortRemove: "Remove {{effort}}",
@@ -5155,6 +5199,42 @@ const resources = {
       aiGatewayRestoreModel: "恢复",
       aiGatewayReasoningEfforts: "推理档位",
       aiGatewayReasoningEffortsDesc: "添加或删除该模型支持的推理档位标识。",
+      aiGatewayContextWindowLabel: "上下文窗口（tokens）{{index}}",
+      aiGatewayContextWindowInvalid:
+        "上下文窗口必须是 1 到 4294967295 之间的整数。",
+      aiGatewayContextWindowUnspecified: "未指定",
+      aiGatewayContextWindowSourceOverwrite:
+        "有效模型列表来源值会覆盖已存储的上限。",
+      aiGatewayContextWindowSourceMissing: "缺失来源字段会保留现有值。",
+      aiGatewayContextWindowExplicitNull: "显式 null 会清除该值。",
+      aiGatewayContextInheritedFrom: "继承自 {{name}}",
+      aiGatewayContextTemplateModelMissing: "模板中未找到该模型，上下文未指定",
+      aiGatewayContextBoundTemplateMissing: "未找到模板，上下文未指定",
+      aiGatewayModelListEffectiveContext: "保守有效上下文",
+      aiGatewayModelListContextIncomplete: "不完整 — 未知上下文",
+      aiGatewayModelListContextTokens: "{{value}} tokens",
+      aiGatewayTerminalContextPerModel: "按模型覆盖已生成的模型",
+      aiGatewayTerminalContextCoverage: "已覆盖 {{known}}/{{total}}",
+      aiGatewayTerminalContextSelectedModel: "选中的模型",
+      aiGatewayTerminalContextApplied: "已应用上下文：{{value}} tokens",
+      aiGatewayTerminalContextRaw: "来源值：{{value}} tokens",
+      aiGatewayTerminalContextManualScope:
+        "仅在手动激活时生效；同步不会自动激活此工具。",
+      aiGatewayTerminalContextUnknown: "未知上下文",
+      aiGatewayTerminalContextShared: "共享压缩目标",
+      aiGatewayTerminalContextNewSessions:
+        "仅对新会话生效；运行中的 CLI 不会自动消费新值。",
+      aiGatewayTerminalContextCapped: "已从 {{raw}} 封顶到 {{cap}} tokens",
+      aiGatewayTerminalContextBelowMinimum: "低于 100000 最小值",
+      aiGatewayTerminalContextIncompleteSelection: "模型选择不完整",
+      aiGatewayTerminalContextUnavailable: "不可用",
+      aiGatewayClaudeContextShared: "共享压缩阈值：{{value}} tokens",
+      aiGatewayClaudeContextCapped:
+        "共享压缩阈值：{{value}} tokens（原值 {{raw}}，已封顶）",
+      aiGatewayClaudeContextBelowMinimum: "不可用：低于 100000 压缩最小值",
+      aiGatewayClaudeContextUnknown: "不可用：所选模型的上下文未知",
+      aiGatewayClaudeContextIncomplete: "不可用：请为每个槽位选择模型",
+      aiGatewayClaudeContextCoverage: "覆盖：{{known}}/{{total}}",
       aiGatewayReasoningEffortPlaceholder: "例如 high",
       aiGatewayReasoningEffortAdd: "添加",
       aiGatewayReasoningEffortRemove: "删除 {{effort}}",

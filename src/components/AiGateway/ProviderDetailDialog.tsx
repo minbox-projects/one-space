@@ -36,12 +36,14 @@ import {
   isProviderTemplateBindingBroken,
   mappedUpstreamModels,
   normalizeReasoningEfforts,
+  parseContextWindowInput,
   priceRowToDraft,
   providerKeyPool,
   providerKeyState,
   PROVIDER_KEY_STATE_TRANSLATION_KEYS,
   resolveEffectiveTemplatePolicy,
   resolveProviderPriceRow,
+  resolveTemplateContextWindow,
   type GatewayModelMapping,
   type GatewayPriceDraft,
   type GatewayProviderKey,
@@ -123,6 +125,9 @@ function runtimeMappingKey(localModel: string, upstreamModel: string): string {
 /** Editable key-pool row: persisted fields plus a client-only `isNew` marker. */
 type ProviderKeyDraft = GatewayProviderKey & { isNew?: boolean };
 
+/** A mapping row keeps the raw context draft so invalid input survives. */
+type MappingDraft = GatewayModelMapping & { contextDraft?: string };
+
 let providerKeyDraftCounter = 0;
 
 /** Build a blank new-key draft with a client-generated stable id. */
@@ -200,9 +205,10 @@ export function ProviderDetailDialog({
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [keyNameError, setKeyNameError] = useState(false);
   const [keyValueError, setKeyValueError] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
   const [defaultModel, setDefaultModel] = useState("");
   const [protocol, setProtocol] = useState<GatewayUpstreamProtocol>("chat_completions");
-  const [mappings, setMappings] = useState<GatewayModelMapping[]>([]);
+  const [mappings, setMappings] = useState<MappingDraft[]>([]);
   const [priceDrafts, setPriceDrafts] = useState<GatewayPriceDraft[]>([]);
   const [autoAddedModel, setAutoAddedModel] = useState<string | null>(null);
   const [expandedMappings, setExpandedMappings] = useState<Record<number, boolean>>(
@@ -226,6 +232,7 @@ export function ProviderDetailDialog({
       setKeyDrafts([]);
       setKeyNameError(false);
       setKeyValueError(false);
+      setContextError(null);
       setDefaultModel("");
       setProtocol("chat_completions");
       setMappings([]);
@@ -286,9 +293,18 @@ export function ProviderDetailDialog({
     );
     setKeyNameError(false);
     setKeyValueError(false);
+    setContextError(null);
     setDefaultModel(provider.default_model ?? "");
     setProtocol(provider.protocol ?? "chat_completions");
-    setMappings(nextMappings);
+    setMappings(
+      nextMappings.map((mapping) => ({
+        ...mapping,
+        contextDraft:
+          mapping.context_window != null
+            ? String(mapping.context_window)
+            : "",
+      })),
+    );
     setPriceDrafts(seeded);
     setAutoAddedModel(nextAutoAdded);
     setExpandedMappings({});
@@ -461,7 +477,7 @@ export function ProviderDetailDialog({
     });
   };
 
-  const updateMapping = (index: number, patch: Partial<GatewayModelMapping>) => {
+  const updateMapping = (index: number, patch: Partial<MappingDraft>) => {
     setMappings((prev) =>
       prev.map((entry, entryIndex) =>
         entryIndex === index ? { ...entry, ...patch } : entry,
@@ -638,6 +654,7 @@ export function ProviderDetailDialog({
     }
     setKeyNameError(false);
     setKeyValueError(false);
+    setContextError(null);
     const savedKeys: GatewayProviderKey[] = keyDrafts.map((key) => ({
       id: key.id,
       name: key.name.trim(),
@@ -649,18 +666,52 @@ export function ProviderDetailDialog({
       marked_at: key.marked_at,
       reason: key.reason,
     }));
+    const boundTemplateId = templateId.trim();
+    const boundTemplateForSave = boundTemplateId
+      ? (templates ?? []).find((view) => view.template.id === boundTemplateId)
+          ?.template
+      : undefined;
+    let invalidContextModel: string | null = null;
     const savedMappings = mappings.map((mapping) => {
       const reasoningEfforts = normalizeReasoningEfforts(mapping.reasoning_efforts);
+      const { contextDraft, ...mappingFields } = mapping;
+      let contextWindow: number | null;
+      if (boundTemplateId) {
+        contextWindow = resolveTemplateContextWindow(
+          boundTemplateForSave,
+          mapping.upstream_model,
+        );
+      } else {
+        const parsed = parseContextWindowInput(
+          contextDraft ??
+            (mapping.context_window != null
+              ? String(mapping.context_window)
+              : ""),
+        );
+        if (parsed.invalid) invalidContextModel = mapping.upstream_model.trim();
+        contextWindow = parsed.value;
+      }
       return {
-        ...mapping,
+        ...mappingFields,
         enabled: mapping.enabled !== false,
         display_name: mapping.display_name?.trim()
           ? mapping.display_name.trim()
           : undefined,
         protocol: mapping.protocol ? mapping.protocol : undefined,
         reasoning_efforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
+        context_window: contextWindow,
       };
     });
+    if (invalidContextModel) {
+      setContextError(
+        t("aiGatewayContextWindowInvalid", {
+          model: invalidContextModel,
+          defaultValue:
+            "Context window must be a whole number between 1 and 4294967295.",
+        }),
+      );
+      return;
+    }
     const savedModels = new Set(
       savedMappings
         .map((mapping) => mapping.upstream_model.trim())
@@ -1588,6 +1639,7 @@ export function ProviderDetailDialog({
                         display_name: "",
                         protocol: null,
                         enabled: true,
+                        contextDraft: "",
                       },
                     ])
                   }
@@ -1598,6 +1650,15 @@ export function ProviderDetailDialog({
                 </button>
               </div>
             </div>
+
+            {contextError ? (
+              <p
+                role="alert"
+                className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+              >
+                {contextError}
+              </p>
+            ) : null}
 
             {mappings.length === 0 ? (
               <p className="rounded-lg border border-dashed bg-background/50 px-3 py-3 text-center text-xs text-muted-foreground">
@@ -1728,6 +1789,60 @@ export function ProviderDetailDialog({
                         })}
                         className={`${mappingInputClass} min-w-[120px] flex-1`}
                       />
+                      <div className="flex min-w-[150px] shrink-0 flex-col gap-0.5">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={
+                            isTemplateBound
+                              ? (resolveTemplateContextWindow(
+                                  boundTemplate,
+                                  mapping.upstream_model,
+                                )?.toString() ?? "")
+                              : (mapping.contextDraft ??
+                                (mapping.context_window != null
+                                  ? String(mapping.context_window)
+                                  : ""))
+                          }
+                          onChange={(event) =>
+                            updateMapping(index, {
+                              contextDraft: event.target.value,
+                            })
+                          }
+                          readOnly={isTemplateBound}
+                          disabled={isTemplateBound}
+                          placeholder={t(
+                            "aiGatewayContextWindowUnspecified",
+                            "Unspecified",
+                          )}
+                          aria-label={t("aiGatewayContextWindowLabel", {
+                            index: index + 1,
+                            defaultValue: `Context window (tokens) ${index + 1}`,
+                          })}
+                          className={`${mappingInputClass} min-w-[140px] font-mono read-only:bg-muted/50`}
+                        />
+                        {isTemplateBound ? (
+                          <span className="text-[10px] text-muted-foreground">
+                            {boundTemplate
+                              ? resolveTemplateContextWindow(
+                                  boundTemplate,
+                                  mapping.upstream_model,
+                                ) != null
+                                ? t("aiGatewayContextInheritedFrom", {
+                                    name: boundTemplate.name,
+                                    defaultValue: `Inherited from ${boundTemplate.name}`,
+                                  })
+                                : t(
+                                    "aiGatewayContextTemplateModelMissing",
+                                    "Template model not found; context unspecified",
+                                  )
+                              : t(
+                                  "aiGatewayContextBoundTemplateMissing",
+                                  "Template not found; context unspecified",
+                                )}
+                          </span>
+                        ) : null}
+                      </div>
                       <select
                         value={mapping.protocol ?? ""}
                         onChange={(event) =>

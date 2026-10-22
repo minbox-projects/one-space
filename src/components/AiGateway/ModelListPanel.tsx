@@ -16,10 +16,14 @@ import { SelectDropdown } from "./SelectDropdown";
 import {
   aggregateModels,
   AI_GATEWAY_DEFAULT_PORT,
+  formatContextWindow,
   localBaseUrl,
   poolReasoningCatalog,
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
+  resolveMappingContextWindow,
+  resolveOrdinaryContextWindow,
+  resolvePoolContextWindow,
   selectPoolReasoningCoverageRow,
   type AggregatedModel,
   type GatewayModelPool,
@@ -105,6 +109,7 @@ function ModelListPanelComponent({
         new Set(entry.providers.map((upstream) => upstream.endpoint)),
       ) as GatewayUpstreamProtocol[],
       reasoningEfforts: resolveAggregatedReasoningEfforts(entry),
+      contextWindow: resolveOrdinaryContextWindow(providers, entry.model),
       pool: undefined as GatewayModelPool | undefined,
       poolDefault: undefined as string | undefined,
       poolCoverage: undefined as ModelPoolReasoningCoverage[] | undefined,
@@ -145,6 +150,7 @@ function ModelListPanelComponent({
             "responses",
           ] as GatewayUpstreamProtocol[],
           reasoningEfforts: catalog.reasoning_efforts,
+          contextWindow: resolvePoolContextWindow(providers, pool),
           pool,
           poolDefault: catalog.default_reasoning_effort,
           poolCoverage: poolHasReasoning
@@ -312,6 +318,7 @@ function ModelListPanelComponent({
     name,
     protocols,
     reasoningEfforts,
+    contextWindow,
     pool,
     poolDefault,
     poolCoverage,
@@ -426,6 +433,36 @@ function ModelListPanelComponent({
                 ))}
               </div>
             )}
+            {contextWindow ? (
+              <div
+                data-testid="ai-gateway-model-list-context"
+                className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground"
+              >
+                <span>
+                  {t(
+                    "aiGatewayModelListEffectiveContext",
+                    "Conservative effective context",
+                  )}
+                  :
+                </span>
+                <span className="font-mono font-medium text-foreground/85">
+                  {t("aiGatewayModelListContextTokens", {
+                    value: formatContextWindow(contextWindow),
+                    defaultValue: "{{value}} tokens",
+                  })}
+                </span>
+              </div>
+            ) : (
+              <div
+                data-testid="ai-gateway-model-list-context"
+                className="text-[10px] font-medium text-amber-600 dark:text-amber-400"
+              >
+                {t(
+                  "aiGatewayModelListContextIncomplete",
+                  "Incomplete — unknown context",
+                )}
+              </div>
+            )}
             {reasoningEfforts.length > 0 ? (
               <div
                 data-testid="ai-gateway-model-list-reasoning-efforts"
@@ -488,6 +525,16 @@ function ModelListPanelComponent({
               const upstreamKey = `${upstream.providerId}-${upstream.upstreamModel}-${index}`;
               const upstreamTargetKey = `upstream:${upstreamKey}`;
               const isUpstreamCopied = copiedTarget === upstreamTargetKey;
+              const sourceLocalModel =
+                isPool && pool
+                  ? pool.candidates[index]?.local_model ?? entry.model
+                  : entry.model;
+              const sourceContext = resolveMappingContextWindow(
+                providers,
+                upstream.providerId,
+                sourceLocalModel,
+                upstream.upstreamModel,
+              );
 
               return (
                 <li
@@ -555,6 +602,24 @@ function ModelListPanelComponent({
                         )}
                       </span>
                     ) : null}
+                    <span
+                      data-testid="ai-gateway-model-list-upstream-context"
+                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
+                        sourceContext
+                          ? "bg-muted/70 text-foreground/75"
+                          : "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                      }`}
+                    >
+                      {sourceContext
+                        ? t("aiGatewayModelListContextTokens", {
+                            value: formatContextWindow(sourceContext),
+                            defaultValue: "{{value}} tokens",
+                          })
+                        : t(
+                            "aiGatewayContextWindowUnspecified",
+                            "Unspecified",
+                          )}
+                    </span>
                   </div>
 
                   <div className="shrink-0">

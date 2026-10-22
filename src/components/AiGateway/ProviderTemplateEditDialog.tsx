@@ -21,6 +21,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   draftToPriceRow,
   normalizeReasoningEfforts,
+  parseContextWindowInput,
   priceRowToDraft,
   type GatewayPriceDraft,
   type GatewayProviderTemplate,
@@ -51,6 +52,11 @@ export type ProviderTemplateEditDialogProps = {
 const mappingInputClass =
   "h-[38px] rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/50 disabled:opacity-50 disabled:cursor-not-allowed";
 
+/** A template model row keeps the raw context draft so invalid input survives. */
+type TemplateModelDraft = GatewayProviderTemplateModel & {
+  contextDraft?: string;
+};
+
 export function ProviderTemplateEditDialog({
   open,
   onOpenChange,
@@ -77,7 +83,7 @@ export function ProviderTemplateEditDialog({
     useState<GatewayTemplateQuotaStrategy>("none");
   const [errorStrategy, setErrorStrategy] =
     useState<GatewayTemplateErrorStrategy>("generic");
-  const [models, setModels] = useState<GatewayProviderTemplateModel[]>([]);
+  const [models, setModels] = useState<TemplateModelDraft[]>([]);
   const [priceDrafts, setPriceDrafts] = useState<GatewayPriceDraft[]>([]);
   const [expandedModels, setExpandedModels] = useState<Record<number, boolean>>(
     {},
@@ -116,6 +122,8 @@ export function ProviderTemplateEditDialog({
             ...model,
             local_model: model.local_model ?? model.upstream_model,
             enabled: model.enabled !== false,
+            contextDraft:
+              model.context_window != null ? String(model.context_window) : "",
           }))
         : [];
       setModels(nextModels);
@@ -213,13 +221,14 @@ export function ProviderTemplateEditDialog({
         display_name: "",
         protocol: null,
         enabled: true,
+        contextDraft: "",
       },
     ]);
   };
 
   const handleUpdateModel = (
     index: number,
-    field: keyof GatewayProviderTemplateModel,
+    field: keyof TemplateModelDraft,
     value: any,
   ) => {
     setModels((prev) => {
@@ -281,6 +290,7 @@ export function ProviderTemplateEditDialog({
       return;
     }
 
+    let invalidContextModel: string | null = null;
     const savedModels: GatewayProviderTemplateModel[] = models
       .filter((m) => m.upstream_model.trim().length > 0)
       .map((m) => {
@@ -288,6 +298,13 @@ export function ProviderTemplateEditDialog({
         const draft = priceDrafts.find((d) => d.upstream_model === upstream);
         const priceRow = draft ? draftToPriceRow(draft) : null;
         const reasoningEfforts = normalizeReasoningEfforts(m.reasoning_efforts);
+        const contextDraft =
+          m.contextDraft ??
+          (m.context_window != null ? String(m.context_window) : "");
+        const context = parseContextWindowInput(contextDraft);
+        if (context.invalid) {
+          invalidContextModel = upstream;
+        }
         return {
           upstream_model: upstream,
           local_model: m.local_model?.trim()
@@ -302,8 +319,20 @@ export function ProviderTemplateEditDialog({
           output: priceRow?.output ?? m.output ?? 0,
           off_peaks: priceRow?.off_peaks ?? m.off_peaks ?? [],
           reasoning_efforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
+          context_window: context.value,
         };
       });
+
+    if (invalidContextModel) {
+      setValidationError(
+        t("aiGatewayContextWindowInvalid", {
+          model: invalidContextModel,
+          defaultValue:
+            "Context window must be a whole number between 1 and 4294967295.",
+        }),
+      );
+      return;
+    }
 
     const payload: GatewayProviderTemplate = {
       id: id.trim() || `tpl-${Date.now()}`,
@@ -588,6 +617,29 @@ export function ProviderTemplateEditDialog({
                     "Map local request model names to upstream models. Optionally set a display name shown in the gateway for each model.",
                   )}
                 </p>
+                <ul
+                  data-testid="template-edit-context-help"
+                  className="mt-1 space-y-0.5 text-[11px] text-muted-foreground"
+                >
+                  <li>
+                    {t(
+                      "aiGatewayContextWindowSourceOverwrite",
+                      "A valid model-list source value replaces the stored limit.",
+                    )}
+                  </li>
+                  <li>
+                    {t(
+                      "aiGatewayContextWindowSourceMissing",
+                      "A missing source field preserves the existing value.",
+                    )}
+                  </li>
+                  <li>
+                    {t(
+                      "aiGatewayContextWindowExplicitNull",
+                      "An explicit null clears the value.",
+                    )}
+                  </li>
+                </ul>
               </div>
 
               <div className="flex items-center gap-2">
@@ -773,6 +825,34 @@ export function ProviderTemplateEditDialog({
                               )}
                             </option>
                           </select>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            data-testid={`template-edit-model-context-${idx}`}
+                            value={
+                              m.contextDraft ??
+                              (m.context_window != null
+                                ? String(m.context_window)
+                                : "")
+                            }
+                            onChange={(event) =>
+                              handleUpdateModel(
+                                idx,
+                                "contextDraft",
+                                event.target.value,
+                              )
+                            }
+                            placeholder={t(
+                              "aiGatewayContextWindowUnspecified",
+                              "Unspecified",
+                            )}
+                            aria-label={t("aiGatewayContextWindowLabel", {
+                              index: idx + 1,
+                              defaultValue: `Context window (tokens) ${idx + 1}`,
+                            })}
+                            disabled={disabled}
+                            className={`${mappingInputClass} min-w-[140px] shrink-0 font-mono`}
+                          />
                           <button
                             type="button"
                             data-testid={`template-edit-remove-model-${idx}`}

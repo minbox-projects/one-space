@@ -38,6 +38,11 @@ export interface GatewayModelMapping {
   /** Reasoning-effort identifiers the model advertises. */
   reasoning_efforts?: string[];
   /**
+   * Declared total context window in tokens. Absent/`null` means unspecified;
+   * a bound mapping inherits this value from its template instead.
+   */
+  context_window?: number | null;
+  /**
    * Row-scoped runtime health state. Absent/`undefined` means healthy; the
    * backend only sets these after a real upstream failure and clears them
    * through an explicit row-level re-enable.
@@ -281,6 +286,28 @@ export interface GatewayStatus {
   default_key_id: string | null;
 }
 
+/** How many applicable models or Claude choices declare a known context window. */
+export interface GatewayTerminalContextCoverage {
+  total: number;
+  known: number;
+  unknown: number;
+}
+
+/**
+ * A target's expected native context configuration. It describes what a new or
+ * rematerialized session receives; it never claims that a running CLI consumed it.
+ */
+export interface GatewayTerminalContextSummary {
+  mode: "per_model" | "selected_model" | "shared_compaction";
+  scope: "generated_models" | "activation" | "global_and_isolated_settings";
+  coverage: GatewayTerminalContextCoverage;
+  selected_model?: string | null;
+  raw_context?: number | null;
+  applied_context?: number | null;
+  /** Stable reason codes such as `unknown_context` or `below_minimum`. */
+  reasons: string[];
+}
+
 export interface GatewayTerminalTarget {
   tool: string;
   name: string;
@@ -295,6 +322,8 @@ export interface GatewayTerminalTarget {
    * `claude` target; absent for the OpenAI tools and never a credential.
    */
   claude_models?: ClaudeModelSelection | null;
+  /** Expected native context configuration; absent on pre-field snapshots. */
+  context?: GatewayTerminalContextSummary | null;
 }
 
 /**
@@ -347,6 +376,240 @@ export function normalizeReasoningEfforts(
   return normalized;
 }
 
+/** Declared context-window bounds in total tokens. */
+export const CONTEXT_WINDOW_MIN = 1;
+export const CONTEXT_WINDOW_MAX = 4294967295;
+/** Claude's shared compaction threshold boundaries. */
+export const CLAUDE_COMPACTION_MIN = 100000;
+export const CLAUDE_COMPACTION_CAP = 1000000;
+
+/** A declared value usable as a context window; `null`/zero means unspecified. */
+export function knownContextWindow(
+  value: number | null | undefined,
+): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= CONTEXT_WINDOW_MIN &&
+    value <= CONTEXT_WINDOW_MAX
+    ? value
+    : null;
+}
+
+/**
+ * Parse an operator's context-window draft. Blank means unspecified, while a
+ * nonnumeric, fractional or out-of-range value stays invalid so the caller can
+ * keep the draft visible and block the save.
+ */
+export function parseContextWindowInput(raw: string): {
+  value: number | null;
+  invalid: boolean;
+} {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { value: null, invalid: false };
+  if (!/^\d+$/.test(trimmed)) return { value: null, invalid: true };
+  const value = Number(trimmed);
+  if (
+    !Number.isSafeInteger(value) ||
+    value < CONTEXT_WINDOW_MIN ||
+    value > CONTEXT_WINDOW_MAX
+  ) {
+    return { value: null, invalid: true };
+  }
+  return { value, invalid: false };
+}
+
+/** Group a token count with deterministic separators for display. */
+export function formatContextWindow(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/**
+ * A template model's declared context, matched by trimmed, case-sensitive
+ * upstream model id. The first matching model wins, including when its value is
+ * unspecified; a missing model is also unspecified.
+ */
+export function resolveTemplateContextWindow(
+  template: GatewayProviderTemplate | null | undefined,
+  upstreamModel: string,
+): number | null {
+  if (!template) return null;
+  const target = upstreamModel.trim();
+  if (target === "") return null;
+  const model = template.models.find(
+    (entry) => entry.upstream_model.trim() === target,
+  );
+  return knownContextWindow(model?.context_window);
+}
+
+function effectiveMappingProtocol(
+  provider: GatewayUpstreamProvider,
+  mapping: GatewayModelMapping,
+): GatewayUpstreamProtocol {
+  return mapping.protocol ?? provider.protocol ?? "chat_completions";
+}
+
+interface ContextSourceRef {
+  providerId: string;
+  localModel: string;
+  upstreamModel: string;
+  protocol: GatewayUpstreamProtocol;
+}
+
+/** Resolve one exact source reference's declared context; missing is unknown. */
+function resolveContextSource(
+  providers: GatewayUpstreamProvider[],
+  ref: ContextSourceRef,
+): number | null {
+  const provider = providers.find(
+    (entry) => entry.id.trim() === ref.providerId.trim(),
+  );
+  if (!provider) return null;
+  const mapping = provider.mappings.find(
+    (entry) =>
+      entry.local_model.trim() === ref.localModel.trim() &&
+      entry.upstream_model.trim() === ref.upstreamModel.trim(),
+  );
+  if (!mapping) return null;
+  if (effectiveMappingProtocol(provider, mapping) !== ref.protocol) return null;
+  return knownContextWindow(mapping.context_window);
+}
+
+/**
+ * Conservative aggregate over deduplicated exact source identities: every
+ * source must declare a known value and the advertised bound is their minimum.
+ */
+function conservativeSourceContext(
+  providers: GatewayUpstreamProvider[],
+  refs: ContextSourceRef[],
+): number | null {
+  const seen = new Set<string>();
+  let minimum: number | null = null;
+  let count = 0;
+  for (const ref of refs) {
+    const key = `${ref.providerId}\u0000${ref.localModel}\u0000${ref.upstreamModel}\u0000${ref.protocol}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    count += 1;
+    const value = resolveContextSource(providers, ref);
+    if (value === null) return null;
+    minimum = minimum === null ? value : Math.min(minimum, value);
+  }
+  return count === 0 ? null : minimum;
+}
+
+/**
+ * Conservative ordinary-model context across every configured mapping that
+ * serves `model`, plus same-provider default-model declarations. Runtime
+ * readiness, keys and enabled state never raise the advertised bound.
+ */
+export function resolveOrdinaryContextWindow(
+  providers: GatewayUpstreamProvider[],
+  model: string,
+): number | null {
+  const publicModel = model.trim();
+  if (publicModel === "") return null;
+  const refs: ContextSourceRef[] = [];
+  for (const provider of providers) {
+    for (const mapping of provider.mappings) {
+      if (mapping.local_model.trim() !== publicModel) continue;
+      refs.push({
+        providerId: provider.id,
+        localModel: publicModel,
+        upstreamModel: mapping.upstream_model.trim(),
+        protocol: effectiveMappingProtocol(provider, mapping),
+      });
+    }
+  }
+  if (refs.length === 0) return null;
+  for (const provider of providers) {
+    const defaultModel = provider.default_model?.trim();
+    if (!defaultModel || defaultModel !== publicModel) continue;
+    const declared = provider.mappings.find(
+      (mapping) => mapping.upstream_model.trim() === defaultModel,
+    );
+    if (!declared) return null;
+    refs.push({
+      providerId: provider.id,
+      localModel: publicModel,
+      upstreamModel: defaultModel,
+      protocol: provider.protocol ?? "chat_completions",
+    });
+  }
+  return conservativeSourceContext(providers, refs);
+}
+
+function expandFallbackModelRefs(
+  providers: GatewayUpstreamProvider[],
+  model: string,
+): ContextSourceRef[] {
+  const target = model.trim();
+  if (target === "") return [];
+  const refs: ContextSourceRef[] = [];
+  for (const provider of providers) {
+    for (const mapping of provider.mappings) {
+      if (mapping.local_model.trim() !== target) continue;
+      const upstreamModel = mapping.upstream_model.trim();
+      if (upstreamModel === "") continue;
+      refs.push({
+        providerId: provider.id,
+        localModel: target,
+        upstreamModel,
+        protocol: effectiveMappingProtocol(provider, mapping),
+      });
+    }
+  }
+  return refs;
+}
+
+/**
+ * Conservative pool context across every candidate plus expanded ordered
+ * fallback model. Unresolved references make the aggregate unknown; a pool has
+ * no independent editable override.
+ */
+export function resolvePoolContextWindow(
+  providers: GatewayUpstreamProvider[],
+  pool: GatewayModelPool | null | undefined,
+): number | null {
+  if (!pool) return null;
+  const refs: ContextSourceRef[] = pool.candidates.map((candidate) => ({
+    providerId: candidate.provider_id,
+    localModel: candidate.local_model,
+    upstreamModel: candidate.upstream_model,
+    protocol: candidate.protocol,
+  }));
+  for (const fallback of pool.fallback_models ?? []) {
+    const expanded = expandFallbackModelRefs(providers, fallback);
+    if (expanded.length === 0) return null;
+    refs.push(...expanded);
+  }
+  return conservativeSourceContext(providers, refs);
+}
+
+/** Context of one exact provider mapping, used for per-source display. */
+export function resolveMappingContextWindow(
+  providers: GatewayUpstreamProvider[],
+  providerId: string,
+  localModel: string,
+  upstreamModel: string,
+): number | null {
+  const provider = providers.find(
+    (entry) => entry.id.trim() === providerId.trim(),
+  );
+  if (!provider) return null;
+  const mapping = provider.mappings.find(
+    (entry) =>
+      entry.local_model.trim() === localModel.trim() &&
+      entry.upstream_model.trim() === upstreamModel.trim(),
+  );
+  if (!mapping) return null;
+  return resolveContextSource(providers, {
+    providerId,
+    localModel,
+    upstreamModel,
+    protocol: effectiveMappingProtocol(provider, mapping),
+  });
+}
+
 /** One upstream source that can serve an aggregated local model. */
 export interface AggregatedModelProvider {
   providerId: string;
@@ -358,6 +621,8 @@ export interface AggregatedModelProvider {
   displayName?: string;
   /** Normalized reasoning efforts advertised by this upstream mapping; absent when empty. */
   reasoningEfforts?: string[];
+  /** Declared total context window on this mapping; absent means unknown. */
+  contextWindow?: number | null;
 }
 
 /** A local model name and every enabled upstream source mapped to it. */
@@ -366,6 +631,8 @@ export interface AggregatedModel {
   providers: AggregatedModelProvider[];
   /** Unified deduplicated list of reasoning efforts across all enabled upstream providers; absent when empty. */
   reasoningEfforts?: string[];
+  /** Conservative effective context across every configured source; absent when unknown. */
+  contextWindow?: number | null;
 }
 
 /**
@@ -2170,6 +2437,8 @@ export interface GatewayProviderTemplateModel {
   output?: number;
   off_peaks?: OffPeakPrice[];
   reasoning_efforts?: string[];
+  /** Declared total context window in tokens; absent/null means unspecified. */
+  context_window?: number | null;
 }
 
 /** Model-synchronization strategy a provider template declares (closed set). */

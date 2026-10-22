@@ -2379,6 +2379,112 @@ describe("AiGateway", () => {
     );
   });
 
+  it("manual template save reloads provider configuration and terminal targets", async () => {
+    const providerBefore = makeProvider({
+      id: "p1",
+      name: "Template Bound",
+      template_id: "t1",
+      mappings: [{ local_model: "remote-a", upstream_model: "remote-a" }],
+    });
+    const providerAfter = makeProvider({
+      ...providerBefore,
+      mappings: [
+        {
+          local_model: "remote-a",
+          upstream_model: "remote-a",
+          context_window: 256000,
+        },
+      ],
+    });
+    const store: Store = {
+      config: makeConfig({ providers: [providerBefore] }),
+      status: makeStatus({ provider_count: 1 }),
+      targets: [openCodeTarget({ context: undefined })],
+    };
+    const templates = [
+      makeTemplateView({
+        template: makeTemplate({
+          id: "t1",
+          models: [
+            makeTemplateModel({
+              upstream_model: "remote-a",
+              local_model: "remote-a",
+              context_window: 128000,
+            }),
+          ],
+        }),
+      }),
+    ];
+
+    let getConfigCalls = 0;
+    let terminalTargetCalls = 0;
+    invokeMock.mockImplementation(async (command: string, _args?: any) => {
+      switch (command) {
+        case "ai_gateway_get_config":
+          getConfigCalls += 1;
+          return store.config;
+        case "ai_gateway_status":
+          return store.status;
+        case "ai_gateway_terminal_targets":
+          terminalTargetCalls += 1;
+          return store.targets;
+        case "ai_gateway_model_pools_status":
+          return [];
+        case "ai_gateway_provider_templates":
+          return templates;
+        case "ai_gateway_upsert_provider_template": {
+          store.config = { ...store.config, providers: [providerAfter] };
+          templates[0] = {
+            ...templates[0],
+            template: _args?.template as GatewayProviderTemplate,
+          };
+          return templates;
+        }
+        default:
+          throw new Error(`Unhandled command: ${command}`);
+      }
+    });
+
+    renderWithProviders(<AiGateway />);
+
+    const manageButton = (
+      await screen.findAllByRole("button", {
+        name: /Provider templates|服务商模板/i,
+      })
+    )[0];
+    fireEvent.click(manageButton);
+    fireEvent.click(await screen.findByTestId("ai-gateway-template-edit-t1"));
+
+    const input = screen.getByLabelText(/context window.*1/i);
+    expect(input).toHaveValue("128000");
+    fireEvent.change(input, { target: { value: "256000" } });
+
+    const configBefore = getConfigCalls;
+    const targetsBefore = terminalTargetCalls;
+    fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "ai_gateway_upsert_provider_template",
+        expect.objectContaining({
+          template: expect.objectContaining({
+            id: "t1",
+            models: [
+              expect.objectContaining({
+                upstream_model: "remote-a",
+                context_window: 256000,
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+    await waitFor(() => expect(getConfigCalls).toBeGreaterThan(configBefore));
+    await waitFor(() =>
+      expect(terminalTargetCalls).toBeGreaterThan(targetsBefore),
+    );
+  });
+
   it("manual sync keeps the spinner and leaves the backend-owned failure snapshot until the update event clears it", async () => {
     const store: Store = {
       config: makeConfig(),
