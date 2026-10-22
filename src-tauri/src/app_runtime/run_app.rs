@@ -2,7 +2,8 @@ use crate::{
     ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store, backup, cli_updates,
     config, file_sharing, http_client, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, sftp, short_link, skills,
-    ssl_certificate, ssh_tunnels, storage, subagents, version_detect, workspaces,
+    ssl_certificate, ssh_tunnels, storage, subagents, uptime_monitor, version_detect,
+    webhook_catcher, workspaces,
 };
 use std::path::Path;
 use std::str::FromStr;
@@ -121,6 +122,10 @@ pub fn run() {
             // and the template-refresh preference.
             ai_gateway::start_daily_reset_scanner(app.handle().clone());
             ssl_certificate::start_ssl_scheduler(app.handle().clone());
+            let uptime_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                uptime_monitor::scheduler::UptimeScheduler::init_global(uptime_app_handle);
+            });
             ssh_tunnels::start_system_wake_observer();
             ssh_tunnels::start_sleep_resume_monitor();
             ssh_tunnels::start_tunnel_watchdog(app.handle().clone());
@@ -244,6 +249,21 @@ pub fn run() {
             ssl_certificate::ssl_certificate_list,
             ssl_certificate::ssl_certificate_delete,
             ssl_certificate::ssl_certificate_export,
+            uptime_monitor::uptime_list_monitors,
+            uptime_monitor::uptime_save_monitor,
+            uptime_monitor::uptime_delete_monitor,
+            uptime_monitor::uptime_toggle_monitor,
+            uptime_monitor::uptime_test_probe,
+            uptime_monitor::uptime_clear_history,
+            webhook_catcher::webhook_get_server_status,
+            webhook_catcher::webhook_start_server,
+            webhook_catcher::webhook_stop_server,
+            webhook_catcher::webhook_list_endpoints,
+            webhook_catcher::webhook_save_endpoint,
+            webhook_catcher::webhook_delete_endpoint,
+            webhook_catcher::webhook_list_requests,
+            webhook_catcher::webhook_clear_requests,
+            webhook_catcher::webhook_execute_replay,
             shortcuts_tray::update_shortcuts,
             shortcuts_tray::toggle_quick_ai_window,
             windows_data::hide_window,

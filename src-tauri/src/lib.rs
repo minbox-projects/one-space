@@ -28,6 +28,8 @@ pub mod sftp;
 mod short_link;
 mod skills;
 pub mod ssl_certificate;
+pub mod uptime_monitor;
+pub mod webhook_catcher;
 mod ssh_tunnels;
 mod storage;
 mod subagents;
@@ -64,6 +66,15 @@ pub use ssl_certificate::{
     ssl_certificate_export, ssl_certificate_list, ssl_certificate_verify_and_finalize,
     ssl_check_certificate, ssl_get_config, ssl_save_config, ssl_watchlist_add,
     ssl_watchlist_check_all, ssl_watchlist_list, ssl_watchlist_remove,
+};
+pub use uptime_monitor::{
+    uptime_clear_history, uptime_delete_monitor, uptime_list_monitors, uptime_save_monitor,
+    uptime_test_probe, uptime_toggle_monitor,
+};
+pub use webhook_catcher::{
+    webhook_clear_requests, webhook_delete_endpoint, webhook_execute_replay,
+    webhook_get_server_status, webhook_list_endpoints, webhook_list_requests,
+    webhook_save_endpoint, webhook_start_server, webhook_stop_server,
 };
 
 // Test-only discovery hook for the delegated `ble_lock` contract tests. The

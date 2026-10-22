@@ -18,7 +18,9 @@ export type MoreToolsSection =
   | "jtt-data-parser"
   | "ai-workflow-model-switcher"
   | "ble-lock"
-  | "port-tunnel";
+  | "port-tunnel"
+  | "uptime-monitor"
+  | "webhook-catcher";
 
 export type ResolvedNavigationTarget = {
   tab: string;

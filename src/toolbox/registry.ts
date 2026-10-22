@@ -17,6 +17,8 @@ import { randomPasswordTool } from "./plugins/random-password";
 import { shortLinkTool } from "./plugins/short-link";
 import { snippetsTool } from "./plugins/snippets";
 import { sslCertificateTool } from "./plugins/ssl-certificate";
+import { uptimeMonitorTool } from "./plugins/uptime-monitor";
+import { webhookCatcherTool } from "./plugins/webhook-catcher";
 import { sshServersTool } from "./plugins/ssh-servers";
 import { sshTunnelsTool } from "./plugins/ssh-tunnels";
 import type {
@@ -44,6 +46,8 @@ export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   curlPlaygroundTool,
   quickSftpTool,
   sslCertificateTool,
+  uptimeMonitorTool,
+  webhookCatcherTool,
   snippetsTool,
   notesTool,
 ];

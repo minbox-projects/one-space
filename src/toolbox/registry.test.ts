@@ -35,6 +35,8 @@ const CANONICAL_HUB_IDS = [
   "curl-playground",
   "quick-sftp",
   "ssl-certificate",
+  "uptime-monitor",
+  "webhook-catcher",
 ] as const;
 
 const NON_HUB_IDS = ["notes", "snippets"] as const;

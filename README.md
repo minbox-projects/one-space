@@ -99,6 +99,8 @@ OneSpace 是一个面向开发者的 macOS 优先桌面工作台（Tauri 2 + Rea
 - **JSON 解析**、**MD5 加密**、**随机密码**、**JT/T 数据解析**（JT/T 808 / 809 / 1078 报文）
 - **备忘录（Notes）**、**代码片段（Snippets）**、**收藏夹（Bookmarks）**：本地内容工具，参与侧边栏计数、OmniSearch 与内容同步
 - **AI Workflow 模型切换**：按 9×3 角色矩阵编辑并保存/激活 profile，模型候选自动从已发现的模型源读取，也支持手动输入
+- **服务状态监控（Uptime Monitor）**：多协议服务探活（HTTP/TCP/Ping/DNS）、60节点心跳柱状图、可用率SLA统计、事件流与桌面通知/Webhook告警
+- **Webhook 捕获与重放（Webhook Catcher）**：本地私密接收第三方回调、Payload与签名深度检视、一键重放到本地端口与实时镜像透传代理
 
 ### 通知与资讯
 

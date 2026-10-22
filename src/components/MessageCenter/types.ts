@@ -32,8 +32,17 @@ export const SOURCE_LABELS: Record<string, string> = {
   workspaces: "Workspaces",
   content: "Content",
   ai_gateway: "AI Gateway",
+  uptime_monitor: "Uptime Monitor",
 };
 
-export function getSourceLabel(source: string): string {
+export function getSourceLabel(
+  source: string,
+  t?: (key: string, fallback?: string) => string,
+): string {
+  if (t) {
+    const key = `source_${source}`;
+    const translated = t(key, SOURCE_LABELS[source] || source);
+    if (translated && translated !== key) return translated;
+  }
   return SOURCE_LABELS[source] || source || "System";
 }

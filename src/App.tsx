@@ -691,6 +691,16 @@ function App() {
       setActiveTab("settings");
       return;
     }
+    if (target.tab === "more-tools") {
+      const currentTab = activeTabRef.current;
+      if (currentTab !== "more-tools") {
+        setPreviousTab(currentTab);
+      }
+      setMoreToolsReturnTab(currentTab === "launcher" ? "launcher" : "more-tools");
+      setMoreToolsSection((target.section as MoreToolsSection) || null);
+      setActiveTab("more-tools");
+      return;
+    }
     navigateToTab(target.tab);
   };
 
@@ -1283,12 +1293,12 @@ function App() {
   const scheduleLoadCounts = (delayMs = 180) => {
     if (!isTauri) return;
     if (countsRefreshTimerRef.current !== null) {
-      window.clearTimeout(countsRefreshTimerRef.current);
+      clearTimeout(countsRefreshTimerRef.current);
     }
-    countsRefreshTimerRef.current = window.setTimeout(() => {
+    countsRefreshTimerRef.current = setTimeout(() => {
       countsRefreshTimerRef.current = null;
       void loadCounts();
-    }, delayMs);
+    }, delayMs) as unknown as number;
   };
 
   const refreshMessageUnreadCount = async () => {
@@ -1428,6 +1438,63 @@ function App() {
           setMessageUnreadCount(payload.unread_count);
         } else {
           void refreshMessageUnreadCount();
+        }
+      });
+
+      addListener("uptime-monitor-alert", (event) => {
+        const payload = (event.payload ?? {}) as {
+          monitor_id?: string;
+          name?: string;
+          target?: string;
+          status_kind?: "down" | "up";
+          title?: string;
+          body?: string;
+        };
+        const isDown = payload.status_kind === "down";
+        void refreshMessageUnreadCount();
+
+        pushToast({
+          title:
+            payload.title ||
+            (isDown
+              ? t("uptimeDownAlertTitle", "服务故障告警")
+              : t("uptimeUpAlertTitle", "服务恢复通知")),
+          description: payload.body || `${payload.name ?? ""} (${payload.target ?? ""})`,
+          kind: isDown ? "error" : "success",
+          action: {
+            label: t("view", "查看"),
+            onClick: () => {
+              const currentTab = activeTabRef.current;
+              if (currentTab !== "more-tools") {
+                setPreviousTab(currentTab);
+              }
+              setMoreToolsReturnTab(currentTab === "launcher" ? "launcher" : "more-tools");
+              setMoreToolsSection("uptime-monitor");
+              setActiveTab("more-tools");
+            },
+          },
+        });
+
+        if (typeof window !== "undefined" && "Notification" in window) {
+          if (Notification.permission === "granted") {
+            try {
+              new Notification(payload.title || "OneSpace 服务监控提醒", {
+                body: payload.body || "",
+              });
+            } catch {
+              // Ignore native notification errors
+            }
+          } else if (Notification.permission === "default") {
+            Notification.requestPermission().then((perm) => {
+              if (perm === "granted") {
+                try {
+                  new Notification(payload.title || "OneSpace 服务监控提醒", {
+                    body: payload.body || "",
+                  });
+                } catch {}
+              }
+            });
+          }
         }
       });
 

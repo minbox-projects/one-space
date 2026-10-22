@@ -49,6 +49,21 @@ function invokeCommandMock(command: string, args?: Record<string, unknown>) {
       return bleLockRequestAccessibilityMock();
     case "ble_lock_lock_now":
       return bleLockLockNowMock();
+    case "uptime_list_monitors":
+      return Promise.resolve([]);
+    case "webhook_get_server_status":
+      return Promise.resolve({
+        isRunning: true,
+        port: 17692,
+        activeEndpointsCount: 0,
+        capturedRequestsCount: 0,
+      });
+    case "webhook_list_endpoints":
+      return Promise.resolve([]);
+    case "webhook_list_requests":
+      return Promise.resolve([]);
+    case "webhook_start_server":
+      return Promise.resolve(17692);
     default:
       return Promise.resolve(undefined);
   }

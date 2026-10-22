@@ -21,6 +21,7 @@ export type MessageSource =
   | "workspaces"
   | "content"
   | "ai_gateway"
+  | "uptime_monitor"
   | (string & {});
 
 export interface MessageTarget {
