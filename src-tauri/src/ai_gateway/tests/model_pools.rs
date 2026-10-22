@@ -627,6 +627,289 @@ async fn pool_client_error_returns_to_caller_without_falling_back() {
     stop_server().await.expect("stop the listener");
 }
 
+const REASONING_HISTORY_ERROR: &str = "Missing required parameter: 'messages[3].reasoning_content'. This model needs the reasoning of every earlier assistant message: send back the 'reasoning_content' returned with that message. If 'reasoning_content' is not available, consider starting a new session or conversation history.";
+
+fn reasoning_history_messages(empty_reasoning: bool) -> Value {
+    let mut messages = json!([
+        {"role": "user", "content": "Count the synthetic blue tiles."},
+        {
+            "role": "assistant",
+            "content": "There are two blue tiles.",
+            "reasoning_content": "SAFE_FIXTURE_existing_nonempty_reasoning"
+        },
+        {"role": "user", "content": "Count the synthetic red tiles."},
+        {"role": "assistant", "content": "There are three red tiles."},
+        {"role": "user", "content": "How many tiles are there altogether?"}
+    ]);
+    if empty_reasoning {
+        messages[3]["reasoning_content"] = json!("");
+    }
+    messages
+}
+
+fn reasoning_history_error(message: &str) -> Value {
+    json!({"error": {"type": "invalid_request_error", "message": message}})
+}
+
+fn reasoning_history_success(captured: &Captured) -> MockReply {
+    let body: Value = serde_json::from_slice(&captured.body).expect("captured chat request");
+    if body["stream"] == true {
+        MockReply::Stream(format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "id": "history-success",
+                "object": "chat.completion.chunk",
+                "model": "remote-ready",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Five tiles."}, "finish_reason": null}]
+            }),
+            json!({
+                "id": "history-success",
+                "object": "chat.completion.chunk",
+                "model": "remote-ready",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+            }),
+        ))
+    } else {
+        MockReply::Json(200, json!({
+            "id": "history-success",
+            "object": "chat.completion",
+            "model": "remote-ready",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Five tiles."}, "finish_reason": "stop"}]
+        }))
+    }
+}
+
+fn reasoning_history_config(port: u16, upstream: &str, configured_fallback: bool) -> Value {
+    let tag = tag();
+    let provider_id = format!("p-history-{tag}");
+    let provider = pool_provider(
+        &provider_id,
+        "Synthetic History Provider",
+        upstream,
+        vec![
+            pool_key("key-first", "First", "SAFE_FIXTURE_history_first", true),
+            pool_key("key-second", "Second", "SAFE_FIXTURE_history_second", true),
+        ],
+        vec![
+            provider_mapping("local-rejected", "remote-rejected", "chat_completions"),
+            provider_mapping("local-ready", "remote-ready", "chat_completions"),
+        ],
+    );
+    let mut pool = json!({
+        "id": format!("pool-history-{tag}"),
+        "name": "Synthetic History Pool",
+        "model": format!("history-pool-{tag}"),
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_id, "local-rejected", "remote-rejected", "chat_completions", Some(100)),
+        ],
+        "fallback_models": [],
+    });
+    if configured_fallback {
+        // Repeating the primary in the fallback expansion must not retry it.
+        pool["fallback_models"] = json!(["local-rejected", "local-ready"]);
+    } else {
+        pool["candidates"].as_array_mut().unwrap().push(pool_candidate(
+            &provider_id, "local-ready", "remote-ready", "chat_completions", Some(1),
+        ));
+    }
+    pool_config_v3(port, vec![provider], vec![pool])
+}
+
+fn reasoning_history_provider_state() -> Value {
+    serde_json::to_value(
+        crate::ai_gateway::storage::read_config().expect("read config").providers,
+    )
+    .expect("serialize persisted provider state")
+}
+
+async fn assert_reasoning_history_pool_fallback(stream: bool, configured_fallback: bool) {
+    let _home = temp_home("pool-reasoning-history-fallback");
+    let port = free_port().await;
+    let (upstream, log) = spawn_mock_upstream(|captured| {
+        if captured_model(captured) == "remote-rejected" {
+            MockReply::Json(400, reasoning_history_error(REASONING_HISTORY_ERROR))
+        } else {
+            reasoning_history_success(captured)
+        }
+    })
+    .await;
+    let config = reasoning_history_config(port, &upstream, configured_fallback);
+    let alias = config["model_pools"][0]["model"].as_str().unwrap();
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+    let before = reasoning_history_provider_state();
+    let mut observations = Vec::new();
+    for empty_reasoning in [false, true] {
+        let messages = reasoning_history_messages(empty_reasoning);
+        let start = log.lock().unwrap().len();
+        let response = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": alias, "stream": stream, "messages": messages})),
+        )
+        .await;
+        let captured = log.lock().unwrap()[start..].to_vec();
+        observations.push((messages, response, captured));
+    }
+    let after = reasoning_history_provider_state();
+    // Release the global listener before the expected RED assertions.
+    stop_server().await.expect("stop the listener");
+
+    for (messages, (status, content_type, text), captured) in observations {
+        assert_eq!(status, 200, "historical reasoning rejection must advance the pool: {text}");
+        assert_eq!(
+            captured.iter().map(captured_model).collect::<Vec<_>>(),
+            vec!["remote-rejected", "remote-ready"],
+            "each request must skip the rejected source once, without retry, key rotation or cross-request cooldown"
+        );
+        for entry in &captured {
+            let body: Value = serde_json::from_slice(&entry.body).expect("captured request");
+            assert_eq!(body["messages"], messages, "preserve missing, empty and existing nonempty reasoning exactly");
+            assert_eq!(body["stream"], stream);
+            assert_eq!(entry.path, "/v1/chat/completions");
+            assert_eq!(auth_of(entry), Some("Bearer SAFE_FIXTURE_history_first"));
+        }
+        if stream {
+            assert!(content_type.starts_with("text/event-stream"), "{content_type}");
+            assert!(text.contains("Five tiles."), "{text}");
+            assert!(text.contains("[DONE]"), "{text}");
+            assert!(!text.contains(REASONING_HISTORY_ERROR), "{text}");
+        } else {
+            let body: Value = serde_json::from_str(&text).expect("success JSON");
+            assert_eq!(body["choices"][0]["message"]["content"], "Five tiles.");
+        }
+    }
+    assert_eq!(after, before, "history rejection must leave keys and mapping health unchanged");
+}
+
+#[tokio::test]
+async fn pool_reasoning_history_non_streaming_tries_next_candidate() {
+    assert_reasoning_history_pool_fallback(false, false).await;
+}
+
+#[tokio::test]
+async fn pool_reasoning_history_streaming_tries_next_candidate() {
+    assert_reasoning_history_pool_fallback(true, false).await;
+}
+
+#[tokio::test]
+async fn pool_reasoning_history_non_streaming_uses_configured_fallback() {
+    assert_reasoning_history_pool_fallback(false, true).await;
+}
+
+#[tokio::test]
+async fn pool_reasoning_history_streaming_uses_configured_fallback() {
+    assert_reasoning_history_pool_fallback(true, true).await;
+}
+
+async fn assert_reasoning_history_returns_400(ordinary: bool, message: &'static str) {
+    let _home = temp_home("pool-reasoning-history-client-error");
+    let port = free_port().await;
+    let (upstream, log) = spawn_mock_upstream(move |captured| {
+        if captured_model(captured) == "remote-rejected" {
+            MockReply::Json(400, reasoning_history_error(message))
+        } else {
+            reasoning_history_success(captured)
+        }
+    })
+    .await;
+    let mut config = reasoning_history_config(port, &upstream, false);
+    let alias = if ordinary {
+        config["model_pools"] = json!([]);
+        let mut other = config["providers"][0].clone();
+        other["id"] = json!(format!("p-other-{}", tag()));
+        other["mappings"] = json!([provider_mapping("local-rejected", "remote-ready", "chat_completions")]);
+        config["providers"][0]["weight"] = json!(100);
+        config["providers"].as_array_mut().unwrap().push(other);
+        "local-rejected".to_string()
+    } else {
+        config["model_pools"][0]["fallback_models"] = json!(["local-ready"]);
+        config["model_pools"][0]["model"].as_str().unwrap().to_string()
+    };
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+    let before = reasoning_history_provider_state();
+    let mut observations = Vec::new();
+    for stream in [false, true] {
+        let start = log.lock().unwrap().len();
+        let response = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(json!({"model": alias, "stream": stream, "messages": reasoning_history_messages(stream)})),
+        )
+        .await;
+        observations.push((response, log.lock().unwrap()[start..].to_vec()));
+    }
+    let after = reasoning_history_provider_state();
+    stop_server().await.expect("stop the listener");
+
+    for ((status, content_type, text), captured) in observations {
+        assert_eq!(status, 400, "this client error must return unchanged: {text}");
+        assert!(content_type.starts_with("application/json"), "{content_type}");
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), reasoning_history_error(message));
+        assert_eq!(captured.iter().map(captured_model).collect::<Vec<_>>(), vec!["remote-rejected"], "no key rotation, retry, sibling or fallback attempt");
+        assert_eq!(auth_of(&captured[0]), Some("Bearer SAFE_FIXTURE_history_first"));
+    }
+    assert_eq!(after, before, "client errors must leave persisted provider state unchanged");
+}
+
+#[tokio::test]
+async fn pool_reasoning_history_ordinary_request_returns_identical_400() {
+    assert_reasoning_history_returns_400(true, REASONING_HISTORY_ERROR).await;
+}
+
+#[tokio::test]
+async fn pool_reasoning_history_unrelated_invalid_request_returns_400() {
+    assert_reasoning_history_returns_400(false, "Invalid request: 'temperature' must be between 0 and 2.").await;
+}
+
+async fn assert_reasoning_history_exhaustion(stream: bool) {
+    let _home = temp_home("pool-reasoning-history-exhaustion");
+    let port = free_port().await;
+    let (upstream, log) = spawn_mock_upstream(|_| {
+        MockReply::Json(400, reasoning_history_error(REASONING_HISTORY_ERROR))
+    })
+    .await;
+    let config = reasoning_history_config(port, &upstream, true);
+    let alias = config["model_pools"][0]["model"].as_str().unwrap();
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+    let before = reasoning_history_provider_state();
+    let (status, content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": alias, "stream": stream, "messages": reasoning_history_messages(false)})),
+    )
+    .await;
+    let after = reasoning_history_provider_state();
+    stop_server().await.expect("stop the listener");
+
+    assert_eq!(status, 502, "exhausted history-incompatible sources must use the existing 502 envelope: {text}");
+    assert!(content_type.starts_with("application/json"), "{content_type}");
+    let body: Value = serde_json::from_str(&text).expect("exhaustion error JSON");
+    assert_eq!(body["error"]["code"], "all_providers_unavailable");
+    assert!(body["error"]["message"].as_str().unwrap().contains(REASONING_HISTORY_ERROR), "retain the rejection cause: {text}");
+    assert_eq!(models_of(&log), vec!["remote-rejected", "remote-ready"], "exhaust each distinct source once, including the fallback stage");
+    assert_eq!(after, before, "exhaustion must leave keys and mapping health unchanged");
+}
+
+#[tokio::test]
+async fn pool_reasoning_history_non_streaming_exhaustion_returns_502_with_cause() {
+    assert_reasoning_history_exhaustion(false).await;
+}
+
+#[tokio::test]
+async fn pool_reasoning_history_streaming_exhaustion_returns_502_with_cause() {
+    assert_reasoning_history_exhaustion(true).await;
+}
+
 // ---------------------------------------------------------------------------
 // REQ-007 / AC-010: alias exclusion and the native Messages boundary
 // ---------------------------------------------------------------------------
@@ -6671,4 +6954,3 @@ async fn pool_fallback_queue_serves_the_next_fallback_model_after_every_source_o
 
     stop_server().await.expect("stop the listener");
 }
-

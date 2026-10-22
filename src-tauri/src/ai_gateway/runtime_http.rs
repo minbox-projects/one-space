@@ -1107,6 +1107,44 @@ fn failure_reason(status: u16, body_parsed: bool, error_message: Option<&str>) -
     format!("{base} ({msg})")
 }
 
+/// Recognize the upstream rejection raised when an earlier assistant turn is
+/// sent without the `reasoning_content` that model requires. Bounded to the
+/// provider's missing historical-reasoning parameter error, never any 400 or
+/// any reasoning-related validation text.
+fn is_missing_historical_reasoning_rejection(status: u16, error_message: Option<&str>) -> bool {
+    if status != 400 {
+        return false;
+    }
+    let Some(message) = error_message.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let lower = message.to_ascii_lowercase();
+    lower.contains("missing required parameter")
+        && lower.contains("messages[")
+        && lower.contains("].reasoning_content")
+        && lower.contains("earlier assistant message")
+}
+
+/// Classify one failed attempt, recognizing a model-pool historical-reasoning
+/// rejection as a request-local skip before the shared classifier runs.
+///
+/// The caller's own message bytes determine that rejection for this model only;
+/// it says nothing about the upstream key or mapping health. `Transient` makes
+/// the pool advance to the next source without retrying the same provider,
+/// marking a key, counting mapping health or cooling the candidate.
+fn classify_attempt_failure(
+    status: u16,
+    network_error: bool,
+    body_parsed: bool,
+    error_message: Option<&str>,
+    pool_candidate: bool,
+) -> FailureClass {
+    if pool_candidate && is_missing_historical_reasoning_rejection(status, error_message) {
+        return FailureClass::Transient;
+    }
+    classify_failure_with_message(status, network_error, body_parsed, error_message)
+}
+
 /// The exact upstream model and protocol for one attempt.
 ///
 /// A prepared model-pool candidate carries its full stored identity, so its real
@@ -1257,11 +1295,12 @@ async fn attempt_candidate(
             // Quota-exhausted 429s count toward mapping health (Retryable) but
             // never requeue the same provider; plain rate-limit 429s stay
             // Transient and are still retried.
-            let class = classify_failure_with_message(
+            let class = classify_attempt_failure(
                 response.status,
                 false,
                 response.parsed,
                 error_message.as_deref(),
+                provider.pool_candidate.is_some(),
             );
             if class == FailureClass::ReturnToClient {
                 // A standard upstream error body stays byte-for-byte; a
@@ -2689,8 +2728,13 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                     &extract_upstream_error_text(&bytes).unwrap_or_default(),
                     provider,
                 );
-                let class =
-                    classify_failure_with_message(status, false, parsed, error_message.as_deref());
+                let class = classify_attempt_failure(
+                    status,
+                    false,
+                    parsed,
+                    error_message.as_deref(),
+                    provider.pool_candidate.is_some(),
+                );
                 if class == FailureClass::ReturnToClient {
                     let reason = failure_reason(status, parsed, error_message.as_deref());
                     if let Some(target) = &probe_target {
