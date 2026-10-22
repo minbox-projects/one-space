@@ -25,7 +25,74 @@ pub(super) fn check_cli_installed() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::{Duration, Instant};
+
     use crate::app_runtime::cli::build_cli_script_content;
+
+    fn webhook_listener_accepts_connections(port: u16) -> bool {
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+    }
+
+    fn wait_for_webhook_listener_closed(port: u16, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !webhook_listener_accepts_connections(port) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    struct WebhookServerGuard(
+        std::sync::Arc<crate::webhook_catcher::server::WebhookServerManager>,
+    );
+
+    impl Drop for WebhookServerGuard {
+        fn drop(&mut self) {
+            let _ = self.0.stop();
+        }
+    }
+
+    #[test]
+    fn shutdown_runtime_services_closes_running_webhook_listener_idempotently() {
+        let _app = tauri::test::mock_app();
+        let manager = crate::webhook_catcher::server::WebhookServerManager::global();
+        let _ = manager.stop();
+
+        let port = tauri::async_runtime::block_on(manager.start(Some(0)))
+            .expect("webhook listener should start on an ephemeral loopback port");
+        // Stops the listener on any assertion failure, including the precondition.
+        let _guard = WebhookServerGuard(manager.clone());
+
+        assert!(
+            webhook_listener_accepts_connections(port),
+            "webhook listener should be reachable before shutdown"
+        );
+
+        super::shutdown_runtime_services();
+        let closed_after_shutdown = wait_for_webhook_listener_closed(port, Duration::from_secs(2));
+
+        assert!(
+            closed_after_shutdown,
+            "running webhook listener on port {port} stayed reachable after shutdown_runtime_services"
+        );
+        assert!(
+            !webhook_listener_accepts_connections(port),
+            "webhook listener should stay closed after shutdown"
+        );
+
+        super::shutdown_runtime_services();
+        super::shutdown_runtime_services();
+        assert!(
+            !webhook_listener_accepts_connections(port),
+            "repeated shutdown must not reopen the webhook listener"
+        );
+    }
 
     #[test]
     fn cli_script_preserves_claude_config_dir_stderr() {
@@ -177,6 +244,8 @@ pub(super) fn shutdown_runtime_services() {
     crate::tunnel::shutdown_all();
     // Stop the process-owned SSL certificate scheduler.
     crate::ssl_certificate::stop_ssl_scheduler();
+    // Stop the process-owned webhook listener; `stop` is idempotent.
+    let _ = crate::webhook_catcher::server::WebhookServerManager::global().stop();
 }
 
 #[tauri::command]

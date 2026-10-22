@@ -21,12 +21,6 @@ pub async fn webhook_start_server(port: Option<u16>) -> Result<u16, String> {
 }
 
 #[tauri::command]
-pub async fn webhook_stop_server() -> Result<(), String> {
-    let manager = WebhookServerManager::global();
-    manager.stop()
-}
-
-#[tauri::command]
 pub async fn webhook_list_endpoints() -> Result<Vec<WebhookEndpoint>, String> {
     load_endpoints()
 }

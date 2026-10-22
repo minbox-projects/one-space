@@ -506,76 +506,6 @@ pub fn get_mcp_templates() -> Vec<MCPTemplate> {
     ]
 }
 
-// Retained without production callers after the AI workspace removal; see the
-// decision record
-// .ai-workflow/notes/implemented/simplification/2026-09-29-ai-workspace-removal.md
-#[allow(dead_code)]
-pub fn find_mcp_template_for_server(server: &MCPServer) -> Option<MCPTemplate> {
-    get_mcp_templates()
-        .into_iter()
-        .find(|template| server_matches_template(server, template))
-}
-
-#[allow(dead_code)]
-fn server_matches_template(server: &MCPServer, template: &MCPTemplate) -> bool {
-    if server.id == format!("mcp-{}", template.id) {
-        return true;
-    }
-    if server.config_key.as_deref() == Some(template.id) {
-        return true;
-    }
-
-    let command = server
-        .command
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-    let args_joined = server
-        .args
-        .as_ref()
-        .map(|args| args.join(" ").to_lowercase())
-        .unwrap_or_default();
-    let url = server
-        .http_url
-        .as_ref()
-        .or(server.url.as_ref())
-        .map(|value| value.to_lowercase())
-        .unwrap_or_default();
-
-    if let Some(template_url) = template.url {
-        let template_url = template_url.to_lowercase();
-        if !template_url.is_empty()
-            && url.contains(template_url.split('?').next().unwrap_or_default())
-        {
-            return true;
-        }
-    }
-
-    if let Some(template_command) = template.command {
-        if command == template_command.to_lowercase() {
-            if let Some(args) = &template.args {
-                if args
-                    .iter()
-                    .all(|arg| args_joined.contains(&arg.to_lowercase()))
-                {
-                    return true;
-                }
-            }
-        }
-    }
-
-    match template.id {
-        "exa" => {
-            url.contains("mcp.exa.ai/mcp")
-                || args_joined.contains("exa-mcp-server")
-                || (args_joined.contains("mcp-remote") && args_joined.contains("mcp.exa.ai/mcp"))
-        }
-        "context7" => args_joined.contains("@upstash/context7-mcp"),
-        _ => false,
-    }
-}
-
 /// 从模板创建 MCP 服务器实例
 #[tauri::command]
 pub fn get_mcp_template(template_id: String) -> Result<MCPServer, String> {
@@ -669,9 +599,7 @@ pub fn list_mcp_templates() -> Result<Vec<serde_json::Value>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_mcp_template_for_server, get_mcp_templates};
-    use crate::mcp_servers::{MCPServer, MCPServerTransport};
-    use chrono::Utc;
+    use super::get_mcp_templates;
 
     #[test]
     fn exa_template_exposes_search_metadata() {
@@ -684,32 +612,5 @@ mod tests {
         assert_eq!(exa.url, Some("https://mcp.exa.ai/mcp?tools=web_search_exa"));
         assert!(exa.capability_tags.contains(&"web_search"));
         assert!(exa.impact_tags.contains(&"remote_api"));
-    }
-
-    #[test]
-    fn find_template_matches_context7_stdio_server() {
-        let server = MCPServer {
-            id: "mcp-context7".to_string(),
-            name: "Context7".to_string(),
-            config_key: Some("context7".to_string()),
-            description: None,
-            transport: MCPServerTransport::Stdio,
-            command: Some("npx".to_string()),
-            args: Some(vec!["-y".to_string(), "@upstash/context7-mcp".to_string()]),
-            cwd: None,
-            url: None,
-            http_url: None,
-            env: None,
-            headers: None,
-            timeout: Some(60_000),
-            trust: Some(false),
-            linked_provider_ids: vec![],
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        let matched = find_mcp_template_for_server(&server).expect("context7 template");
-        assert_eq!(matched.id, "context7");
-        assert_eq!(matched.category, "docs");
     }
 }

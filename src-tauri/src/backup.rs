@@ -55,19 +55,6 @@ fn get_backup_history_path() -> Result<PathBuf, String> {
     Ok(backup_dir.join("backup_history.json"))
 }
 
-/// 扩展 home 目录路径
-fn _expand_home_dir(path: &str) -> Result<PathBuf, String> {
-    if let Some(home) = dirs::home_dir() {
-        if path == "~" {
-            return Ok(home);
-        }
-        if path.starts_with("~/") {
-            return Ok(home.join(&path[2..]));
-        }
-    }
-    Ok(PathBuf::from(path))
-}
-
 /// 加载备份历史
 fn load_backup_history() -> Result<BackupHistory, String> {
     let path = get_backup_history_path()?;
@@ -97,8 +84,7 @@ fn save_backup_history(history: &BackupHistory) -> Result<(), String> {
     atomic_write_string(&path, &content)
 }
 
-/// 创建备份
-#[tauri::command]
+/// 创建备份（内部使用，恢复前自动调用）
 pub fn create_backup(tool: String, reason: Option<String>) -> Result<Vec<BackupEntry>, String> {
     let backup_dir = get_backup_dir()?;
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();

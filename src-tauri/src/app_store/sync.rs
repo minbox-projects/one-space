@@ -892,7 +892,6 @@ pub(in crate::app_store) async fn process_sync_queue_impl(
                         },
                     );
                 }
-                let _ = app.emit("refresh-ai-providers", ());
             }
             Err(err) => {
                 last_error = Some(err.clone());

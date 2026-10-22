@@ -1,69 +1,13 @@
-use crate::config::{self, SkillSourceConfig};
+use crate::config;
 use crate::skills::{
     api_ok, combined_revision, current_installed_skills, job_lock, load_local_skills_state,
     load_skills_state, load_sync_state, migrate_installed_dir_names, normalize_install_scope,
     normalize_models, normalize_project_root_for_scope, normalized_model, refresh_local_hashes,
     resolve_effective_models, save_local_skills_state, save_skills_state, skills_sync_now_blocking,
-    ApiOk, CatalogSkill, SkillRecord, SkillsConfigPayload, SkillsSourcesExportPayload,
-    SkillsSyncState,
+    ApiOk, CatalogSkill, SkillRecord, SkillsSyncState,
 };
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::TryLockError;
-
-#[tauri::command]
-pub fn skills_config_get() -> Result<ApiOk<SkillsConfigPayload>, String> {
-    let cfg = config::get_storage_config()?;
-    let payload = SkillsConfigPayload {
-        skills_sync_enabled: cfg.skills_sync_enabled.unwrap_or(true),
-        skills_auto_update_enabled: cfg.skills_auto_update_enabled.unwrap_or(false),
-        skills_sync_interval_minutes: cfg.skills_sync_interval_minutes.unwrap_or(60).max(5),
-        skills_new_badge_hours: cfg.skills_new_badge_hours.unwrap_or(72).clamp(1, 720),
-        skills_sources: cfg.skills_sources,
-    };
-    let state = load_skills_state()?;
-    api_ok(payload, state.revision)
-}
-
-#[tauri::command]
-pub async fn skills_config_save(
-    app: tauri::AppHandle,
-    config_payload: SkillsConfigPayload,
-) -> Result<ApiOk<SkillsConfigPayload>, String> {
-    {
-        let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-        let mut cfg = config::get_storage_config()?;
-        cfg.skills_sync_enabled = Some(config_payload.skills_sync_enabled);
-        cfg.skills_auto_update_enabled = Some(config_payload.skills_auto_update_enabled);
-        cfg.skills_sync_interval_minutes = Some(config_payload.skills_sync_interval_minutes.max(5));
-        cfg.skills_new_badge_hours = Some(config_payload.skills_new_badge_hours.clamp(1, 720));
-        cfg.skills_sources = config_payload.skills_sources.clone();
-        drop(_guard);
-        config::save_storage_config(app.clone(), cfg).await?;
-    }
-    let state = load_skills_state()?;
-    api_ok(config_payload, state.revision)
-}
-
-#[tauri::command]
-pub fn skills_sources_export_to_path(
-    output_path: String,
-    skills_sources: Vec<SkillSourceConfig>,
-) -> Result<String, String> {
-    let payload = SkillsSourcesExportPayload {
-        version: 1,
-        exported_at: chrono::Utc::now().to_rfc3339(),
-        skills_sources,
-    };
-    let content = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-    let path = PathBuf::from(&output_path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(&path, content).map_err(|e| e.to_string())?;
-    Ok(output_path)
-}
 
 #[tauri::command]
 pub fn skills_list_installed(

@@ -107,11 +107,6 @@ impl ProxyManager {
             .and_then(|g| g.as_ref().map(|c| c.proxy_enabled))
             .unwrap_or(false)
     }
-
-    #[allow(dead_code)]
-    pub fn get_config(&self) -> Option<ProxyConfig> {
-        self.config.read().ok().and_then(|g| g.clone())
-    }
 }
 
 fn create_proxy_client(config: &ProxyConfig) -> Result<Client, String> {
@@ -254,19 +249,6 @@ pub fn init_proxy_manager() -> Arc<ProxyManager> {
     }
 
     mgr
-}
-
-#[tauri::command]
-pub async fn get_proxy_config() -> Result<Option<ProxyConfig>, String> {
-    let cfg = crate::config::get_storage_config()?;
-    Ok(cfg.proxy)
-}
-
-#[tauri::command]
-pub async fn save_proxy_config(app: tauri::AppHandle, proxy: ProxyConfig) -> Result<(), String> {
-    let mut cfg = crate::config::get_config()?;
-    cfg.proxy = Some(proxy);
-    crate::config::save_storage_config(app, cfg).await
 }
 
 #[tauri::command]

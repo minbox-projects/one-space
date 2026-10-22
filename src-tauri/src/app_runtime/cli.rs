@@ -4,28 +4,6 @@ use std::io::Write;
 use std::process::Command;
 use std::sync::OnceLock;
 
-#[allow(dead_code)]
-pub(super) fn get_brew_command() -> Command {
-    static BREW_PATH: OnceLock<String> = OnceLock::new();
-    let path = BREW_PATH.get_or_init(|| {
-        if Command::new("brew")
-            .arg("--version")
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-        {
-            return "brew".to_string();
-        }
-        for p in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"] {
-            if std::path::Path::new(p).exists() {
-                return p.to_string();
-            }
-        }
-        "brew".to_string()
-    });
-    Command::new(path)
-}
-
 pub fn get_git_command() -> Command {
     static GIT_PATH: OnceLock<String> = OnceLock::new();
     let path = GIT_PATH.get_or_init(|| {

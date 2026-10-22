@@ -1,20 +1,7 @@
 use crate::config::{get_app_dir, StorageConfig};
-use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
-use tauri::Emitter;
-
-#[allow(dead_code)]
-static SYNC_LOCK: Mutex<()> = Mutex::new(());
-
-#[allow(dead_code)]
-#[derive(Serialize, Clone)]
-struct SyncStatusPayload {
-    status: String,
-    message: Option<String>,
-}
 
 fn get_git_data_dir() -> Result<PathBuf, String> {
     let app_dir = get_app_dir()?;
@@ -260,57 +247,3 @@ pub fn commit_and_push(config: &StorageConfig) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-#[allow(dead_code)]
-pub async fn sync_git(app: tauri::AppHandle) -> Result<(), String> {
-    let config = crate::config::get_config()?;
-    if config.storage_type == "git" {
-        let _ = app.emit(
-            "git-sync-status",
-            SyncStatusPayload {
-                status: "pulling".to_string(),
-                message: Some("Pulling from Git repository...".to_string()),
-            },
-        );
-
-        // Run sync in a blocking thread to avoid any chance of UI stutter
-        let res = tauri::async_runtime::spawn_blocking(move || {
-            let _lock = SYNC_LOCK.lock().map_err(|e| e.to_string())?;
-            match (|| {
-                init_or_pull_git_repo(&config)?;
-                commit_and_push(&config)?;
-                Ok::<(), String>(())
-            })() {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-        match res {
-            Ok(_) => {
-                let _ = app.emit(
-                    "git-sync-status",
-                    SyncStatusPayload {
-                        status: "success".to_string(),
-                        message: Some("Synced successfully".to_string()),
-                    },
-                );
-                // Notify other components to refresh data
-                let _ = app.emit("refresh-ai-providers", ());
-            }
-            Err(e) => {
-                let _ = app.emit(
-                    "git-sync-status",
-                    SyncStatusPayload {
-                        status: "error".to_string(),
-                        message: Some(e.clone()),
-                    },
-                );
-                return Err(e);
-            }
-        }
-    }
-    Ok(())
-}

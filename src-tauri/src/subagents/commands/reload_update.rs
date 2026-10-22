@@ -15,7 +15,7 @@ use crate::subagents::{
     source_entry_exists, source_subagent_abs_path, subagent_has_markdown_update,
     subagent_matches_repository, trigger_storage_sync, ApiOk, ReloadApplyResult,
     RepoReloadApplyInput, SubagentKeyInput, SubagentRecord, UpdateDiff, INSTALL_SCOPE_GLOBAL,
-    INSTALL_SCOPE_PROJECT, MODELS,
+    MODELS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -203,61 +203,6 @@ pub async fn subagents_repo_reload_apply(
         applied_at: now,
     };
     api_ok(result, combined_revision(&shared_state, &local_state))
-}
-
-#[tauri::command]
-pub fn subagents_update_check(input: SubagentKeyInput) -> Result<ApiOk<bool>, String> {
-    let update_scope = normalize_install_scope(input.scope.as_deref());
-    let update_project_root =
-        normalize_project_root_for_scope(&update_scope, input.project_root.as_deref())?;
-    let mut state = load_local_subagents_state()?;
-    let sync_state = load_sync_state()?;
-    let cfg = config::get_storage_config()?;
-    if update_scope == INSTALL_SCOPE_PROJECT {
-        let record = find_current_installed_subagent(
-            &state,
-            &sync_state,
-            &cfg,
-            &input.model,
-            &input.subagent_id,
-            &update_scope,
-            update_project_root.as_deref(),
-        )?;
-        return api_ok(record.has_update, state.revision);
-    }
-    let mut changed = false;
-    for s in &mut state.subagents {
-        if s.model == input.model
-            && s.id == input.subagent_id
-            && scope_project_match(s, &update_scope, update_project_root.as_deref())
-        {
-            if let Some(c) = sync_state
-                .catalog
-                .iter()
-                .find(|c| c.source_id == s.source_id && c.rel_path == s.source_rel_path)
-            {
-                s.remote_hash = Some(c.remote_hash.clone());
-                s.has_update = subagent_has_markdown_update(s, &cfg).unwrap_or(false);
-                changed = true;
-            }
-        }
-    }
-    let has_update = state
-        .subagents
-        .iter()
-        .find(|s| {
-            s.model == input.model
-                && s.id == input.subagent_id
-                && scope_project_match(s, &update_scope, update_project_root.as_deref())
-        })
-        .map(|s| s.has_update)
-        .unwrap_or(false);
-    let state = if changed {
-        save_local_subagents_state(state)?
-    } else {
-        state
-    };
-    api_ok(has_update, state.revision)
 }
 
 #[tauri::command]

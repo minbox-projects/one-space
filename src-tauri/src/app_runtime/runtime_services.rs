@@ -1,7 +1,6 @@
 use crate::app_store;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::Emitter;
 
 /// Fixed grace after a detected system resume during which transport failures
 /// are not counted toward mapping-row health (REQ-004).
@@ -44,8 +43,7 @@ pub(crate) fn set_system_resume_at_for_tests(at: Option<SystemTime>) {
     SYSTEM_RESUME_AT_SECS.store(epoch_secs(at), Ordering::Relaxed);
 }
 
-pub(super) fn setup_proxy_monitor(app: &tauri::AppHandle) {
-    let app = app.clone();
+pub(super) fn setup_proxy_monitor(_app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -61,7 +59,6 @@ pub(super) fn setup_proxy_monitor(app: &tauri::AppHandle) {
                 if proxy_mgr.is_enabled() {
                     match proxy_mgr.test_proxy().await {
                         Ok(status) => {
-                            let _ = app.emit("proxy-status-update", &status);
                             if !status.is_available {
                                 log::warn!("Proxy check failed: {}", status.message);
                             }

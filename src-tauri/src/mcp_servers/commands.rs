@@ -1,11 +1,11 @@
 use super::{
-    acquire_job_key, api_ok, apply_model_switch, compare_semver_like, decrypt_sensitive_data,
-    enabled_by_any_model, ensure_server_config_keys, fetch_npm_latest_version, job_lock,
-    load_state, load_state_with_local_sync, load_updates_state, model_keysets, now_ts,
-    parse_server_npm_spec, refresh_local_install_state_from_cli, save_state, save_updates_state,
-    slugify_server_name, sync_local_install_state_with_current_servers, trigger_storage_sync,
-    ApiOk, MCPModel, MCPModelSwitchState, MCPServer, MCPServersState, MCPUpdateInfo,
-    MCPUpdateStatus, MCPUpdatesState,
+    acquire_job_key, api_ok, apply_model_switch, compare_semver_like, enabled_by_any_model,
+    ensure_server_config_keys, fetch_npm_latest_version, job_lock, load_state,
+    load_state_with_local_sync, load_updates_state, model_keysets, now_ts, parse_server_npm_spec,
+    refresh_local_install_state_from_cli, save_state, save_updates_state, slugify_server_name,
+    sync_local_install_state_with_current_servers, trigger_storage_sync, ApiOk, MCPModel,
+    MCPModelSwitchState, MCPServer, MCPServersState, MCPUpdateInfo, MCPUpdateStatus,
+    MCPUpdatesState,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -448,15 +448,3 @@ pub async fn mcp_update_apply(
     api_ok(info)
 }
 
-/// 测试命令：解密当前存储的数据（仅用于调试）
-#[tauri::command]
-pub fn debug_decrypt_all() -> Result<Vec<MCPServer>, String> {
-    let mut state = load_state()?;
-
-    // 确保解密
-    for server in state.servers.iter_mut() {
-        let _ = decrypt_sensitive_data(server);
-    }
-
-    Ok(state.servers)
-}

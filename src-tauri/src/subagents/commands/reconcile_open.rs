@@ -268,24 +268,6 @@ pub async fn subagents_reconcile(
 }
 
 #[tauri::command]
-pub async fn subagents_rescan_local(
-    _app: tauri::AppHandle,
-) -> Result<ApiOk<Vec<SubagentRecord>>, String> {
-    let _job = match acquire_job_key("rescan:local")? {
-        Some(v) => v,
-        None => {
-            let state = load_local_subagents_state()?;
-            return api_ok(state.subagents.clone(), state.revision);
-        }
-    };
-    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-    let mut state = load_local_subagents_state()?;
-    rebuild_local_installed_from_models(&mut state)?;
-    let state = save_local_subagents_state(state)?;
-    api_ok(state.subagents.clone(), state.revision)
-}
-
-#[tauri::command]
 pub async fn subagents_rescan_mirror(
     _app: tauri::AppHandle,
 ) -> Result<ApiOk<Vec<SubagentRecord>>, String> {

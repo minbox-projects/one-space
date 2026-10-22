@@ -1,4 +1,4 @@
-use crate::config::{self, SubagentSourceConfig};
+use crate::config;
 use crate::subagents::{
     api_ok, combined_revision, current_installed_subagents, get_source, git_run, job_lock,
     load_local_subagents_state, load_subagents_state, load_sync_state, migrate_installed_dir_names,
@@ -6,66 +6,10 @@ use crate::subagents::{
     refresh_local_hashes, resolve_effective_models, save_local_subagents_state,
     save_subagents_state, scan_source_catalog_with_diagnostics, subagents_cache_root,
     subagents_sync_now_blocking, sync_source_repo, ApiOk, CatalogSubagent, SubagentRecord,
-    SubagentSourceDiagnoseInput, SubagentSourceDiagnoseResult, SubagentsConfigPayload,
-    SubagentsSourcesExportPayload, SubagentsSyncState,
+    SubagentSourceDiagnoseInput, SubagentSourceDiagnoseResult, SubagentsSyncState,
 };
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::TryLockError;
-
-#[tauri::command]
-pub fn subagents_config_get() -> Result<ApiOk<SubagentsConfigPayload>, String> {
-    let cfg = config::get_storage_config()?;
-    let payload = SubagentsConfigPayload {
-        subagents_sync_enabled: cfg.subagents_sync_enabled.unwrap_or(true),
-        subagents_sync_interval_minutes: cfg.subagents_sync_interval_minutes.unwrap_or(60).max(5),
-        subagents_new_badge_hours: cfg.subagents_new_badge_hours.unwrap_or(72).clamp(1, 720),
-        subagents_sources: cfg.subagents_sources,
-    };
-    let state = load_subagents_state()?;
-    api_ok(payload, state.revision)
-}
-
-#[tauri::command]
-pub async fn subagents_config_save(
-    app: tauri::AppHandle,
-    config_payload: SubagentsConfigPayload,
-) -> Result<ApiOk<SubagentsConfigPayload>, String> {
-    {
-        let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-        let mut cfg = config::get_storage_config()?;
-        cfg.subagents_sync_enabled = Some(config_payload.subagents_sync_enabled);
-        cfg.subagents_sync_interval_minutes =
-            Some(config_payload.subagents_sync_interval_minutes.max(5));
-        cfg.subagents_new_badge_hours =
-            Some(config_payload.subagents_new_badge_hours.clamp(1, 720));
-        cfg.subagents_sources = config_payload.subagents_sources.clone();
-        drop(_guard);
-        config::save_storage_config(app.clone(), cfg).await?;
-    }
-    let state = load_subagents_state()?;
-    api_ok(config_payload, state.revision)
-}
-
-#[tauri::command]
-pub fn subagents_sources_export_to_path(
-    output_path: String,
-    subagents_sources: Vec<SubagentSourceConfig>,
-) -> Result<String, String> {
-    let payload = SubagentsSourcesExportPayload {
-        version: 1,
-        exported_at: chrono::Utc::now().to_rfc3339(),
-        subagents_sources,
-    };
-    let content = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-    let path = PathBuf::from(&output_path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    crate::atomic_write_string(&path, &content).map_err(|e| e.to_string())?;
-    Ok(output_path)
-}
 
 #[tauri::command]
 pub fn subagents_list_installed(

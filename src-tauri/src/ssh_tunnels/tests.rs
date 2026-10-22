@@ -1627,11 +1627,9 @@ fn invoke_handler_registers_common_port_commands_exactly_once() {
     let block = invoke_handler_registration_block();
 
     assert_eq!(
-        block
-            .matches("ssh_tunnels::ssh_common_ports_list")
-            .count(),
+        block.matches("ssh_tunnels::ssh_tunnels_snapshot").count(),
         1,
-        "ssh_common_ports_list must be registered exactly once"
+        "ssh_tunnels_snapshot must be registered exactly once"
     );
     assert_eq!(
         block

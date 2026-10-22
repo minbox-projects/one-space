@@ -1,4 +1,4 @@
-use super::{CatalogModel, HttpResponse};
+use super::HttpResponse;
 use serde_json::{json, Value};
 
 pub(in crate::protocol_router) fn json_response(status: u16, body: Value) -> HttpResponse {
@@ -265,38 +265,3 @@ pub(in crate::protocol_router) fn collect_openai_stream_tool_calls(
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn parse_openai_models_catalog(
-    value: &Value,
-    prefix: Option<&str>,
-) -> Result<Vec<CatalogModel>, String> {
-    let data = value
-        .get("data")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "models response must contain data array".to_string())?;
-    let prefix = prefix.unwrap_or("").trim();
-    let mut models = Vec::new();
-    for item in data {
-        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let id = if prefix.is_empty() || id.starts_with(prefix) {
-            id.to_string()
-        } else {
-            format!("{prefix}{id}")
-        };
-        models.push(CatalogModel {
-            id,
-            object: item
-                .get("object")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            created: item.get("created").and_then(|v| v.as_u64()),
-            owned_by: item
-                .get("owned_by")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-        });
-    }
-    Ok(models)
-}

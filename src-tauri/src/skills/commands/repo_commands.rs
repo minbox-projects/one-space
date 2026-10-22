@@ -7,10 +7,10 @@ use crate::skills::{
     normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
     read_required_skill_dir_name, reconcile_internal, remove_existing_record_dir_if_moved,
     replace_dir_atomic, repo_storage_dir, resolve_skill_target_dir, save_local_skills_state,
-    save_skills_state, scope_project_match, skills_sync_now, source_skill_abs_path,
-    trigger_storage_sync, upsert_repo_dir_name, upsert_repository_from_dir, ApiOk,
-    RepoSetModelInput, RepoSkillKeyInput, RepositorySkillView, SkillRecord, SkillsSyncState,
-    INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+    save_skills_state, scope_project_match, source_skill_abs_path, trigger_storage_sync,
+    upsert_repo_dir_name, upsert_repository_from_dir, ApiOk, RepoSetModelInput, RepoSkillKeyInput,
+    RepositorySkillView, SkillRecord, SkillsSyncState, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT,
+    MODELS,
 };
 use std::fs;
 
@@ -74,28 +74,6 @@ pub fn skills_repo_list_with_update(
     )?;
     let list = build_repository_views(&shared_state, &installed, true, Some(&cfg));
     api_ok(list, combined_revision(&shared_state, &local_state))
-}
-
-#[tauri::command]
-pub async fn skills_repo_refresh(
-    app: tauri::AppHandle,
-) -> Result<ApiOk<Vec<RepositorySkillView>>, String> {
-    let _ = skills_sync_now(app.clone()).await?;
-    let shared_state = load_skills_state()?;
-    let local_state = load_local_skills_state()?;
-    let cfg = config::get_storage_config()?;
-    let list = build_repository_views(&shared_state, &local_state.skills, true, Some(&cfg));
-    api_ok(list, combined_revision(&shared_state, &local_state))
-}
-
-#[tauri::command]
-pub fn skills_repo_refresh_background(app: tauri::AppHandle) -> Result<ApiOk<bool>, String> {
-    std::thread::spawn(move || {
-        let _ = tauri::async_runtime::block_on(skills_repo_refresh(app));
-    });
-    let shared_state = load_skills_state()?;
-    let local_state = load_local_skills_state()?;
-    api_ok(true, combined_revision(&shared_state, &local_state))
 }
 
 #[tauri::command]
