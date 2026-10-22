@@ -41,9 +41,10 @@ pub(in crate::ai_gateway) fn scan_due_daily_reset_marks<R: tauri::Runtime>(
 ) -> Result<usize, String> {
     let recovered = super::storage::modify_config::<usize>(|config| {
         let mut recovered = 0usize;
+        let offset = config.settings.daily_reset_offset_hours;
         for provider in config.providers.iter_mut() {
             for key in provider.keys.iter_mut() {
-                if super::selection::daily_quota_reset_due(key, now) {
+                if super::selection::daily_quota_reset_due_with_offset(key, now, offset) {
                     super::selection::clear_key_runtime_state(key);
                     recovered += 1;
                 }

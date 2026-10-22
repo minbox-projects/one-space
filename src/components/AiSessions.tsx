@@ -26,6 +26,7 @@ import { ToolIcon } from './AiEnvironments';
 import { AiSessionsList } from './AiSessionsList';
 import { TerminalPermissionConfirmDialog } from './TerminalPermissionConfirmDialog';
 import { useToast } from './ToastProvider';
+import { CustomSelect } from '@/components/common/CustomSelect';
 import {
   type TerminalPermissionMode,
 } from '@/lib/terminalPermissions';
@@ -514,20 +515,16 @@ export function AiSessions({
             <div className="space-y-2">
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('aiCommand')}</label>
               <div className="flex gap-2">
-                <select 
+                <CustomSelect<AiModelId>
                   value={selectedCommandId}
-                  onChange={(e) => {
-                    const id = e.target.value as AiModelId;
-                    setSelectedCommandId(id);
-                  }}
-                  className="flex flex-1 h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {AI_MODEL_OPTIONS.map((cmd) => (
-                    <option key={cmd.id} value={cmd.id}>
-                      {cmd.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setSelectedCommandId(val)}
+                  ariaLabel={t('aiCommand')}
+                  className="flex-1"
+                  options={AI_MODEL_OPTIONS.map((cmd) => ({
+                    value: cmd.id,
+                    label: cmd.name,
+                  }))}
+                />
                 <button
                   onClick={handleOpenAiSessionSettings}
                   className="px-3 rounded-md border transition-colors bg-background hover:bg-muted text-muted-foreground"

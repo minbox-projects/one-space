@@ -318,11 +318,29 @@
   outline: none;
   width: 100%;
 }
+.field select {
+  cursor: pointer;
+}
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
   border-color: hsl(var(--primary));
   box-shadow: 0 0 0 2px hsl(var(--primary) / 0.5);
+}
+
+/* 全局统一原生 select 现代化基准外观，消除操作系统默认双箭头并对齐 Lucide ChevronDown 样式 */
+select:not(.sr-only) {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1rem 1rem;
+  padding-right: 2.25rem !important;
+}
+
+.dark select:not(.sr-only) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 .field input[disabled] {
   background: hsl(var(--muted) / 0.4);

@@ -56,6 +56,7 @@ import {
   type ModelPrice,
 } from "@/lib/aiGateway";
 import { MappingPriceEditor } from "./MappingPriceEditor";
+import { CustomSelect } from "@/components/common/CustomSelect";
 import {
   PROVIDER_CUSTOM_ICON_OPTIONS,
   ProviderTemplateAvatar,
@@ -877,27 +878,29 @@ export function ProviderDetailDialog({
                 <label>
                   {t("aiGatewayProviderTemplateBinding", "Provider template")}
                 </label>
-                <select
-                  data-testid="ai-gateway-provider-template-select"
+                <CustomSelect
+                  selectTestId="ai-gateway-provider-template-select"
+                  triggerTestId="ai-gateway-provider-template-trigger"
                   value={templateId}
-                  onChange={(event) => setTemplateId(event.target.value)}
-                  aria-label={t(
+                  onChange={(val) => setTemplateId(val)}
+                  ariaLabel={t(
                     "aiGatewayProviderTemplateBinding",
                     "Provider template",
                   )}
-                >
-                  <option value="">
-                    {t(
-                      "aiGatewayProviderTemplateUnbound",
-                      "No template (generic)",
-                    )}
-                  </option>
-                  {(templates ?? []).map((view) => (
-                    <option key={view.template.id} value={view.template.id}>
-                      {view.template.name}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    {
+                      value: "",
+                      label: t(
+                        "aiGatewayProviderTemplateUnbound",
+                        "No template (generic)",
+                      ),
+                    },
+                    ...(templates ?? []).map((view) => ({
+                      value: view.template.id,
+                      label: view.template.name,
+                    })),
+                  ]}
+                />
               </div>
               <div
                 data-testid="ai-gateway-provider-effective-strategy"
@@ -1001,26 +1004,36 @@ export function ProviderDetailDialog({
             {/* 第 2 行：接口协议与默认模型并排 */}
             <div className="field">
               <label className="required">{t("aiGatewayProtocol", "API protocol")}</label>
-              <select
+              <CustomSelect<GatewayUpstreamProtocol>
                 value={protocol}
-                onChange={(event) =>
-                  setProtocol(event.target.value as GatewayUpstreamProtocol)
-                }
-                aria-label={t("aiGatewayProtocol", "API protocol")}
-              >
-                <option value="chat_completions">
-                  {t("aiGatewayProtocolChat", "Chat Completions (/chat/completions)")}
-                </option>
-                <option value="responses">
-                  {t("aiGatewayProtocolResponses", "Responses (/responses)")}
-                </option>
-                <option value="anthropic_messages">
-                  {t(
-                    "aiGatewayProtocolAnthropicMessages",
-                    "Anthropic Messages (native)",
-                  )}
-                </option>
-              </select>
+                onChange={(val) => setProtocol(val)}
+                ariaLabel={t("aiGatewayProtocol", "API protocol")}
+                selectTestId="ai-gateway-protocol-select"
+                triggerTestId="ai-gateway-protocol-trigger"
+                options={[
+                  {
+                    value: "chat_completions",
+                    label: t(
+                      "aiGatewayProtocolChat",
+                      "Chat Completions (/chat/completions)",
+                    ),
+                  },
+                  {
+                    value: "responses",
+                    label: t(
+                      "aiGatewayProtocolResponses",
+                      "Responses (/responses)",
+                    ),
+                  },
+                  {
+                    value: "anthropic_messages",
+                    label: t(
+                      "aiGatewayProtocolAnthropicMessages",
+                      "Anthropic Messages (native)",
+                    ),
+                  },
+                ]}
+              />
             </div>
 
             <div className="field">
@@ -1042,22 +1055,24 @@ export function ProviderDetailDialog({
                   </span>
                 </span>
               </label>
-              <select
-                data-testid="ai-gateway-default-model-select"
+              <CustomSelect
+                selectTestId="ai-gateway-default-model-select"
+                triggerTestId="ai-gateway-default-model-trigger"
                 value={defaultModel}
-                onChange={(event) => setDefaultModel(event.target.value)}
-                aria-label={t("aiGatewayDefaultModel", "Default model")}
-                className="font-mono"
-              >
-                <option value="">
-                  {t("aiGatewayDefaultModelNone", "None")}
-                </option>
-                {mappedUpstreamModels({ ...provider, mappings }).map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setDefaultModel(val)}
+                ariaLabel={t("aiGatewayDefaultModel", "Default model")}
+                triggerClassName="font-mono text-xs"
+                options={[
+                  {
+                    value: "",
+                    label: t("aiGatewayDefaultModelNone", "None"),
+                  },
+                  ...mappedUpstreamModels({ ...provider, mappings }).map((model) => ({
+                    value: model,
+                    label: model,
+                  })),
+                ]}
+              />
             </div>
 
             {/* 第 3 行：API Base URL 独占一行 */}

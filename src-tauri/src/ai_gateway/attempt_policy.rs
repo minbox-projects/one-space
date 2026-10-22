@@ -19,8 +19,8 @@ use super::selection::{
     clear_key_runtime_state, clear_mapping_runtime_state, find_key_probe_candidate,
     is_authentication_error_message, is_quota_exceeded_message, mapping_matches_key,
     mark_key_failure, quota_mark_expired, rearm_key_probe, rearm_mapping_probe_cooldown,
-    register_mapping_failure, register_mapping_success, select_usable_key, FailureClass,
-    MappingTarget,
+    register_mapping_failure_with_threshold, register_mapping_success,
+    select_usable_key, FailureClass, MappingTarget,
 };
 use super::storage::{modify_config, read_config_shared};
 use super::usage_log::sanitize_error_text;
@@ -177,7 +177,7 @@ pub(in crate::ai_gateway) fn apply_failure(
         };
         let before_runtime = mapping_runtime_snapshot(stored, target);
         let before_auto_disabled = auto_disabled_snapshot(stored, target);
-        register_mapping_failure(stored, target, class, reason, at);
+        register_mapping_failure_with_threshold(stored, target, class, reason, at, latest.settings.failure_threshold);
         let changed = mapping_runtime_snapshot(stored, target) != before_runtime;
         let transition = if auto_disabled_entered(stored, target, &before_auto_disabled) {
             Some(MappingAutoDisabledTransition {
@@ -567,12 +567,13 @@ impl RequestHealth {
                 if outcome.succeeded {
                     register_mapping_success(stored, target);
                 } else if outcome.health_failure {
-                    register_mapping_failure(
+                    register_mapping_failure_with_threshold(
                         stored,
                         target,
                         FailureClass::Retryable,
                         &outcome.reason,
                         at,
+                        latest.settings.failure_threshold,
                     );
                 } else {
                     continue;

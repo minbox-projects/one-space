@@ -3,6 +3,7 @@ import { Terminal, Sparkles, Bot, FolderOpen } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { skillModelOptions } from "@/components/skillsModelOptions";
 import { SettingCard } from "../common/SettingCard";
+import { SettingSelect } from "../common/SettingSelect";
 import { FolderPicker } from "../common/FolderPicker";
 import { RetentionChips } from "../common/RetentionChips";
 import { SubTabNavigation, type SubTabItem } from "../common/SubTabNavigation";
@@ -206,28 +207,35 @@ export function AiEcoSection({
                       className="flex-1 bg-background border rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/20"
                       placeholder={DEFAULT_AI_MODEL_LAUNCH_COMMANDS[modelId]}
                     />
-                    <select
+                    <SettingSelect<TerminalPermissionMode>
                       value={permissionModes[modelId]}
-                      onChange={(e) =>
+                      onChange={(newMode) =>
                         setConfig((prev) => ({
                           ...prev,
                           ai_model_permission_modes: {
                             ...normalizeAiModelPermissionModesForUi(
                               prev.ai_model_permission_modes,
                             ),
-                            [modelId]: e.target.value as TerminalPermissionMode,
+                            [modelId]: newMode,
                           },
                         }))
                       }
-                      className="bg-background border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                    >
-                      <option value="default">
-                        {t("defaultPermissionMode", "Default")}
-                      </option>
-                      <option value="full_access">
-                        {t("fullAccessPermissionMode", "Full Access")}
-                      </option>
-                    </select>
+                      options={[
+                        {
+                          value: "default",
+                          label: t("defaultPermissionMode", "Default"),
+                        },
+                        {
+                          value: "full_access",
+                          label: t("fullAccessPermissionMode", "Full Access"),
+                        },
+                      ]}
+                      className="w-36 shrink-0"
+                      ariaLabel={`${modelId} permission mode`}
+                      selectTestId={`ai-model-permission-select-${modelId}`}
+                      triggerTestId={`ai-model-permission-trigger-${modelId}`}
+                      optionTestIdPrefix={`ai-model-permission-option-${modelId}`}
+                    />
                   </div>
                 );
               })}

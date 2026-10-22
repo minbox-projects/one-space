@@ -357,6 +357,19 @@ pub(in crate::ai_gateway) const SESSION_BINDING_MISS_THRESHOLD: u32 = 2;
 pub(in crate::ai_gateway) fn resolve_session_id(
     headers: &HashMap<String, String>,
 ) -> Option<String> {
+    resolve_session_id_with_custom(headers, &[])
+}
+
+pub(in crate::ai_gateway) fn resolve_session_id_with_custom(
+    headers: &HashMap<String, String>,
+    custom_headers: &[String],
+) -> Option<String> {
+    for header in custom_headers {
+        let key = header.trim().to_ascii_lowercase();
+        if let Some(val) = headers.get(&key).map(String::as_str).map(str::trim).filter(|v| !v.is_empty()) {
+            return Some(val.to_string());
+        }
+    }
     SESSION_ID_HEADERS.iter().find_map(|header| {
         headers
             .get(*header)
@@ -663,8 +676,12 @@ const RETRY_JITTER_RATIO: f64 = 0.25;
 /// `min(2000ms * 2^(retry-1) * (1 + random[0,1]*0.25), 30000ms)`. Header-driven
 /// overrides take priority over this.
 pub(in crate::ai_gateway) fn default_retry_delay(retry: u32) -> Duration {
+    default_retry_delay_with_base(retry, RETRY_BASE_DELAY_MILLIS as u32)
+}
+
+pub(in crate::ai_gateway) fn default_retry_delay_with_base(retry: u32, base_ms: u32) -> Duration {
     let exponent = retry.saturating_sub(1).min(20);
-    let base = RETRY_BASE_DELAY_MILLIS.saturating_mul(1u128 << exponent);
+    let base = (base_ms as u128).saturating_mul(1u128 << exponent);
     let jitter = 1.0 + rand::random::<f64>() * RETRY_JITTER_RATIO;
     let millis = (base as f64 * jitter).min(RETRY_MAX_DELAY_MILLIS as f64) as u64;
     Duration::from_millis(millis)
@@ -930,6 +947,26 @@ pub(in crate::ai_gateway) fn find_probe_candidate(
     healthy_provider_ids: &[String],
     now: u64,
 ) -> Option<ProbeCandidate> {
+    find_probe_candidate_with_settings(
+        providers,
+        requested,
+        protocol,
+        healthy_provider_ids,
+        now,
+        AUTO_DISABLE_PROBE_COOLDOWN_SECS,
+        FAILURE_THRESHOLD,
+    )
+}
+
+pub(in crate::ai_gateway) fn find_probe_candidate_with_settings(
+    providers: &[GatewayUpstreamProvider],
+    requested: Option<&str>,
+    protocol: UpstreamProtocol,
+    healthy_provider_ids: &[String],
+    now: u64,
+    probe_cooldown_secs: u64,
+    failure_threshold: u32,
+) -> Option<ProbeCandidate> {
     let requested = requested.map(str::trim).filter(|value| !value.is_empty())?;
     let mut best: Option<((u64, String, String, String), ProbeCandidate)> = None;
     for provider in providers.iter().filter(|provider| provider.enabled) {
@@ -947,10 +984,10 @@ pub(in crate::ai_gateway) fn find_probe_candidate(
             let Some(disabled_at) = mapping.disabled_at else {
                 continue;
             };
-            if now.saturating_sub(disabled_at) < AUTO_DISABLE_PROBE_COOLDOWN_SECS {
+            if now.saturating_sub(disabled_at) < probe_cooldown_secs {
                 continue;
             }
-            if mapping.consecutive_failures < FAILURE_THRESHOLD {
+            if failure_threshold > 0 && mapping.consecutive_failures < failure_threshold {
                 continue;
             }
             if is_immediate_auth_disable_reason(mapping.disabled_reason.as_deref()) {
@@ -1069,6 +1106,17 @@ pub(in crate::ai_gateway) fn register_mapping_failure(
     reason: &str,
     at: u64,
 ) -> bool {
+    register_mapping_failure_with_threshold(provider, target, class, reason, at, FAILURE_THRESHOLD)
+}
+
+pub(in crate::ai_gateway) fn register_mapping_failure_with_threshold(
+    provider: &mut GatewayUpstreamProvider,
+    target: &MappingTarget,
+    class: FailureClass,
+    reason: &str,
+    at: u64,
+    failure_threshold: u32,
+) -> bool {
     let counts = matches!(
         class,
         FailureClass::Retryable | FailureClass::DisableImmediately
@@ -1089,7 +1137,7 @@ pub(in crate::ai_gateway) fn register_mapping_failure(
         }
         mapping.last_error_at = Some(at);
         let should_disable = class == FailureClass::DisableImmediately
-            || mapping.consecutive_failures >= FAILURE_THRESHOLD;
+            || (failure_threshold > 0 && mapping.consecutive_failures >= failure_threshold);
         if should_disable && !mapping.auto_disabled {
             mapping.auto_disabled = true;
             mapping.disabled_reason = Some(reason.to_string());
@@ -1159,6 +1207,12 @@ pub(in crate::ai_gateway) fn set_user_enabled(
 /// number of whole UTC+8 calendar days since the UNIX epoch. Comparing two day
 /// indices is therefore exactly "the clock's UTC+8 calendar day is later than
 /// the other's", which never consults the device timezone.
+fn offset_natural_day(timestamp: u64, offset_hours: i32) -> i64 {
+    const SECONDS_PER_DAY: i64 = 86_400;
+    let offset_seconds = (offset_hours as i64) * 3600;
+    ((timestamp as i64) + offset_seconds).div_euclid(SECONDS_PER_DAY)
+}
+
 fn utc8_natural_day(timestamp: u64) -> u64 {
     const SECONDS_PER_DAY: u64 = 86_400;
     const UTC8_OFFSET_SECONDS: u64 = 8 * 3_600;
@@ -1167,69 +1221,79 @@ fn utc8_natural_day(timestamp: u64) -> u64 {
 }
 
 /// Whether a daily-reset quota mark is due at the explicit `now`.
-///
-/// The key must be user-enabled with `daily_reset` on, runtime-marked with a
-/// quota failure and a known marking time, and `now` must fall on a strictly
-/// later fixed UTC+8 natural day than the mark. A same-day mark stays excluded
-/// however old it is, a future-dated mark is never due early, and a missing
-/// marking time never qualifies; the device timezone is never consulted.
 pub(in crate::ai_gateway) fn daily_quota_reset_due(key: &UpstreamKey, now: u64) -> bool {
+    daily_quota_reset_due_with_offset(key, now, 8)
+}
+
+pub(in crate::ai_gateway) fn daily_quota_reset_due_with_offset(
+    key: &UpstreamKey,
+    now: u64,
+    offset_hours: i32,
+) -> bool {
     key.enabled
         && key.daily_reset
         && key.auto_marked
         && key.failure_kind == Some(KeyFailureKind::Quota)
-        && key
-            .marked_at
-            .is_some_and(|marked_at| utc8_natural_day(now) > utc8_natural_day(marked_at))
+        && key.marked_at.is_some_and(|marked_at| {
+            offset_natural_day(now, offset_hours) > offset_natural_day(marked_at, offset_hours)
+        })
 }
 
 /// Whether a quota mark is old enough to make the key usable again through
-/// normal list-order selection. A `daily_reset` key is due exactly when the
-/// explicit `now`'s UTC+8 day is later than the mark's (see
-/// [`daily_quota_reset_due`]); a legacy key keeps the inclusive
-/// [`KEY_QUOTA_MARK_TTL_SECS`]-second TTL, exclusive below it. Auth marks and
-/// quota marks without a marking time never expire this way.
+/// normal list-order selection.
 pub(in crate::ai_gateway) fn quota_mark_expired(key: &UpstreamKey, now: u64) -> bool {
+    quota_mark_expired_with_ttl(key, now, KEY_QUOTA_MARK_TTL_SECS, 8)
+}
+
+pub(in crate::ai_gateway) fn quota_mark_expired_with_ttl(
+    key: &UpstreamKey,
+    now: u64,
+    ttl_secs: u64,
+    offset_hours: i32,
+) -> bool {
     if !key.auto_marked || key.failure_kind != Some(KeyFailureKind::Quota) {
         return false;
     }
     if key.daily_reset {
-        return daily_quota_reset_due(key, now);
+        return daily_quota_reset_due_with_offset(key, now, offset_hours);
     }
     key.marked_at
-        .is_some_and(|marked_at| now.saturating_sub(marked_at) >= KEY_QUOTA_MARK_TTL_SECS)
+        .is_some_and(|marked_at| now.saturating_sub(marked_at) >= ttl_secs)
 }
 
-/// First key usable for a normal upstream attempt: enabled, not already
-/// attempted in the current pass, and either unmarked or carrying a
-/// TTL-expired quota mark, in list order. A user-disabled or runtime-marked
-/// key never participates in selection; `attempted` lets one request pass try
-/// each usable key at most once under in-request bare-429 rotation.
 pub(in crate::ai_gateway) fn select_usable_key<'a>(
     provider: &'a GatewayUpstreamProvider,
     now: u64,
     attempted: &HashSet<String>,
 ) -> Option<&'a UpstreamKey> {
+    select_usable_key_with_settings(provider, now, attempted, KEY_QUOTA_MARK_TTL_SECS, 8)
+}
+
+pub(in crate::ai_gateway) fn select_usable_key_with_settings<'a>(
+    provider: &'a GatewayUpstreamProvider,
+    now: u64,
+    attempted: &HashSet<String>,
+    ttl_secs: u64,
+    offset_hours: i32,
+) -> Option<&'a UpstreamKey> {
     provider.keys.iter().find(|key| {
         key.enabled
             && !attempted.contains(&key.id)
-            && (!key.auto_marked || quota_mark_expired(key, now))
+            && (!key.auto_marked || quota_mark_expired_with_ttl(key, now, ttl_secs, offset_hours))
     })
 }
 
-/// The single quota-marked key eligible for one half-open probe.
-///
-/// Eligibility requires the key to be enabled and runtime-marked with
-/// [`KeyFailureKind::Quota`] at least [`KEY_PROBE_COOLDOWN_SECS`] seconds before
-/// the explicit `now` (`now - marked_at >= cooldown`). Auth-marked keys are
-/// never returned; a missing `marked_at` is never eligible; and a
-/// `daily_reset` key is excluded entirely, because a same-day daily mark must
-/// not be probed and a due one recovers through normal selection and the daily
-/// scan instead. At most one key is chosen: the oldest `marked_at` first, ties
-/// by list order.
 pub(in crate::ai_gateway) fn find_key_probe_candidate(
     provider: &GatewayUpstreamProvider,
     now: u64,
+) -> Option<&UpstreamKey> {
+    find_key_probe_candidate_with_cooldown(provider, now, KEY_PROBE_COOLDOWN_SECS)
+}
+
+pub(in crate::ai_gateway) fn find_key_probe_candidate_with_cooldown(
+    provider: &GatewayUpstreamProvider,
+    now: u64,
+    cooldown_secs: u64,
 ) -> Option<&UpstreamKey> {
     provider
         .keys
@@ -1238,7 +1302,7 @@ pub(in crate::ai_gateway) fn find_key_probe_candidate(
         .filter(|key| key.failure_kind == Some(KeyFailureKind::Quota))
         .filter(|key| {
             key.marked_at
-                .is_some_and(|marked_at| now.saturating_sub(marked_at) >= KEY_PROBE_COOLDOWN_SECS)
+                .is_some_and(|marked_at| now.saturating_sub(marked_at) >= cooldown_secs)
         })
         .min_by_key(|key| key.marked_at.unwrap_or(u64::MAX))
 }

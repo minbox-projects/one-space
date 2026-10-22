@@ -24,11 +24,16 @@ import {
   type ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
 import {
+  aiGatewayGetConfig,
+  aiGatewaySaveSettings,
   aiGatewayTemplateAutoRefreshGet,
   aiGatewayTemplateAutoRefreshSave,
   aiGatewayUsageRetentionGet,
   aiGatewayUsageRetentionSave,
   notifyTemplateAutoRefreshIntervalChanged,
+  normalizeGatewaySettings,
+  DEFAULT_GATEWAY_SETTINGS,
+  type GatewaySettings,
 } from "@/lib/aiGateway";
 import { sslGetConfig, sslSaveConfig, type SslConfig } from "@/lib/sslCertificate";
 import {
@@ -166,6 +171,13 @@ export function SettingsContainer({
   const [protocolRouterBusy, setProtocolRouterBusy] = useState(false);
 
   // AI Gateway States
+  const [gatewaySettings, setGatewaySettings] = useState<GatewaySettings>(
+    DEFAULT_GATEWAY_SETTINGS,
+  );
+  const [savedGatewaySettings, setSavedGatewaySettings] =
+    useState<GatewaySettings>(DEFAULT_GATEWAY_SETTINGS);
+  const [gatewayPortInput, setGatewayPortInput] = useState("17688");
+  const [savedGatewayPort, setSavedGatewayPort] = useState(17688);
   const [usageRetentionInput, setUsageRetentionInput] = useState("90");
   const [savedUsageRetentionDays, setSavedUsageRetentionDays] = useState(90);
   const [templateAutoRefreshInput, setTemplateAutoRefreshInput] = useState("60");
@@ -340,6 +352,15 @@ export function SettingsContainer({
 
   const loadAiGateway = async () => {
     try {
+      const config = await aiGatewayGetConfig();
+      if (config) {
+        const port = config.port ?? 17688;
+        setSavedGatewayPort(port);
+        setGatewayPortInput(String(port));
+        const settings = normalizeGatewaySettings(config.settings);
+        setSavedGatewaySettings(settings);
+        setGatewaySettings(settings);
+      }
       const days = await aiGatewayUsageRetentionGet();
       const normalizedDays = Number.isFinite(days) ? Number(days) : 30;
       setSavedUsageRetentionDays(normalizedDays);
@@ -539,7 +560,10 @@ export function SettingsContainer({
             ? parsedMinutes !== savedTemplateAutoRefreshMinutes
             : templateAutoRefreshInput.trim() !==
               String(savedTemplateAutoRefreshMinutes);
-        next[tab] = retentionDirty || refreshDirty;
+        const portDirty = gatewayPortInput.trim() !== String(savedGatewayPort);
+        const settingsDirty =
+          JSON.stringify(gatewaySettings) !== JSON.stringify(savedGatewaySettings);
+        next[tab] = retentionDirty || refreshDirty || portDirty || settingsDirty;
         return;
       }
       if (tab === "ssl-certificate") {
@@ -550,9 +574,9 @@ export function SettingsContainer({
             ? sslAlertDaysInput.trim() !== String(savedThreshold)
             : thresholdNum !== savedThreshold;
         const configDirty =
-          sslConfig.autoCheckEnabled !==
+          (sslConfig?.autoCheckEnabled ?? true) !==
             (savedSslConfig?.autoCheckEnabled ?? true) ||
-          JSON.stringify(sslConfig.checkTimes) !==
+          JSON.stringify(sslConfig?.checkTimes ?? ["09:00"]) !==
             JSON.stringify(savedSslConfig?.checkTimes ?? ["09:00"]);
         next[tab] = thresholdDirty || configDirty;
         return;
@@ -590,6 +614,10 @@ export function SettingsContainer({
     savedUsageRetentionDays,
     templateAutoRefreshInput,
     savedTemplateAutoRefreshMinutes,
+    gatewayPortInput,
+    savedGatewayPort,
+    gatewaySettings,
+    savedGatewaySettings,
     sslConfig,
     savedSslConfig,
     sslAlertDaysInput,
@@ -851,6 +879,36 @@ export function SettingsContainer({
       }
 
       if (activeSubTab === "ai-gateway") {
+        const portNum = parseInt(gatewayPortInput.trim(), 10);
+        if (isNaN(portNum) || portNum < 1024 || portNum > 65535) {
+          setMessage({
+            type: "error",
+            text: t(
+              "aiGatewayPortInvalid",
+              "Port must be an integer between 1024 and 65535.",
+            ),
+          });
+          return;
+        }
+
+        try {
+          const updatedConfig = await aiGatewaySaveSettings(gatewaySettings, portNum);
+          if (updatedConfig) {
+            const newPort = updatedConfig.port ?? portNum;
+            setSavedGatewayPort(newPort);
+            setGatewayPortInput(String(newPort));
+            const newSettings = updatedConfig.settings ?? gatewaySettings;
+            setSavedGatewaySettings(newSettings);
+            setGatewaySettings(newSettings);
+          }
+        } catch (err: any) {
+          setMessage({
+            type: "error",
+            text: `${t("aiGatewaySaveSettingsFailed", "Failed to save AI Gateway settings")}: ${err?.message || err}`,
+          });
+          return;
+        }
+
         const parsed = parseUsageRetentionInput(usageRetentionInput);
         if (parsed === null) {
           setMessage({
@@ -1441,6 +1499,10 @@ export function SettingsContainer({
                   setUsageRetentionInput={setUsageRetentionInput}
                   templateAutoRefreshInput={templateAutoRefreshInput}
                   setTemplateAutoRefreshInput={setTemplateAutoRefreshInput}
+                  gatewaySettings={gatewaySettings}
+                  setGatewaySettings={setGatewaySettings}
+                  gatewayPortInput={gatewayPortInput}
+                  setGatewayPortInput={setGatewayPortInput}
                   sslConfig={sslConfig}
                   setSslConfig={setSslConfig}
                   newCheckTimeInput={newCheckTimeInput}

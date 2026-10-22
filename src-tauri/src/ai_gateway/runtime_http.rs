@@ -28,11 +28,12 @@ use super::reasoning::{
 };
 use super::selection::{
     candidate_providers, classify_failure_with_message, clear_key_runtime_state,
-    default_retry_delay, find_probe_candidate, is_quota_exceeded_message,
+    default_retry_delay, default_retry_delay_with_base,
+    find_probe_candidate_with_settings, is_quota_exceeded_message,
     is_retryable_with_message, mark_key_failure, rearm_key_probe, resolve_model_for_protocol,
-    resolve_session_id, resolve_upstream_protocol, retry_header_delay, select_usable_key,
+    resolve_session_id_with_custom, resolve_upstream_protocol, retry_header_delay, select_usable_key,
     session_affinity, try_acquire_probe_guard, weighted_candidates, FailureClass, ModelResolution,
-    ProbeCandidate, ProbeGuard, SessionOrder, MAX_RETRIES_PER_PROVIDER,
+    ProbeCandidate, ProbeGuard, SessionOrder,
 };
 use super::storage::{local_base_url, read_config_shared};
 use super::usage_log::{
@@ -42,7 +43,7 @@ use super::usage_log::{
     UsageLogStore, UsageResult, UsageTokens,
 };
 use super::{
-    now_ts, GatewayConfig, GatewayKey, GatewayStatus, GatewayUpstreamProvider, ModelPool,
+    now_ts, GatewayConfig, GatewayKey, GatewaySettings, GatewayStatus, GatewayUpstreamProvider, ModelPool,
     PoolCandidateIdentity, PoolReasoningEffort, UpstreamProtocol,
 };
 use futures_util::StreamExt;
@@ -304,12 +305,17 @@ pub(in crate::ai_gateway) async fn start_server(
             }
         }
     }
-    let listener = TcpListener::bind(("127.0.0.1", config.port))
+    let bind_host = if config.settings.bind_address.trim().is_empty() {
+        "127.0.0.1"
+    } else {
+        config.settings.bind_address.trim()
+    };
+    let listener = TcpListener::bind((bind_host, config.port))
         .await
         .map_err(|e| {
             format!(
-                "failed to bind AI Gateway port {} on 127.0.0.1: {e}",
-                config.port
+                "failed to bind AI Gateway port {} on {}: {e}",
+                config.port, bind_host
             )
         })?;
     let (tx, rx) = oneshot::channel();
@@ -787,7 +793,7 @@ pub(in crate::ai_gateway) fn reason_for_status(status: u16) -> &'static str {
 
 pub(in crate::ai_gateway) fn http_response_bytes(response: HttpResponse) -> Vec<u8> {
     let header = format!(
-        "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\ncontent-type: {}\r\naccess-control-allow-origin: *\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         response.status,
         reason_for_status(response.status),
         response.content_type,
@@ -1134,6 +1140,7 @@ async fn attempt_candidate(
     requested: Option<&str>,
     upstream_protocol: UpstreamProtocol,
     client_headers: &HashMap<String, String>,
+    settings: &GatewaySettings,
 ) -> (AttemptResult, AttemptLog) {
     let started = Instant::now();
     match forward_non_streaming_with_protocol(
@@ -1143,6 +1150,7 @@ async fn attempt_candidate(
         model,
         client_headers,
         upstream_protocol,
+        settings,
     )
     .await
     {
@@ -1366,6 +1374,7 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
         probe,
         attempts,
         &[],
+        &GatewaySettings::default(),
     )
     .await
 }
@@ -1380,6 +1389,7 @@ async fn attempt_non_streaming_inner(
     probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
     fallback: &[PoolFallbackStage],
+    settings: &GatewaySettings,
 ) -> HttpResponse {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -1447,6 +1457,7 @@ async fn attempt_non_streaming_inner(
                 requested,
                 upstream_protocol,
                 client_headers,
+                settings,
             )
             .await;
             attempts.push(log);
@@ -1578,7 +1589,7 @@ async fn attempt_non_streaming_inner(
     // initial candidate order. A 404 never enters this queue and 401/403 stop the
     // provider; only retryable classes are rescheduled. Each retry is a fresh
     // pass that restarts key selection from the first usable key.
-    let mut remaining_wait = Duration::from_secs(120);
+    let mut remaining_wait = Duration::from_secs(settings.request_budget_secs as u64);
     loop {
         let Some(index) = RetryCandidate::next_ready(&retries, &mut remaining_wait).await else {
             break;
@@ -1620,6 +1631,7 @@ async fn attempt_non_streaming_inner(
                 requested,
                 upstream_protocol,
                 client_headers,
+                settings,
             )
             .await;
             attempts.push(log);
@@ -1704,9 +1716,9 @@ async fn attempt_non_streaming_inner(
                     );
                     pass_retry = None;
                     candidate.attempts += 1;
-                    if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+                    if retryable && candidate.attempts <= settings.max_retries_per_provider {
                         candidate.ready_at = Instant::now().checked_add(
-                            retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+                            retry_delay.unwrap_or_else(|| default_retry_delay_with_base(candidate.attempts, settings.retry_base_delay_ms)),
                         );
                         schedule = true;
                     }
@@ -1718,9 +1730,9 @@ async fn attempt_non_streaming_inner(
         // next retry with its budget intact.
         if let Some((retryable, retry_delay)) = pass_retry.take() {
             candidate.attempts += 1;
-            if retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+            if retryable && candidate.attempts <= settings.max_retries_per_provider {
                 candidate.ready_at = Instant::now().checked_add(
-                    retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+                    retry_delay.unwrap_or_else(|| default_retry_delay_with_base(candidate.attempts, settings.retry_base_delay_ms)),
                 );
                 schedule = true;
             }
@@ -1798,6 +1810,7 @@ async fn attempt_non_streaming_inner(
                     requested,
                     upstream_protocol,
                     client_headers,
+                    settings,
                 )
                 .await;
                 attempts.push(log);
@@ -1968,6 +1981,7 @@ async fn attempt_non_streaming_inner(
                             requested,
                             upstream_protocol,
                             client_headers,
+                            settings,
                         )
                         .await;
                         attempts.push(log);
@@ -2113,6 +2127,7 @@ async fn attempt_non_streaming_inner(
                             requested,
                             candidate.protocol,
                             client_headers,
+                            settings,
                         )
                         .await;
                         attempts.push(log);
@@ -2288,6 +2303,7 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         probe,
         attempts,
         &[],
+        &GatewaySettings::default(),
     )
     .await
 }
@@ -2303,6 +2319,7 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
     probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
     fallback: &[PoolFallbackStage],
+    settings: &GatewaySettings,
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -2318,7 +2335,7 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
         .any(|provider| provider.keys.iter().any(|key| key.enabled));
     let mut health = RequestHealth::new(suppress_transport_failures);
     let mut retries = Vec::new();
-    let mut remaining_wait = Duration::from_secs(120);
+    let mut remaining_wait = Duration::from_secs(settings.request_budget_secs as u64);
     let mut ordered_queue: VecDeque<RetryCandidate> = ordered
         .iter()
         .filter_map(
@@ -2629,6 +2646,7 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                 &candidate.model,
                 client_headers,
                 upstream_protocol,
+                settings,
             )
             .await;
             let response = match streamed {
@@ -3458,9 +3476,9 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                 // The pass exhausted every usable key: hand the failure to the
                 // bounded retry scheduler with the full budget.
                 candidate.attempts += 1;
-                if !fallback_active && retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+                if !fallback_active && retryable && candidate.attempts <= settings.max_retries_per_provider {
                     candidate.ready_at = Instant::now().checked_add(
-                        retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+                        retry_delay.unwrap_or_else(|| default_retry_delay_with_base(candidate.attempts, settings.retry_base_delay_ms)),
                     );
                     candidate.attempted_keys.clear();
                     retries.insert(retry_index, candidate);
@@ -3478,9 +3496,9 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
             );
             record_provider_failure(&mut failures, &failure_label(&provider), reason);
             candidate.attempts += 1;
-            if !fallback_active && retryable && candidate.attempts <= MAX_RETRIES_PER_PROVIDER {
+            if !fallback_active && retryable && candidate.attempts <= settings.max_retries_per_provider {
                 candidate.ready_at = Instant::now().checked_add(
-                    retry_delay.unwrap_or_else(|| default_retry_delay(candidate.attempts)),
+                    retry_delay.unwrap_or_else(|| default_retry_delay_with_base(candidate.attempts, settings.retry_base_delay_ms)),
                 );
                 candidate.attempted_keys.clear();
                 retries.insert(retry_index, candidate);
@@ -3543,7 +3561,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for NativeHttpWriter<W> {
         if !self.decided {
             self.decided = true;
             if !buf.starts_with(b"HTTP/1.1 ") {
-                self.pending = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n".to_vec();
+                self.pending = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\naccess-control-allow-origin: *\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n".to_vec();
             }
         }
         while !self.pending.is_empty() {
@@ -3585,7 +3603,7 @@ async fn write_stream_headers<W: AsyncWrite + Unpin>(
     status: u16,
 ) -> Result<(), String> {
     let header = format!(
-        "HTTP/1.1 {} {}\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\ncontent-type: text/event-stream\r\naccess-control-allow-origin: *\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
         status,
         reason_for_status(status)
     );
@@ -3637,6 +3655,18 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
             return Ok(());
         }
     };
+
+    if request.method == "OPTIONS" && config.settings.enable_cors {
+        let headers = "HTTP/1.1 204 No Content\r\n\
+access-control-allow-origin: *\r\n\
+access-control-allow-methods: GET, POST, OPTIONS\r\n\
+access-control-allow-headers: authorization, x-api-key, content-type, accept, x-session-affinity, x-opencode-session, session-id, session_id, conversation_id, thread-id, x-session-id\r\n\
+access-control-max-age: 86400\r\n\
+content-length: 0\r\n\
+connection: close\r\n\r\n";
+        stream.write_all(headers.as_bytes()).await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
 
     let raw_path = clean_path(&request.path);
     let Some(canonical_path) = canonical_api_path(raw_path) else {
@@ -3984,12 +4014,14 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     let probe = if is_pool {
         pool_probe
     } else {
-        find_probe_candidate(
+        find_probe_candidate_with_settings(
             &config.providers,
             requested.as_deref(),
             protocol,
             &healthy_provider_ids,
             now_ts(),
+            config.settings.probe_cooldown_secs,
+            config.settings.failure_threshold,
         )
     };
     // Conversion validation runs before any Anthropic attempt, including a
@@ -4057,7 +4089,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
     let session_id = if probe_only || is_pool {
         None
     } else {
-        resolve_session_id(&request.headers)
+        resolve_session_id_with_custom(&request.headers, &config.settings.custom_session_headers)
     };
     let (ordered, bound_was_eligible) = if probe_only {
         (Vec::new(), false)
@@ -4113,6 +4145,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     probe.as_ref(),
                     &mut attempts,
                     &pool_fallback,
+                    &config.settings,
                 )
                 .await
             } else {
@@ -4127,6 +4160,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                     probe.as_ref(),
                     &mut attempts,
                     &pool_fallback,
+                    &config.settings,
                 )
                 .await
             }
@@ -4141,6 +4175,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
                 probe.as_ref(),
                 &mut attempts,
                 &pool_fallback,
+                &config.settings,
             )
             .await;
             let status = response.status;

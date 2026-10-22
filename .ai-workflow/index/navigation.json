@@ -153,6 +153,15 @@
         "src/components/Mail.tsx",
         "src/components/Md5EncryptionTool.tsx",
         "src/components/MessageCenter.tsx",
+        "src/components/MessageCenter/MessageCenter.tsx",
+        "src/components/MessageCenter/MessageCenterHeader.tsx",
+        "src/components/MessageCenter/MessageCenterToolbar.tsx",
+        "src/components/MessageCenter/MessageDetailView.tsx",
+        "src/components/MessageCenter/MessageItem.tsx",
+        "src/components/MessageCenter/MessageList.tsx",
+        "src/components/MessageCenter/index.ts",
+        "src/components/MessageCenter/types.ts",
+        "src/components/MessageCenter/useMessageCenter.ts",
         "src/components/MoreToolsHub.tsx",
         "src/components/Notes.tsx",
         "src/components/OmniSearch.tsx",
@@ -179,6 +188,16 @@
         "src/components/ThemeProvider.tsx",
         "src/components/ToastProvider.tsx",
         "src/components/UpdateUpgradeModal.tsx",
+        "src/components/UptimeMonitor/HeartbeatBar.tsx",
+        "src/components/UptimeMonitor/MonitorCard.tsx",
+        "src/components/UptimeMonitor/MonitorFormModal.tsx",
+        "src/components/UptimeMonitor/index.tsx",
+        "src/components/UptimeMonitor/types.ts",
+        "src/components/WebhookCatcher/ReplayDrawer.tsx",
+        "src/components/WebhookCatcher/RequestInspector.tsx",
+        "src/components/WebhookCatcher/RequestStreamList.tsx",
+        "src/components/WebhookCatcher/index.tsx",
+        "src/components/WebhookCatcher/types.ts",
         "src/components/Workspaces/WorkspaceSkillsPanel.tsx",
         "src/components/Workspaces/WorkspaceSubagentsPanel.tsx",
         "src/components/Workspaces/components/WorkspaceCopyDialog.tsx",
@@ -201,6 +220,23 @@
         "src/components/Workspaces/hooks/useWorkspaceSubagentsPanelState.ts",
         "src/components/Workspaces/index.tsx",
         "src/components/Workspaces/types.ts",
+        "src/components/common/CustomSelect.tsx",
+        "src/components/settings/SettingsContainer.tsx",
+        "src/components/settings/SettingsSidebar.tsx",
+        "src/components/settings/common/EcoSourceManager.tsx",
+        "src/components/settings/common/FolderPicker.tsx",
+        "src/components/settings/common/RetentionChips.tsx",
+        "src/components/settings/common/SettingCard.tsx",
+        "src/components/settings/common/SettingRow.tsx",
+        "src/components/settings/common/SettingSelect.tsx",
+        "src/components/settings/common/SubTabNavigation.tsx",
+        "src/components/settings/helpers.ts",
+        "src/components/settings/sections/AiEcoSection.tsx",
+        "src/components/settings/sections/DataSecuritySection.tsx",
+        "src/components/settings/sections/GeneralSection.tsx",
+        "src/components/settings/sections/NewsSection.tsx",
+        "src/components/settings/sections/ServicesSection.tsx",
+        "src/components/settings/types.ts",
         "src/components/skillsModelOptions.ts",
         "src/components/sshTunnels/CommonPortSelectMenu.tsx",
         "src/components/sshTunnels/SshCommonPortManagerDialog.tsx",
@@ -304,6 +340,8 @@
         "src/toolbox/plugins/ssh-servers.ts",
         "src/toolbox/plugins/ssh-tunnels.ts",
         "src/toolbox/plugins/ssl-certificate.ts",
+        "src/toolbox/plugins/uptime-monitor.ts",
+        "src/toolbox/plugins/webhook-catcher.ts",
         "src/toolbox/registry.ts",
         "src/toolbox/types.ts",
         "src/toolbox/useCopyToClipboard.ts",
@@ -1442,6 +1480,90 @@
         {
           "file": "src/components/MessageCenter.tsx",
           "name": "MessageCenter",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/MessageCenter.tsx",
+          "name": "MessageCenter",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/MessageCenterHeader.tsx",
+          "name": "MessageCenterHeader",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/MessageCenterToolbar.tsx",
+          "name": "MessageCenterToolbar",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/MessageDetailView.tsx",
+          "name": "MessageDetailView",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/MessageItem.tsx",
+          "name": "MessageItem",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/MessageList.tsx",
+          "name": "MessageList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/index.ts",
+          "name": "MessageCenter",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/index.ts",
+          "name": "useMessageCenter",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/types.ts",
+          "name": "FilterTab",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/types.ts",
+          "name": "MessageCenterProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/types.ts",
+          "name": "MessageFilterState",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/types.ts",
+          "name": "SOURCE_LABELS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/types.ts",
+          "name": "getSourceLabel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/MessageCenter/useMessageCenter.ts",
+          "name": "useMessageCenter",
           "kind": "function",
           "visibility": "public"
         },
@@ -1536,6 +1658,12 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/SettingsView.tsx",
+          "name": "SettingsViewProps",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/ShortLinkTool.tsx",
           "name": "ShortLinkTool",
           "kind": "function",
@@ -1611,6 +1739,168 @@
           "file": "src/components/UpdateUpgradeModal.tsx",
           "name": "UpdateUpgradeModal",
           "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/HeartbeatBar.tsx",
+          "name": "HeartbeatBar",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/MonitorCard.tsx",
+          "name": "MonitorCard",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/MonitorFormModal.tsx",
+          "name": "MonitorFormModal",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/index.tsx",
+          "name": "UptimeMonitorTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "AlertConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "DnsProbeOptions",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "HeartbeatBarPoint",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "HttpProbeOptions",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "MonitorIncident",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "MonitorStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "MonitorSummary",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "MonitorTarget",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "ProbeTestResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "ProbeType",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UptimeMonitor/types.ts",
+          "name": "TcpProbeOptions",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/ReplayDrawer.tsx",
+          "name": "ReplayDrawer",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/RequestInspector.tsx",
+          "name": "RequestInspector",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/RequestStreamList.tsx",
+          "name": "RequestStreamList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/index.tsx",
+          "name": "WebhookCatcherTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/types.ts",
+          "name": "CapturedWebhookRequest",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/types.ts",
+          "name": "CustomResponseConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/types.ts",
+          "name": "DetectedSignature",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/types.ts",
+          "name": "ForwardConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/types.ts",
+          "name": "ReplayRequest",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/types.ts",
+          "name": "ReplayResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/types.ts",
+          "name": "WebhookEndpoint",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/WebhookCatcher/types.ts",
+          "name": "WebhookServerStatus",
+          "kind": "interface",
           "visibility": "public"
         },
         {
@@ -2298,6 +2588,546 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/common/CustomSelect.tsx",
+          "name": "CustomSelect",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/common/CustomSelect.tsx",
+          "name": "CustomSelectOption",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/common/CustomSelect.tsx",
+          "name": "CustomSelectProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/common/CustomSelect.tsx",
+          "name": "CustomSelectSize",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/SettingsContainer.tsx",
+          "name": "SettingsContainer",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/SettingsContainer.tsx",
+          "name": "SettingsContainerProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/SettingsSidebar.tsx",
+          "name": "SettingsSidebar",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/SettingsSidebar.tsx",
+          "name": "SettingsSidebarProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/EcoSourceManager.tsx",
+          "name": "EcoSourceManager",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/EcoSourceManager.tsx",
+          "name": "EcoSourceManagerProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/FolderPicker.tsx",
+          "name": "FolderPicker",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/FolderPicker.tsx",
+          "name": "FolderPickerProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/RetentionChips.tsx",
+          "name": "RetentionChips",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/RetentionChips.tsx",
+          "name": "RetentionChipsProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingCard.tsx",
+          "name": "SettingCard",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingCard.tsx",
+          "name": "SettingCardProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingRow.tsx",
+          "name": "SettingRow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingRow.tsx",
+          "name": "SettingRowProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingSelect.tsx",
+          "name": "SettingSelect",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingSelect.tsx",
+          "name": "SettingSelectOption",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SettingSelect.tsx",
+          "name": "SettingSelectProps",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SubTabNavigation.tsx",
+          "name": "SubTabItem",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SubTabNavigation.tsx",
+          "name": "SubTabNavigation",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/common/SubTabNavigation.tsx",
+          "name": "SubTabNavigationProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "BUILTIN_AI_NEWS_RSS_SOURCES",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "DEFAULT_AI_MODEL_LAUNCH_COMMANDS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "DEFAULT_PROTOCOL_ROUTER_CONFIG",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "DEFAULT_PROXY_CONFIG",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "DEFAULT_SKILL_SOURCE_MODELS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "DEFAULT_SYNC_POLICY",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "NewsRetentionPreset",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "detectNewsRetentionPreset",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "formatAiNewsSyncIntervalInput",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "generateRandomMd5String",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "getTabSnapshot",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "isAiNewsRssSourceConfigured",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeAiModelLaunchCommandsForUi",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeAiModelPermissionModesForUi",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeAiNewsRssSourcesForCompare",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeAiNewsRssSourcesForUi",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeConfigForUi",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeProtocolRouterConfigForUi",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeProtocolRouterForCompare",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeProxyConfigForUi",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeProxyForCompare",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeSkillSourceForSyncCompare",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeSkillSourcesForSyncCompare",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeSkillSourcesForUi",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "normalizeSyncPolicyForUi",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "parseAiNewsSyncIntervalInput",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "parseTemplateAutoRefreshInput",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/helpers.ts",
+          "name": "parseUsageRetentionInput",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/AiEcoSection.tsx",
+          "name": "AiEcoSection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/AiEcoSection.tsx",
+          "name": "AiEcoSectionProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/DataSecuritySection.tsx",
+          "name": "DataSecuritySection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/DataSecuritySection.tsx",
+          "name": "DataSecuritySectionProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/GeneralSection.tsx",
+          "name": "GeneralSection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/GeneralSection.tsx",
+          "name": "GeneralSectionProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/NewsSection.tsx",
+          "name": "NewsSection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/NewsSection.tsx",
+          "name": "NewsSectionProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/ServicesSection.tsx",
+          "name": "ServicesSection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/ServicesSection.tsx",
+          "name": "ServicesSectionProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "AiModelId",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "AiModelLaunchCommands",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "AiModelPermissionModes",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "AiNewsRssSource",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "AiNewsRssSourceValidation",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "BUILTIN_AI_NEWS_RSS_SOURCES",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "DEFAULT_AI_MODEL_LAUNCH_COMMANDS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "DEFAULT_PROTOCOL_ROUTER_CONFIG",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "DEFAULT_PROXY_CONFIG",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "DEFAULT_SKILL_SOURCE_MODELS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "LegacySettingsSection",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "MAIN_SETTINGS_CATEGORIES",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "MainSettingsTab",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "ProtocolRouterConfig",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "ProtocolRouterStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "ProxyConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "ProxyStatus",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "ResolvedSettingsRoute",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "SkillSourceConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "SkillSourceValidation",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "SkillsSourceSyncState",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "SkillsSyncState",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "SslConfig",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "StorageConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "SubagentSourceDiagnoseResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "SubagentSourceDiagnoseSkippedSample",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "SyncPolicy",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/types.ts",
+          "name": "resolveSettingsTab",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/skillsModelOptions.ts",
           "name": "SkillModelId",
           "kind": "type",
@@ -2965,6 +3795,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "DEFAULT_GATEWAY_SETTINGS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "GATEWAY_GENERIC_TEMPLATE_POLICY",
           "kind": "variable",
           "visibility": "public"
@@ -3098,6 +3934,12 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "GatewayProviderTemplateView",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "GatewaySettings",
           "kind": "interface",
           "visibility": "public"
         },
@@ -3487,6 +4329,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "aiGatewayGetSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "aiGatewayModelPoolsStatus",
           "kind": "function",
           "visibility": "public"
@@ -3542,6 +4390,12 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "aiGatewayRestoreProviderModel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "aiGatewaySaveSettings",
           "kind": "function",
           "visibility": "public"
         },
@@ -3914,6 +4768,12 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "normalizeDraftDays",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "normalizeGatewaySettings",
           "kind": "function",
           "visibility": "public"
         },
@@ -5803,6 +6663,12 @@
         },
         {
           "file": "src/lib/messages.ts",
+          "name": "AppMessageInput",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messages.ts",
           "name": "MESSAGES_UPDATED_EVENT",
           "kind": "variable",
           "visibility": "public"
@@ -5822,6 +6688,12 @@
         {
           "file": "src/lib/messages.ts",
           "name": "MessageSeverity",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messages.ts",
+          "name": "MessageSource",
           "kind": "type",
           "visibility": "public"
         },
@@ -5864,6 +6736,18 @@
         {
           "file": "src/lib/messages.ts",
           "name": "markMessageRead",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messages.ts",
+          "name": "notifyMessage",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messages.ts",
+          "name": "recordAppMessage",
           "kind": "function",
           "visibility": "public"
         },
@@ -7483,6 +8367,18 @@
         },
         {
           "file": "src/test/mocks/messages.ts",
+          "name": "notifyMessageMock",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/messages.ts",
+          "name": "recordAppMessageMock",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/messages.ts",
           "name": "recordMessageMock",
           "kind": "variable",
           "visibility": "public"
@@ -7782,6 +8678,18 @@
           "visibility": "public"
         },
         {
+          "file": "src/toolbox/plugins/uptime-monitor.ts",
+          "name": "uptimeMonitorTool",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/plugins/webhook-catcher.ts",
+          "name": "webhookCatcherTool",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
           "file": "src/toolbox/registry.ts",
           "name": "TOOLBOX_TOOLS",
           "kind": "variable",
@@ -7971,6 +8879,7 @@
         "src/components/JwtInspectorTool.test.tsx",
         "src/components/Launcher.test.tsx",
         "src/components/Md5EncryptionTool.test.tsx",
+        "src/components/MessageCenter/MessageCenter.test.tsx",
         "src/components/MoreToolsHub.test.tsx",
         "src/components/OmniSearch.test.tsx",
         "src/components/PortTunnelTool/LogViewer.test.tsx",
@@ -7984,12 +8893,16 @@
         "src/components/SshServers.test.tsx",
         "src/components/SshTunnels.test.tsx",
         "src/components/SslCertificateTool.test.tsx",
+        "src/components/UptimeMonitor/UptimeMonitor.test.tsx",
+        "src/components/WebhookCatcher/WebhookCatcher.test.tsx",
         "src/components/Workspaces/WorkspaceSkillsPanel.test.tsx",
         "src/components/Workspaces/WorkspaceSubagentsPanel.test.tsx",
         "src/components/Workspaces/Workspaces.test.tsx",
         "src/components/Workspaces/helpers/workspaceCapabilityHelpers.test.ts",
         "src/components/Workspaces/helpers/workspaceHelpers.test.ts",
+        "src/components/common/CustomSelect.test.tsx",
         "src/components/modelOptions.test.ts",
+        "src/components/settings/common/SettingSelect.test.tsx",
         "src/components/sshTunnels/SshCommonPortManagerDialog.test.tsx",
         "src/components/toolbox/ToolShell.test.tsx",
         "src/components/toolbox/ToolStatusBadge.test.tsx",
@@ -8017,6 +8930,7 @@
         "src/lib/launcherToolOrder.test.ts",
         "src/lib/launcherToolVisibility.test.ts",
         "src/lib/md5.test.ts",
+        "src/lib/messages.test.ts",
         "src/lib/navigation.test.ts",
         "src/lib/runtimeStatus.test.ts",
         "src/lib/serviceProviders.test.ts",
@@ -8805,6 +9719,61 @@
         },
         {
           "kind": "imports",
+          "from": "src/components/MessageCenter/MessageCenter.tsx#MessageCenter",
+          "to": "src/components/MessageCenter/MessageCenterHeader.tsx#MessageCenterHeader"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageCenter.tsx#MessageCenter",
+          "to": "src/components/MessageCenter/MessageCenterToolbar.tsx#MessageCenterToolbar"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageCenter.tsx#MessageCenter",
+          "to": "src/components/MessageCenter/MessageDetailView.tsx#MessageDetailView"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageCenter.tsx#MessageCenter",
+          "to": "src/components/MessageCenter/MessageList.tsx#MessageList"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageCenter.tsx#MessageCenter",
+          "to": "src/components/MessageCenter/types.ts#MessageCenterProps"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageCenter.tsx#MessageCenter",
+          "to": "src/components/MessageCenter/useMessageCenter.ts#useMessageCenter"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageCenterToolbar.tsx#MessageCenterToolbar",
+          "to": "src/components/MessageCenter/types.ts#getSourceLabel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageDetailView.tsx#MessageDetailView",
+          "to": "src/components/MessageCenter/types.ts#getSourceLabel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageItem.tsx#MessageItem",
+          "to": "src/components/MessageCenter/types.ts#getSourceLabel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageList.tsx#MessageList",
+          "to": "src/components/MessageCenter/MessageItem.tsx#MessageItem"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/useMessageCenter.ts#useMessageCenter",
+          "to": "src/components/MessageCenter/types.ts#MessageFilterState"
+        },
+        {
+          "kind": "imports",
           "from": "src/components/MoreToolsHub.tsx#MoreToolsHub",
           "to": "src/components/AppErrorBoundary.tsx#AppErrorBoundary"
         },
@@ -8911,22 +9880,12 @@
         {
           "kind": "imports",
           "from": "src/components/SettingsView.tsx#SettingsView",
-          "to": "src/components/ConfirmDialogProvider.tsx#useConfirmDialog"
+          "to": "src/components/settings/SettingsContainer.tsx#SettingsContainer"
         },
         {
           "kind": "imports",
-          "from": "src/components/SettingsView.tsx#SettingsView",
-          "to": "src/components/ThemeProvider.tsx#useTheme"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/SettingsView.tsx#SettingsView",
-          "to": "src/components/ToastProvider.tsx#useToast"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/SettingsView.tsx#SettingsView",
-          "to": "src/components/skillsModelOptions.ts#skillModelOptions"
+          "from": "src/components/SettingsView.tsx#SettingsViewProps",
+          "to": "src/components/settings/SettingsContainer.tsx#SettingsContainerProps"
         },
         {
           "kind": "imports",
@@ -9182,6 +10141,101 @@
           "kind": "imports",
           "from": "src/components/Subagents/index.tsx#Subagents",
           "to": "src/components/ui/dialog.tsx#DialogTitle"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/HeartbeatBar.tsx#HeartbeatBar",
+          "to": "src/components/UptimeMonitor/types.ts#HeartbeatBarPoint"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/MonitorCard.tsx#MonitorCard",
+          "to": "src/components/UptimeMonitor/HeartbeatBar.tsx#HeartbeatBar"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/MonitorFormModal.tsx#MonitorFormModal",
+          "to": "src/components/UptimeMonitor/types.ts#MonitorTarget"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/MonitorFormModal.tsx#MonitorFormModal",
+          "to": "src/components/UptimeMonitor/types.ts#ProbeTestResult"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/MonitorFormModal.tsx#MonitorFormModal",
+          "to": "src/components/UptimeMonitor/types.ts#ProbeType"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/index.tsx#UptimeMonitorTool",
+          "to": "src/components/UptimeMonitor/MonitorCard.tsx#MonitorCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/index.tsx#UptimeMonitorTool",
+          "to": "src/components/UptimeMonitor/MonitorFormModal.tsx#MonitorFormModal"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/index.tsx#UptimeMonitorTool",
+          "to": "src/components/UptimeMonitor/types.ts#MonitorSummary"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/index.tsx#UptimeMonitorTool",
+          "to": "src/components/UptimeMonitor/types.ts#MonitorTarget"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UptimeMonitor/index.tsx#UptimeMonitorTool",
+          "to": "src/components/UptimeMonitor/types.ts#ProbeTestResult"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/ReplayDrawer.tsx#ReplayDrawer",
+          "to": "src/components/WebhookCatcher/types.ts#ReplayResult"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/index.tsx#WebhookCatcherTool",
+          "to": "src/components/WebhookCatcher/ReplayDrawer.tsx#ReplayDrawer"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/index.tsx#WebhookCatcherTool",
+          "to": "src/components/WebhookCatcher/RequestInspector.tsx#RequestInspector"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/index.tsx#WebhookCatcherTool",
+          "to": "src/components/WebhookCatcher/RequestStreamList.tsx#RequestStreamList"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/index.tsx#WebhookCatcherTool",
+          "to": "src/components/WebhookCatcher/types.ts#CapturedWebhookRequest"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/index.tsx#WebhookCatcherTool",
+          "to": "src/components/WebhookCatcher/types.ts#ReplayRequest"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/index.tsx#WebhookCatcherTool",
+          "to": "src/components/WebhookCatcher/types.ts#ReplayResult"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/index.tsx#WebhookCatcherTool",
+          "to": "src/components/WebhookCatcher/types.ts#WebhookEndpoint"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/WebhookCatcher/index.tsx#WebhookCatcherTool",
+          "to": "src/components/WebhookCatcher/types.ts#WebhookServerStatus"
         },
         {
           "kind": "imports",
@@ -10505,6 +11559,586 @@
         },
         {
           "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/ConfirmDialogProvider.tsx#useConfirmDialog"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/ThemeProvider.tsx#useTheme"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/ToastProvider.tsx#useToast"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/SettingsSidebar.tsx#SettingsSidebar"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#NewsRetentionPreset"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#detectNewsRetentionPreset"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#formatAiNewsSyncIntervalInput"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#generateRandomMd5String"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#getTabSnapshot"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#normalizeAiModelLaunchCommandsForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#normalizeAiModelPermissionModesForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#normalizeAiNewsRssSourcesForCompare"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#normalizeConfigForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#normalizeProtocolRouterConfigForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#normalizeProtocolRouterForCompare"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#normalizeProxyConfigForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#normalizeSyncPolicyForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#parseAiNewsSyncIntervalInput"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#parseTemplateAutoRefreshInput"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/helpers.ts#parseUsageRetentionInput"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/sections/DataSecuritySection.tsx#DataSecuritySection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/sections/GeneralSection.tsx#GeneralSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/sections/NewsSection.tsx#NewsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/sections/ServicesSection.tsx#ServicesSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#DEFAULT_PROTOCOL_ROUTER_CONFIG"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#DEFAULT_PROXY_CONFIG"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#MAIN_SETTINGS_CATEGORIES"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#MainSettingsTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#ProxyConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#ProxyStatus"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#SkillsSyncState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#SubagentSourceDiagnoseResult"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/types.ts#resolveSettingsTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsSidebar.tsx#SettingsSidebar",
+          "to": "src/components/settings/types.ts#MAIN_SETTINGS_CATEGORIES"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsSidebar.tsx#SettingsSidebarProps",
+          "to": "src/components/settings/types.ts#MainSettingsTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/EcoSourceManager.tsx#EcoSourceManager",
+          "to": "src/components/settings/helpers.ts#DEFAULT_SKILL_SOURCE_MODELS"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/EcoSourceManager.tsx#EcoSourceManager",
+          "to": "src/components/settings/helpers.ts#normalizeSkillSourcesForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/EcoSourceManager.tsx#EcoSourceManager",
+          "to": "src/components/settings/types.ts#SkillSourceConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/EcoSourceManager.tsx#EcoSourceManager",
+          "to": "src/components/settings/types.ts#SkillSourceValidation"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/EcoSourceManager.tsx#EcoSourceManagerProps",
+          "to": "src/components/settings/types.ts#SkillsSyncState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/EcoSourceManager.tsx#EcoSourceManagerProps",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/EcoSourceManager.tsx#EcoSourceManagerProps",
+          "to": "src/components/settings/types.ts#SubagentSourceDiagnoseResult"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/SubTabNavigation.tsx#SubTabItem",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/common/SubTabNavigation.tsx#SubTabNavigationProps",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#DEFAULT_SYNC_POLICY",
+          "to": "src/components/settings/types.ts#SyncPolicy"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#getTabSnapshot",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#getTabSnapshot",
+          "to": "src/components/settings/types.ts#ProxyConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#getTabSnapshot",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#isAiNewsRssSourceConfigured",
+          "to": "src/components/settings/types.ts#AiNewsRssSource"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeAiModelLaunchCommandsForUi",
+          "to": "src/components/settings/types.ts#AiModelLaunchCommands"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeAiModelLaunchCommandsForUi",
+          "to": "src/components/settings/types.ts#DEFAULT_AI_MODEL_LAUNCH_COMMANDS"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeAiNewsRssSourcesForCompare",
+          "to": "src/components/settings/types.ts#AiNewsRssSource"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeAiNewsRssSourcesForUi",
+          "to": "src/components/settings/types.ts#AiNewsRssSource"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeAiNewsRssSourcesForUi",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeConfigForUi",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeProtocolRouterConfigForUi",
+          "to": "src/components/settings/types.ts#DEFAULT_PROTOCOL_ROUTER_CONFIG"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeProtocolRouterConfigForUi",
+          "to": "src/components/settings/types.ts#ProtocolRouterConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeProtocolRouterForCompare",
+          "to": "src/components/settings/types.ts#ProtocolRouterConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeProxyConfigForUi",
+          "to": "src/components/settings/types.ts#DEFAULT_PROXY_CONFIG"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeProxyConfigForUi",
+          "to": "src/components/settings/types.ts#ProxyConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeProxyForCompare",
+          "to": "src/components/settings/types.ts#ProxyConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeSkillSourceForSyncCompare",
+          "to": "src/components/settings/types.ts#SkillSourceConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeSkillSourcesForSyncCompare",
+          "to": "src/components/settings/types.ts#SkillSourceConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeSkillSourcesForUi",
+          "to": "src/components/settings/types.ts#DEFAULT_SKILL_SOURCE_MODELS"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeSkillSourcesForUi",
+          "to": "src/components/settings/types.ts#SkillSourceConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeSkillSourcesForUi",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/helpers.ts#normalizeSyncPolicyForUi",
+          "to": "src/components/settings/types.ts#SyncPolicy"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/common/EcoSourceManager.tsx#EcoSourceManager"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/common/FolderPicker.tsx#FolderPicker"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/common/RetentionChips.tsx#RetentionChips"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/common/SettingSelect.tsx#SettingSelect"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabItem"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabNavigation"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/helpers.ts#normalizeAiModelLaunchCommandsForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/types.ts#AiModelId"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/types.ts#DEFAULT_AI_MODEL_LAUNCH_COMMANDS"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSection",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSectionProps",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSectionProps",
+          "to": "src/components/settings/types.ts#SkillsSyncState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSectionProps",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/AiEcoSection.tsx#AiEcoSectionProps",
+          "to": "src/components/settings/types.ts#SubagentSourceDiagnoseResult"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/DataSecuritySection.tsx#DataSecuritySection",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/DataSecuritySection.tsx#DataSecuritySection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabItem"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/DataSecuritySection.tsx#DataSecuritySection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabNavigation"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/DataSecuritySection.tsx#DataSecuritySection",
+          "to": "src/components/settings/helpers.ts#normalizeSyncPolicyForUi"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/DataSecuritySection.tsx#DataSecuritySection",
+          "to": "src/components/settings/types.ts#SyncPolicy"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/DataSecuritySection.tsx#DataSecuritySectionProps",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/DataSecuritySection.tsx#DataSecuritySectionProps",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/GeneralSection.tsx#GeneralSection",
+          "to": "src/components/settings/common/FolderPicker.tsx#FolderPicker"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/GeneralSection.tsx#GeneralSection",
+          "to": "src/components/settings/common/RetentionChips.tsx#RetentionChips"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/GeneralSection.tsx#GeneralSection",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/GeneralSection.tsx#GeneralSection",
+          "to": "src/components/settings/common/SettingRow.tsx#SettingRow"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/GeneralSection.tsx#GeneralSection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabItem"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/GeneralSection.tsx#GeneralSection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabNavigation"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/GeneralSection.tsx#GeneralSectionProps",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/GeneralSection.tsx#GeneralSectionProps",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSection",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSection",
+          "to": "src/components/settings/common/SettingRow.tsx#SettingRow"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSection",
+          "to": "src/components/settings/helpers.ts#NewsRetentionPreset"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSection",
+          "to": "src/components/settings/helpers.ts#isAiNewsRssSourceConfigured"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSection",
+          "to": "src/components/settings/types.ts#AiNewsRssSource"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSection",
+          "to": "src/components/settings/types.ts#AiNewsRssSourceValidation"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSection",
+          "to": "src/components/settings/types.ts#BUILTIN_AI_NEWS_RSS_SOURCES"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSectionProps",
+          "to": "src/components/settings/helpers.ts#NewsRetentionPreset"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/NewsSection.tsx#NewsSectionProps",
+          "to": "src/components/settings/types.ts#StorageConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
+          "to": "src/components/settings/common/SettingSelect.tsx#SettingSelect"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabItem"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabNavigation"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSectionProps",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSectionProps",
+          "to": "src/components/settings/types.ts#ProxyConfig"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSectionProps",
+          "to": "src/components/settings/types.ts#ProxyStatus"
+        },
+        {
+          "kind": "imports",
           "from": "src/components/skillsModelOptions.ts#skillModelOptions",
           "to": "src/components/AiEnvironments/icons.tsx#AntigravityIcon"
         },
@@ -11115,6 +12749,16 @@
         },
         {
           "kind": "imports",
+          "from": "src/toolbox/plugins/uptime-monitor.ts#uptimeMonitorTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/plugins/webhook-catcher.ts#webhookCatcherTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
           "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
           "to": "src/toolbox/plugins/ai-workflow-model-switcher.ts#aiWorkflowModelSwitcherTool"
         },
@@ -11207,6 +12851,16 @@
           "kind": "imports",
           "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
           "to": "src/toolbox/plugins/ssl-certificate.ts#sslCertificateTool"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/uptime-monitor.ts#uptimeMonitorTool"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/webhook-catcher.ts#webhookCatcherTool"
         },
         {
           "kind": "imports",
@@ -11388,6 +13042,16 @@
         "src/components/Md5EncryptionTool.test.tsx",
         "src/components/Md5EncryptionTool.tsx",
         "src/components/MessageCenter.tsx",
+        "src/components/MessageCenter/MessageCenter.test.tsx",
+        "src/components/MessageCenter/MessageCenter.tsx",
+        "src/components/MessageCenter/MessageCenterHeader.tsx",
+        "src/components/MessageCenter/MessageCenterToolbar.tsx",
+        "src/components/MessageCenter/MessageDetailView.tsx",
+        "src/components/MessageCenter/MessageItem.tsx",
+        "src/components/MessageCenter/MessageList.tsx",
+        "src/components/MessageCenter/index.ts",
+        "src/components/MessageCenter/types.ts",
+        "src/components/MessageCenter/useMessageCenter.ts",
         "src/components/MoreToolsHub.test.tsx",
         "src/components/MoreToolsHub.tsx",
         "src/components/Notes.tsx",
@@ -11427,6 +13091,18 @@
         "src/components/ThemeProvider.tsx",
         "src/components/ToastProvider.tsx",
         "src/components/UpdateUpgradeModal.tsx",
+        "src/components/UptimeMonitor/HeartbeatBar.tsx",
+        "src/components/UptimeMonitor/MonitorCard.tsx",
+        "src/components/UptimeMonitor/MonitorFormModal.tsx",
+        "src/components/UptimeMonitor/UptimeMonitor.test.tsx",
+        "src/components/UptimeMonitor/index.tsx",
+        "src/components/UptimeMonitor/types.ts",
+        "src/components/WebhookCatcher/ReplayDrawer.tsx",
+        "src/components/WebhookCatcher/RequestInspector.tsx",
+        "src/components/WebhookCatcher/RequestStreamList.tsx",
+        "src/components/WebhookCatcher/WebhookCatcher.test.tsx",
+        "src/components/WebhookCatcher/index.tsx",
+        "src/components/WebhookCatcher/types.ts",
         "src/components/Workspaces/WorkspaceSkillsPanel.test.tsx",
         "src/components/Workspaces/WorkspaceSkillsPanel.tsx",
         "src/components/Workspaces/WorkspaceSubagentsPanel.test.tsx",
@@ -11454,7 +13130,26 @@
         "src/components/Workspaces/hooks/useWorkspaceSubagentsPanelState.ts",
         "src/components/Workspaces/index.tsx",
         "src/components/Workspaces/types.ts",
+        "src/components/common/CustomSelect.test.tsx",
+        "src/components/common/CustomSelect.tsx",
         "src/components/modelOptions.test.ts",
+        "src/components/settings/SettingsContainer.tsx",
+        "src/components/settings/SettingsSidebar.tsx",
+        "src/components/settings/common/EcoSourceManager.tsx",
+        "src/components/settings/common/FolderPicker.tsx",
+        "src/components/settings/common/RetentionChips.tsx",
+        "src/components/settings/common/SettingCard.tsx",
+        "src/components/settings/common/SettingRow.tsx",
+        "src/components/settings/common/SettingSelect.test.tsx",
+        "src/components/settings/common/SettingSelect.tsx",
+        "src/components/settings/common/SubTabNavigation.tsx",
+        "src/components/settings/helpers.ts",
+        "src/components/settings/sections/AiEcoSection.tsx",
+        "src/components/settings/sections/DataSecuritySection.tsx",
+        "src/components/settings/sections/GeneralSection.tsx",
+        "src/components/settings/sections/NewsSection.tsx",
+        "src/components/settings/sections/ServicesSection.tsx",
+        "src/components/settings/types.ts",
         "src/components/skillsModelOptions.ts",
         "src/components/sshTunnels/CommonPortSelectMenu.tsx",
         "src/components/sshTunnels/SshCommonPortManagerDialog.test.tsx",
@@ -11537,6 +13232,7 @@
         "src/lib/launcherToolVisibility.ts",
         "src/lib/md5.test.ts",
         "src/lib/md5.ts",
+        "src/lib/messages.test.ts",
         "src/lib/messages.ts",
         "src/lib/navigation.test.ts",
         "src/lib/navigation.ts",
@@ -11601,6 +13297,8 @@
         "src/toolbox/plugins/ssh-servers.ts",
         "src/toolbox/plugins/ssh-tunnels.ts",
         "src/toolbox/plugins/ssl-certificate.ts",
+        "src/toolbox/plugins/uptime-monitor.ts",
+        "src/toolbox/plugins/webhook-catcher.ts",
         "src/toolbox/registry.test.ts",
         "src/toolbox/registry.ts",
         "src/toolbox/types.ts",

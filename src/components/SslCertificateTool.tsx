@@ -24,6 +24,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { useToast } from "./ToastProvider";
 import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
+import { CustomSelect } from "@/components/common/CustomSelect";
 import {
   sslCertificateCreateOrder,
   sslCertificateDelete,
@@ -1037,14 +1038,21 @@ export function SslCertificateTool() {
                       <label className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">
                         私钥算法 (Key Type)
                       </label>
-                      <select
+                      <CustomSelect
                         value={keyType}
-                        onChange={(e: any) => setKeyType(e.target.value)}
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                      >
-                        <option value="ecc_p256">ECC P-256 (推荐，性能极高)</option>
-                        <option value="rsa2048">RSA 2048 (传统兼容性好)</option>
-                      </select>
+                        onChange={(val) => setKeyType(val)}
+                        ariaLabel="私钥算法 (Key Type)"
+                        options={[
+                          {
+                            value: "ecc_p256",
+                            label: "ECC P-256 (推荐，性能极高)",
+                          },
+                          {
+                            value: "rsa2048",
+                            label: "RSA 2048 (传统兼容性好)",
+                          },
+                        ]}
+                      />
                     </div>
 
                     <div>
