@@ -25,10 +25,6 @@ export function sshTunnelGroupDelete<T>(id: string) {
   return invokeTyped<T>("ssh_tunnel_group_delete", { id });
 }
 
-export function sshCommonPortsList<T>() {
-  return invokeTyped<T>("ssh_common_ports_list");
-}
-
 export function sshCommonPortUpsert<T>(input: {
   id?: string;
   name: string;

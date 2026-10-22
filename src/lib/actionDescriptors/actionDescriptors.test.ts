@@ -7,7 +7,6 @@ import {
 } from "@/lib/actionDescriptors/appSystemEvents";
 import {
   buildCleanupBackupsActionDescriptor,
-  buildCreateBackupActionDescriptor,
   buildDeleteBackupActionDescriptor,
   buildRestoreBackupActionDescriptor,
 } from "@/lib/actionDescriptors/backup";
@@ -114,10 +113,6 @@ describe("actionDescriptors", () => {
   });
 
   it("builds backup action descriptors with confirmation and targets", () => {
-    expect(buildCreateBackupActionDescriptor(t, "skills")).toMatchObject({
-      dedupeKey: "backup:create:skills",
-      confirm: { kind: "warning" },
-    });
     expect(buildDeleteBackupActionDescriptor(t, "entry-1")).toMatchObject({
       dedupeKey: "backup:delete:entry-1",
       confirm: { kind: "error" },
@@ -130,7 +125,6 @@ describe("actionDescriptors", () => {
 
   it("points every backup action descriptor at the real backup home", () => {
     const descriptors = [
-      buildCreateBackupActionDescriptor(t, "skills"),
       buildRestoreBackupActionDescriptor(t, "entry-1"),
       buildDeleteBackupActionDescriptor(t, "entry-1"),
       buildCleanupBackupsActionDescriptor(t, 30),

@@ -38,10 +38,6 @@ export function normalizeAiModelPermissionModesForUi(
   };
 }
 
-export function getPermissionModeLabel(mode: TerminalPermissionMode): string {
-  return mode === 'full_access' ? 'full_access' : 'default';
-}
-
 export function getFullAccessFlag(modelId: AiModelId): { flag?: string; env?: Record<string, string> } {
   switch (modelId) {
     case 'claude':

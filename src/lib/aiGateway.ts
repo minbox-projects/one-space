@@ -599,10 +599,6 @@ export function aiGatewayGetConfig() {
   return invoke<GatewayConfig>("ai_gateway_get_config");
 }
 
-export function aiGatewayGetSettings() {
-  return invoke<GatewaySettings>("ai_gateway_get_settings");
-}
-
 export function aiGatewaySaveSettings(settings: GatewaySettings, port?: number) {
   return invoke<GatewayConfig>("ai_gateway_save_settings", { settings, port: port ?? null });
 }
@@ -1742,27 +1738,6 @@ export interface GatewayModelPoolStatus {
   fallback_models?: GatewayModelPoolFallbackModelStatus[];
 }
 
-/** Read the stored model pools; a legacy/missing collection yields an empty list. */
-export function modelPools(
-  config: GatewayConfig | null | undefined,
-): GatewayModelPool[] {
-  return config?.model_pools ?? [];
-}
-
-/** Stored pools with the user's enabled intent on, preserving stored order. */
-export function enabledModelPools(
-  config: GatewayConfig | null | undefined,
-): GatewayModelPool[] {
-  return modelPools(config).filter((pool) => pool.enabled);
-}
-
-/** The minimal alias reservation; a legacy/missing collection yields an empty list. */
-export function modelPoolReservedModels(
-  config: GatewayConfig | null | undefined,
-): string[] {
-  return config?.model_pool_reserved_models ?? [];
-}
-
 /**
  * Whether one candidate-local mapping is structurally valid for its declared
  * profile. Unknown profiles and unsupported action shapes never produce a
@@ -2115,24 +2090,6 @@ export function modelPoolCandidateKey(
     candidate.upstream_model,
     candidate.protocol,
   ].join("\u0001");
-}
-
-/** Build the exact pool reference for one provider mapping, defaulting weight to 1. */
-export function modelPoolCandidateFromMapping(
-  provider: GatewayUpstreamProvider,
-  mapping: GatewayModelMapping,
-  weight = 1,
-): GatewayModelPoolCandidate | null {
-  const localModel = mapping.local_model.trim();
-  const upstreamModel = mapping.upstream_model.trim();
-  if (!localModel || !upstreamModel) return null;
-  return {
-    provider_id: provider.id,
-    local_model: localModel,
-    upstream_model: upstreamModel,
-    protocol: mapping.protocol ?? provider.protocol ?? "chat_completions",
-    weight,
-  };
 }
 
 /** Generate a fresh opaque pool id; the backend stores it verbatim. */

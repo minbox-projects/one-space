@@ -19,7 +19,6 @@ export type ModelPoolListPanelProps = {
   onAddPool?: () => void;
   onTogglePoolEnabled?: (poolId: string, enabled: boolean) => void;
   onEditPool?: (pool: GatewayModelPool) => void;
-  onDeletePool?: (poolId: string) => void;
   onOpenPoolLogs?: (model: string) => void;
 };
 
@@ -32,7 +31,6 @@ function ModelPoolListPanelComponent({
   onAddPool,
   onTogglePoolEnabled,
   onEditPool,
-  onDeletePool,
   onOpenPoolLogs,
 }: ModelPoolListPanelProps) {
   const { t } = useTranslation();
@@ -271,7 +269,6 @@ function ModelPoolListPanelComponent({
                 onTogglePoolEnabled?.(poolId, enabled)
               }
               onEdit={(target) => onEditPool?.(target)}
-              onDelete={(poolId) => onDeletePool?.(poolId)}
               onOpenLogs={(model) => onOpenPoolLogs?.(model)}
             />
           ))}
