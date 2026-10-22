@@ -32,7 +32,7 @@ import {
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { useToast } from "./ToastProvider";
 import type { SshTunnelsSnapshot } from "./sshTunnels/types";
-import { errorToMessage, safeRecordMessage } from "@/lib/messages";
+import { notifyMessage, safeRecordMessage } from "@/lib/messages";
 import { runUserAction } from "@/lib/userActions";
 import {
   LAUNCHER_TOOL_VISIBILITY_UPDATED_EVENT,
@@ -810,15 +810,13 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       await executeLaunch(item);
     } catch (err) {
       console.error(err);
-      const detail = errorToMessage(err);
-      void safeRecordMessage({
+      void notifyMessage.error({
         source: "launcher",
         category: "execute",
-        severity: "error",
         title: t("launcherLaunchFailedMessageTitle", "Launcher failed to start"),
-        summary: `${item.name}: ${detail.split("\n").find(Boolean) || "Launch failed"}`,
-        detail,
-        dedupe_key: `launcher:execute:error:${item.id}`,
+        summary: `${item.name}: ${err instanceof Error ? err.message : "Launch failed"}`,
+        error: err,
+        dedupeKey: `launcher:execute:error:${item.id}`,
         target: { tab: "launcher", entity_id: item.id },
         metadata: { item_type: item.type, target: item.target },
       });
@@ -842,16 +840,15 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
         });
       }
       await executeLaunch(item);
-      await safeRecordMessage({
+      await notifyMessage.success({
         source: "launcher",
         category: "execute",
-        severity: "success",
         title: t("launcherLaunchSuccessMessageTitle", "Launcher action started"),
         summary: t("launcherLaunchSuccessSummary", {
           name: item.name,
           defaultValue: "{{name}} started successfully.",
         }),
-        dedupe_key: `launcher:execute:success:${item.id}`,
+        dedupeKey: `launcher:execute:success:${item.id}`,
         target: { tab: "launcher", entity_id: item.id },
         metadata: { item_type: item.type, target: item.target },
       });
@@ -862,15 +859,13 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       });
     } catch (err) {
       console.error(err);
-      const detail = errorToMessage(err);
-      void safeRecordMessage({
+      void notifyMessage.error({
         source: "launcher",
         category: "execute",
-        severity: "error",
         title: t("launcherLaunchFailedMessageTitle", "Launcher failed to start"),
-        summary: `${item.name}: ${detail.split("\n").find(Boolean) || "Launch failed"}`,
-        detail,
-        dedupe_key: `launcher:execute:error:${item.id}`,
+        summary: `${item.name}: ${err instanceof Error ? err.message : "Launch failed"}`,
+        error: err,
+        dedupeKey: `launcher:execute:error:${item.id}`,
         target: { tab: "launcher", entity_id: item.id },
         metadata: { item_type: item.type, target: item.target },
       });
@@ -948,13 +943,12 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
           mode: "merge",
         },
       );
-      await safeRecordMessage({
+      await notifyMessage.success({
         source: "launcher",
         category: "import",
-        severity: "success",
         title: t("launcherImportMessageTitle", "Launcher items imported"),
         summary: t("launcherImportSuccess", { count: resp.data?.count ?? 0 }),
-        dedupe_key: "launcher:import",
+        dedupeKey: "launcher:import",
         target: { tab: "launcher" },
         metadata: { import_path: importPath, imported: resp.data?.count ?? 0 },
       });
@@ -966,14 +960,13 @@ export function Launcher({ isVisible = true }: { isVisible?: boolean }) {
       });
     } catch (err) {
       console.error(err);
-      await safeRecordMessage({
+      await notifyMessage.error({
         source: "launcher",
         category: "import",
-        severity: "error",
         title: t("launcherImportFailedTitle", "Failed to import launcher items"),
         summary: t("launcherImportFailed", { error: formatInvokeError(err) }),
-        detail: errorToMessage(err),
-        dedupe_key: "launcher:import",
+        error: err,
+        dedupeKey: "launcher:import",
         target: { tab: "launcher" },
       });
       pushToast({

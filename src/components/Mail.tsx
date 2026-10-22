@@ -5,7 +5,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useToast } from './ToastProvider';
-import { errorToMessage, recordMessage } from '@/lib/messages';
+import { notifyMessage } from '@/lib/messages';
 import {
   getValidAccessToken,
   getGmailSessionStatus,
@@ -422,15 +422,12 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
       emit('refresh-mail-count').catch(console.error);
     } catch (err: any) {
       console.error(err);
-      const detail = errorToMessage(err);
-      void recordMessage({
+      void notifyMessage.error({
         source: 'mail',
         category: 'send',
-        severity: 'error',
         title: t('mailSendFailedMessageTitle', 'Failed to send email'),
-        summary: detail.split('\n').find(Boolean) || 'Email send failed',
-        detail,
-        dedupe_key: 'mail:send:error',
+        error: err,
+        dedupeKey: 'mail:send:error',
         target: { tab: 'mail' },
         metadata: { to, subject },
       });
@@ -463,18 +460,16 @@ export function Mail({ isVisible = true }: { isVisible?: boolean }) {
       a.click();
     } catch (err) {
       console.error("Download failed", err);
-      const detail = errorToMessage(err);
-      void recordMessage({
+      void notifyMessage.error({
         source: 'mail',
         category: 'attachment',
-        severity: 'error',
         title: t(
           'mailAttachmentDownloadFailedMessageTitle',
           'Failed to download email attachment',
         ),
-        summary: `${filename}: ${detail.split('\n').find(Boolean) || 'Download failed'}`,
-        detail,
-        dedupe_key: `mail:attachment:error:${attachmentId}`,
+        summary: `${filename}: ${err instanceof Error ? err.message : 'Download failed'}`,
+        error: err,
+        dedupeKey: `mail:attachment:error:${attachmentId}`,
         target: { tab: 'mail' },
         metadata: { filename, email_id: selectedEmail.id },
       });

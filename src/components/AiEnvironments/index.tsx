@@ -16,7 +16,7 @@ import { IconPicker } from './IconPicker';
 import { ModelMappingTable } from './ModelMappingTable';
 import { TerminalPermissionConfirmDialog } from '../TerminalPermissionConfirmDialog';
 import { useToast } from '../ToastProvider';
-import { safeRecordMessage } from '@/lib/messages';
+import { notifyMessage, safeRecordMessage } from '@/lib/messages';
 import { openLocalPath } from '@/lib/externalActions';
 import { runUserAction } from '@/lib/userActions';
 import {
@@ -1187,13 +1187,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       }
 
       if (showSavedMessage) {
-        await safeRecordMessage({
+        await notifyMessage.success({
           source: 'ai_environments',
           category: 'save',
-          severity: 'success',
           title: t('aiEnvironmentSavedMessageTitle', 'Service Provider saved'),
           summary: t('providerSaved', 'Service Provider saved'),
-          dedupe_key: `ai-environments:save:${savedProvider.tool}:${savedProvider.id}`,
+          dedupeKey: `ai-environments:save:${savedProvider.tool}:${savedProvider.id}`,
           target: { tab: 'ai-environments', entity_id: savedProvider.id },
           metadata: { tool: savedProvider.tool, provider_id: savedProvider.id },
         });
@@ -1209,14 +1208,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       };
     } catch (e: any) {
       const errorMessage = errorToDisplayMessage(e);
-      await safeRecordMessage({
+      await notifyMessage.error({
         source: 'ai_environments',
         category: 'save',
-        severity: 'error',
         title: t('saveFailed', 'Save failed'),
         summary: errorMessage,
-        detail: errorMessage,
-        dedupe_key: `ai-environments:save:${provider.tool || activeTool}:${newId}`,
+        error: e,
+        dedupeKey: `ai-environments:save:${provider.tool || activeTool}:${newId}`,
         target: { tab: 'ai-environments', entity_id: newId },
         metadata: { tool: provider.tool || activeTool, provider_id: newId },
       });
@@ -1451,13 +1449,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         next.delete(targetId);
         return next;
       });
-      await safeRecordMessage({
+      await notifyMessage.success({
         source: 'ai_environments',
         category: 'delete',
-        severity: 'success',
         title: t('aiEnvironmentDeletedMessageTitle', 'Service Provider deleted'),
         summary: t('deleteSuccess', 'Preset deleted successfully'),
-        dedupe_key: `ai-environments:delete:${targetTool}:${targetId}`,
+        dedupeKey: `ai-environments:delete:${targetTool}:${targetId}`,
         target: { tab: 'ai-environments', entity_id: targetId },
         metadata: { tool: targetTool, provider_id: targetId, unsaved: true },
       });
@@ -1554,14 +1551,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         setMessage({ type: 'success', text: t('cliUpdateTerminalLaunched') });
         setTimeout(() => setMessage({ type: '', text: '' }), 5000);
       } else {
-        await safeRecordMessage({
+        await notifyMessage.error({
           source: 'ai_environments',
           category: 'cli_update',
-          severity: 'error',
           title: t('cliUpdateFailedTitle', 'CLI update failed'),
           summary: t('cliUpdateFailed', { error: result.error || 'Unknown error' }),
-          detail: result.error || 'Unknown error',
-          dedupe_key: `ai-environments:cli-update:${tool}`,
+          error: result.error || 'Unknown error',
+          dedupeKey: `ai-environments:cli-update:${tool}`,
           target: { tab: 'ai-environments', entity_id: tool },
           metadata: result,
         });
@@ -1917,13 +1913,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
       const res = await serviceProvidersImportPreview(selectedPath);
       if (!res.data?.items?.length) {
         const emptyText = t('providersImportEmpty', 'No Service Providers found in the selected file.');
-        await safeRecordMessage({
+        await notifyMessage.warn({
           source: 'ai_environments',
           category: 'import',
-          severity: 'warning',
           title: t('providersImportEmptyTitle', 'Import file is empty'),
           summary: emptyText,
-          dedupe_key: 'ai-environments:import-preview-empty',
+          dedupeKey: 'ai-environments:import-preview-empty',
           target: { tab: 'ai-environments' },
           metadata: { import_path: selectedPath },
         });
@@ -1951,14 +1946,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         error: String(e),
         defaultValue: 'Failed to read import file: {{error}}',
       });
-      await safeRecordMessage({
+      await notifyMessage.error({
         source: 'ai_environments',
         category: 'import',
-        severity: 'error',
         title: t('providersImportPreviewFailedTitle', 'Failed to preview import'),
         summary: errorText,
-        detail: String(e),
-        dedupe_key: 'ai-environments:import-preview',
+        error: e,
+        dedupeKey: 'ai-environments:import-preview-failed',
         target: { tab: 'ai-environments' },
       });
       pushToast({

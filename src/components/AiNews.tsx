@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { Newspaper, RefreshCw } from 'lucide-react';
-import { errorToMessage, recordMessage } from '@/lib/messages';
+import { notifyMessage } from '@/lib/messages';
 import { openExternalUrl } from '@/lib/externalActions';
 
 type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: number } };
@@ -154,15 +154,12 @@ export function AiNews({ isVisible = true }: { isVisible?: boolean }) {
       emit('refresh-counts').catch(() => {});
     } catch (e: any) {
       const message = String(e || '');
-      const detail = errorToMessage(e);
-      void recordMessage({
+      void notifyMessage.error({
         source: 'ai_news',
         category: 'manual_refresh',
-        severity: 'error',
         title: t('aiNewsFetchFailedTitle', 'AI News fetch failed'),
-        summary: detail.split('\n').find(Boolean) || 'AI News refresh failed',
-        detail,
-        dedupe_key: 'ai-news:manual-refresh:error',
+        error: e,
+        dedupeKey: 'ai-news:manual-refresh:error',
         target: { tab: 'ai-news' },
       });
       if (isRssAccessError(message)) {

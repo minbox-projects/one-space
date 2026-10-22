@@ -7,7 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
-import { errorToMessage, recordMessage } from '@/lib/messages';
+import { notifyMessage } from '@/lib/messages';
 
 interface Note {
   id: string;
@@ -70,15 +70,12 @@ export function Notes() {
       setNotes(newNotes.sort((a, b) => b.updated_at - a.updated_at));
     } catch (err) {
       console.error("Failed to save notes", err);
-      const detail = errorToMessage(err);
-      void recordMessage({
+      void notifyMessage.error({
         source: 'content',
         category: 'notes',
-        severity: 'error',
         title: t('notesSaveFailedMessageTitle', 'Failed to save Notes'),
-        summary: detail.split('\n').find(Boolean) || 'Failed to save notes',
-        detail,
-        dedupe_key: 'content:notes:save:error',
+        error: err,
+        dedupeKey: 'content:notes:save:error',
         target: { tab: 'notes' },
       });
       pushToast({ title: t('failedToSave'), kind: 'error' });

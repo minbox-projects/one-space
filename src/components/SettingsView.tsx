@@ -53,7 +53,7 @@ import {
   type TerminalPermissionMode,
 } from "@/lib/terminalPermissions";
 import { Switch } from "@/components/ui/switch";
-import { errorToMessage, safeRecordMessage } from "@/lib/messages";
+import { errorToMessage, notifyMessage, safeRecordMessage } from "@/lib/messages";
 import { md5Hex } from "@/lib/md5";
 import { runUserAction } from "@/lib/userActions";
 import {
@@ -803,16 +803,15 @@ export function SettingsView({
       setShowNewPass(true);
       setShowConfirmNewPass(true);
       setChangingPass(false);
-      await safeRecordMessage({
+      await notifyMessage.success({
         source: "settings",
         category: "security",
-        severity: "success",
         title: t("settingsPasswordChangedTitle", "Master password changed"),
         summary: t(
           "settingsPasswordChangedSummary",
           "Master password changed successfully.",
         ),
-        dedupe_key: "settings:security:password-changed",
+        dedupeKey: "settings:security:password-changed",
         target: { tab: "settings", section: "security" },
       });
       pushToast({
@@ -839,17 +838,15 @@ export function SettingsView({
         description: text,
         kind: "error",
       });
-      void safeRecordMessage({
+      void notifyMessage.error({
         source: "settings",
         category: "security",
-        severity: "error",
         title: t(
           "settingsPasswordChangeFailedTitle",
           "Failed to change master password",
         ),
-        summary: text.split("\n").find(Boolean) || "Password change failed",
-        detail: text,
-        dedupe_key: "settings:security:password-change-failed",
+        error: e,
+        dedupeKey: "settings:security:password-change-failed",
         target: { tab: "settings", section: "security" },
       });
     } finally {
@@ -2183,16 +2180,15 @@ export function SettingsView({
         );
         if (!confirmed) return;
         await loadProtocolRouter();
-        await safeRecordMessage({
+        await notifyMessage.success({
           source: "settings",
           category: "reset",
-          severity: "success",
           title: t("settingsSectionResetTitle", "Settings reset"),
           summary: t(
             "currentSectionResetSuccess",
             "Current section has been reset.",
           ),
-          dedupe_key: "settings:reset:protocol-router",
+          dedupeKey: "settings:reset:protocol-router",
           target: { tab: "settings", section: "protocol-router" },
         });
         pushToast({
@@ -2308,13 +2304,12 @@ export function SettingsView({
         "currentSectionResetSuccess",
         "Current section has been reset.",
       );
-      await safeRecordMessage({
+      await notifyMessage.success({
         source: "settings",
         category: "reset",
-        severity: "success",
         title: t("settingsSectionResetTitle", "Settings reset"),
         summary: baseText,
-        dedupe_key: `settings:reset:${activeTab}`,
+        dedupeKey: `settings:reset:${activeTab}`,
         target: { tab: "settings", section: activeTab },
       });
       pushToast({
@@ -2367,13 +2362,12 @@ export function SettingsView({
       const normalized = normalizeProtocolRouterConfigForUi(next);
       setProtocolRouterConfig(normalized);
       setSavedProtocolRouterConfig(normalized);
-      await safeRecordMessage({
+      await notifyMessage.success({
         source: "settings",
         category: "protocol_router",
-        severity: "success",
         title: t("protocolRouterTokenRotatedTitle", "Protocol Router token rotated"),
         summary: t("protocolRouterTokenRotatedSummary", "A new Protocol Router token was generated."),
-        dedupe_key: "settings:protocol-router:rotate-token",
+        dedupeKey: "settings:protocol-router:rotate-token",
         target: { tab: "settings", section: "protocol-router" },
       });
       pushToast({
@@ -2762,15 +2756,14 @@ export function SettingsView({
       }
 
       setConfig((prev) => ({ ...prev, skills_sources: normalizedSources }));
-      await safeRecordMessage({
+      await notifyMessage.success({
         source: "settings",
         category: "skills",
-        severity: "success",
         title: t("skillsSourcesImportedTitle", "Skills sources imported"),
         summary: t("skillsSourcesImported", "Imported {{count}} skills sources", {
           count: normalizedSources.length,
         }),
-        dedupe_key: "settings:skills:import",
+        dedupeKey: "settings:skills:import",
         target: { tab: "settings", section: "skills" },
         metadata: { imported_count: normalizedSources.length },
       });
@@ -3016,17 +3009,16 @@ export function SettingsView({
       }
 
       setConfig((prev) => ({ ...prev, subagents_sources: normalizedSources }));
-      await safeRecordMessage({
+      await notifyMessage.success({
         source: "settings",
         category: "subagents",
-        severity: "success",
         title: t("subagentsSourcesImportedTitle", "Subagents sources imported"),
         summary: t(
           "subagentsSourcesImported",
           "Imported {{count}} subagents sources",
           { count: normalizedSources.length },
         ),
-        dedupe_key: "settings:subagents:import",
+        dedupeKey: "settings:subagents:import",
         target: { tab: "settings", section: "subagents" },
         metadata: { imported_count: normalizedSources.length },
       });

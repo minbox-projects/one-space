@@ -9,7 +9,7 @@ import { skillModelOptions, type SkillModelId } from '../skillsModelOptions';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
 import { useToast } from '../ToastProvider';
 import type { WorkspaceCapabilityContext } from '../workspaceCapabilityContext';
-import { errorToMessage, safeRecordMessage } from '@/lib/messages';
+import { notifyMessage, safeRecordMessage } from '@/lib/messages';
 import { runUserAction } from '@/lib/userActions';
 import {
   buildDeleteMcpServerActionDescriptor,
@@ -290,18 +290,15 @@ export function MCPServers({
       await invoke('mcp_updates_check_background');
       await loadUpdatesStatus();
     } catch (e) {
-      const detail = errorToMessage(e);
-      void safeRecordMessage({
+      void notifyMessage.error({
         source: 'mcp_servers',
         category: 'updates',
-        severity: 'error',
         title: t(
           'mcpUpdateCheckFailedMessageTitle',
           'MCP Servers update check failed',
         ),
-        summary: detail.split('\n').find(Boolean) || 'MCP update check failed',
-        detail,
-        dedupe_key: 'mcp:update-check:error',
+        error: e,
+        dedupeKey: 'mcp:update-check:error',
         target: { tab: 'mcp-servers' },
       });
       pushToast({ title: t('mcpUpdateCheckFailed', { error: e }), kind: 'error' });
@@ -316,18 +313,15 @@ export function MCPServers({
       await invoke('mcp_update_apply', { input: { server_id: serverId } });
       await Promise.all([loadServers(false), loadUpdatesStatus()]);
     } catch (e) {
-      const detail = errorToMessage(e);
-      void safeRecordMessage({
+      void notifyMessage.error({
         source: 'mcp_servers',
         category: 'updates',
-        severity: 'error',
         title: t(
           'mcpUpdateApplyFailedMessageTitle',
           'MCP Server update apply failed',
         ),
-        summary: detail.split('\n').find(Boolean) || 'MCP update apply failed',
-        detail,
-        dedupe_key: `mcp:update-apply:error:${serverId}`,
+        error: e,
+        dedupeKey: `mcp:update-apply:error:${serverId}`,
         target: { tab: 'mcp-servers', entity_id: serverId },
       });
       pushToast({ title: t('mcpUpdateApplyFailed', { error: e }), kind: 'error' });
@@ -420,18 +414,16 @@ export function MCPServers({
       emit('refresh-counts').catch(() => {});
     } catch (e) {
       setModelSwitchStates(prev => ({ ...prev, [serverId]: previousState }));
-      const detail = errorToMessage(e);
-      void safeRecordMessage({
+      void notifyMessage.error({
         source: 'mcp_servers',
         category: 'model_sync',
-        severity: 'error',
         title: t(
           'mcpModelSwitchSyncFailedMessageTitle',
           'MCP model switch sync failed',
         ),
-        summary: `${model}: ${detail.split('\n').find(Boolean) || 'Model sync failed'}`,
-        detail,
-        dedupe_key: `mcp:model-switch:error:${serverId}:${model}`,
+        summary: `${model}: ${e instanceof Error ? e.message : 'Model sync failed'}`,
+        error: e,
+        dedupeKey: `mcp:model-switch:error:${serverId}:${model}`,
         target: { tab: 'mcp-servers', entity_id: serverId },
         metadata: { server_id: serverId, model, enabled },
       });

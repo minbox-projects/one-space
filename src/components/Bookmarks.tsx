@@ -5,7 +5,7 @@ import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2, Loa
 import { v4 as uuidv4 } from 'uuid';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
-import { errorToMessage, recordMessage } from '@/lib/messages';
+import { notifyMessage } from '@/lib/messages';
 import { isLikelyLocalPath, openExternalUrl, openLocalPath } from '@/lib/externalActions';
 import { getToolboxTool } from "@/toolbox/registry";
 import { invokeToolboxCommand } from "@/toolbox/invoke";
@@ -66,15 +66,12 @@ export function Bookmarks() {
       setBookmarks(newBookmarks.sort((a, b) => b.created_at - a.created_at));
     } catch (err) {
       console.error("Failed to save bookmarks", err);
-      const detail = errorToMessage(err);
-      void recordMessage({
+      void notifyMessage.error({
         source: 'content',
         category: 'bookmarks',
-        severity: 'error',
         title: t('bookmarksSaveFailedMessageTitle', 'Failed to save Bookmarks'),
-        summary: detail.split('\n').find(Boolean) || 'Failed to save bookmarks',
-        detail,
-        dedupe_key: 'content:bookmarks:save:error',
+        error: err,
+        dedupeKey: 'content:bookmarks:save:error',
         target: { tab: 'bookmarks' },
       });
       pushToast({ title: t('failedToSave'), kind: 'error' });

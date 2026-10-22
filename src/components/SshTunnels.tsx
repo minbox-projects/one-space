@@ -38,7 +38,7 @@ import { Switch } from "./ui/switch";
 import { SshTunnelGroupManagerDialog } from "./sshTunnels/SshTunnelGroupManagerDialog";
 import { SshCommonPortManagerDialog } from "./sshTunnels/SshCommonPortManagerDialog";
 import { CommonPortSelectMenu } from "./sshTunnels/CommonPortSelectMenu";
-import { errorToMessage, safeRecordMessage } from "@/lib/messages";
+import { notifyMessage, safeRecordMessage } from "@/lib/messages";
 import {
   notifyActionResult,
   runUserAction,
@@ -770,14 +770,13 @@ export function SshTunnels({
     detail: unknown,
     id?: string,
   ) => {
-    void safeRecordMessage({
+    void notifyMessage.error({
       source: "ssh_tunnels",
       category,
-      severity: "error",
       title,
       summary,
-      detail: errorToMessage(detail),
-      dedupe_key: `ssh-tunnels:${category}:${id || "draft"}`,
+      error: detail,
+      dedupeKey: `ssh-tunnels:${category}:${id || "draft"}`,
       target: { tab: "ssh-tunnels", entity_id: id },
     });
   };
