@@ -94,6 +94,7 @@
         "src/components/AiEnvironments/index.tsx",
         "src/components/AiEnvironments/opencodeModelConfig.ts",
         "src/components/AiEnvironments/providerPresets.ts",
+        "src/components/AiGateway/AutoDisabledModelsDialog.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.tsx",
         "src/components/AiGateway/LocalKeyDialog.tsx",
         "src/components/AiGateway/LocalKeyList.tsx",
@@ -819,6 +820,12 @@
         {
           "file": "src/components/AiEnvironments/providerPresets.ts",
           "name": "normalizeClaudePresetTemplate",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/AiGateway/AutoDisabledModelsDialog.tsx",
+          "name": "AutoDisabledModelsDialog",
           "kind": "function",
           "visibility": "public"
         },
@@ -8801,6 +8808,7 @@
         "src/components/AiEnvironments/syncedProviderActivation.test.ts",
         "src/components/AiGateway/AiGateway.performance.test.tsx",
         "src/components/AiGateway/AiGateway.test.tsx",
+        "src/components/AiGateway/AutoDisabledModelsDialog.test.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.test.tsx",
         "src/components/AiGateway/ContextLimits.test.tsx",
         "src/components/AiGateway/MappingPriceEditor.test.tsx",
@@ -9254,6 +9262,11 @@
           "kind": "imports",
           "from": "src/components/AiGateway/TemplateCreateDialog.tsx#TemplateCreateDialog",
           "to": "src/components/AiGateway/ProviderTemplateIcon.tsx#ProviderTemplateAvatar"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/AiGateway/UpstreamProviderList.tsx#UpstreamProviderList",
+          "to": "src/components/AiGateway/AutoDisabledModelsDialog.tsx#AutoDisabledModelsDialog"
         },
         {
           "kind": "imports",
@@ -12898,6 +12911,8 @@
         "src/components/AiEnvironments/syncedProviderActivation.test.ts",
         "src/components/AiGateway/AiGateway.performance.test.tsx",
         "src/components/AiGateway/AiGateway.test.tsx",
+        "src/components/AiGateway/AutoDisabledModelsDialog.test.tsx",
+        "src/components/AiGateway/AutoDisabledModelsDialog.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.test.tsx",
         "src/components/AiGateway/ClaudeModelSelectionDialog.tsx",
         "src/components/AiGateway/ContextLimits.test.tsx",

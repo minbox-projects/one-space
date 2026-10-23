@@ -2519,11 +2519,13 @@ describe("UpstreamProviderList anthropic_messages 徽标", () => {
       );
 
       expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("上游服务商");
+      expect(screen.getByTestId("ai-gateway-auto-disabled-models")).toHaveTextContent("自动禁用");
       expect(screen.getByTestId("ai-gateway-manage-templates")).toHaveTextContent("服务商模板");
       expect(screen.getByTestId("ai-gateway-add-provider")).toHaveTextContent("新增服务商");
 
       await i18n.changeLanguage("en");
       expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Upstream providers");
+      expect(screen.getByTestId("ai-gateway-auto-disabled-models")).toHaveTextContent("Auto-disabled");
       expect(screen.getByTestId("ai-gateway-manage-templates")).toHaveTextContent("Provider templates");
       expect(screen.getByTestId("ai-gateway-add-provider")).toHaveTextContent("Add provider");
     });
@@ -2543,6 +2545,72 @@ describe("UpstreamProviderList anthropic_messages 徽标", () => {
       expect(screen.getByTestId("ai-gateway-providers-section")).toBeInTheDocument();
       expect(screen.queryByTestId("ai-gateway-model-pools-section")).not.toBeInTheDocument();
       expect(screen.queryByTestId("ai-gateway-view-mode-selector")).not.toBeInTheDocument();
+    });
+
+    it("顶部操作顺序与状态/标签筛选、已忽略告警及空列表无关，且空列表时入口仍可打开", async () => {
+      window.localStorage.clear();
+      await i18n.changeLanguage("en");
+      const user = userEvent.setup();
+      const dismissAria = i18n.t("aiGatewayAlertBadgeDismissAria");
+      const autoMappingRow: GatewayUpstreamProvider["mappings"][number] = {
+        local_model: "l-order",
+        upstream_model: "m-order",
+        enabled: true,
+        auto_disabled: true,
+      };
+      const orderProvider = makeProvider({
+        id: "p-order",
+        name: "Order Provider",
+        enabled: false,
+        tags: ["red"],
+        mappings: [autoMappingRow],
+      });
+      const listElement = (providers: GatewayUpstreamProvider[]) => (
+        <UpstreamProviderList
+          providers={providers}
+          selectedProviderId={null}
+          busy={false}
+          onSelect={vi.fn()}
+          onToggleEnabled={vi.fn()}
+          onAdd={vi.fn()}
+          onManageTemplates={vi.fn()}
+        />
+      );
+      const view = renderWithProviders(listElement([orderProvider]));
+
+      const assertActionOrder = () => {
+        const auto = screen.getByTestId("ai-gateway-auto-disabled-models");
+        const templates = screen.getByTestId("ai-gateway-manage-templates");
+        const add = screen.getByTestId("ai-gateway-add-provider");
+        const following = Node.DOCUMENT_POSITION_FOLLOWING;
+        expect(auto.compareDocumentPosition(add) & following).toBeTruthy();
+        expect(auto.compareDocumentPosition(templates) & following).toBeTruthy();
+        expect(templates.compareDocumentPosition(add) & following).toBeTruthy();
+      };
+      assertActionOrder();
+
+      // 已忽略自动禁用告警徽标不影响入口与其顺序。
+      await user.click(
+        within(
+          screen.getByTestId("ai-gateway-provider-p-order"),
+        ).getByRole("button", { name: dismissAria }),
+      );
+      assertActionOrder();
+
+      // 激活状态与标签筛选（该服务商被状态筛选隐藏）不影响入口顺序。
+      await user.click(screen.getByTestId("filter-status-enabled"));
+      await user.click(screen.getByTestId("ai-gateway-tag-filter-trigger"));
+      await user.click(screen.getByTestId("ai-gateway-tag-option-red"));
+      assertActionOrder();
+
+      view.rerender(listElement([]));
+
+      // 无服务商且筛选仍激活时入口仍在、顺序不变、且可打开空状态。
+      assertActionOrder();
+      await user.click(screen.getByTestId("ai-gateway-auto-disabled-models"));
+      expect(
+        await screen.findByTestId("ai-gateway-auto-disabled-models-dialog"),
+      ).toBeInTheDocument();
     });
   });
 });

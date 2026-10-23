@@ -677,6 +677,46 @@ const resources = {
         "{{count}} mapping(s) auto-disabled",
       aiGatewayProviderAutoDisabledModelsTooltip:
         "Auto-disabled mappings: {{models}}",
+      aiGatewayAutoDisabledEntryLabel: "Auto-disabled models",
+      aiGatewayAutoDisabledOpenAria:
+        "Open auto-disabled models ({{count}} affected models)",
+      aiGatewayAutoDisabledDialogTitle: "Auto-disabled model sources",
+      aiGatewayAutoDisabledDialogDescription:
+        "Inspect mappings the gateway disabled after repeated failures. Clearing an automatic disable leaves manual provider and model switches unchanged.",
+      aiGatewayAutoDisabledSearchLabel: "Search auto-disabled models",
+      aiGatewayAutoDisabledSearchPlaceholder:
+        "Search model, provider, or upstream ID",
+      aiGatewayAutoDisabledSummary:
+        "Showing {{shownModels}} of {{totalModels}} models · {{shownSources}} of {{totalSources}} sources",
+      aiGatewayAutoDisabledManualNote:
+        "Clearing an automatic disable keeps manual switches unchanged.",
+      aiGatewayAutoDisabledEmpty: "Zero auto-disabled model sources.",
+      aiGatewayAutoDisabledNoMatch: "No matching auto-disabled sources.",
+      aiGatewayAutoDisabledClearSearch: "Clear search",
+      aiGatewayAutoDisabledProviderCount: "{{count}} provider(s)",
+      aiGatewayAutoDisabledSourceCount: "{{count}} source(s)",
+      aiGatewayAutoDisabledProviderManual: "Provider switch off",
+      aiGatewayAutoDisabledMappingManual: "Model switch off",
+      aiGatewayAutoDisabledUpstreamLabel: "Upstream",
+      aiGatewayAutoDisabledReasonLabel: "Reason",
+      aiGatewayAutoDisabledReasonUnavailable: "Reason unavailable",
+      aiGatewayAutoDisabledDisabledAt: "Disabled at {{time}}",
+      aiGatewayAutoDisabledShowReason: "Show full reason",
+      aiGatewayAutoDisabledHideReason: "Show less",
+      aiGatewayAutoDisabledShowReasonAria:
+        "Show the full reason for {{upstream}} for {{local}} on {{provider}}",
+      aiGatewayAutoDisabledHideReasonAria:
+        "Show less of the reason for {{upstream}} for {{local}} on {{provider}}",
+      aiGatewayAutoDisabledReenable: "Re-enable",
+      aiGatewayAutoDisabledClearAutoDisable: "Clear auto-disable",
+      aiGatewayAutoDisabledReenableAria:
+        "Re-enable {{upstream}} for {{local}} on {{provider}}",
+      aiGatewayAutoDisabledClearAria:
+        "Clear automatic disable for {{upstream}} for {{local}} on {{provider}}",
+      aiGatewayAutoDisabledReenabling: "Re-enabling…",
+      aiGatewayAutoDisabledSourceAria:
+        "Auto-disabled source {{local}} to {{upstream}} on {{provider}}",
+      aiGatewayAutoDisabledActionUnavailable: "Recovery is unavailable",
       aiGatewayAlertBadgeDismissAria: "Dismiss alert",
       aiGatewayReenableMapping: "Re-enable mapping",
       aiGatewayReenableAllMappings: "Re-enable all mappings",
@@ -4866,6 +4906,44 @@ const resources = {
       aiGatewayDisabled: "已禁用",
       aiGatewayProviderAutoDisabledModelsHint: "{{count}} 个映射已被自动禁用",
       aiGatewayProviderAutoDisabledModelsTooltip: "已自动禁用的映射：{{models}}",
+      aiGatewayAutoDisabledEntryLabel: "自动禁用模型",
+      aiGatewayAutoDisabledOpenAria:
+        "打开自动禁用模型（{{count}} 个受影响模型）",
+      aiGatewayAutoDisabledDialogTitle: "自动禁用模型来源",
+      aiGatewayAutoDisabledDialogDescription:
+        "查看网关在连续失败后自动禁用的映射。清除自动禁用不会改动服务商或模型的手动开关。",
+      aiGatewayAutoDisabledSearchLabel: "搜索自动禁用模型",
+      aiGatewayAutoDisabledSearchPlaceholder: "搜索模型、服务商或上游 ID",
+      aiGatewayAutoDisabledSummary:
+        "显示 {{shownModels}}/{{totalModels}} 个模型 · {{shownSources}}/{{totalSources}} 个来源",
+      aiGatewayAutoDisabledManualNote: "清除自动禁用不会改动手动开关。",
+      aiGatewayAutoDisabledEmpty: "没有自动禁用的模型来源。",
+      aiGatewayAutoDisabledNoMatch: "没有匹配的自动禁用来源。",
+      aiGatewayAutoDisabledClearSearch: "清除搜索",
+      aiGatewayAutoDisabledProviderCount: "{{count}} 个服务商",
+      aiGatewayAutoDisabledSourceCount: "{{count}} 个来源",
+      aiGatewayAutoDisabledProviderManual: "服务商开关已关闭",
+      aiGatewayAutoDisabledMappingManual: "模型开关已关闭",
+      aiGatewayAutoDisabledUpstreamLabel: "上游模型",
+      aiGatewayAutoDisabledReasonLabel: "原因",
+      aiGatewayAutoDisabledReasonUnavailable: "原因不可用",
+      aiGatewayAutoDisabledDisabledAt: "禁用时间：{{time}}",
+      aiGatewayAutoDisabledShowReason: "展开完整原因",
+      aiGatewayAutoDisabledHideReason: "收起原因",
+      aiGatewayAutoDisabledShowReasonAria:
+        "展开 {{provider}} 上 {{local}} 到 {{upstream}} 的完整原因",
+      aiGatewayAutoDisabledHideReasonAria:
+        "收起 {{provider}} 上 {{local}} 到 {{upstream}} 的原因",
+      aiGatewayAutoDisabledReenable: "重新启用",
+      aiGatewayAutoDisabledClearAutoDisable: "清除自动禁用",
+      aiGatewayAutoDisabledReenableAria:
+        "重新启用 {{provider}} 上 {{local}} 到 {{upstream}} 的映射",
+      aiGatewayAutoDisabledClearAria:
+        "清除 {{provider}} 上 {{local}} 到 {{upstream}} 的自动禁用",
+      aiGatewayAutoDisabledReenabling: "正在重新启用…",
+      aiGatewayAutoDisabledSourceAria:
+        "自动禁用来源：{{provider}} 上 {{local}} 到 {{upstream}}",
+      aiGatewayAutoDisabledActionUnavailable: "无法执行恢复",
       aiGatewayAlertBadgeDismissAria: "关闭提醒",
       aiGatewayReenableMapping: "重新启用映射",
       aiGatewayReenableAllMappings: "重新启用所有映射",

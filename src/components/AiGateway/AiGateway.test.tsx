@@ -3102,7 +3102,7 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
               (mapping as any).consecutive_failures = 0;
             }
           }
-          return store.config;
+          return structuredClone(store.config);
         }
         return originalImpl(command, args);
       },
@@ -3189,7 +3189,7 @@ describe("AiGateway 逐行自动禁用前端计数与重新启用入口", () => 
               (m as any).consecutive_failures = 0;
             }
           }
-          return store.config;
+          return structuredClone(store.config);
         }
         return originalImpl(command, args);
       },
@@ -4224,7 +4224,7 @@ describe("AiGateway 上游密钥池 UI 接线", () => {
             key.marked_at = null;
             key.reason = null;
           }
-          return store.config;
+          return structuredClone(store.config);
         }
         return originalImpl(command, args);
       },
@@ -5352,6 +5352,614 @@ describe("AiGateway 模型池推理纵向切片（Step 4）", () => {
     await act(async () => {
       await i18n.changeLanguage("en");
     });
+  });
+});
+
+describe("AiGateway 服务商页头自动禁用模型弹窗接线", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    resetMessageMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("通过服务商页头精确重新启用一个来源并保留其余映射与手动开关", async () => {
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Broken Provider",
+      mappings: [
+        {
+          local_model: " GPT-4O ",
+          upstream_model: " u1 ",
+          enabled: true,
+          auto_disabled: true,
+          disabled_reason: "probe failed",
+          disabled_at: 10,
+        },
+        {
+          local_model: "GPT-4O",
+          upstream_model: "u1",
+          enabled: true,
+          auto_disabled: true,
+          protocol: "anthropic_messages",
+          disabled_reason: "duplicate",
+          disabled_at: 20,
+        },
+        {
+          local_model: "gpt-4o",
+          upstream_model: "gpt-4o-2024",
+          enabled: true,
+          auto_disabled: true,
+        },
+        {
+          local_model: "manual-a",
+          upstream_model: "manual-a",
+          enabled: false,
+        },
+      ],
+    });
+    const p2 = makeProvider({
+      id: "p2",
+      name: "Second Provider",
+      mappings: [
+        {
+          local_model: "claude-3",
+          upstream_model: "claude-3-2024",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+
+    const store: Store = {
+      config: makeConfig({ providers: [p1, p2] }),
+      status: makeStatus({ provider_count: 2, auto_disabled_count: 2 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const originalImpl = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_gateway_reenable_provider_model") {
+          const { providerId, localModel, upstreamModel } = args as {
+            providerId: string;
+            localModel: string;
+            upstreamModel: string;
+          };
+          const provider = store.config.providers.find(
+            (item) => item.id === providerId,
+          );
+          if (provider) {
+            for (const mapping of provider.mappings) {
+              if (
+                mapping.local_model.trim() === localModel &&
+                mapping.upstream_model.trim() === upstreamModel
+              ) {
+                (mapping as any).auto_disabled = false;
+                (mapping as any).disabled_reason = null;
+                (mapping as any).disabled_at = null;
+              }
+            }
+          }
+          return structuredClone(store.config);
+        }
+        return originalImpl(command, args);
+      },
+    );
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    const entry = screen.getByTestId("ai-gateway-auto-disabled-models");
+    expect(entry).toHaveTextContent("3");
+
+    await userEvent.click(entry);
+    const dialog = await screen.findByTestId(
+      "ai-gateway-auto-disabled-models-dialog",
+    );
+
+    const action = within(dialog).getByRole("button", {
+      name: i18n.t("aiGatewayAutoDisabledReenableAria", {
+        upstream: "u1",
+        local: "GPT-4O",
+        provider: "Broken Provider",
+      }),
+    });
+    await userEvent.click(action);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "ai_gateway_reenable_provider_model",
+        {
+          providerId: "p1",
+          localModel: "GPT-4O",
+          upstreamModel: "u1",
+        },
+      ),
+    );
+
+    const reenableCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "ai_gateway_reenable_provider_model",
+    );
+    expect(reenableCalls).toHaveLength(1);
+    const providerWideCalls = invokeMock.mock.calls.filter(
+      ([command]) =>
+        command === "ai_gateway_reenable_provider_models" ||
+        command === "ai_gateway_reenable_provider",
+    );
+    expect(providerWideCalls).toHaveLength(0);
+
+    await waitFor(() =>
+      expect(
+        within(dialog).queryByText("u1"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(within(dialog).getByText("gpt-4o-2024")).toBeInTheDocument();
+    expect(within(dialog).getByText("claude-3")).toBeInTheDocument();
+
+    // Manual and user-enabled flags survive in the returned configuration.
+    const p1After = store.config.providers.find((item) => item.id === "p1")!;
+    const manualRow = p1After.mappings.find(
+      (item) => item.local_model === "manual-a",
+    );
+    expect(manualRow?.enabled).toBe(false);
+    const userEnabledRow = p1After.mappings.find(
+      (item) => item.upstream_model === "gpt-4o-2024",
+    );
+    expect(userEnabledRow?.auto_disabled).toBe(true);
+
+    // Reopening reflects the latest snapshot instead of a stale list.
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("ai-gateway-auto-disabled-models-dialog"),
+      ).not.toBeInTheDocument(),
+    );
+    const reopenedEntry = screen.getByTestId("ai-gateway-auto-disabled-models");
+    expect(reopenedEntry).toHaveTextContent("2");
+    await userEvent.click(reopenedEntry);
+    const reopenedDialog = await screen.findByTestId(
+      "ai-gateway-auto-disabled-models-dialog",
+    );
+    expect(within(reopenedDialog).queryByText("u1")).not.toBeInTheDocument();
+    expect(within(reopenedDialog).getByText("claude-3")).toBeInTheDocument();
+  });
+
+  it("guards repeated recovery submissions, keeps the record on rejection and retries explicitly", async () => {
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Broken Provider",
+      mappings: [
+        {
+          local_model: "m1",
+          upstream_model: "u-m1",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+    const store: Store = {
+      config: makeConfig({ providers: [p1] }),
+      status: makeStatus({ provider_count: 1, auto_disabled_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const deferred = deferredPromise<GatewayConfig>();
+    let failFirst = true;
+    const originalImpl = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_gateway_reenable_provider_model") {
+          if (failFirst) return deferred.promise;
+          const { providerId, localModel, upstreamModel } = args as {
+            providerId: string;
+            localModel: string;
+            upstreamModel: string;
+          };
+          const provider = store.config.providers.find(
+            (item) => item.id === providerId,
+          );
+          if (provider) {
+            for (const mapping of provider.mappings) {
+              if (
+                mapping.local_model.trim() === localModel &&
+                mapping.upstream_model.trim() === upstreamModel
+              ) {
+                (mapping as any).auto_disabled = false;
+              }
+            }
+          }
+          return structuredClone(store.config);
+        }
+        return originalImpl(command, args);
+      },
+    );
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    await userEvent.click(screen.getByTestId("ai-gateway-auto-disabled-models"));
+    const dialog = await screen.findByTestId(
+      "ai-gateway-auto-disabled-models-dialog",
+    );
+    const action = within(dialog).getByRole("button", {
+      name: i18n.t("aiGatewayAutoDisabledReenableAria", {
+        upstream: "u-m1",
+        local: "m1",
+        provider: "Broken Provider",
+      }),
+    });
+
+    await userEvent.click(action);
+    fireEvent.click(action);
+    expect(invokeMock.mock.calls.filter(
+      ([command]) => command === "ai_gateway_reenable_provider_model",
+    )).toHaveLength(1);
+    expect(action).toBeDisabled();
+    expect(within(dialog).getByText(
+      i18n.t("aiGatewayAutoDisabledReenabling"),
+    )).toBeInTheDocument();
+
+    await act(async () => {
+      deferred.reject(new Error("upstream failed"));
+      await deferred.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText(i18n.t("aiGatewayMappingOperationFailed")),
+      ).toBeInTheDocument(),
+    );
+    expect(within(dialog).getByText("m1")).toBeInTheDocument();
+    expect(action).toBeEnabled();
+
+    failFirst = false;
+    const retryAction = within(dialog).getByRole("button", {
+      name: i18n.t("aiGatewayAutoDisabledReenableAria", {
+        upstream: "u-m1",
+        local: "m1",
+        provider: "Broken Provider",
+      }),
+    });
+    await userEvent.click(retryAction);
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(
+          ([command]) => command === "ai_gateway_reenable_provider_model",
+        ),
+      ).toHaveLength(2),
+    );
+    await waitFor(() =>
+      expect(
+        within(
+          screen.getByTestId("ai-gateway-auto-disabled-models-dialog"),
+        ).queryByText("m1"),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the returned configuration authoritative when an auxiliary refresh fails after persistence", async () => {
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Broken Provider",
+      mappings: [
+        {
+          local_model: "m1",
+          upstream_model: "u-m1",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+    const store: Store = {
+      config: makeConfig({ providers: [p1] }),
+      status: makeStatus({ provider_count: 1, auto_disabled_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    let shouldFailStatus = false;
+    const originalImpl = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_gateway_reenable_provider_model") {
+          shouldFailStatus = true;
+          const provider = store.config.providers.find(
+            (item) => item.id === "p1",
+          );
+          if (provider) {
+            for (const mapping of provider.mappings) {
+              if (
+                (mapping as any).local_model?.trim() === "m1" &&
+                (mapping as any).upstream_model?.trim() === "u-m1"
+              ) {
+                (mapping as any).auto_disabled = false;
+              }
+            }
+          }
+           return structuredClone(store.config);
+        }
+        if (command === "ai_gateway_status" && shouldFailStatus) {
+          throw new Error("status down");
+        }
+        return originalImpl(command, args);
+      },
+    );
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    await userEvent.click(screen.getByTestId("ai-gateway-auto-disabled-models"));
+    const dialog = await screen.findByTestId(
+      "ai-gateway-auto-disabled-models-dialog",
+    );
+    const action = within(dialog).getByRole("button", {
+      name: i18n.t("aiGatewayAutoDisabledReenableAria", {
+        upstream: "u-m1",
+        local: "m1",
+        provider: "Broken Provider",
+      }),
+    });
+    await userEvent.click(action);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(i18n.t("aiGatewayMappingOperationFailed")),
+      ).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(
+        within(
+          screen.getByTestId("ai-gateway-auto-disabled-models-dialog"),
+        ).queryByText("m1"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("ai-gateway-auto-disabled-models")).toHaveTextContent(
+      "0",
+    );
+  });
+
+  it("a stale configuration read started before recovery cannot restore recovered rows", async () => {
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Broken Provider",
+      mappings: [
+        {
+          local_model: "m1",
+          upstream_model: "u-m1",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+    const store: Store = {
+      config: makeConfig({ providers: [p1] }),
+      status: makeStatus({ provider_count: 1, auto_disabled_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const stale = deferredPromise<GatewayConfig>();
+    let getConfigCalls = 0;
+    const originalImpl = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_gateway_get_config") {
+          getConfigCalls += 1;
+          if (getConfigCalls === 2) {
+            return stale.promise;
+          }
+        }
+        if (command === "ai_gateway_reenable_provider_model") {
+          const provider = store.config.providers.find(
+            (item) => item.id === "p1",
+          );
+          if (provider) {
+            for (const mapping of provider.mappings) {
+              if (
+                (mapping as any).local_model?.trim() === "m1" &&
+                (mapping as any).upstream_model?.trim() === "u-m1"
+              ) {
+                (mapping as any).auto_disabled = false;
+              }
+            }
+          }
+          return structuredClone(store.config);
+        }
+        return originalImpl(command, args);
+      },
+    );
+
+    const configUpdateHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (eventName: string, handler: (event: unknown) => void) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === AI_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configUpdateHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    await act(async () => {
+      for (const handler of configUpdateHandlers) {
+        handler({ payload: undefined });
+      }
+      await Promise.resolve();
+    });
+    expect(getConfigCalls).toBe(2);
+
+    await userEvent.click(screen.getByTestId("ai-gateway-auto-disabled-models"));
+    const dialog = await screen.findByTestId(
+      "ai-gateway-auto-disabled-models-dialog",
+    );
+    const action = within(dialog).getByRole("button", {
+      name: i18n.t("aiGatewayAutoDisabledReenableAria", {
+        upstream: "u-m1",
+        local: "m1",
+        provider: "Broken Provider",
+      }),
+    });
+    await userEvent.click(action);
+    await waitFor(() =>
+      expect(
+        within(
+          screen.getByTestId("ai-gateway-auto-disabled-models-dialog"),
+        ).queryByText("m1"),
+      ).not.toBeInTheDocument(),
+    );
+
+    await act(async () => {
+      stale.resolve(
+        makeConfig({
+          providers: [
+            makeProvider({
+              id: "p1",
+              name: "Broken Provider",
+              mappings: [
+                {
+                  local_model: "m1",
+                  upstream_model: "u-m1",
+                  enabled: true,
+                  auto_disabled: true,
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      for (let index = 0; index < 16; index += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(within(await screen.findByTestId("ai-gateway-auto-disabled-models-dialog")).queryByText("m1")).not.toBeInTheDocument();
+  });
+
+  it("an existing configuration update refreshes the open dialog and reaches the empty state", async () => {
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Broken Provider",
+      mappings: [
+        {
+          local_model: "m1",
+          upstream_model: "u-m1",
+          enabled: true,
+          auto_disabled: true,
+        },
+      ],
+    });
+    const store: Store = {
+      config: makeConfig({ providers: [p1] }),
+      status: makeStatus({ provider_count: 1, auto_disabled_count: 1 }),
+      targets: [],
+    };
+    mockStore(store);
+
+    const configUpdateHandlers: Array<(event: unknown) => void> = [];
+    (
+      listenMock as unknown as {
+        mockImplementation: (
+          fn: (eventName: string, handler: (event: unknown) => void) => Promise<() => void>,
+        ) => void;
+      }
+    ).mockImplementation(
+      async (eventName: string, handler: (event: unknown) => void) => {
+        if (eventName === AI_GATEWAY_CONFIG_UPDATED_EVENT) {
+          configUpdateHandlers.push(handler);
+        }
+        return vi.fn();
+      },
+    );
+
+    renderWithProviders(<AiGateway />);
+    await screen.findByTestId("ai-gateway-providers");
+
+    await userEvent.click(screen.getByTestId("ai-gateway-auto-disabled-models"));
+    const dialog = await screen.findByTestId(
+      "ai-gateway-auto-disabled-models-dialog",
+    );
+    expect(within(dialog).getByText("m1")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-gateway-auto-disabled-models")).toHaveTextContent(
+      "1",
+    );
+
+    store.config = makeConfig({
+      providers: [
+        makeProvider({
+          id: "p1",
+          name: "Broken Provider",
+          mappings: [
+            {
+              local_model: "m1",
+              upstream_model: "u-m1",
+              enabled: true,
+              auto_disabled: true,
+            },
+            {
+              local_model: "m2",
+              upstream_model: "u-m2",
+              enabled: true,
+              auto_disabled: true,
+            },
+          ],
+        }),
+      ],
+    });
+    store.status = makeStatus({ provider_count: 1, auto_disabled_count: 2 });
+    await act(async () => {
+      for (const handler of configUpdateHandlers) {
+        handler({ payload: undefined });
+      }
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-auto-disabled-models")).toHaveTextContent(
+        "2",
+      ),
+    );
+    expect(within(dialog).getByText("m2")).toBeInTheDocument();
+
+    store.config = makeConfig({
+      providers: [
+        makeProvider({
+          id: "p1",
+          name: "Broken Provider",
+          mappings: [
+            {
+              local_model: "m1",
+              upstream_model: "u-m1",
+              enabled: true,
+            },
+          ],
+        }),
+      ],
+    });
+    store.status = makeStatus({ provider_count: 1, auto_disabled_count: 0 });
+    await act(async () => {
+      for (const handler of configUpdateHandlers) {
+        handler({ payload: undefined });
+      }
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-gateway-auto-disabled-models")).toHaveTextContent(
+        "0",
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        within(dialog).getByText(i18n.t("aiGatewayAutoDisabledEmpty")),
+      ).toBeInTheDocument(),
+    );
   });
 });
 

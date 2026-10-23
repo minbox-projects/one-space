@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { AutoDisabledModelsDialog } from "./AutoDisabledModelsDialog";
 import { ProviderQuotaBlock } from "./ProviderQuotaBlock";
 import { ProviderGoUsageBlock } from "./ProviderGoUsageBlock";
 import {
@@ -62,6 +63,12 @@ type UpstreamProviderListProps = {
   onManageTemplates?: () => void;
   /** Re-enable one runtime-marked key of a provider. */
   onReenableKey?: (providerId: string, keyId: string) => void;
+  /** Clear one auto-disabled mapping through the existing single-mapping command. */
+  onReenableModel?: (
+    providerId: string,
+    localModel: string,
+    upstreamModel: string,
+  ) => Promise<boolean> | boolean | void;
 };
 
 type UpstreamProviderCardItemProps = {
@@ -554,6 +561,7 @@ export function UpstreamProviderList({
   onAdd,
   onManageTemplates,
   onReenableKey,
+  onReenableModel,
 }: UpstreamProviderListProps) {
   const { t } = useTranslation();
 
@@ -782,7 +790,13 @@ export function UpstreamProviderList({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+          <AutoDisabledModelsDialog
+            providers={providers}
+            busy={busy}
+            onReenableModel={onReenableModel}
+          />
+
           {onManageTemplates ? (
             <button
               type="button"
