@@ -1125,13 +1125,17 @@ fn is_missing_historical_reasoning_rejection(status: u16, error_message: Option<
         && lower.contains("earlier assistant message")
 }
 
-/// Classify one failed attempt, recognizing a model-pool historical-reasoning
-/// rejection as a request-local skip before the shared classifier runs.
+/// Classify one failed attempt, recognizing request-local model-pool skips
+/// before the shared classifier runs: a retired upstream model's 410 Gone, a
+/// model-capacity 413 Payload Too Large, and the historical-reasoning rejection.
 ///
-/// The caller's own message bytes determine that rejection for this model only;
-/// it says nothing about the upstream key or mapping health. `Transient` makes
-/// the pool advance to the next source without retrying the same provider,
-/// marking a key, counting mapping health or cooling the candidate.
+/// These failures are specific to the pool source that produced them: a retired
+/// or capacity-limited model says nothing about the upstream key or the mapping
+/// row's health. `Transient` makes the pool skip that candidate and continue
+/// with the next candidate or configured fallback without retrying it, backing
+/// off, marking a key, counting mapping health or cooling the candidate. Every
+/// ordinary non-pool attempt, including an ordinary 413, still reaches the
+/// shared classifier and returns its client error unchanged.
 fn classify_attempt_failure(
     status: u16,
     network_error: bool,
@@ -1139,7 +1143,10 @@ fn classify_attempt_failure(
     error_message: Option<&str>,
     pool_candidate: bool,
 ) -> FailureClass {
-    if pool_candidate && is_missing_historical_reasoning_rejection(status, error_message) {
+    if pool_candidate
+        && (matches!(status, 410 | 413)
+            || is_missing_historical_reasoning_rejection(status, error_message))
+    {
         return FailureClass::Transient;
     }
     classify_failure_with_message(status, network_error, body_parsed, error_message)

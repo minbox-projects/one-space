@@ -6954,3 +6954,652 @@ async fn pool_fallback_queue_serves_the_next_fallback_model_after_every_source_o
 
     stop_server().await.expect("stop the listener");
 }
+// ---------------------------------------------------------------------------
+// pool_gone_: retired (HTTP 410) pool candidates are skipped, not terminal.
+// ---------------------------------------------------------------------------
+
+fn pool_gone_success_reply(stream: bool) -> MockReply {
+    if stream {
+        MockReply::Stream("data: {\"choices\":[{\"delta\":{\"content\":\"from-success\"}}]}\n\ndata: [DONE]\n\n".to_string())
+    } else {
+        MockReply::Json(200, json!({"id":"ok","choices":[{"message":{"role":"assistant","content":"from-success"}}]}))
+    }
+}
+
+fn pool_gone_body_stream(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("stream").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+async fn assert_pool_gone_first_candidate_skipped(stream: bool) {
+    let _home = temp_home("pool-gone-first-skipped");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let provider_id = format!("p-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| {
+        let model = captured_model(captured);
+        if model == "remote-a" {
+            MockReply::Json(410, json!({"error":{"message":"Model minimax-m3.1-flash-free has been deprecated. Use deepseek-v4.1-flash-free instead."}}))
+        } else {
+            pool_gone_success_reply(pool_gone_body_stream(&captured.body))
+        }
+    })
+    .await;
+    let provider = pool_provider(
+        &provider_id,
+        "Provider",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![
+            provider_mapping("local-a", "remote-a", "chat_completions"),
+            provider_mapping("local-b", "remote-b", "chat_completions"),
+        ],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_id, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_id, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start");
+    let body = json!({"model": alias, "stream": stream, "messages": [{"role":"user","content":"hi"}]});
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, 200, "skipped 410 must let next candidate serve: {text}");
+    assert!(text.contains("from-success"), "response must come from success candidate: {text}");
+    let models = models_of(&log);
+    assert_eq!(models, vec!["remote-a".to_string(), "remote-b".to_string()], "both candidates attempted once, 410 not retried: {models:?}");
+    stop_server().await.expect("stop");
+}
+
+#[tokio::test]
+async fn pool_gone_first_candidate_410_skips_to_next_candidate_non_streaming() {
+    assert_pool_gone_first_candidate_skipped(false).await;
+}
+
+#[tokio::test]
+async fn pool_gone_first_candidate_410_skips_to_next_candidate_streaming() {
+    assert_pool_gone_first_candidate_skipped(true).await;
+}
+
+async fn assert_pool_gone_all_candidates_then_fallback(stream: bool) {
+    let _home = temp_home("pool-gone-all-then-fallback");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let p_id = format!("p-{tag}");
+    let fb1 = format!("fb1-{tag}");
+    let fb2 = format!("fb2-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| {
+        let model = captured_model(captured);
+        let s = pool_gone_body_stream(&captured.body);
+        if model == "remote-main" {
+            MockReply::Json(410, json!({"error":{"message":"Model minimax-m3.1-flash-free has been deprecated. Use deepseek-v4.1-flash-free instead."}}))
+        } else if model == "remote-fb1" {
+            MockReply::Json(410, json!({"error":{"message":"deprecated fb1"}}))
+        } else {
+            pool_gone_success_reply(s)
+        }
+    })
+    .await;
+    let provider_main = pool_provider(&p_id, "Main", &provider_url, vec![pool_key("key", "K", "sk", true)], vec![provider_mapping("local-main", "remote-main", "chat_completions")]);
+    let provider_fb1 = pool_provider(&format!("p-fb1-{tag}"), "Fb1", &provider_url, vec![pool_key("key", "K", "sk", true)], vec![provider_mapping(&fb1, "remote-fb1", "chat_completions")]);
+    let provider_fb2 = pool_provider(&format!("p-fb2-{tag}"), "Fb2", &provider_url, vec![pool_key("key", "K", "sk", true)], vec![provider_mapping(&fb2, "remote-fb2", "chat_completions")]);
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&p_id, "local-main", "remote-main", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [fb1, fb2],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider_main, provider_fb1, provider_fb2], vec![pool]));
+    start_server(None).await.expect("start");
+    let body = json!({"model": alias, "stream": stream, "messages": [{"role":"user","content":"hi"}]});
+    let (status, _ct, text) = call_gateway(port, "POST", "/v1/chat/completions", &[("authorization", "Bearer local-key")], Some(body)).await;
+    assert_eq!(status, 200, "fallback success after 410s: {text}");
+    assert!(text.contains("from-success"), "response from success fallback: {text}");
+    let models = models_of(&log);
+    assert_eq!(
+        models,
+        vec![
+            "remote-main".to_string(),
+            "remote-fb1".to_string(),
+            "remote-fb2".to_string(),
+        ],
+        "all necessary candidates attempted exactly once in order: {models:?}"
+    );
+    stop_server().await.expect("stop");
+}
+
+#[tokio::test]
+async fn pool_gone_all_candidates_410_then_fallback_with_one_410_then_success_non_streaming() {
+    assert_pool_gone_all_candidates_then_fallback(false).await;
+}
+
+#[tokio::test]
+async fn pool_gone_all_candidates_410_then_fallback_with_one_410_then_success_streaming() {
+    assert_pool_gone_all_candidates_then_fallback(true).await;
+}
+
+async fn assert_pool_gone_all_unavailable(stream: bool) {
+    let _home = temp_home("pool-gone-all-unavailable");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let p_id = format!("p-{tag}");
+    let fb = format!("fb-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|_captured| {
+        MockReply::Json(410, json!({"error":{"message":"Model minimax-m3.1-flash-free has been deprecated. Use deepseek-v4.1-flash-free instead."}}))
+    })
+    .await;
+    let provider_main = pool_provider(
+        &p_id,
+        "Main",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![
+            provider_mapping("local-main", "remote-main", "chat_completions"),
+            provider_mapping("local-main2", "remote-main2", "chat_completions"),
+        ],
+    );
+    let provider_fb = pool_provider(
+        &format!("p-fb-{tag}"),
+        "Fb",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![provider_mapping(&fb, "remote-fb", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&p_id, "local-main", "remote-main", "chat_completions", Some(1)),
+            pool_candidate(&p_id, "local-main2", "remote-main2", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [fb],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider_main, provider_fb], vec![pool]));
+    start_server(None).await.expect("start");
+    let body = json!({"model": alias, "stream": stream, "messages": [{"role":"user","content":"hi"}]});
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, 502, "all 410 must end 502: {text}");
+    let bodyj: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(bodyj["error"]["code"], "all_providers_unavailable");
+    assert!(
+        bodyj["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("deprecated"),
+        "retain upstream reason: {text}"
+    );
+    let upstreams = models_of(&log);
+    assert_eq!(
+        upstreams,
+        vec![
+            "remote-main2".to_string(),
+            "remote-main".to_string(),
+            "remote-fb".to_string(),
+        ],
+        "all attempts once in order: {upstreams:?}"
+    );
+    let records = wait_for_usage_logs(3).await;
+    assert_eq!(records.len(), 3, "three attempt rows: {records:?}");
+    let non_terminals: Vec<String> = records
+        .iter()
+        .filter(|r| !r.terminal)
+        .map(|r| r.upstream_model.clone())
+        .collect();
+    assert_eq!(non_terminals.len(), 2, "two non-terminal rows: {records:?}");
+    assert!(non_terminals.contains(&"remote-main".to_string()), "non-terminal main candidate: {records:?}");
+    assert!(non_terminals.contains(&"remote-main2".to_string()), "non-terminal main candidate: {records:?}");
+    let terminals: Vec<_> = records.iter().filter(|r| r.terminal).collect();
+    assert_eq!(terminals.len(), 1, "one terminal row: {records:?}");
+    assert_eq!(terminals[0].upstream_model, "remote-fb", "terminal last upstream");
+    assert_eq!(terminals[0].status, 410, "terminal status must be last upstream 410");
+    assert!(
+        terminals[0]
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("deprecated"),
+        "terminal retains upstream reason: {records:?}"
+    );
+    stop_server().await.expect("stop");
+}
+
+#[tokio::test]
+async fn pool_gone_all_providers_410_returns_502_with_upstream_reason_non_streaming() {
+    assert_pool_gone_all_unavailable(false).await;
+}
+
+#[tokio::test]
+async fn pool_gone_all_providers_410_returns_502_with_upstream_reason_streaming() {
+    assert_pool_gone_all_unavailable(true).await;
+}
+
+#[tokio::test]
+async fn pool_gone_ordinary_non_pool_410_preserved() {
+    for stream in [false, true] {
+        let _home = temp_home("pool-gone-ordinary-410");
+        let port = free_port().await;
+        let tag = tag();
+        let (provider_url, _log) = spawn_mock_upstream(|_| {
+            MockReply::Json(410, json!({"error":{"message":"gone"}}))
+        })
+        .await;
+        let provider = pool_provider(&format!("p-{tag}"), "P", &provider_url, vec![pool_key("key", "K", "sk", true)], vec![provider_mapping("local-x", "remote-x", "chat_completions")]);
+        write_raw_gateway_config(&json!({
+            "schema_version": GATEWAY_CONFIG_SCHEMA_VERSION,
+            "port": port,
+            "keys": [{"id":"k-local","label":"k-local","value":"local-key","enabled":true,"created_at":1}],
+            "providers": [provider],
+            "model_pools": [],
+            "model_pool_reserved_models": [],
+        }));
+        start_server(None).await.expect("start");
+        let body = json!({"model": "local-x", "stream": stream, "messages": [{"role":"user","content":"hi"}]});
+        let (status, _ct, text) = call_gateway(port, "POST", "/v1/chat/completions", &[("authorization", "Bearer local-key")], Some(body)).await;
+        assert_eq!(status, 410, "ordinary non-pool 410 unchanged: {text}");
+        stop_server().await.expect("stop");
+    }
+}
+
+/// A pool-only client error is scoped to the candidate that produced it. The
+/// next configured candidate must serve the request while the rejected
+/// candidate is attempted exactly once and never retried.
+async fn assert_pool_client_error_skips_to_next_candidate(upstream_status: u16, stream: bool) {
+    let _home = temp_home("pool-client-error-skips-to-next");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let reason = format!("synthetic upstream {upstream_status} rejection");
+    let reason_for_mock = reason.clone();
+    let (provider_url, log) = spawn_mock_upstream(move |captured| {
+        let model = captured_model(captured);
+        if model == "remote-a" {
+            MockReply::Json(
+                upstream_status,
+                json!({"error":{"message": reason_for_mock.clone()}}),
+            )
+        } else {
+            pool_gone_success_reply(pool_gone_body_stream(&captured.body))
+        }
+    })
+    .await;
+    let provider_id = format!("p-{tag}");
+    let provider = pool_provider(
+        &provider_id,
+        "P",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![
+            provider_mapping("local-a", "remote-a", "chat_completions"),
+            provider_mapping("local-b", "remote-b", "chat_completions"),
+        ],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_id, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_id, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start");
+    let body = json!({"model": alias, "stream": stream, "messages": [{"role":"user","content":"hi"}]});
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+    let models = models_of(&log);
+    assert_eq!(
+        status, 200,
+        "{upstream_status} must skip the failed candidate and let the next candidate serve (stream={stream}); attempts: {models:?}: {text}"
+    );
+    assert!(
+        text.contains("from-success"),
+        "{upstream_status} response must come from the successful candidate (stream={stream}): {text}"
+    );
+    assert_eq!(
+        models,
+        vec!["remote-a".to_string(), "remote-b".to_string()],
+        "{upstream_status} must attempt every candidate once in order and never retry (stream={stream})"
+    );
+
+    let records = wait_for_usage_logs(2).await;
+    assert_eq!(
+        records.len(),
+        2,
+        "{upstream_status} must own one attempt row and one success row (stream={stream}): {records:?}"
+    );
+    let failed = records
+        .iter()
+        .find(|record| !record.terminal)
+        .expect("the skipped candidate must own a non-terminal row");
+    assert_eq!(
+        failed.status, upstream_status,
+        "the skipped candidate row must retain its upstream status: {records:?}"
+    );
+    assert_eq!(
+        failed.upstream_model, "remote-a",
+        "the skipped candidate must be the first source: {records:?}"
+    );
+    let terminals: Vec<_> = records.iter().filter(|record| record.terminal).collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "the request must own exactly one terminal row: {records:?}"
+    );
+    assert_eq!(
+        terminals[0].status, 200,
+        "the terminal row must record the successful candidate: {records:?}"
+    );
+
+    stop_server().await.expect("stop");
+}
+
+#[tokio::test]
+async fn pool_client_error_413_skips_to_next_candidate_non_streaming() {
+    assert_pool_client_error_skips_to_next_candidate(413, false).await;
+}
+
+#[tokio::test]
+async fn pool_client_error_413_skips_to_next_candidate_streaming() {
+    assert_pool_client_error_skips_to_next_candidate(413, true).await;
+}
+
+/// A server error on the first candidate must not delay the next candidate
+/// behind that candidate's retry queue entry. The successful second candidate
+/// answers with exactly two attempts.
+async fn assert_pool_upstream_error_then_next_candidate(upstream_status: u16, stream: bool) {
+    let _home = temp_home("pool-upstream-error-then-next");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(move |captured| {
+        let model = captured_model(captured);
+        if model == "remote-a" {
+            MockReply::Json(
+                upstream_status,
+                json!({"error":{"message":"synthetic upstream error"}}),
+            )
+        } else {
+            pool_gone_success_reply(pool_gone_body_stream(&captured.body))
+        }
+    })
+    .await;
+    let provider_id = format!("p-{tag}");
+    let provider = pool_provider(
+        &provider_id,
+        "P",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![
+            provider_mapping("local-a", "remote-a", "chat_completions"),
+            provider_mapping("local-b", "remote-b", "chat_completions"),
+        ],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_id, "local-a", "remote-a", "chat_completions", Some(1)),
+            pool_candidate(&provider_id, "local-b", "remote-b", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start");
+    let body = json!({"model": alias, "stream": stream, "messages": [{"role":"user","content":"hi"}]});
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+    let models = models_of(&log);
+    assert_eq!(
+        status, 200,
+        "{upstream_status} must let the next candidate serve (stream={stream}); attempts: {models:?}: {text}"
+    );
+    assert!(
+        text.contains("from-success"),
+        "the response must come from the successful candidate (stream={stream}): {text}"
+    );
+    assert_eq!(
+        models,
+        vec!["remote-a".to_string(), "remote-b".to_string()],
+        "{upstream_status} must try both candidates exactly once before any retry (stream={stream})"
+    );
+
+    let records = wait_for_usage_logs(2).await;
+    assert_eq!(
+        records.len(),
+        2,
+        "the request must own exactly two attempt rows (stream={stream}): {records:?}"
+    );
+    let failed = records
+        .iter()
+        .find(|record| !record.terminal)
+        .expect("the failed candidate must own a non-terminal row");
+    assert_eq!(
+        failed.status, upstream_status,
+        "the first attempt must retain its upstream status: {records:?}"
+    );
+    assert_eq!(
+        failed.upstream_model, "remote-a",
+        "the first attempt must be the failing candidate: {records:?}"
+    );
+    let terminals: Vec<_> = records.iter().filter(|record| record.terminal).collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "the request must own exactly one terminal row: {records:?}"
+    );
+    assert_eq!(
+        terminals[0].status, 200,
+        "the terminal row must record the successful candidate: {records:?}"
+    );
+
+    stop_server().await.expect("stop");
+}
+
+#[tokio::test]
+async fn pool_server_error_502_tries_next_candidate_before_retry() {
+    for stream in [false, true] {
+        assert_pool_upstream_error_then_next_candidate(502, stream).await;
+    }
+}
+
+#[tokio::test]
+async fn pool_not_found_404_skips_to_next_candidate() {
+    for stream in [false, true] {
+        assert_pool_upstream_error_then_next_candidate(404, stream).await;
+    }
+}
+
+/// Exhausting the pool and its fallback on candidate-scoped client errors must
+/// return the existing all-unavailable 502 while the single terminal usage row
+/// keeps the last real upstream status instead of fabricating a transport 502.
+#[tokio::test]
+async fn pool_client_error_413_all_candidates_exhausted_returns_502() {
+    let _home = temp_home("pool-client-error-413-exhausted");
+    let port = free_port().await;
+    let tag = tag();
+    let alias = format!("free-model-{tag}");
+    let main_id = format!("p-main-{tag}");
+    let fallback_id = format!("p-fb-{tag}");
+    let fallback_model = format!("fallback-model-{tag}");
+    let reason = "request entity too large: synthetic payload";
+    let (provider_url, log) = spawn_mock_upstream(move |_captured| {
+        MockReply::Json(413, json!({"error":{"message": reason}}))
+    })
+    .await;
+    let provider_main = pool_provider(
+        &main_id,
+        "Main",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![provider_mapping("local-main", "remote-main", "chat_completions")],
+    );
+    let provider_fallback = pool_provider(
+        &fallback_id,
+        "Fallback",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![provider_mapping(
+            &fallback_model,
+            "remote-fb",
+            "chat_completions",
+        )],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Pool",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&main_id, "local-main", "remote-main", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [fallback_model],
+    });
+    write_raw_gateway_config(&pool_config_v3(
+        port,
+        vec![provider_main, provider_fallback],
+        vec![pool],
+    ));
+    start_server(None).await.expect("start");
+    let body = json!({"model": alias, "messages": [{"role":"user","content":"hi"}]});
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+    let models = models_of(&log);
+
+    assert_eq!(
+        status, 502,
+        "all candidate-scoped 413s must exhaust the request; attempts: {models:?}: {text}"
+    );
+    let bodyj: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(
+        bodyj["error"]["code"], "all_providers_unavailable",
+        "the exhausted request must use the existing 502 envelope: {text}"
+    );
+    assert!(
+        bodyj["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(reason),
+        "the 502 must retain the last upstream reason: {text}"
+    );
+    assert_eq!(
+        models,
+        vec!["remote-main".to_string(), "remote-fb".to_string()],
+        "the primary candidate and fallback source must each be attempted exactly once"
+    );
+
+    let records = wait_for_usage_logs(2).await;
+    assert_eq!(
+        records.len(),
+        2,
+        "each exhausted source must own one attempt row: {records:?}"
+    );
+    assert!(
+        records.iter().all(|record| record.status == 413),
+        "every attempt row must retain its real upstream 413 status: {records:?}"
+    );
+    let terminals: Vec<_> = records.iter().filter(|record| record.terminal).collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "the request must own exactly one terminal row: {records:?}"
+    );
+    assert_eq!(
+        terminals[0].upstream_model, "remote-fb",
+        "the terminal row must name the last attempted fallback source: {records:?}"
+    );
+    assert_eq!(
+        terminals[0].status, 413,
+        "the terminal row must keep the last upstream status instead of a fabricated 502: {records:?}"
+    );
+    assert!(
+        terminals[0]
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains(reason),
+        "the terminal row must retain the upstream reason: {records:?}"
+    );
+
+    stop_server().await.expect("stop");
+}
+
+#[tokio::test]
+async fn pool_gone_ordinary_non_pool_413_preserved() {
+    for stream in [false, true] {
+        let _home = temp_home("pool-gone-ordinary-413");
+        let port = free_port().await;
+        let tag = tag();
+        let (provider_url, _log) = spawn_mock_upstream(|_| {
+            MockReply::Json(413, json!({"error":{"message":"too large"}}))
+        })
+        .await;
+        let provider = pool_provider(&format!("p-{tag}"), "P", &provider_url, vec![pool_key("key", "K", "sk", true)], vec![provider_mapping("local-x", "remote-x", "chat_completions")]);
+        write_raw_gateway_config(&json!({
+            "schema_version": GATEWAY_CONFIG_SCHEMA_VERSION,
+            "port": port,
+            "keys": [{"id":"k-local","label":"k-local","value":"local-key","enabled":true,"created_at":1}],
+            "providers": [provider],
+            "model_pools": [],
+            "model_pool_reserved_models": [],
+        }));
+        start_server(None).await.expect("start");
+        let body = json!({"model": "local-x", "stream": stream, "messages": [{"role":"user","content":"hi"}]});
+        let (status, _ct, text) = call_gateway(port, "POST", "/v1/chat/completions", &[("authorization", "Bearer local-key")], Some(body)).await;
+        assert_eq!(status, 413, "ordinary non-pool 413 unchanged: {text}");
+        stop_server().await.expect("stop");
+    }
+}
