@@ -1634,6 +1634,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             onReenableKey={(providerId, keyId) =>
               void handleReenableProviderKey(providerId, keyId)
             }
+            onReenableModel={handleReenableProviderModel}
           />
         </div>
 
