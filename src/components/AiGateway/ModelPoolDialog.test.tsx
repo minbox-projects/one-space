@@ -785,6 +785,116 @@ describe("ModelPoolDialog", () => {
     expect(screen.getByTestId("model-pool-source-group-p-enabled-2")).toBeInTheDocument();
     expect(screen.queryByTestId("model-pool-source-group-p-disabled")).not.toBeInTheDocument();
   });
+
+  it("clears unavailable selected candidates and saves only the ready ones", async () => {
+    const providers = [
+      {
+        id: "p-ready",
+        name: "Ready Provider",
+        base_url: "https://ready.example",
+        default_model: null,
+        protocol: "chat_completions",
+        enabled: true,
+        keys: [configuredKey("k-ready")],
+        mappings: [
+          { local_model: "local-ready", upstream_model: "remote-ready" },
+        ],
+      },
+      {
+        id: "p-disabled",
+        name: "Disabled Provider",
+        base_url: "https://disabled.example",
+        default_model: null,
+        protocol: "responses",
+        enabled: false,
+        keys: [configuredKey("k-disabled")],
+        mappings: [
+          { local_model: "local-disabled", upstream_model: "remote-disabled" },
+        ],
+      },
+    ];
+    const readyPool = {
+      id: "pool-ready",
+      name: "Ready Pool",
+      model: "ready-model",
+      enabled: true,
+      default_reasoning_effort: "auto",
+      candidates: [
+        {
+          provider_id: "p-ready",
+          local_model: "local-ready",
+          upstream_model: "remote-ready",
+          protocol: "chat_completions",
+          weight: 1,
+        },
+      ],
+    };
+    const mixedPool = {
+      id: "pool-mixed",
+      name: "Mixed Pool",
+      model: "mixed-model",
+      enabled: true,
+      default_reasoning_effort: "auto",
+      candidates: [
+        {
+          provider_id: "p-ready",
+          local_model: "local-ready",
+          upstream_model: "remote-ready",
+          protocol: "chat_completions",
+          weight: 1,
+        },
+        {
+          provider_id: "p-disabled",
+          local_model: "local-disabled",
+          upstream_model: "remote-disabled",
+          protocol: "responses",
+          weight: 1,
+        },
+      ],
+    };
+
+    // Readiness comes from the current config: the ready provider has a usable
+    // configured key, while the other provider is disabled.
+    mockState.config = buildConfig([readyPool, mixedPool], providers);
+    mockState.statusPayload = [];
+    renderWithProviders(<AiGateway />);
+    await screen.findByText("Ready Provider");
+    openModelPoolsTab();
+    await screen.findByTestId("ai-gateway-model-pool-name-pool-ready");
+
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-ready"));
+    await screen.findByTestId("model-pool-dialog");
+    expect(
+      screen.queryByTestId("model-pool-clear-unavailable"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("model-pool-cancel"));
+
+    fireEvent.click(screen.getByTestId("ai-gateway-model-pool-name-pool-mixed"));
+    await screen.findByTestId("model-pool-dialog");
+
+    const clearButton = screen.getByTestId("model-pool-clear-unavailable");
+    expect(clearButton).toHaveAccessibleName(/\b1\b/);
+
+    fireEvent.click(clearButton);
+
+    const selectedList = screen.getByTestId("model-pool-selected-list");
+    expect(
+      within(selectedList).queryByText(/local-disabled/i),
+    ).not.toBeInTheDocument();
+    expect(within(selectedList).getByText(/local-ready/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("model-pool-save"));
+    await waitFor(() => expect(upsertCalls()).toHaveLength(1));
+    const savedCandidates = candidatesOf(upsertCalls()[0]);
+    expect(savedCandidates).toHaveLength(1);
+    expect(savedCandidates[0]).toMatchObject({
+      provider_id: "p-ready",
+      local_model: "local-ready",
+      upstream_model: "remote-ready",
+      protocol: "chat_completions",
+      weight: 1,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
