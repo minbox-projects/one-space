@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronUp,
   Equal,
+  Eraser,
   Layers,
   Search,
   Server,
@@ -440,6 +441,22 @@ export function ModelPoolDialog({
     return map;
   }, [poolStatus]);
 
+  const unavailableSelectedKeys = useMemo(
+    () =>
+      selected
+        .filter(
+          (candidate) =>
+            !resolveModelPoolCandidateState(
+              candidate,
+              providers,
+              statusByKey.get(candidate.key) ?? null,
+            ).ready,
+        )
+        .map((candidate) => candidate.key),
+    [providers, selected, statusByKey],
+  );
+  const unavailableSelectedCount = unavailableSelectedKeys.length;
+
   const sourceGroups = useMemo(() => {
     const storedReasoningByKey = new Map<string, GatewayModelPoolReasoning>();
     for (const candidate of pool?.candidates ?? []) {
@@ -819,6 +836,16 @@ export function ModelPoolDialog({
       nextWeights[item.key] = "1";
     }
     setWeights((prev) => ({ ...prev, ...nextWeights }));
+    setError(null);
+  };
+
+  // 一键移除所有当前不可用的已选候选
+  const handleClearUnavailable = () => {
+    if (unavailableSelectedKeys.length === 0) return;
+    const keysToRemove = new Set(unavailableSelectedKeys);
+    setSelected((previous) =>
+      previous.filter((item) => !keysToRemove.has(item.key)),
+    );
     setError(null);
   };
 
@@ -1683,18 +1710,38 @@ export function ModelPoolDialog({
                     {selected.length}
                   </span>
                 </div>
-                {selected.length > 1 ? (
-                  <button
-                    type="button"
-                    onClick={handleEqualizeWeights}
-                    disabled={busy || saving}
-                    title="将所有候选模型权重均等平分"
-                    className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/80 px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
-                  >
-                    <Equal className="h-3 w-3 text-primary/80" />
-                    <span>平分权重</span>
-                  </button>
-                ) : null}
+                <div className="flex flex-wrap items-center gap-2">
+                  {unavailableSelectedCount > 0 ? (
+                    <button
+                      type="button"
+                      data-testid="model-pool-clear-unavailable"
+                      onClick={handleClearUnavailable}
+                      disabled={busy || saving}
+                      className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/80 px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+                    >
+                      <Eraser className="h-3 w-3 text-primary/80" />
+                      <span>
+                        {t(
+                          "aiGatewayModelPoolClearUnavailable",
+                          "Clear unavailable ({{count}})",
+                          { count: unavailableSelectedCount },
+                        )}
+                      </span>
+                    </button>
+                  ) : null}
+                  {selected.length > 1 ? (
+                    <button
+                      type="button"
+                      onClick={handleEqualizeWeights}
+                      disabled={busy || saving}
+                      title="将所有候选模型权重均等平分"
+                      className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/80 px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+                    >
+                      <Equal className="h-3 w-3 text-primary/80" />
+                      <span>平分权重</span>
+                    </button>
+                  ) : null}
+                </div>
               </div>
 
               {/* 已选列表 */}
