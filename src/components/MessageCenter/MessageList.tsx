@@ -8,8 +8,10 @@ interface MessageListProps {
   selectedId: string | null;
   loading: boolean;
   hasActiveFilters: boolean;
+  isMessageFocused?: (message: MessageRecord) => boolean;
   onSelect: (id: string) => void;
   onToggleRead: (id: string, e?: React.MouseEvent) => void;
+  onToggleStar?: (id: string, e?: React.MouseEvent) => void;
   onClearFilters: () => void;
 }
 
@@ -18,8 +20,10 @@ export function MessageList({
   selectedId,
   loading,
   hasActiveFilters,
+  isMessageFocused,
   onSelect,
   onToggleRead,
+  onToggleStar,
   onClearFilters,
 }: MessageListProps) {
   const { t } = useTranslation();
@@ -91,8 +95,10 @@ export function MessageList({
           key={message.id}
           message={message}
           isSelected={selectedId === message.id}
+          isFocused={isMessageFocused ? isMessageFocused(message) : false}
           onSelect={onSelect}
           onToggleRead={onToggleRead}
+          onToggleStar={onToggleStar}
         />
       ))}
     </div>

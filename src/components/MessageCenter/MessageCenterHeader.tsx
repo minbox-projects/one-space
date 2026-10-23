@@ -5,6 +5,8 @@ import {
   MailCheck,
   PanelRight,
   RefreshCw,
+  SlidersHorizontal,
+  Star,
   X,
 } from "lucide-react";
 import type { FilterTab } from "./types";
@@ -12,6 +14,7 @@ import type { FilterTab } from "./types";
 interface MessageCenterHeaderProps {
   unreadCount: number;
   alertsCount: number;
+  focusedCount: number;
   totalCount: number;
   loading: boolean;
   isWideMode: boolean;
@@ -20,12 +23,14 @@ interface MessageCenterHeaderProps {
   onToggleWideMode: () => void;
   onReload: () => void;
   onMarkAllRead: () => void;
+  onOpenSubscriptions: () => void;
   onClose: () => void;
 }
 
 export function MessageCenterHeader({
   unreadCount,
   alertsCount,
+  focusedCount,
   totalCount,
   loading,
   isWideMode,
@@ -34,6 +39,7 @@ export function MessageCenterHeader({
   onToggleWideMode,
   onReload,
   onMarkAllRead,
+  onOpenSubscriptions,
   onClose,
 }: MessageCenterHeaderProps) {
   const { t } = useTranslation();
@@ -93,6 +99,14 @@ export function MessageCenterHeader({
           </button>
           <button
             type="button"
+            onClick={onOpenSubscriptions}
+            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            title={t("messageCenterSubscriptions", "特别关注设置")}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={onReload}
             className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             title={t("refresh", "Refresh")}
@@ -125,6 +139,7 @@ export function MessageCenterHeader({
         <div className="inline-flex rounded-lg border border-border/40 bg-muted/30 p-0.5 text-xs text-muted-foreground">
           <button
             type="button"
+            data-tab="all"
             onClick={() => onTabChange("all")}
             className={`rounded-md px-2.5 py-1 transition-all ${
               activeTab === "all"
@@ -136,6 +151,7 @@ export function MessageCenterHeader({
           </button>
           <button
             type="button"
+            data-tab="unread"
             onClick={() => onTabChange("unread")}
             className={`relative rounded-md px-2.5 py-1 transition-all ${
               activeTab === "unread"
@@ -152,6 +168,7 @@ export function MessageCenterHeader({
           </button>
           <button
             type="button"
+            data-tab="alerts"
             onClick={() => onTabChange("alerts")}
             className={`relative rounded-md px-2.5 py-1 transition-all ${
               activeTab === "alerts"
@@ -163,6 +180,24 @@ export function MessageCenterHeader({
             {alertsCount > 0 ? (
               <span className="ml-1.5 rounded bg-muted px-1.5 py-0.2 font-mono text-[10px]">
                 {alertsCount}
+              </span>
+            ) : null}
+          </button>
+          <button
+            type="button"
+            data-tab="focused"
+            onClick={() => onTabChange("focused")}
+            className={`relative rounded-md px-2.5 py-1 transition-all flex items-center gap-1.5 ${
+              activeTab === "focused"
+                ? "bg-background text-amber-600 dark:text-amber-400 shadow-xs font-medium"
+                : "hover:text-foreground"
+            }`}
+          >
+            <Star className={`h-3 w-3 ${activeTab === "focused" ? "fill-amber-500/20 text-amber-500" : "text-amber-500/70"}`} />
+            <span>{t("messageCenterTabFocused", "特别关注")}</span>
+            {focusedCount > 0 ? (
+              <span className="ml-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 px-1.5 py-0.2 font-mono text-[10px]">
+                {focusedCount}
               </span>
             ) : null}
           </button>

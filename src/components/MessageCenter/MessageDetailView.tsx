@@ -11,6 +11,7 @@ import {
   Terminal,
   MailCheck,
   MailOpen,
+  Star,
   X,
 } from "lucide-react";
 import type { MessageRecord, MessageSeverity, MessageTarget } from "@/lib/messages";
@@ -19,12 +20,14 @@ import { getSourceLabel } from "./types";
 interface MessageDetailViewProps {
   message: MessageRecord;
   isWideMode: boolean;
+  isFocused?: boolean;
   hasPrevious: boolean;
   hasNext: boolean;
   onBack: () => void;
   onSelectPrevious: () => void;
   onSelectNext: () => void;
   onToggleRead: (id: string) => void;
+  onToggleStar?: (id: string) => void;
   onNavigate: (target: MessageTarget) => void;
   onClose: () => void;
 }
@@ -47,12 +50,14 @@ function formatTimestamp(ts?: number | null) {
 export function MessageDetailView({
   message,
   isWideMode,
+  isFocused = false,
   hasPrevious,
   hasNext,
   onBack,
   onSelectPrevious,
   onSelectNext,
   onToggleRead,
+  onToggleStar,
   onNavigate,
   onClose,
 }: MessageDetailViewProps) {
@@ -136,6 +141,28 @@ export function MessageDetailView({
             <ChevronRight className="h-4 w-4" />
           </button>
           <div className="mx-1 h-3.5 w-[1px] bg-border" />
+          {onToggleStar ? (
+            <button
+              type="button"
+              onClick={() => onToggleStar(message.id)}
+              className={`rounded-lg p-1.5 transition-colors ${
+                isFocused
+                  ? "text-amber-500 bg-amber-500/10 hover:bg-amber-500/20"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              }`}
+              title={
+                isFocused
+                  ? t("messageCenterUnstar", "取消关注")
+                  : t("messageCenterStar", "特别关注")
+              }
+            >
+              <Star
+                className={`h-4 w-4 ${
+                  isFocused ? "fill-amber-500 text-amber-500" : ""
+                }`}
+              />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => onToggleRead(message.id)}
@@ -183,6 +210,12 @@ export function MessageDetailView({
                 getSourceLabel(message.source),
               )}
             </span>
+            {isFocused ? (
+              <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                <Star className="h-3 w-3 fill-amber-500 text-amber-500" />
+                {t("messageCenterStarredBadge", "特别关注")}
+              </span>
+            ) : null}
             {message.occurrences > 1 ? (
               <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-bold text-primary">
                 {t("messageCenterOccurrences", "{{count}} occurrences", {

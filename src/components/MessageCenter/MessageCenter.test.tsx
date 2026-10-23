@@ -351,4 +351,92 @@ describe("src/components/MessageCenter/MessageCenter.tsx", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it("supports focused messages tab, starring/unstarring, and subscription settings dialog", async () => {
+    const user = userEvent.setup();
+    const customMessages: MessageRecord[] = [
+      {
+        id: "msg_key_err",
+        source: "ai_gateway",
+        category: "key_auth_failed", // 属于系统默认推荐特别关注
+        severity: "error",
+        title: "DeepSeek API Key invalid",
+        summary: "Auth failed 401",
+        detail: "Invalid credentials",
+        created_at: 1700000000,
+        last_seen_at: 1700000000,
+        read_at: null,
+        occurrences: 1,
+      },
+      {
+        id: "msg_regular",
+        source: "skills",
+        category: "sync", // 未被订阅
+        severity: "info",
+        title: "Skills synchronized",
+        summary: "Update complete",
+        detail: null,
+        created_at: 1700000001,
+        last_seen_at: 1700000001,
+        read_at: null,
+        occurrences: 1,
+      },
+    ];
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "messages_list") return customMessages;
+      return null;
+    });
+
+    const { container } = render(
+      <MessageCenter
+        open={true}
+        onOpenChange={vi.fn()}
+        onNavigate={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("DeepSeek API Key invalid")).toBeInTheDocument();
+      expect(screen.getByText("Skills synchronized")).toBeInTheDocument();
+    });
+
+    // 1. 验证特别关注 Tab 存在并点击切换
+    const focusedTabBtn = container.querySelector("button[data-tab='focused']") as HTMLElement;
+    expect(focusedTabBtn).toBeInTheDocument();
+    await user.click(focusedTabBtn);
+
+    // 2. 在特别关注视图中，只展示命中特别关注的消息
+    await waitFor(() => {
+      expect(screen.getByText("DeepSeek API Key invalid")).toBeInTheDocument();
+      expect(screen.queryByText("Skills synchronized")).not.toBeInTheDocument();
+    });
+
+    // 3. 打开特别关注订阅管理弹窗
+    const subSettingsBtn = screen.getByTitle(/特别关注设置|Subscription Settings/i);
+    await user.click(subSettingsBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/特别关注消息订阅|Focused Message Subscriptions/i),
+      ).toBeInTheDocument();
+    });
+
+    // 4. 在订阅弹窗中能看到各模块分组及 Switch
+    expect(screen.getAllByText(/AI 网关|AI Gateway/i).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/API Key 鉴权失败|API Key Authentication Failed/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /保存设置|Save Changes/i })).toBeInTheDocument();
+
+    // 5. 保存并关闭弹窗
+    const saveBtn = screen.getByRole("button", { name: /保存设置|Save Changes/i });
+    await user.click(saveBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/特别关注消息订阅|Focused Message Subscriptions/i),
+      ).not.toBeInTheDocument();
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Layers } from "lucide-react";
 import { useMessageCenter } from "./useMessageCenter";
@@ -6,6 +6,7 @@ import { MessageCenterHeader } from "./MessageCenterHeader";
 import { MessageCenterToolbar } from "./MessageCenterToolbar";
 import { MessageList } from "./MessageList";
 import { MessageDetailView } from "./MessageDetailView";
+import { FocusedSubscriptionsDialog } from "./FocusedSubscriptionsDialog";
 import type { MessageCenterProps } from "./types";
 
 export function MessageCenter({
@@ -14,6 +15,7 @@ export function MessageCenter({
   onNavigate,
 }: MessageCenterProps) {
   const { t } = useTranslation();
+  const [subscriptionsDialogOpen, setSubscriptionsDialogOpen] = useState(false);
   const {
     messages,
     filteredMessages,
@@ -22,6 +24,11 @@ export function MessageCenter({
     selectedMessage,
     unreadCount,
     alertsCount,
+    focusedCount,
+    focusedConfig,
+    updateFocusedConfig,
+    toggleMessageStar,
+    isMessageFocused,
     availableSources,
     loading,
     error,
@@ -90,6 +97,7 @@ export function MessageCenter({
         <MessageCenterHeader
           unreadCount={unreadCount}
           alertsCount={alertsCount}
+          focusedCount={focusedCount}
           totalCount={messages.length}
           loading={loading}
           isWideMode={isWideMode}
@@ -98,6 +106,7 @@ export function MessageCenter({
           onToggleWideMode={toggleWideMode}
           onReload={() => void reloadMessages()}
           onMarkAllRead={() => void handleMarkAllRead()}
+          onOpenSubscriptions={() => setSubscriptionsDialogOpen(true)}
           onClose={() => onOpenChange(false)}
         />
 
@@ -122,8 +131,10 @@ export function MessageCenter({
                 selectedId={selectedId}
                 loading={loading}
                 hasActiveFilters={hasActiveFilters}
+                isMessageFocused={isMessageFocused}
                 onSelect={(id) => setSelectedId(id)}
                 onToggleRead={toggleMessageRead}
+                onToggleStar={toggleMessageStar}
                 onClearFilters={clearFilters}
               />
             </div>
@@ -134,12 +145,14 @@ export function MessageCenter({
                 <MessageDetailView
                   message={selectedMessage}
                   isWideMode={true}
+                  isFocused={isMessageFocused(selectedMessage)}
                   hasPrevious={hasPrevious}
                   hasNext={hasNext}
                   onBack={() => setSelectedId(null)}
                   onSelectPrevious={selectPrevious}
                   onSelectNext={selectNext}
                   onToggleRead={toggleMessageRead}
+                  onToggleStar={toggleMessageStar}
                   onNavigate={(target) => {
                     onOpenChange(false);
                     onNavigate(target);
@@ -194,8 +207,10 @@ export function MessageCenter({
                 selectedId={selectedId}
                 loading={loading}
                 hasActiveFilters={hasActiveFilters}
+                isMessageFocused={isMessageFocused}
                 onSelect={(id) => setSelectedId(id)}
                 onToggleRead={toggleMessageRead}
+                onToggleStar={toggleMessageStar}
                 onClearFilters={clearFilters}
               />
             </div>
@@ -206,12 +221,14 @@ export function MessageCenter({
                 <MessageDetailView
                   message={selectedMessage}
                   isWideMode={false}
+                  isFocused={isMessageFocused(selectedMessage)}
                   hasPrevious={hasPrevious}
                   hasNext={hasNext}
                   onBack={() => setSelectedId(null)}
                   onSelectPrevious={selectPrevious}
                   onSelectNext={selectNext}
                   onToggleRead={toggleMessageRead}
+                  onToggleStar={toggleMessageStar}
                   onNavigate={(target) => {
                     onOpenChange(false);
                     onNavigate(target);
@@ -234,6 +251,16 @@ export function MessageCenter({
           </span>
         </div>
       </aside>
+
+      {/* 特别关注消息订阅管理模态框 */}
+      {subscriptionsDialogOpen ? (
+        <FocusedSubscriptionsDialog
+          open={subscriptionsDialogOpen}
+          onOpenChange={setSubscriptionsDialogOpen}
+          config={focusedConfig}
+          onSave={updateFocusedConfig}
+        />
+      ) : null}
     </div>
   );
 }

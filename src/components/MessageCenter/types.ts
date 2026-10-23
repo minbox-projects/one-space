@@ -1,6 +1,6 @@
 import type { MessageSeverity, MessageTarget } from "@/lib/messages";
 
-export type FilterTab = "all" | "unread" | "alerts";
+export type FilterTab = "all" | "unread" | "alerts" | "focused";
 
 export interface MessageFilterState {
   tab: FilterTab;

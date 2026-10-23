@@ -9,6 +9,7 @@ import {
   Info,
   MailCheck,
   MailOpen,
+  Star,
 } from "lucide-react";
 import type { MessageRecord, MessageSeverity } from "@/lib/messages";
 import { getSourceLabel } from "./types";
@@ -16,8 +17,10 @@ import { getSourceLabel } from "./types";
 interface MessageItemProps {
   message: MessageRecord;
   isSelected: boolean;
+  isFocused?: boolean;
   onSelect: (id: string) => void;
   onToggleRead: (id: string, e?: React.MouseEvent) => void;
+  onToggleStar?: (id: string, e?: React.MouseEvent) => void;
 }
 
 function renderSeverityIcon(severity: MessageSeverity) {
@@ -54,8 +57,10 @@ function formatRelativeTime(ts: number, language: string) {
 export function MessageItem({
   message,
   isSelected,
+  isFocused = false,
   onSelect,
   onToggleRead,
+  onToggleStar,
 }: MessageItemProps) {
   const { t, i18n } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -84,10 +89,16 @@ export function MessageItem({
       }}
       className={`group relative cursor-pointer rounded-xl border p-3 text-left transition-all duration-150 ${
         isSelected
-          ? "border-foreground/30 bg-muted/40 shadow-xs ring-1 ring-foreground/10"
+          ? isFocused
+            ? "border-amber-500/40 bg-muted/40 shadow-xs ring-1 ring-amber-500/20"
+            : "border-foreground/30 bg-muted/40 shadow-xs ring-1 ring-foreground/10"
           : isUnread
-            ? "border-border/80 bg-card hover:border-foreground/20 hover:bg-muted/20 shadow-xs"
-            : "border-border/40 bg-card/60 opacity-75 hover:opacity-100 hover:border-border hover:bg-muted/20"
+            ? isFocused
+              ? "border-amber-500/30 bg-card hover:border-amber-500/40 hover:bg-muted/20 shadow-xs"
+              : "border-border/80 bg-card hover:border-foreground/20 hover:bg-muted/20 shadow-xs"
+            : isFocused
+              ? "border-amber-500/20 bg-card/60 opacity-85 hover:opacity-100 hover:border-amber-500/30 hover:bg-muted/20"
+              : "border-border/40 bg-card/60 opacity-75 hover:opacity-100 hover:border-border hover:bg-muted/20"
       }`}
     >
       <div className="flex items-start gap-2.5">
@@ -110,10 +121,16 @@ export function MessageItem({
         {/* 核心内容区 */}
         <div className="min-w-0 flex-1">
           {/* 来源与时间栏 */}
-          <div className="mb-1 flex items-center gap-1.5">
+          <div className="mb-1 flex items-center gap-1.5 flex-wrap">
             <span className="rounded bg-muted/70 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               {t(`messageSource_${message.source}`, getSourceLabel(message.source))}
             </span>
+            {isFocused ? (
+              <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-600 dark:text-amber-400">
+                <Star className="h-2.5 w-2.5 fill-amber-500 text-amber-500" />
+                {t("messageCenterStarredBadge", "特别关注")}
+              </span>
+            ) : null}
             {message.occurrences > 1 ? (
               <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
                 x{message.occurrences}
@@ -146,6 +163,28 @@ export function MessageItem({
 
       {/* 悬停快捷操作栏 (Hover Actions) */}
       <div className="absolute top-2.5 right-2.5 hidden items-center gap-1 rounded-lg border bg-background/90 p-0.5 shadow-xs backdrop-blur-xs group-hover:flex">
+        {onToggleStar ? (
+          <button
+            type="button"
+            onClick={(e) => onToggleStar(message.id, e)}
+            className={`rounded-md p-1 transition-colors ${
+              isFocused
+                ? "text-amber-500 hover:bg-amber-500/10"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+            }`}
+            title={
+              isFocused
+                ? t("messageCenterUnstar", "取消关注")
+                : t("messageCenterStar", "特别关注")
+            }
+          >
+            <Star
+              className={`h-3.5 w-3.5 ${
+                isFocused ? "fill-amber-500 text-amber-500" : ""
+              }`}
+            />
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={(e) => onToggleRead(message.id, e)}

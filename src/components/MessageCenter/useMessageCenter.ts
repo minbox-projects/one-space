@@ -7,6 +7,12 @@ import {
   MESSAGES_UPDATED_EVENT,
   type MessageRecord,
 } from "@/lib/messages";
+import {
+  loadFocusedSubscriptionConfig,
+  saveFocusedSubscriptionConfig,
+  isMessageFocused as checkMessageFocused,
+  type FocusedMessageSubscriptionConfig,
+} from "@/lib/messageSubscriptions";
 import type { MessageFilterState } from "./types";
 
 const WIDE_MODE_STORAGE_KEY = "onespace_message_center_wide_mode";
@@ -31,6 +37,17 @@ export function useMessageCenter(open: boolean) {
     source: "all",
     severity: "all",
   });
+
+  const [focusedConfig, setFocusedConfig] = useState<FocusedMessageSubscriptionConfig>(() =>
+    loadFocusedSubscriptionConfig(),
+  );
+
+  // 当抽屉打开时，重新加载特别关注配置以防外部变更
+  useEffect(() => {
+    if (open) {
+      setFocusedConfig(loadFocusedSubscriptionConfig());
+    }
+  }, [open]);
 
   const toggleWideMode = useCallback(() => {
     setIsWideMode((prev) => {
@@ -100,6 +117,21 @@ export function useMessageCenter(open: boolean) {
     [messages],
   );
 
+  // 特别关注总数
+  const focusedCount = useMemo(
+    () => messages.filter((m) => checkMessageFocused(m, focusedConfig)).length,
+    [messages, focusedConfig],
+  );
+
+  // 特别关注未读数
+  const focusedUnreadCount = useMemo(
+    () =>
+      messages.filter(
+        (m) => !m.read_at && checkMessageFocused(m, focusedConfig),
+      ).length,
+    [messages, focusedConfig],
+  );
+
   // 全部可用来源集合
   const availableSources = useMemo(() => {
     const set = new Set<string>();
@@ -120,6 +152,8 @@ export function useMessageCenter(open: boolean) {
       result = result.filter(
         (m) => m.severity === "error" || m.severity === "warning",
       );
+    } else if (filters.tab === "focused") {
+      result = result.filter((m) => checkMessageFocused(m, focusedConfig));
     }
 
     // 2. 来源过滤
@@ -146,7 +180,7 @@ export function useMessageCenter(open: boolean) {
     }
 
     return result;
-  }, [messages, filters]);
+  }, [messages, filters, focusedConfig]);
 
   // 当前选中的消息对象
   const selectedMessage = useMemo(
@@ -241,6 +275,28 @@ export function useMessageCenter(open: boolean) {
     });
   }, []);
 
+  const toggleMessageStar = useCallback((id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setFocusedConfig((prev) => {
+      const currentManual = prev.manualStarredIds || [];
+      const isCurrentlyStarred = currentManual.includes(id);
+      const nextManual = isCurrentlyStarred
+        ? currentManual.filter((item) => item !== id)
+        : [...currentManual, id];
+      const next = { ...prev, manualStarredIds: nextManual };
+      saveFocusedSubscriptionConfig(next);
+      return next;
+    });
+  }, []);
+
+  const updateFocusedConfig = useCallback(
+    (nextConfig: FocusedMessageSubscriptionConfig) => {
+      setFocusedConfig(nextConfig);
+      saveFocusedSubscriptionConfig(nextConfig);
+    },
+    [],
+  );
+
   return {
     messages,
     filteredMessages,
@@ -249,6 +305,16 @@ export function useMessageCenter(open: boolean) {
     selectedMessage,
     unreadCount,
     alertsCount,
+    focusedCount,
+    focusedUnreadCount,
+    focusedConfig,
+    updateFocusedConfig,
+    toggleMessageStar,
+    isMessageFocused: useCallback(
+      (m: Pick<MessageRecord, "id" | "source" | "category">) =>
+        checkMessageFocused(m, focusedConfig),
+      [focusedConfig],
+    ),
     availableSources,
     loading,
     error,
