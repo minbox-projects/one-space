@@ -4,6 +4,7 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronUp,
+  Equal,
   Layers,
   Search,
   Server,
@@ -356,6 +357,7 @@ export function ModelPoolDialog({
     }
     return maxCandidateContext;
   }, [manualContextWindow, candidateContextOptions, maxCandidateContext]);
+
   const [weights, setWeights] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
     for (const candidate of pool?.candidates ?? []) {
@@ -363,6 +365,7 @@ export function ModelPoolDialog({
     }
     return initial;
   });
+
   // Ordered fallback gateway model ids. The list never shares regular weights
   // or primary scheduling, and each id expands to its provider mappings later.
   const [fallbackModels, setFallbackModels] = useState<string[]>(() =>
@@ -386,6 +389,7 @@ export function ModelPoolDialog({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [fallbackDropdownOpen]);
+
   // Pool default preference; a new pool starts at `medium`, a legacy pool at `auto`.
   const [defaultEffort, setDefaultEffort] = useState<string>(() =>
     pool ? resolveModelPoolDefaultEffort(pool) : "medium",
@@ -403,6 +407,7 @@ export function ModelPoolDialog({
   });
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+
   // 默认仅展开第一个已启用的服务商，后续已启用的服务商默认折叠
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
@@ -415,6 +420,7 @@ export function ModelPoolDialog({
     return initial;
   });
   const [saving, setSaving] = useState(false);
+
   // 单个候选模型的推理策略面板展开状态（默认收起）
   const [expandedReasoning, setExpandedReasoning] = useState<
     Record<string, boolean>
@@ -435,12 +441,6 @@ export function ModelPoolDialog({
   }, [poolStatus]);
 
   const sourceGroups = useMemo(() => {
-    // The immutable stored base for each already-saved candidate, indexed by its
-    // full source identity. Re-selecting a previously deselected source row must
-    // reattach that exact base (profile/values/budget/supports_disable) rather
-    // than the bare source tuple, so the stored manual/adaptive metadata survives
-    // a deselect/reselect round-trip. Only the exact identity matches: no sibling
-    // model or other provider ever contributes, and new sources stay unknown.
     const storedReasoningByKey = new Map<string, GatewayModelPoolReasoning>();
     for (const candidate of pool?.candidates ?? []) {
       if (candidate.reasoning) {
@@ -545,8 +545,8 @@ export function ModelPoolDialog({
     return counts;
   }, [activeProviders]);
 
-  const addFallbackModel = (model: string) => {
-    const trimmed = model.trim();
+  const addFallbackModel = (fallbackModelId: string) => {
+    const trimmed = fallbackModelId.trim();
     if (!trimmed) return;
     setFallbackModels((previous) =>
       previous.includes(trimmed) ? previous : [...previous, trimmed],
@@ -568,8 +568,8 @@ export function ModelPoolDialog({
     setError(null);
   };
 
-  const removeFallbackModel = (model: string) => {
-    setFallbackModels((previous) => previous.filter((item) => item !== model));
+  const removeFallbackModel = (fallbackModelId: string) => {
+    setFallbackModels((previous) => previous.filter((item) => item !== fallbackModelId));
     setError(null);
   };
 
@@ -607,16 +607,14 @@ export function ModelPoolDialog({
   // reasoning auto-derived from the exact mapping and effective protocol.
   const expandedFallbackCandidates = useMemo(
     () =>
-      fallbackModels.flatMap((model) =>
-        expandModelPoolFallbackModel(providers, model),
+      fallbackModels.flatMap((fallbackModelId) =>
+        expandModelPoolFallbackModel(providers, fallbackModelId),
       ),
     [fallbackModels, providers],
   );
 
   // Live static coverage derived from the current binding drafts and the
   // current provider list; readiness stays a separate, key/health-aware count.
-  // The denominator spans the configured union of regular candidates and every
-  // expanded fallback source, while runtime readiness below remains regular-only.
   const draftReasoningCatalog = useMemo(() => {
     const candidates: GatewayModelPoolCandidate[] = selected.map((candidate) => {
       const draft =
@@ -813,22 +811,45 @@ export function ModelPoolDialog({
     setError(null);
   };
 
+  // 一键平分所有已选模型的权重
+  const handleEqualizeWeights = () => {
+    if (selected.length === 0) return;
+    const nextWeights: Record<string, string> = {};
+    for (const item of selected) {
+      nextWeights[item.key] = "1";
+    }
+    setWeights((prev) => ({ ...prev, ...nextWeights }));
+    setError(null);
+  };
+
+  // 计算权重总和用于显示占比百分比
+  const totalWeight = useMemo(() => {
+    let sum = 0;
+    for (const item of selected) {
+      const w = parseWeight(weights[item.key] ?? "1");
+      if (w !== null) {
+        sum += w;
+      }
+    }
+    return sum;
+  }, [selected, weights]);
+
+  const getWeightPercentage = (key: string): string => {
+    if (totalWeight <= 0) return "--";
+    const w = parseWeight(weights[key] ?? "1");
+    if (w === null) return "--";
+    return `${Math.round((w / totalWeight) * 100)}%`;
+  };
+
   const reasoningEditor = (candidate: DraftCandidate) => {
     const draft =
       reasoningDrafts[candidate.key] ??
       reasoningDraftFrom(candidate.reasoning);
     const base = candidate.reasoning ?? null;
-    // Native choices come from this candidate's exact source mapping, unioned
-    // with its own stored values and bound enums so legacy declarations stay
-    // representable; nothing is borrowed from a sibling model, another provider
-    // or a name-based profile guess.
     const nativeEfforts = candidateNativeEfforts(providers, candidate, draft);
     const nativePositiveEfforts = nativeEfforts.filter(
       (value) => !isReservedNoneEffort(value),
     );
-    // The stored (immutable) profile decides which native targets are valid; a
-    // binding never rewrites it, and a new candidate picks its adapter only at
-    // derivation time.
     const storedProfile = base?.profile ?? "";
     const isManualProfile = storedProfile === "anthropic_manual_budget";
     const isSwitchProfile = storedProfile === "chat_thinking_switch";
@@ -845,10 +866,14 @@ export function ModelPoolDialog({
       });
     };
 
+    const boundCount = CANONICAL_REASONING_EFFORTS.filter(
+      (effort) => Boolean(draft.mappings[effort]),
+    ).length;
+
     return (
       <div
         data-testid={`model-pool-reasoning-editor-${candidate.provider_id}-${candidate.local_model}`}
-        className="w-full rounded-xl border border-border/60 bg-muted/25 overflow-hidden transition-all"
+        className="w-full rounded-xl border border-border/60 bg-muted/20 overflow-hidden transition-all"
       >
         {/* 顶部标题栏兼折叠切换条 */}
         <button
@@ -870,6 +895,11 @@ export function ModelPoolDialog({
                 "Reasoning bindings",
               )}
             </span>
+            {boundCount > 0 ? (
+              <span className="rounded-full bg-primary/10 px-2 py-0.2 text-[10px] font-medium text-primary">
+                {boundCount} 档已映射
+              </span>
+            ) : null}
           </div>
           <ChevronDown
             className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${
@@ -935,9 +965,6 @@ export function ModelPoolDialog({
                 const bindingOptions: Array<{ value: string; label: string }> =
                   [];
                 if (isNone) {
-                  // `none` is the explicit disable: it never offers an enum or
-                  // a budget, and only where the source declares `none` or the
-                  // stored declaration already supports it.
                   if (noneOffersDisable) {
                     bindingOptions.push({
                       value: "disable",
@@ -948,10 +975,6 @@ export function ModelPoolDialog({
                     });
                   }
                 } else if (isManualProfile) {
-                  // A manual-budget candidate keeps exactly its original stored
-                  // distinct budgets as immutable rebind targets; source native
-                  // levels are not representable as enums and no new token or
-                  // range may be typed.
                   for (const tokens of budgetTokens) {
                     bindingOptions.push({
                       value: `budget:${tokens}`,
@@ -962,16 +985,11 @@ export function ModelPoolDialog({
                     });
                   }
                 } else if (isSwitchProfile) {
-                  // A switch profile's only positive native value is `enabled`,
-                  // supplied by the adapter even when the source metadata omits
-                  // it; no other native level is a valid switch target.
                   bindingOptions.push({
                     value: "enum:enabled",
                     label: "enabled",
                   });
                 } else {
-                  // Enum-capable profiles and an unset/unknown declaration keep
-                  // offering this candidate's exact native levels.
                   for (const value of nativePositiveEfforts) {
                     bindingOptions.push({
                       value: `enum:${value}`,
@@ -1050,9 +1068,7 @@ export function ModelPoolDialog({
       );
       return;
     }
-    // Derive each candidate's persisted reasoning from its immutable stored base
-    // and the operator's chosen bindings; the whole draft is retained on any
-    // rejection and the operator sees a localized reason.
+
     const selectedDrafts = selected.map((candidate) => {
       const draft =
         reasoningDrafts[candidate.key] ??
@@ -1067,12 +1083,7 @@ export function ModelPoolDialog({
         ),
       };
     });
-    // A concrete default preference requires at least one currently valid
-    // candidate mapping across the configured union of regular drafts and every
-    // expanded fallback source; `auto` omits the controls. The same save may not
-    // delete the retained default's last declaration, while a retained,
-    // unchanged declaration may survive an unavailable source in an unrelated
-    // edit.
+
     if (defaultEffort !== "auto") {
       const defaultUnmapped = () =>
         t(
@@ -1129,8 +1140,8 @@ export function ModelPoolDialog({
       ]);
       const storedPoolCandidates = [
         ...(pool?.candidates ?? []),
-        ...(pool?.fallback_models ?? []).flatMap((model) =>
-          expandModelPoolFallbackModel(providers, model),
+        ...(pool?.fallback_models ?? []).flatMap((fallbackModelId) =>
+          expandModelPoolFallbackModel(providers, fallbackModelId),
         ),
       ];
       const declarationUnchanged =
@@ -1235,11 +1246,11 @@ export function ModelPoolDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         data-testid="model-pool-dialog"
-        className="w-full sm:max-w-2xl lg:max-w-3xl max-h-[88vh] overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0"
+        className="w-full sm:max-w-4xl lg:max-w-5xl max-h-[90vh] overflow-hidden flex flex-col sm:rounded-2xl p-0 gap-0 shadow-2xl"
       >
         <DialogHeader className="pl-6 pr-14 py-4 border-b bg-card/80 backdrop-blur-sm shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-2xs">
               <Layers className="h-4.5 w-4.5" />
             </div>
             <div className="min-w-0">
@@ -1258,930 +1269,994 @@ export function ModelPoolDialog({
           </div>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-5 p-6">
-          {/* Basic fields */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
-              <span>{t("aiGatewayModelPoolNameLabel", "Name")}</span>
-              <input
-                type="text"
-                data-testid="model-pool-name-input"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder={t("aiGatewayModelPoolNamePlaceholder", "Free Modle")}
-                disabled={busy || saving}
-                className="h-9 rounded-lg border border-border/80 bg-background px-3 text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
-              <span>
-                {t("aiGatewayModelPoolModelLabel", "Public model ID")}
-              </span>
-              <input
-                type="text"
-                data-testid="model-pool-model-input"
-                value={model}
-                onChange={(event) => setModel(event.target.value)}
-                placeholder={t(
-                  "aiGatewayModelPoolModelPlaceholder",
-                  "free-model",
-                )}
-                disabled={busy || saving}
-                className="h-9 rounded-lg border border-border/80 bg-background px-3 font-mono text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
-              />
-            </label>
-          </div>
+        <div className="flex-1 overflow-y-auto space-y-4 p-5 sm:p-6">
+          {/* Section 1: 基础配置与统一上下文限制 */}
+          <div className="rounded-2xl border border-border/70 bg-card/60 p-4 shadow-2xs space-y-3.5">
+            <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
+              {/* Pool Name */}
+              <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
+                <span className="flex items-center gap-1">
+                  <span>{t("aiGatewayModelPoolNameLabel", "Name")}</span>
+                  <span className="text-destructive">*</span>
+                </span>
+                <input
+                  type="text"
+                  data-testid="model-pool-name-input"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder={t("aiGatewayModelPoolNamePlaceholder", "Free Modle")}
+                  disabled={busy || saving}
+                  className="h-9 rounded-lg border border-border/80 bg-background px-3 text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
+                />
+              </label>
 
-          {/* Pool default reasoning preference */}
-          <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground sm:max-w-xs">
-            <span>
-              {t("aiGatewayModelPoolReasoningDefaultLabel", "Reasoning default")}
-            </span>
-            <select
-              data-testid="model-pool-reasoning-default"
-              aria-label={t(
-                "aiGatewayModelPoolReasoningDefaultLabel",
-                "Reasoning default",
-              )}
-              value={defaultEffort}
-              onChange={(event) => {
-                setDefaultEffort(event.target.value);
-                setError(null);
-              }}
-              disabled={busy || saving}
-              className="h-9 rounded-lg border border-border/80 bg-background px-2 text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
-            >
-              <option value="auto">
-                {t(
-                  "aiGatewayModelPoolReasoningDefaultAuto",
-                  "Provider default (auto)",
-                )}
-              </option>
-              {CANONICAL_REASONING_EFFORTS.map((effort) => (
-                <option key={effort} value={effort}>
-                  {effort}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {/* Unified public context window limit */}
-          <div
-            data-testid="model-pool-context-limit-container"
-            className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                  <Layers className="h-3.5 w-3.5 text-cyan-600 dark:text-cyan-400" />
-                  <span>
-                    {t(
-                      "aiGatewayModelPoolContextLimitTitle",
-                      "Unified Context Window Limit",
-                    )}
-                  </span>
-                </div>
-                <p className="text-[10px] leading-relaxed text-muted-foreground">
-                  {t(
-                    "aiGatewayModelPoolContextLimitDesc",
-                    "Select the unified public context window for this model pool, used during AI terminal synchronization. Choices are derived from selected models; defaults to the maximum context window.",
+              {/* Public Model ID */}
+              <label className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
+                <span className="flex items-center gap-1">
+                  <span>{t("aiGatewayModelPoolModelLabel", "Public model ID")}</span>
+                  <span className="text-destructive">*</span>
+                </span>
+                <input
+                  type="text"
+                  data-testid="model-pool-model-input"
+                  value={model}
+                  onChange={(event) => setModel(event.target.value)}
+                  placeholder={t(
+                    "aiGatewayModelPoolModelPlaceholder",
+                    "free-model",
                   )}
-                </p>
+                  disabled={busy || saving}
+                  className="h-9 rounded-lg border border-border/80 bg-background px-3 font-mono text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
+                />
+              </label>
+
+              {/* Unified Context Window Limit */}
+              <div
+                data-testid="model-pool-context-limit-container"
+                className="flex flex-col gap-1.5 text-xs font-medium text-foreground sm:col-span-2 lg:col-span-1"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 truncate">
+                    <Layers className="h-3.5 w-3.5 text-cyan-600 dark:text-cyan-400 shrink-0" />
+                    <span className="truncate">
+                      {t(
+                        "aiGatewayModelPoolContextLimitTitle",
+                        "Unified Context Window Limit",
+                      )}
+                    </span>
+                  </span>
+                  {effectiveContextWindow != null && (
+                    <span
+                      data-testid="model-pool-context-approx"
+                      className="font-mono text-[11px] text-cyan-600 dark:text-cyan-400 font-semibold shrink-0"
+                    >
+                      {t("aiGatewayContextWindowApproxTokens", {
+                        tokens: formatContextWindow(effectiveContextWindow),
+                        defaultValue: `≈ ${formatContextWindow(effectiveContextWindow)} tokens`,
+                      })}
+                    </span>
+                  )}
+                </div>
+                <select
+                  data-testid="model-pool-context-select"
+                  aria-label={t(
+                    "aiGatewayModelPoolContextLimitTitle",
+                    "Unified Context Window Limit",
+                  )}
+                  value={effectiveContextWindow ?? ""}
+                  onChange={(event) => {
+                    const val = event.target.value;
+                    setManualContextWindow(val ? Number(val) : null);
+                    setError(null);
+                  }}
+                  disabled={busy || saving || candidateContextOptions.length === 0}
+                  className="h-9 w-full rounded-lg border border-border/80 bg-background px-3 font-mono text-xs sm:text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {candidateContextOptions.length === 0 ? (
+                    <option value="">
+                      {t(
+                        "aiGatewayModelPoolContextLimitNoOptions",
+                        "No context limits detected from selected models",
+                      )}
+                    </option>
+                  ) : (
+                    candidateContextOptions.map((cw) => {
+                      const isMax = cw === maxCandidateContext;
+                      const displayLabel = formatContextWindowDisplay(cw);
+                      const exactTokens = formatContextWindow(cw);
+                      const suffix = isMax
+                        ? ` - ${t(
+                            "aiGatewayModelPoolContextLimitMaxDefault",
+                            "Maximum (default)",
+                          )}`
+                        : "";
+                      return (
+                        <option key={cw} value={cw}>
+                          {`${displayLabel} (${exactTokens} tokens)${suffix}`}
+                        </option>
+                      );
+                    })
+                  )}
+                </select>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <select
-                data-testid="model-pool-context-select"
-                aria-label={t(
-                  "aiGatewayModelPoolContextLimitTitle",
-                  "Unified Context Window Limit",
-                )}
-                value={effectiveContextWindow ?? ""}
-                onChange={(event) => {
-                  const val = event.target.value;
-                  setManualContextWindow(val ? Number(val) : null);
-                  setError(null);
-                }}
-                disabled={busy || saving || candidateContextOptions.length === 0}
-                className="h-9 min-w-64 rounded-lg border border-border/80 bg-background px-3 font-mono text-sm text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {candidateContextOptions.length === 0 ? (
-                  <option value="">
+            {/* 指标与就绪状态栏 */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-border/50 text-[11px] text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <span>
                     {t(
-                      "aiGatewayModelPoolContextLimitNoOptions",
-                      "No context limits detected from selected models",
+                      "aiGatewayModelPoolReasoningRuntimeReadinessLabel",
+                      "Runtime readiness",
                     )}
-                  </option>
+                    :
+                  </span>
+                  <span
+                    data-testid="model-pool-reasoning-runtime-readiness"
+                    className="font-medium text-foreground"
+                  >
+                    {t("aiGatewayModelPoolReasoningRuntimeReadyCount", {
+                      ready: readyCount,
+                      total: selected.length,
+                      defaultValue: "{{ready}}/{{total}} candidates ready",
+                    })}
+                  </span>
+                </span>
+                <span className="text-border">|</span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span>
+                    {t("aiGatewayModelPoolReasoningCoverageLabel", "Static coverage")}:
+                  </span>
+                  <span
+                    data-testid="model-pool-reasoning-static-coverage"
+                    className="font-medium text-foreground"
+                  >
+                    {t("aiGatewayModelPoolReasoningCoverageValue", {
+                      mapped: coverageRow?.mapped_candidates ?? 0,
+                      total: coverageRow?.total_candidates ?? selected.length,
+                      defaultValue: "{{mapped}}/{{total}} candidates mapped",
+                    })}
+                  </span>
+                </span>
+              </div>
+              <div className="text-[10px] text-muted-foreground/80 hidden sm:block">
+                {t(
+                  "aiGatewayModelPoolContextLimitDesc",
+                  "Select the unified public context window for this model pool, used during AI terminal synchronization. Choices are derived from selected models; defaults to the maximum context window.",
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: 核心成员穿梭工作区（双栏布局） */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            {/* 左栏：来源模型库 (占 5 列) */}
+            <div className="lg:col-span-5 flex flex-col rounded-2xl border border-border/70 bg-card/40 overflow-hidden shadow-2xs">
+              {/* 头部：标题与搜索 */}
+              <div className="p-3 border-b border-border/60 bg-muted/20 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Server className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="text-xs font-semibold text-foreground">
+                      {t("aiGatewayModelPoolSourcesTitle", "Source models")}
+                    </span>
+                    <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {filteredCandidates.length}
+                    </span>
+                  </div>
+                  {filteredCandidates.length > 0 ? (
+                    <button
+                      type="button"
+                      data-testid="model-pool-select-all-filtered"
+                      onClick={toggleSelectAllFiltered}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-primary hover:bg-primary/10 transition-colors"
+                    >
+                      <CheckSquare className="h-3.5 w-3.5" />
+                      <span>
+                        {allFilteredSelected
+                          ? t(
+                              "aiGatewayModelPoolDeselectAllFiltered",
+                              "Deselect all ({{count}})",
+                              { count: filteredCandidates.length },
+                            )
+                          : t(
+                              "aiGatewayModelPoolSelectAllFiltered",
+                              "Select all ({{count}})",
+                              { count: filteredCandidates.length },
+                            )}
+                      </span>
+                    </button>
+                  ) : null}
+                </div>
+
+                {/* 搜索框 */}
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
+                  <input
+                    type="search"
+                    data-testid="model-pool-source-search"
+                    aria-label={t("aiGatewayModelPoolSourceSearch", "Search source models")}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder={t(
+                      "aiGatewayModelPoolSourceSearchPlaceholder",
+                      "Search by provider or model",
+                    )}
+                    className="h-8 w-full rounded-lg border border-border/80 bg-background pl-8 pr-8 text-xs text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20"
+                  />
+                  {query ? (
+                    <button
+                      type="button"
+                      onClick={() => setQuery("")}
+                      aria-label={t("aiGatewayModelListClearSearch", "Clear search")}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* 来源列表 */}
+              <div className="max-h-[460px] overflow-y-auto p-2 space-y-2">
+                {sourceGroups.length === 0 ? (
+                  <p className="rounded-lg border border-dashed bg-muted/20 px-3 py-6 text-center text-xs text-muted-foreground">
+                    {t("aiGatewayModelPoolNoSources", "No source models available.")}
+                  </p>
                 ) : (
-                  candidateContextOptions.map((cw) => {
-                    const isMax = cw === maxCandidateContext;
-                    const displayLabel = formatContextWindowDisplay(cw);
-                    const exactTokens = formatContextWindow(cw);
-                    const suffix = isMax
-                      ? ` - ${t(
-                          "aiGatewayModelPoolContextLimitMaxDefault",
-                          "Maximum (default)",
-                        )}`
-                      : "";
+                  sourceGroups.map((group) => {
+                    const visibleRows = group.rows.filter((row) =>
+                      normalizedQuery
+                        ? row.candidate.local_model
+                            .toLowerCase()
+                            .includes(normalizedQuery) ||
+                          row.candidate.upstream_model
+                            .toLowerCase()
+                            .includes(normalizedQuery) ||
+                          group.providerName.toLowerCase().includes(normalizedQuery)
+                        : true,
+                    );
+                    const isCollapsed = Boolean(collapsed[group.providerId]);
                     return (
-                      <option key={cw} value={cw}>
-                        {`${displayLabel} (${exactTokens} tokens)${suffix}`}
-                      </option>
+                      <div
+                        key={group.providerId}
+                        className="rounded-xl border border-border/70 bg-card/60 overflow-hidden"
+                      >
+                        <button
+                          type="button"
+                          data-testid={`model-pool-source-group-${group.providerId}`}
+                          aria-expanded={!isCollapsed}
+                          onClick={() =>
+                            setCollapsed((previous) => ({
+                              ...previous,
+                              [group.providerId]: !previous[group.providerId],
+                            }))
+                          }
+                          className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left bg-muted/20 hover:bg-muted/40 transition-colors"
+                        >
+                          <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-xs font-semibold text-foreground">
+                            <Server className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            <span className="min-w-0 truncate">{group.providerName}</span>
+                            {group.templateName ? (
+                              <span
+                                data-testid={`model-pool-source-template-badge-${group.providerId}`}
+                                className="inline-flex items-center gap-0.5 rounded-md border border-indigo-500/25 bg-indigo-500/10 px-1.5 py-0.2 text-[9px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0"
+                                title={group.templateName}
+                              >
+                                <Sparkles className="h-2.5 w-2.5" />
+                                <span>{group.templateName}</span>
+                              </span>
+                            ) : null}
+                            <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                              {group.rows.length}
+                            </span>
+                          </span>
+                          <ChevronDown
+                            className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${
+                              isCollapsed ? "-rotate-90" : ""
+                            }`}
+                          />
+                        </button>
+                        {!isCollapsed ? (
+                          visibleRows.length === 0 ? (
+                            <p className="px-3 py-2 text-[11px] text-muted-foreground">
+                              {t(
+                                "aiGatewayModelListNoMatch",
+                                "No models match the current search.",
+                              )}
+                            </p>
+                          ) : (
+                            <div className="space-y-1 p-1.5">
+                              {visibleRows.map(({ key, candidate }) => {
+                                const checked = selectedKeys.has(key);
+                                const state = resolveModelPoolCandidateState(
+                                  candidate,
+                                  providers,
+                                  statusByKey.get(key) ?? null,
+                                );
+                                const labelKey =
+                                  MODEL_POOL_AVAILABILITY_LABEL_KEYS[
+                                    state.availability
+                                  ];
+                                const label = labelKey
+                                  ? t(labelKey)
+                                  : state.availability;
+                                return (
+                                  <label
+                                    key={key}
+                                    className={`flex cursor-pointer items-start gap-2 rounded-lg p-2 transition ${
+                                      checked
+                                        ? "bg-primary/5 border border-primary/20"
+                                        : "hover:bg-muted/50 border border-transparent"
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => toggleCandidate(candidate)}
+                                      aria-label={`${group.providerName} ${candidate.local_model} ${candidate.upstream_model}`}
+                                      disabled={busy || saving}
+                                      className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded border-border accent-primary"
+                                    />
+                                    <span className="flex min-w-0 flex-1 flex-col gap-1 text-xs">
+                                      <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                        <span className="break-all font-medium text-foreground">
+                                          {candidate.local_model}
+                                        </span>
+                                        <span className="text-muted-foreground/60 select-none text-[10px]">
+                                          →
+                                        </span>
+                                        <code className="break-all rounded border border-border/40 bg-muted/60 px-1 py-0.2 font-mono text-[10px] text-foreground">
+                                          {candidate.upstream_model}
+                                        </code>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                                        <span
+                                          className={`inline-flex items-center rounded px-1 py-0.2 font-medium ${protocolBadgeClass(
+                                            candidate.protocol,
+                                          )}`}
+                                        >
+                                          {protocolShortLabel(candidate.protocol)}
+                                        </span>
+                                        {(() => {
+                                          const contextWindow = resolveMappingContextWindow(
+                                            providers,
+                                            candidate.provider_id,
+                                            candidate.local_model,
+                                            candidate.upstream_model,
+                                          );
+                                          if (!contextWindow) return null;
+                                          return (
+                                            <span
+                                              data-testid={`model-pool-source-context-${key}`}
+                                              className="inline-flex items-center gap-0.5 rounded border border-cyan-500/25 bg-cyan-500/10 px-1 py-0.2 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300"
+                                              title={t(
+                                                "aiGatewayModelListEffectiveContext",
+                                                "Conservative effective context",
+                                              )}
+                                            >
+                                              <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                                              <span>{formatContextWindowDisplay(contextWindow)}</span>
+                                            </span>
+                                          );
+                                        })()}
+                                        <span
+                                          className={`inline-flex items-center rounded px-1 py-0.2 font-medium ${
+                                            state.ready
+                                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                                              : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                                          }`}
+                                        >
+                                          {label}
+                                        </span>
+                                        {state.reason ? (
+                                          <span className="break-words text-[10px] text-amber-600 dark:text-amber-400 truncate max-w-full">
+                                            {state.reason}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )
+                        ) : null}
+                      </div>
                     );
                   })
                 )}
-              </select>
-
-              {effectiveContextWindow != null && (
-                <span
-                  data-testid="model-pool-context-approx"
-                  className="font-mono text-xs text-muted-foreground"
-                >
-                  {t("aiGatewayContextWindowApproxTokens", {
-                    tokens: formatContextWindow(effectiveContextWindow),
-                    defaultValue: `≈ ${formatContextWindow(effectiveContextWindow)} tokens`,
-                  })}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Ordered fallback gateway models, separate from regular selection */}
-          <div className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0 space-y-0.5">
-                <div className="text-xs font-semibold text-foreground">
-                  {t("aiGatewayModelPoolFallbackLabel", "Fallback models")}
-                </div>
-                <p className="text-[10px] leading-relaxed text-muted-foreground">
-                  {t(
-                    "aiGatewayModelPoolFallbackHint",
-                    "Ordered fallback models are used only after every regular candidate is exhausted.",
-                  )}
-                </p>
               </div>
-              {fallbackModels.length > 0 ? (
-                <button
-                  type="button"
-                  onClick={clearFallbackModels}
-                  disabled={busy || saving}
-                  aria-label={t(
-                    "aiGatewayModelPoolFallbackClear",
-                    "Clear fallback models",
-                  )}
-                  className="inline-flex h-7 shrink-0 items-center rounded-md border border-border/80 bg-background px-2 text-[11px] font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
-                >
-                  {t(
-                    "aiGatewayModelPoolFallbackClear",
-                    "Clear fallback models",
-                  )}
-                </button>
-              ) : null}
             </div>
 
-            <div className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
-              <div className="flex items-center justify-between">
-                <span>
-                  {t(
-                    "aiGatewayModelPoolFallbackAddLabel",
-                    "Add fallback model",
-                  )}
-                </span>
-                {fallbackQuery.trim() ? (
-                  <span
-                    data-testid="model-pool-fallback-match-count"
-                    className="text-[10px] text-muted-foreground"
-                  >
-                    {t(
-                      "aiGatewayModelPoolFallbackMatchCount",
-                      "{{count}} fallback models matching",
-                      { count: filteredFallbackModelOptions.length },
-                    )}
+            {/* 右栏：已选池成员与调度 (占 7 列) */}
+            <div className="lg:col-span-7 flex flex-col rounded-2xl border border-border/70 bg-card/40 overflow-hidden shadow-2xs">
+              {/* 头部：标题与一键平分权重 */}
+              <div className="p-3 border-b border-border/60 bg-muted/20 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-foreground">
+                    {t("aiGatewayModelPoolSelectedTitle", "Selected candidates")}
                   </span>
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                    {selected.length}
+                  </span>
+                </div>
+                {selected.length > 1 ? (
+                  <button
+                    type="button"
+                    onClick={handleEqualizeWeights}
+                    disabled={busy || saving}
+                    title="将所有候选模型权重均等平分"
+                    className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/80 px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+                  >
+                    <Equal className="h-3 w-3 text-primary/80" />
+                    <span>平分权重</span>
+                  </button>
                 ) : null}
               </div>
 
-              {/* Searchable Combobox for selecting & adding fallback models */}
-              <div ref={fallbackComboboxRef} className="relative w-full">
-                <div className="relative flex items-center">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/70" />
-                  <input
-                    ref={fallbackInputRef}
-                    type="search"
-                    data-testid="model-pool-fallback-search"
-                    aria-label={t(
-                      "aiGatewayModelPoolFallbackComboboxAria",
-                      "Search fallback models to add",
-                    )}
-                    aria-expanded={fallbackDropdownOpen}
-                    value={fallbackQuery}
-                    onFocus={() => setFallbackDropdownOpen(true)}
-                    onChange={(event) => {
-                      setFallbackQuery(event.target.value);
-                      if (!fallbackDropdownOpen) setFallbackDropdownOpen(true);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        setFallbackDropdownOpen(false);
-                      } else if (
-                        event.key === "Enter" &&
-                        filteredFallbackModelOptions.length > 0
-                      ) {
-                        event.preventDefault();
-                        addFallbackModel(filteredFallbackModelOptions[0]);
-                        setFallbackQuery("");
-                        setFallbackDropdownOpen(false);
-                      }
-                    }}
-                    placeholder={t(
-                      "aiGatewayModelPoolFallbackComboboxPlaceholder",
-                      "Search or select fallback model to add...",
-                    )}
-                    disabled={busy || saving}
-                    className="h-9 w-full rounded-lg border border-border/80 bg-background pl-9 pr-16 text-xs text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
-                  />
-                  <div className="absolute right-1.5 flex items-center gap-0.5">
-                    {fallbackQuery ? (
-                      <button
-                        type="button"
-                        tabIndex={-1}
-                        onClick={() => {
-                          setFallbackQuery("");
-                          fallbackInputRef.current?.focus();
-                        }}
-                        aria-label={t("aiGatewayModelListClearSearch", "Clear search")}
-                        className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      data-testid="model-pool-fallback-combobox-toggle"
-                      onClick={() =>
-                        setFallbackDropdownOpen((previous) => !previous)
-                      }
-                      aria-label={t(
-                        "aiGatewayModelPoolFallbackAddAria",
-                        "Add fallback model",
+              {/* 已选列表 */}
+              <div
+                data-testid="model-pool-selected-list"
+                className="max-h-[460px] overflow-y-auto p-2.5 sm:p-3 space-y-2.5"
+              >
+                {selected.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border/70 bg-card/40 px-3 py-10 text-center flex flex-col items-center justify-center gap-1.5 text-muted-foreground">
+                    <Layers className="h-6 w-6 opacity-40 mb-1" />
+                    <p className="text-xs font-medium">
+                      {t(
+                        "aiGatewayModelPoolSelectedEmpty",
+                        "Select at least one source model.",
                       )}
-                      disabled={busy || saving}
-                      className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-                    >
-                      <ChevronDown
-                        className={`h-4 w-4 transition-transform duration-150 ${
-                          fallbackDropdownOpen ? "rotate-180" : ""
-                        }`}
-                      />
-                    </button>
+                    </p>
+                    <p className="text-[11px] opacity-70">
+                      从左侧列表中勾选模型，将其加入当前模型池并分配路由权重
+                    </p>
                   </div>
-                </div>
+                ) : (
+                  selected.map((candidate) => {
+                    const state = resolveModelPoolCandidateState(
+                      candidate,
+                      providers,
+                      statusByKey.get(candidate.key) ?? null,
+                    );
+                    const labelKey =
+                      MODEL_POOL_AVAILABILITY_LABEL_KEYS[state.availability];
+                    const label = labelKey ? t(labelKey) : state.availability;
+                    const providerName =
+                      state.provider_name ?? candidate.provider_id;
+                    const candidateProvider = providers.find(
+                      (p) => p.id === candidate.provider_id,
+                    );
+                    const candidateTemplate = candidateProvider?.template_id
+                      ? templates.find(
+                          (t) => t.template.id === candidateProvider.template_id,
+                        )?.template
+                      : undefined;
+                    const candidateTemplateName = candidateTemplate?.name ?? null;
+                    const weightVal = weights[candidate.key] ?? "1";
+                    const weightPercent = getWeightPercentage(candidate.key);
 
-                {/* Dropdown menu */}
-                {fallbackDropdownOpen && (
-                  <div
-                    role="listbox"
-                    data-testid="model-pool-fallback-combobox-menu"
-                    className="absolute left-0 top-full z-40 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-border/80 bg-popover p-1 shadow-lg"
-                  >
-                    {filteredFallbackModelOptions.length > 0 ? (
-                      filteredFallbackModelOptions.map((candidateModel) => {
-                        const providerCount =
-                          fallbackProviderCounts.get(candidateModel) ?? 0;
-                        return (
-                          <div
-                            key={candidateModel}
-                            role="option"
-                            aria-selected={false}
-                            data-testid={`model-pool-fallback-option-${candidateModel}`}
-                            onClick={() => {
-                              addFallbackModel(candidateModel);
-                              setFallbackQuery("");
-                              setFallbackDropdownOpen(false);
-                            }}
-                            className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-xs text-foreground hover:bg-muted transition-colors"
-                          >
-                            <span className="truncate font-mono font-medium">
-                              {candidateModel}
-                            </span>
-                            <span className="shrink-0 text-[10px] text-muted-foreground">
-                              {t(
-                                "aiGatewayModelPoolFallbackProviderCount",
-                                "{{count}} providers",
-                                { count: providerCount },
-                              )}
-                            </span>
-                          </div>
-                        );
-                      })
-                    ) : (
+                    return (
                       <div
-                        data-testid="model-pool-fallback-combobox-empty"
-                        className="px-3 py-2 text-center text-xs text-muted-foreground"
+                        key={candidate.key}
+                        className="flex flex-col rounded-xl border border-border/70 bg-background/80 p-3 shadow-2xs hover:border-primary/40 transition-colors space-y-2.5"
                       >
-                        {t(
-                          "aiGatewayModelPoolFallbackNoMatch",
-                          "No matching fallback models",
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                        {/* 顶部主行：模型名与右侧操作 */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
+                            <span
+                              className="font-semibold text-xs sm:text-sm text-foreground break-all"
+                              title={candidate.local_model}
+                            >
+                              {candidate.local_model}
+                            </span>
+                            <span className="text-muted-foreground/60 text-xs shrink-0 select-none">
+                              →
+                            </span>
+                            <code
+                              className="rounded-md border border-border/60 bg-muted/80 px-1.5 py-0.5 font-mono text-xs text-foreground break-all shadow-2xs"
+                              title={candidate.upstream_model}
+                            >
+                              {candidate.upstream_model}
+                            </code>
+                          </div>
 
-                {/* Backward compatibility standard select */}
+                          {/* 权重输入与删除 */}
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <div className="flex items-center gap-1.5 bg-muted/40 border border-border/60 rounded-lg px-2 py-0.5 shadow-2xs">
+                              <span className="text-[10px] font-medium text-muted-foreground select-none">
+                                {t("aiGatewayModelPoolWeightLabel", "weight")}
+                              </span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={100}
+                                step={1}
+                                value={weightVal}
+                                onChange={(event) =>
+                                  setWeights((previous) => ({
+                                    ...previous,
+                                    [candidate.key]: event.target.value,
+                                  }))
+                                }
+                                aria-label={t("aiGatewayModelPoolWeightAria", {
+                                  model: candidate.local_model,
+                                  defaultValue: "{{model}} weight",
+                                })}
+                                disabled={busy || saving}
+                                className="h-6 w-11 rounded border border-border/70 bg-background px-1 text-center font-mono text-xs text-foreground shadow-2xs outline-none focus:border-primary/60 focus-visible:ring-1 focus-visible:ring-primary/20 disabled:opacity-50"
+                              />
+                              <span className="text-[10px] font-mono text-primary font-semibold select-none">
+                                {weightPercent}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeCandidate(candidate.key)}
+                              disabled={busy || saving}
+                              aria-label={t("aiGatewayModelPoolRemoveAria", {
+                                model: candidate.local_model,
+                                defaultValue: "Remove {{model}}",
+                              })}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition disabled:opacity-50"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 次行：属性与状态 */}
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                          <span className="inline-flex items-center gap-1 rounded-md border border-border/50 bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            <Server className="h-2.5 w-2.5 text-muted-foreground/80 shrink-0" />
+                            <span
+                              className="font-medium text-foreground/90 truncate max-w-[120px]"
+                              title={providerName}
+                            >
+                              {providerName}
+                            </span>
+                            {candidateTemplateName ? (
+                              <span
+                                data-testid={`model-pool-selected-template-badge-${candidate.provider_id}`}
+                                className="inline-flex items-center gap-0.5 rounded border border-indigo-500/25 bg-indigo-500/10 px-1 py-0.2 text-[9px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0"
+                                title={candidateTemplateName}
+                              >
+                                <Sparkles className="h-2 w-2" />
+                                <span>{candidateTemplateName}</span>
+                              </span>
+                            ) : null}
+                          </span>
+
+                          <span
+                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${protocolBadgeClass(
+                              candidate.protocol,
+                            )}`}
+                          >
+                            {protocolShortLabel(candidate.protocol)}
+                          </span>
+
+                          {(() => {
+                            const contextWindow = resolveMappingContextWindow(
+                              providers,
+                              candidate.provider_id,
+                              candidate.local_model,
+                              candidate.upstream_model,
+                            );
+                            if (!contextWindow) return null;
+                            return (
+                              <span
+                                data-testid={`model-pool-selected-context-${candidate.key}`}
+                                className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
+                                title={t(
+                                  "aiGatewayModelListEffectiveContext",
+                                  "Conservative effective context",
+                                )}
+                              >
+                                <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                                <span>{formatContextWindowDisplay(contextWindow)}</span>
+                              </span>
+                            );
+                          })()}
+
+                          <span
+                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                              state.ready
+                                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                                : "bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/25"
+                            }`}
+                          >
+                            {label}
+                          </span>
+
+                          {state.reason ? (
+                            <span
+                              className="inline-flex items-center rounded border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400 break-words"
+                              title={state.reason}
+                            >
+                              {state.reason}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {/* 内嵌推理策略绑定面板 */}
+                        {reasoningEditor(candidate)}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: 高级路由策略与故障降级 */}
+          <div className="rounded-2xl border border-border/70 bg-card/60 p-4 shadow-2xs space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4 text-primary" />
+                <span className="text-xs font-semibold text-foreground">
+                  高级路由策略与故障降级
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-muted-foreground">
+                  {t("aiGatewayModelPoolReasoningDefaultLabel", "Reasoning default")}:
+                </span>
                 <select
-                  data-testid="model-pool-fallback-add"
+                  data-testid="model-pool-reasoning-default"
                   aria-label={t(
-                    "aiGatewayModelPoolFallbackAddAria",
-                    "Add fallback model",
+                    "aiGatewayModelPoolReasoningDefaultLabel",
+                    "Reasoning default",
                   )}
-                  value=""
+                  value={defaultEffort}
                   onChange={(event) => {
-                    addFallbackModel(event.target.value);
+                    setDefaultEffort(event.target.value);
+                    setError(null);
                   }}
                   disabled={busy || saving}
-                  className="sr-only"
+                  className="h-8 rounded-lg border border-border/80 bg-background px-2 text-xs font-medium text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
                 >
-                  <option value="">
+                  <option value="auto">
                     {t(
-                      "aiGatewayModelPoolFallbackAddPlaceholder",
-                      "Add fallback model",
+                      "aiGatewayModelPoolReasoningDefaultAuto",
+                      "Provider default (auto)",
                     )}
                   </option>
-                  {fallbackModelOptions.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
+                  {CANONICAL_REASONING_EFFORTS.map((effort) => (
+                    <option key={effort} value={effort}>
+                      {effort}
                     </option>
                   ))}
                 </select>
               </div>
             </div>
 
-            {fallbackModels.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-3 text-center text-[11px] text-muted-foreground">
-                {t(
-                  "aiGatewayModelPoolFallbackEmpty",
-                  "No fallback models configured.",
-                )}
-              </p>
-            ) : filteredFallbackModels.length === 0 ? (
-              <p
-                data-testid="model-pool-fallback-empty-filter"
-                className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-3 text-center text-[11px] text-muted-foreground"
-              >
-                {t(
-                  "aiGatewayModelPoolFallbackNoConfiguredMatch",
-                  "No configured fallback models match the filter.",
-                )}
-              </p>
-            ) : (
-              <ul
-                data-testid="model-pool-fallback-list"
-                className="space-y-1.5"
-              >
-                {filteredFallbackModels.map((model) => {
-                  const rawIndex = fallbackModels.indexOf(model);
-                  const providerCount =
-                    fallbackProviderCounts.get(model) ?? 0;
-                  return (
-                    <li
-                      key={model}
-                      role="listitem"
-                      className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-card/70 px-2.5 py-2"
-                    >
-                      <div className="min-w-0">
-                        <div className="break-all font-mono text-xs font-medium text-foreground">
-                          {model}
-                        </div>
-                        <div
-                          className={`text-[10px] ${
-                            providerCount > 0
-                              ? "text-muted-foreground"
-                              : "text-amber-700 dark:text-amber-400"
-                          }`}
-                        >
-                          {providerCount > 0
-                            ? t(
-                                "aiGatewayModelPoolFallbackProviderCount",
-                                "{{count}} providers",
-                                { count: providerCount },
-                              )
-                            : t(
-                                "aiGatewayModelPoolFallbackUnavailable",
-                                "Unavailable — no provider mapping",
-                              )}
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-0.5">
-                        <button
-                          type="button"
-                          onClick={() => moveFallbackModel(rawIndex, -1)}
-                          disabled={busy || saving || rawIndex === 0}
-                          aria-label={t(
-                            "aiGatewayModelPoolFallbackMoveUpAria",
-                            {
-                              model,
-                              defaultValue: "Move fallback {{model}} up",
-                            },
-                          )}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
-                        >
-                          <ChevronUp className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => moveFallbackModel(rawIndex, 1)}
-                          disabled={
-                            busy ||
-                            saving ||
-                            rawIndex === fallbackModels.length - 1
-                          }
-                          aria-label={t(
-                            "aiGatewayModelPoolFallbackMoveDownAria",
-                            {
-                              model,
-                              defaultValue: "Move fallback {{model}} down",
-                            },
-                          )}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
-                        >
-                          <ChevronDown className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeFallbackModel(model)}
-                          disabled={busy || saving}
-                          aria-label={t(
-                            "aiGatewayModelPoolFallbackRemoveAria",
-                            {
-                              model,
-                              defaultValue: "Remove fallback {{model}}",
-                            },
-                          )}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-
-          {/* Live static coverage (config-derived) separated from runtime readiness */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
-            <span className="inline-flex items-center gap-1">
-              <span>
-                {t("aiGatewayModelPoolReasoningCoverageLabel", "Static coverage")}:
-              </span>
-              <span
-                data-testid="model-pool-reasoning-static-coverage"
-                className="font-medium text-foreground/85"
-              >
-                {t("aiGatewayModelPoolReasoningCoverageValue", {
-                  mapped: coverageRow?.mapped_candidates ?? 0,
-                  total: coverageRow?.total_candidates ?? selected.length,
-                  defaultValue: "{{mapped}}/{{total}} candidates mapped",
-                })}
-              </span>
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span>
-                {t(
-                  "aiGatewayModelPoolReasoningRuntimeReadinessLabel",
-                  "Runtime readiness",
-                )}
-                :
-              </span>
-              <span
-                data-testid="model-pool-reasoning-runtime-readiness"
-                className="font-medium text-foreground/85"
-              >
-                {t("aiGatewayModelPoolReasoningRuntimeReadyCount", {
-                  ready: readyCount,
-                  total: selected.length,
-                  defaultValue: "{{ready}}/{{total}} candidates ready",
-                })}
-              </span>
-            </span>
-          </div>
-
-          {/* Source search */}
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/70" />
-            <input
-              type="search"
-              data-testid="model-pool-source-search"
-              aria-label={t("aiGatewayModelPoolSourceSearch", "Search source models")}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={t(
-                "aiGatewayModelPoolSourceSearchPlaceholder",
-                "Search by provider or model",
-              )}
-              className="h-9 w-full rounded-lg border border-border/80 bg-background pl-9 pr-9 text-xs text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20"
-            />
-            {query ? (
-              <button
-                type="button"
-                onClick={() => setQuery("")}
-                aria-label={t("aiGatewayModelListClearSearch", "Clear search")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
-          </div>
-
-          {/* Source groups */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-xs font-semibold text-foreground">
-                {t("aiGatewayModelPoolSourcesTitle", "Source models")}
+            {/* Fallback models 列表与添加 */}
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 space-y-0.5">
+                  <div className="text-xs font-semibold text-foreground">
+                    {t("aiGatewayModelPoolFallbackLabel", "Fallback models")}
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    {t(
+                      "aiGatewayModelPoolFallbackHint",
+                      "Ordered fallback models are used only after every regular candidate is exhausted.",
+                    )}
+                  </p>
+                </div>
+                {fallbackModels.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={clearFallbackModels}
+                    disabled={busy || saving}
+                    aria-label={t(
+                      "aiGatewayModelPoolFallbackClear",
+                      "Clear fallback models",
+                    )}
+                    className="inline-flex h-7 shrink-0 items-center rounded-md border border-border/80 bg-background px-2 text-[11px] font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
+                  >
+                    {t(
+                      "aiGatewayModelPoolFallbackClear",
+                      "Clear fallback models",
+                    )}
+                  </button>
+                ) : null}
               </div>
-              {filteredCandidates.length > 0 ? (
-                <button
-                  type="button"
-                  data-testid="model-pool-select-all-filtered"
-                  onClick={toggleSelectAllFiltered}
-                  className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10 transition-colors"
-                >
-                  <CheckSquare className="h-3.5 w-3.5" />
+
+              {/* 搜索与添加下拉框 */}
+              <div className="flex flex-col gap-1.5 text-xs font-medium text-foreground">
+                <div className="flex items-center justify-between">
                   <span>
-                    {allFilteredSelected
-                      ? t(
-                          "aiGatewayModelPoolDeselectAllFiltered",
-                          "Deselect all ({{count}})",
-                          { count: filteredCandidates.length },
-                        )
-                      : t(
-                          "aiGatewayModelPoolSelectAllFiltered",
-                          "Select all ({{count}})",
-                          { count: filteredCandidates.length },
-                        )}
+                    {t(
+                      "aiGatewayModelPoolFallbackAddLabel",
+                      "Add fallback model",
+                    )}
                   </span>
-                </button>
-              ) : null}
-            </div>
-            {sourceGroups.length === 0 ? (
-              <p className="rounded-lg border border-dashed bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground">
-                {t("aiGatewayModelPoolNoSources", "No source models available.")}
-              </p>
-            ) : (
-              sourceGroups.map((group) => {
-                const visibleRows = group.rows.filter((row) =>
-                  normalizedQuery
-                    ? row.candidate.local_model
-                        .toLowerCase()
-                        .includes(normalizedQuery) ||
-                      row.candidate.upstream_model
-                        .toLowerCase()
-                        .includes(normalizedQuery) ||
-                      group.providerName.toLowerCase().includes(normalizedQuery)
-                    : true,
-                );
-                const isCollapsed = Boolean(collapsed[group.providerId]);
-                return (
-                  <div
-                    key={group.providerId}
-                    className="rounded-xl border border-border/70 bg-card/60"
-                  >
-                    <button
-                      type="button"
-                      data-testid={`model-pool-source-group-${group.providerId}`}
-                      aria-expanded={!isCollapsed}
-                      onClick={() =>
-                        setCollapsed((previous) => ({
-                          ...previous,
-                          [group.providerId]: !previous[group.providerId],
-                        }))
-                      }
-                      className="flex w-full items-start justify-between gap-2 px-3 py-2 text-left"
+                  {fallbackQuery.trim() ? (
+                    <span
+                      data-testid="model-pool-fallback-match-count"
+                      className="text-[10px] text-muted-foreground"
                     >
-                      <span className="inline-flex min-w-0 flex-1 items-center gap-2 text-xs font-semibold text-foreground">
-                        <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 break-words">{group.providerName}</span>
-                        {group.templateName ? (
-                          <span
-                            data-testid={`model-pool-source-template-badge-${group.providerId}`}
-                            className="inline-flex items-center gap-1 rounded-md border border-indigo-500/25 bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0"
-                            title={group.templateName}
-                          >
-                            <Sparkles className="h-2.5 w-2.5" />
-                            <span>{group.templateName}</span>
-                          </span>
-                        ) : null}
-                        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                          {group.rows.length}
-                        </span>
-                      </span>
-                      <ChevronDown
-                        className={`mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${
-                          isCollapsed ? "-rotate-90" : ""
-                        }`}
-                      />
-                    </button>
-                    {!isCollapsed ? (
-                      visibleRows.length === 0 ? (
-                        <p className="px-3 pb-3 text-[11px] text-muted-foreground">
-                          {t(
-                            "aiGatewayModelListNoMatch",
-                            "No models match the current search.",
-                          )}
-                        </p>
-                      ) : (
-                        <div className="space-y-1 px-2 pb-2">
-                          {visibleRows.map(({ key, candidate }) => {
-                            const checked = selectedKeys.has(key);
-                            const state = resolveModelPoolCandidateState(
-                              candidate,
-                              providers,
-                              statusByKey.get(key) ?? null,
-                            );
-                            const labelKey =
-                              MODEL_POOL_AVAILABILITY_LABEL_KEYS[
-                                state.availability
-                              ];
-                            const label = labelKey
-                              ? t(labelKey)
-                              : state.availability;
-                            return (
-                              <label
-                                key={key}
-                                className="flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 transition hover:bg-muted/50"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => toggleCandidate(candidate)}
-                                  aria-label={`${group.providerName} ${candidate.local_model} ${candidate.upstream_model}`}
-                                  disabled={busy || saving}
-                                  className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded border-border accent-primary"
-                                />
-                                <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 text-xs">
-                                  <span className="break-all font-medium text-foreground">
-                                    {candidate.local_model}
-                                  </span>
-                                  <span className="text-muted-foreground/60">
-                                    →
-                                  </span>
-                                  <code className="break-all rounded border border-border/40 bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-foreground">
-                                    {candidate.upstream_model}
-                                  </code>
-                                  <span
-                                    className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${protocolBadgeClass(
-                                      candidate.protocol,
-                                    )}`}
-                                  >
-                                    {protocolShortLabel(candidate.protocol)}
-                                  </span>
-                                  {(() => {
-                                    const contextWindow = resolveMappingContextWindow(
-                                      providers,
-                                      candidate.provider_id,
-                                      candidate.local_model,
-                                      candidate.upstream_model,
-                                    );
-                                    if (!contextWindow) return null;
-                                    return (
-                                      <span
-                                        data-testid={`model-pool-source-context-${key}`}
-                                        className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300"
-                                        title={t(
-                                          "aiGatewayModelListEffectiveContext",
-                                          "Conservative effective context",
-                                        )}
-                                      >
-                                        <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
-                                        <span>{formatContextWindowDisplay(contextWindow)}</span>
-                                      </span>
-                                    );
-                                  })()}
-                                  <span
-                                    className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
-                                      state.ready
-                                        ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                        : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                                    }`}
-                                  >
-                                    {label}
-                                  </span>
-                                  {state.reason ? (
-                                    <span className="break-words text-[10px] text-amber-600 dark:text-amber-400">
-                                      {state.reason}
-                                    </span>
-                                  ) : null}
-                                </span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      )
-                    ) : null}
-                  </div>
-                );
-              })
-            )}
-          </div>
+                      {t(
+                        "aiGatewayModelPoolFallbackMatchCount",
+                        "{{count}} fallback models matching",
+                        { count: filteredFallbackModelOptions.length },
+                      )}
+                    </span>
+                  ) : null}
+                </div>
 
-          {/* Selected candidates */}
-          <div
-            data-testid="model-pool-selected-list"
-            className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-foreground">
-                  {t("aiGatewayModelPoolSelectedTitle", "Selected candidates")}
-                </span>
-                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-                  {selected.length}
-                </span>
-              </div>
-            </div>
-            {selected.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-6 text-center text-xs text-muted-foreground">
-                {t(
-                  "aiGatewayModelPoolSelectedEmpty",
-                  "Select at least one source model.",
-                )}
-              </p>
-            ) : (
-              selected.map((candidate) => {
-                const state = resolveModelPoolCandidateState(
-                  candidate,
-                  providers,
-                  statusByKey.get(candidate.key) ?? null,
-                );
-                const labelKey =
-                  MODEL_POOL_AVAILABILITY_LABEL_KEYS[state.availability];
-                const label = labelKey ? t(labelKey) : state.availability;
-                const providerName =
-                  state.provider_name ?? candidate.provider_id;
-                const candidateProvider = providers.find(
-                  (p) => p.id === candidate.provider_id,
-                );
-                const candidateTemplate = candidateProvider?.template_id
-                  ? templates.find(
-                      (t) => t.template.id === candidateProvider.template_id,
-                    )?.template
-                  : undefined;
-                const candidateTemplateName = candidateTemplate?.name ?? null;
-                return (
-                  <div
-                    key={candidate.key}
-                    className="flex flex-col rounded-xl border border-border/70 bg-card/70 p-3 transition hover:bg-card/90 space-y-2.5"
-                  >
-                    {/* 顶部主行：模型映射标识与右上角操作区 */}
-                    <div className="flex items-start justify-between gap-3">
-                      {/* 模型映射标识：本地模型 -> 上游模型 */}
-                      <div className="min-w-0 flex-1 flex flex-wrap items-center gap-2">
-                        <span
-                          className="font-semibold text-sm text-foreground break-all"
-                          title={candidate.local_model}
-                        >
-                          {candidate.local_model}
-                        </span>
-                        <span className="text-muted-foreground/60 text-xs shrink-0 select-none">
-                          →
-                        </span>
-                        <code
-                          className="rounded-md border border-border/60 bg-muted/80 px-2 py-0.5 font-mono text-xs text-foreground break-all shadow-2xs"
-                          title={candidate.upstream_model}
-                        >
-                          {candidate.upstream_model}
-                        </code>
-                      </div>
-
-                      {/* 右上角操作区：权重输入组件 + 移除按钮 */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="flex items-center gap-1.5 bg-muted/50 border border-border/60 rounded-lg px-2 py-1 shadow-2xs">
-                          <span className="text-[11px] font-medium text-muted-foreground select-none">
-                            {t("aiGatewayModelPoolWeightLabel", "weight")}
-                          </span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={100}
-                            step={1}
-                            value={weights[candidate.key] ?? "1"}
-                            onChange={(event) =>
-                              setWeights((previous) => ({
-                                ...previous,
-                                [candidate.key]: event.target.value,
-                              }))
-                            }
-                            aria-label={t("aiGatewayModelPoolWeightAria", {
-                              model: candidate.local_model,
-                              defaultValue: "{{model}} weight",
-                            })}
-                            disabled={busy || saving}
-                            className="h-6 w-12 rounded border border-border/70 bg-background px-1 text-center font-mono text-xs text-foreground shadow-2xs outline-none focus:border-primary/60 focus-visible:ring-1 focus-visible:ring-primary/20 disabled:opacity-50"
-                          />
-                        </div>
+                <div ref={fallbackComboboxRef} className="relative w-full">
+                  <div className="relative flex items-center">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
+                    <input
+                      ref={fallbackInputRef}
+                      type="search"
+                      data-testid="model-pool-fallback-search"
+                      aria-label={t(
+                        "aiGatewayModelPoolFallbackComboboxAria",
+                        "Search fallback models to add",
+                      )}
+                      aria-expanded={fallbackDropdownOpen}
+                      value={fallbackQuery}
+                      onFocus={() => setFallbackDropdownOpen(true)}
+                      onChange={(event) => {
+                        setFallbackQuery(event.target.value);
+                        if (!fallbackDropdownOpen) setFallbackDropdownOpen(true);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          setFallbackDropdownOpen(false);
+                        } else if (
+                          event.key === "Enter" &&
+                          filteredFallbackModelOptions.length > 0
+                        ) {
+                          event.preventDefault();
+                          addFallbackModel(filteredFallbackModelOptions[0]);
+                          setFallbackQuery("");
+                          setFallbackDropdownOpen(false);
+                        }
+                      }}
+                      placeholder={t(
+                        "aiGatewayModelPoolFallbackComboboxPlaceholder",
+                        "Search or select fallback model to add...",
+                      )}
+                      disabled={busy || saving}
+                      className="h-8.5 w-full rounded-lg border border-border/80 bg-background pl-8.5 pr-16 text-xs text-foreground shadow-xs outline-none transition focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-50"
+                    />
+                    <div className="absolute right-1.5 flex items-center gap-0.5">
+                      {fallbackQuery ? (
                         <button
                           type="button"
-                          onClick={() => removeCandidate(candidate.key)}
-                          disabled={busy || saving}
-                          aria-label={t("aiGatewayModelPoolRemoveAria", {
-                            model: candidate.local_model,
-                            defaultValue: "Remove {{model}}",
-                          })}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition disabled:opacity-50"
+                          tabIndex={-1}
+                          onClick={() => {
+                            setFallbackQuery("");
+                            fallbackInputRef.current?.focus();
+                          }}
+                          aria-label={t("aiGatewayModelListClearSearch", "Clear search")}
+                          className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <X className="h-3 w-3" />
                         </button>
-                      </div>
-                    </div>
-
-                    {/* 次行：属性与状态栏（服务商、模板、协议、可用性健康状态、异常原因） */}
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      {/* 来源服务商与模板徽标 */}
-                      <span className="inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
-                        <Server className="h-3 w-3 text-muted-foreground/80 shrink-0" />
-                        <span
-                          className="font-medium text-foreground/90 break-words"
-                          title={providerName}
-                        >
-                          {providerName}
-                        </span>
-                        {candidateTemplateName ? (
-                          <span
-                            data-testid={`model-pool-selected-template-badge-${candidate.provider_id}`}
-                            className="inline-flex items-center gap-0.5 rounded border border-indigo-500/25 bg-indigo-500/10 px-1.5 py-0.2 text-[10px] font-medium text-indigo-700 dark:text-indigo-300 shrink-0"
-                            title={candidateTemplateName}
-                          >
-                            <Sparkles className="h-2.5 w-2.5" />
-                            <span>{candidateTemplateName}</span>
-                          </span>
-                        ) : null}
-                      </span>
-
-                      {/* 协议徽标 */}
-                      <span
-                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${protocolBadgeClass(
-                          candidate.protocol,
-                        )}`}
-                      >
-                        {protocolShortLabel(candidate.protocol)}
-                      </span>
-
-                      {/* 上下文限制徽标 */}
-                      {(() => {
-                        const contextWindow = resolveMappingContextWindow(
-                          providers,
-                          candidate.provider_id,
-                          candidate.local_model,
-                          candidate.upstream_model,
-                        );
-                        if (!contextWindow) return null;
-                        return (
-                          <span
-                            data-testid={`model-pool-selected-context-${candidate.key}`}
-                            className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
-                            title={t(
-                              "aiGatewayModelListEffectiveContext",
-                              "Conservative effective context",
-                            )}
-                          >
-                            <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
-                            <span>{formatContextWindowDisplay(contextWindow)}</span>
-                          </span>
-                        );
-                      })()}
-
-                      {/* 可用性状态徽标 */}
-                      <span
-                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
-                          state.ready
-                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
-                            : "bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/25"
-                        }`}
-                      >
-                        {label}
-                      </span>
-
-                      {/* 异常原因（如果存在） */}
-                      {state.reason ? (
-                        <span
-                          className="inline-flex items-center rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-700 dark:text-amber-400 break-words"
-                          title={state.reason}
-                        >
-                          {state.reason}
-                        </span>
                       ) : null}
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        data-testid="model-pool-fallback-combobox-toggle"
+                        onClick={() =>
+                          setFallbackDropdownOpen((previous) => !previous)
+                        }
+                        aria-label={t(
+                          "aiGatewayModelPoolFallbackAddAria",
+                          "Add fallback model",
+                        )}
+                        disabled={busy || saving}
+                        className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      >
+                        <ChevronDown
+                          className={`h-3.5 w-3.5 transition-transform duration-150 ${
+                            fallbackDropdownOpen ? "rotate-180" : ""
+                          }`}
+                        />
+                      </button>
                     </div>
-
-                    {/* 底部内嵌推理策略面板 */}
-                    {reasoningEditor(candidate)}
                   </div>
-                );
-              })
-            )}
+
+                  {/* Dropdown menu */}
+                  {fallbackDropdownOpen && (
+                    <div
+                      role="listbox"
+                      data-testid="model-pool-fallback-combobox-menu"
+                      className="absolute left-0 top-full z-40 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-border/80 bg-popover p-1 shadow-lg"
+                    >
+                      {filteredFallbackModelOptions.length > 0 ? (
+                        filteredFallbackModelOptions.map((candidateModel) => {
+                          const providerCount =
+                            fallbackProviderCounts.get(candidateModel) ?? 0;
+                          return (
+                            <div
+                              key={candidateModel}
+                              role="option"
+                              aria-selected={false}
+                              data-testid={`model-pool-fallback-option-${candidateModel}`}
+                              onClick={() => {
+                                addFallbackModel(candidateModel);
+                                setFallbackQuery("");
+                                setFallbackDropdownOpen(false);
+                              }}
+                              className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-xs text-foreground hover:bg-muted transition-colors"
+                            >
+                              <span className="truncate font-mono font-medium">
+                                {candidateModel}
+                              </span>
+                              <span className="shrink-0 text-[10px] text-muted-foreground">
+                                {t(
+                                  "aiGatewayModelPoolFallbackProviderCount",
+                                  "{{count}} providers",
+                                  { count: providerCount },
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div
+                          data-testid="model-pool-fallback-combobox-empty"
+                          className="px-3 py-2 text-center text-xs text-muted-foreground"
+                        >
+                          {t(
+                            "aiGatewayModelPoolFallbackNoMatch",
+                            "No matching fallback models",
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 兼容 select */}
+                  <select
+                    data-testid="model-pool-fallback-add"
+                    aria-label={t(
+                      "aiGatewayModelPoolFallbackAddAria",
+                      "Add fallback model",
+                    )}
+                    value=""
+                    onChange={(event) => {
+                      addFallbackModel(event.target.value);
+                    }}
+                    disabled={busy || saving}
+                    className="sr-only"
+                  >
+                    <option value="">
+                      {t(
+                        "aiGatewayModelPoolFallbackAddPlaceholder",
+                        "Add fallback model",
+                      )}
+                    </option>
+                    {fallbackModelOptions.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {fallbackModels.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-3 text-center text-[11px] text-muted-foreground">
+                  {t(
+                    "aiGatewayModelPoolFallbackEmpty",
+                    "No fallback models configured.",
+                  )}
+                </p>
+              ) : filteredFallbackModels.length === 0 ? (
+                <p
+                  data-testid="model-pool-fallback-empty-filter"
+                  className="rounded-lg border border-dashed border-border/70 bg-card/40 px-3 py-3 text-center text-[11px] text-muted-foreground"
+                >
+                  {t(
+                    "aiGatewayModelPoolFallbackNoConfiguredMatch",
+                    "No configured fallback models match the filter.",
+                  )}
+                </p>
+              ) : (
+                <ul
+                  data-testid="model-pool-fallback-list"
+                  className="space-y-1.5"
+                >
+                  {filteredFallbackModels.map((m) => {
+                    const rawIndex = fallbackModels.indexOf(m);
+                    const providerCount =
+                      fallbackProviderCounts.get(m) ?? 0;
+                    return (
+                      <li
+                        key={m}
+                        role="listitem"
+                        className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-card/70 px-2.5 py-1.5"
+                      >
+                        <div className="min-w-0">
+                          <div className="break-all font-mono text-xs font-medium text-foreground">
+                            {m}
+                          </div>
+                          <div
+                            className={`text-[10px] ${
+                              providerCount > 0
+                                ? "text-muted-foreground"
+                                : "text-amber-700 dark:text-amber-400"
+                            }`}
+                          >
+                            {providerCount > 0
+                              ? t(
+                                  "aiGatewayModelPoolFallbackProviderCount",
+                                  "{{count}} providers",
+                                  { count: providerCount },
+                                )
+                              : t(
+                                  "aiGatewayModelPoolFallbackUnavailable",
+                                  "Unavailable — no provider mapping",
+                                )}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() => moveFallbackModel(rawIndex, -1)}
+                            disabled={busy || saving || rawIndex === 0}
+                            aria-label={t(
+                              "aiGatewayModelPoolFallbackMoveUpAria",
+                              {
+                                model: m,
+                                defaultValue: "Move fallback {{model}} up",
+                              },
+                            )}
+                            className="inline-flex h-6.5 w-6.5 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
+                          >
+                            <ChevronUp className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveFallbackModel(rawIndex, 1)}
+                            disabled={
+                              busy ||
+                              saving ||
+                              rawIndex === fallbackModels.length - 1
+                            }
+                            aria-label={t(
+                              "aiGatewayModelPoolFallbackMoveDownAria",
+                              {
+                                model: m,
+                                defaultValue: "Move fallback {{model}} down",
+                              },
+                            )}
+                            className="inline-flex h-6.5 w-6.5 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
+                          >
+                            <ChevronDown className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeFallbackModel(m)}
+                            disabled={busy || saving}
+                            aria-label={t(
+                              "aiGatewayModelPoolFallbackRemoveAria",
+                              {
+                                model: m,
+                                defaultValue: "Remove fallback {{model}}",
+                              },
+                            )}
+                            className="inline-flex h-6.5 w-6.5 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
 
           {error ? (
@@ -2195,8 +2270,8 @@ export function ModelPoolDialog({
           ) : null}
         </div>
 
-        <DialogFooter className="flex flex-row items-center justify-between border-t px-6 py-4 shrink-0">
-          <div>
+        <DialogFooter className="px-6 py-4 border-t bg-card/80 backdrop-blur-sm shrink-0 flex flex-row items-center justify-between sm:justify-between sm:space-x-0">
+          <div className="flex items-center">
             {pool && onDelete ? (
               confirmingDelete ? (
                 <div className="flex items-center gap-2">
@@ -2236,7 +2311,7 @@ export function ModelPoolDialog({
             ) : null}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 ml-auto">
             <button
               type="button"
               data-testid="model-pool-cancel"
