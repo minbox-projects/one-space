@@ -3183,28 +3183,28 @@ describe("模型池静态推理目录按有序回退模型自动展开", () => {
       expect(formatContextWindowCompact(1050000)).toBe("1.1M");
     });
 
-    it("parseContextWindowInput 解析带单位与纯数字输入", () => {
+    it("parseContextWindowInput 仅支持纯数字 tokens 输入，不使用单位转换", () => {
       // 空值
       expect(parseContextWindowInput("")).toEqual({ value: null, invalid: false });
       expect(parseContextWindowInput("   ")).toEqual({ value: null, invalid: false });
 
-      // 常用单位 K / M (大小写与空格支持)
-      expect(parseContextWindowInput("1M")).toEqual({ value: 1000000, invalid: false });
-      expect(parseContextWindowInput("1m")).toEqual({ value: 1000000, invalid: false });
-      expect(parseContextWindowInput("2M")).toEqual({ value: 2000000, invalid: false });
-      expect(parseContextWindowInput("1.5M")).toEqual({ value: 1500000, invalid: false });
-      expect(parseContextWindowInput("256K")).toEqual({ value: 256000, invalid: false });
-      expect(parseContextWindowInput("256k")).toEqual({ value: 256000, invalid: false });
-      expect(parseContextWindowInput("128K")).toEqual({ value: 128000, invalid: false });
-      expect(parseContextWindowInput("200K")).toEqual({ value: 200000, invalid: false });
-      expect(parseContextWindowInput("64 K")).toEqual({ value: 64000, invalid: false });
-
       // 纯数字支持
       expect(parseContextWindowInput("131072")).toEqual({ value: 131072, invalid: false });
+      expect(parseContextWindowInput("128000")).toEqual({ value: 128000, invalid: false });
+      expect(parseContextWindowInput("1000000")).toEqual({ value: 1000000, invalid: false });
       expect(parseContextWindowInput("64000")).toEqual({ value: 64000, invalid: false });
       expect(parseContextWindowInput("4096")).toEqual({ value: 4096, invalid: false });
 
-      // 非法输入
+      // 带单位与非法输入均判定为 invalid
+      expect(parseContextWindowInput("1M")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("1m")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("2M")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("1.5M")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("256K")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("256k")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("128K")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("200K")).toEqual({ value: null, invalid: true });
+      expect(parseContextWindowInput("64 K")).toEqual({ value: null, invalid: true });
       expect(parseContextWindowInput("abc")).toEqual({ value: null, invalid: true });
       expect(parseContextWindowInput("0")).toEqual({ value: null, invalid: true });
       expect(parseContextWindowInput("0K")).toEqual({ value: null, invalid: true });

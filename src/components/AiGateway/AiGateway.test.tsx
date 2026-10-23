@@ -2455,6 +2455,8 @@ describe("AiGateway", () => {
     fireEvent.click(manageButton);
     fireEvent.click(await screen.findByTestId("ai-gateway-template-edit-t1"));
 
+    fireEvent.click(await screen.findByTestId("template-edit-model-expand-0"));
+
     const input = screen.getByLabelText(/context window.*1/i);
     expect(input).toHaveValue("128000");
     fireEvent.change(input, { target: { value: "256000" } });

@@ -996,12 +996,12 @@ const resources = {
       aiGatewayContextWindowLabel: "Context window (tokens) {{index}}",
       aiGatewayContextWindowSectionTitle: "Context window limit",
       aiGatewayContextWindowSectionDesc:
-        "Limit the maximum context window (tokens) for this model. Supports common units such as 1M, 256K, 128K, or raw tokens; leave blank for unlimited.",
-      aiGatewayContextWindowPlaceholder: "e.g. 1M, 256K, 128K (blank for unlimited)",
+        "Limit the maximum context window (tokens) for this model. Supports raw tokens only; leave blank for unlimited.",
+      aiGatewayContextWindowPlaceholder: "e.g. 128000, 1048576 (blank for unlimited)",
       aiGatewayContextWindowQuickPreset: "Quick presets",
       aiGatewayContextWindowApproxTokens: "≈ {{tokens}} tokens",
       aiGatewayContextWindowInvalid:
-        "Context window must be a whole number between 1 and 4294967295 or a valid size like 1M, 256K.",
+        "Context window must be a whole number between 1 and 4294967295.",
       aiGatewayContextWindowUnspecified: "Unspecified",
       aiGatewayContextWindowSourceOverwrite:
         "A valid model-list source value replaces the stored limit.",
@@ -1015,6 +1015,7 @@ const resources = {
         "Template not found; context unspecified",
       aiGatewayModelListEffectiveContext: "Conservative effective context",
       aiGatewayModelListContextIncomplete: "Incomplete — unknown context",
+      aiGatewayModelListContextIncompleteWithKnown: "{{value}} — Incomplete",
       aiGatewayModelListContextTokens: "{{value}} tokens",
       aiGatewayTerminalContextPerModel:
         "Per-model coverage across generated models",
@@ -5111,12 +5112,12 @@ const resources = {
       aiGatewayContextWindowLabel: "上下文窗口（tokens）{{index}}",
       aiGatewayContextWindowSectionTitle: "模型上下文长度限制",
       aiGatewayContextWindowSectionDesc:
-        "限制该模型的最大上下文窗口（Tokens）。支持填入常用单位如 1M、256K、128K 等，或绝对数值；留空表示不限制。",
-      aiGatewayContextWindowPlaceholder: "例如：1M, 256K, 128K（留空不限制）",
+        "限制该模型的最大上下文窗口（Tokens）。仅支持输入纯数字 Tokens，不支持单位；留空表示不限制。",
+      aiGatewayContextWindowPlaceholder: "例如：128000, 1048576（留空不限制）",
       aiGatewayContextWindowQuickPreset: "常用预设",
       aiGatewayContextWindowApproxTokens: "≈ {{tokens}} tokens",
       aiGatewayContextWindowInvalid:
-        "上下文窗口必须是 1 到 4294967295 之间的整数，或如 1M、256K 的常用单位格式。",
+        "上下文窗口必须是 1 到 4294967295 之间的整数 Tokens。",
       aiGatewayContextWindowUnspecified: "未指定",
       aiGatewayContextWindowSourceOverwrite:
         "有效模型列表来源值会覆盖已存储的上限。",
@@ -5127,6 +5128,7 @@ const resources = {
       aiGatewayContextBoundTemplateMissing: "未找到模板，上下文未指定",
       aiGatewayModelListEffectiveContext: "保守有效上下文",
       aiGatewayModelListContextIncomplete: "不完整 — 未知上下文",
+      aiGatewayModelListContextIncompleteWithKnown: "{{value}} — 不完整",
       aiGatewayModelListContextTokens: "{{value}} tokens",
       aiGatewayTerminalContextPerModel: "按模型覆盖已生成的模型",
       aiGatewayTerminalContextCoverage: "已覆盖 {{known}}/{{total}}",

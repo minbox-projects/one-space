@@ -4,6 +4,7 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
+  Layers,
   Plus,
   Search,
   Trash2,
@@ -19,7 +20,11 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
+  CONTEXT_WINDOW_PRESET_ITEMS,
   draftToPriceRow,
+  formatContextWindow,
+  formatContextWindowCompact,
+  formatContextWindowDisplay,
   normalizeReasoningEfforts,
   parseContextWindowInput,
   priceRowToDraft,
@@ -825,34 +830,30 @@ export function ProviderTemplateEditDialog({
                               )}
                             </option>
                           </select>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            data-testid={`template-edit-model-context-${idx}`}
-                            value={
+                          {(() => {
+                            const parsedVal = parseContextWindowInput(
                               m.contextDraft ??
-                              (m.context_window != null
-                                ? String(m.context_window)
-                                : "")
+                                (m.context_window != null
+                                  ? String(m.context_window)
+                                  : ""),
+                            ).value;
+                            if (parsedVal) {
+                              return (
+                                <span
+                                  data-testid={`template-edit-model-context-badge-${idx}`}
+                                  className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 py-1 font-mono text-[11px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs shrink-0"
+                                  title={t(
+                                    "aiGatewayModelListEffectiveContext",
+                                    "Conservative effective context",
+                                  )}
+                                >
+                                  <Layers className="h-3 w-3 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                                  <span>{formatContextWindowDisplay(parsedVal)}</span>
+                                </span>
+                              );
                             }
-                            onChange={(event) =>
-                              handleUpdateModel(
-                                idx,
-                                "contextDraft",
-                                event.target.value,
-                              )
-                            }
-                            placeholder={t(
-                              "aiGatewayContextWindowUnspecified",
-                              "Unspecified",
-                            )}
-                            aria-label={t("aiGatewayContextWindowLabel", {
-                              index: idx + 1,
-                              defaultValue: `Context window (tokens) ${idx + 1}`,
-                            })}
-                            disabled={disabled}
-                            className={`${mappingInputClass} min-w-[140px] shrink-0 font-mono`}
-                          />
+                            return null;
+                          })()}
                           <button
                             type="button"
                             data-testid={`template-edit-remove-model-${idx}`}
@@ -879,6 +880,130 @@ export function ProviderTemplateEditDialog({
                                 }
                               />
                             ) : null}
+
+                            {/* 模型上下文长度限制配置 */}
+                            <div
+                              data-testid={`template-edit-model-context-${idx}`}
+                              className="space-y-2 rounded-lg border-t border-border/60 bg-muted/10 px-3 py-2.5"
+                            >
+                              <div className="flex items-center justify-between">
+                                <label
+                                  htmlFor={`template-context-input-${idx}`}
+                                  className="text-[11px] font-semibold text-foreground"
+                                >
+                                  {t("aiGatewayContextWindowSectionTitle", "模型上下文长度限制")}
+                                </label>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground">
+                                {t(
+                                  "aiGatewayContextWindowSectionDesc",
+                                  "Limit the maximum context window (tokens) for this model. Supports raw tokens only; leave blank for unlimited.",
+                                )}
+                              </p>
+
+                              <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                  id={`template-context-input-${idx}`}
+                                  type="text"
+                                  inputMode="numeric"
+                                  data-testid={`template-edit-model-context-input-${idx}`}
+                                  value={
+                                    m.contextDraft ??
+                                    (m.context_window != null
+                                      ? String(m.context_window)
+                                      : "")
+                                  }
+                                  onChange={(event) =>
+                                    handleUpdateModel(
+                                      idx,
+                                      "contextDraft",
+                                      event.target.value,
+                                    )
+                                  }
+                                  placeholder={t(
+                                    "aiGatewayContextWindowPlaceholder",
+                                    "例如：128000, 1048576（留空不限制）",
+                                  )}
+                                  aria-label={t("aiGatewayContextWindowLabel", {
+                                    index: idx + 1,
+                                    defaultValue: `Context window (tokens) ${idx + 1}`,
+                                  })}
+                                  disabled={disabled}
+                                  className={`${mappingInputClass} w-48 font-mono`}
+                                />
+
+                                {(() => {
+                                  const currentVal = parseContextWindowInput(
+                                    m.contextDraft ??
+                                      (m.context_window != null
+                                        ? String(m.context_window)
+                                        : ""),
+                                  ).value;
+                                  if (currentVal != null) {
+                                    return (
+                                      <span className="text-xs text-muted-foreground font-mono flex items-center gap-1">
+                                        <span>≈</span>
+                                        <span className="font-semibold text-foreground/80">
+                                          {formatContextWindowCompact(currentVal)}
+                                        </span>
+                                        <span>({formatContextWindow(currentVal)} tokens)</span>
+                                      </span>
+                                    );
+                                  }
+                                  return null;
+                                })()}
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                <span className="text-[11px] text-muted-foreground mr-1">
+                                  {t("aiGatewayContextWindowQuickPreset", "常用预设")}:
+                                </span>
+                                {CONTEXT_WINDOW_PRESET_ITEMS.map((preset) => {
+                                  const currentDraft = (
+                                    m.contextDraft ??
+                                    (m.context_window != null
+                                      ? String(m.context_window)
+                                      : "")
+                                  ).trim();
+                                  const isSelected =
+                                    currentDraft === String(preset.tokens);
+                                  return (
+                                    <button
+                                      key={preset.label}
+                                      type="button"
+                                      disabled={disabled}
+                                      onClick={() =>
+                                        handleUpdateModel(
+                                          idx,
+                                          "contextDraft",
+                                          String(preset.tokens),
+                                        )
+                                      }
+                                      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-mono transition shadow-xs ${
+                                        isSelected
+                                          ? "bg-primary text-primary-foreground font-semibold"
+                                          : "border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground"
+                                      }`}
+                                    >
+                                      {preset.label}
+                                    </button>
+                                  );
+                                })}
+                                {m.contextDraft || m.context_window != null ? (
+                                  <button
+                                    type="button"
+                                    disabled={disabled}
+                                    onClick={() => {
+                                      handleUpdateModel(idx, "contextDraft", "");
+                                      handleUpdateModel(idx, "context_window", null);
+                                    }}
+                                    className="inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-destructive transition"
+                                  >
+                                    {t("clear", "清除")}
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
                             <div
                               data-testid={`ai-gateway-mapping-efforts-${idx}`}
                               className="space-y-2 rounded-lg border-t border-border/60 bg-muted/10 px-3 py-2.5"

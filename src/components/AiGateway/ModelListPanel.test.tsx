@@ -1471,5 +1471,62 @@ describe("ModelListPanel 绑定后池行与来源行的档位隔离（binding）
       within(providerRow).queryByTestId("ai-gateway-model-list-effort-medium"),
     ).toBeNull();
   });
+
+  it("当同一个模型不同服务商部分未配置上下文时，第一列显示已配置的最小值且格式为 'xxxK — 不完整'", async () => {
+    await i18n.changeLanguage("zh");
+    const p1 = makeProvider({
+      id: "p1",
+      name: "Provider 1",
+      mappings: [
+        {
+          local_model: "mixed-model",
+          upstream_model: "mixed-model-a",
+          enabled: true,
+          context_window: 128000,
+        },
+      ],
+    });
+    const p2 = makeProvider({
+      id: "p2",
+      name: "Provider 2",
+      mappings: [
+        {
+          local_model: "mixed-model",
+          upstream_model: "mixed-model-b",
+          enabled: true,
+          context_window: 256000,
+        },
+      ],
+    });
+    const p3 = makeProvider({
+      id: "p3",
+      name: "Provider 3",
+      mappings: [
+        {
+          local_model: "mixed-model",
+          upstream_model: "mixed-model-c",
+          enabled: true,
+          // 未配置上下文
+        },
+      ],
+    });
+
+    renderWithProviders(<ModelListPanel providers={[p1, p2, p3]} />);
+
+    const row = screen
+      .getAllByTestId("ai-gateway-model-list-row")
+      .find((item) => item.getAttribute("data-model") === "mixed-model");
+    expect(row).toBeDefined();
+
+    // 第一列应显示已知最小值 "128K — 不完整"
+    const contextContainer = within(row!).getByTestId("ai-gateway-model-list-context");
+    expect(contextContainer).toHaveTextContent("128K — 不完整");
+
+    // 第三列上游上下文徽章
+    const upstreams = within(row!).getAllByTestId("ai-gateway-model-list-upstream");
+    expect(within(upstreams[0]).getByTestId("ai-gateway-model-list-upstream-context")).toHaveTextContent("128K");
+    expect(within(upstreams[1]).getByTestId("ai-gateway-model-list-upstream-context")).toHaveTextContent("256K");
+    expect(within(upstreams[2]).getByTestId("ai-gateway-model-list-upstream-context")).toHaveTextContent("未指定");
+  });
 });
 

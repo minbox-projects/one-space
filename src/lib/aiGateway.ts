@@ -519,6 +519,22 @@ export const CONTEXT_WINDOW_PRESETS = [
   "2M",
 ] as const;
 
+export interface ContextWindowPresetItem {
+  label: string;
+  tokens: number;
+}
+
+export const CONTEXT_WINDOW_PRESET_ITEMS: readonly ContextWindowPresetItem[] = [
+  { label: "32K", tokens: 32000 },
+  { label: "64K", tokens: 64000 },
+  { label: "128K", tokens: 128000 },
+  { label: "200K", tokens: 200000 },
+  { label: "256K", tokens: 256000 },
+  { label: "512K", tokens: 512000 },
+  { label: "1M", tokens: 1000000 },
+  { label: "2M", tokens: 2000000 },
+] as const;
+
 /** A declared value usable as a context window; `null`/zero means unspecified. */
 export function knownContextWindow(
   value: number | null | undefined,
@@ -535,7 +551,7 @@ export function knownContextWindow(
  * Parse an operator's context-window draft. Blank means unspecified, while a
  * nonnumeric, fractional or out-of-range value stays invalid so the caller can
  * keep the draft visible and block the save.
- * Supports compact units such as "1M", "256K", "128k", "1.5M" as well as raw integers.
+ * Only supports positive integer tokens; compact unit strings are rejected.
  */
 export function parseContextWindowInput(raw: string): {
   value: number | null;
@@ -544,29 +560,9 @@ export function parseContextWindowInput(raw: string): {
   const trimmed = raw.trim();
   if (trimmed === "") return { value: null, invalid: false };
 
-  // Raw positive integer check
+  // Raw positive integer check: only support pure positive integer tokens
   if (/^\d+$/.test(trimmed)) {
     const value = Number(trimmed);
-    if (
-      !Number.isSafeInteger(value) ||
-      value < CONTEXT_WINDOW_MIN ||
-      value > CONTEXT_WINDOW_MAX
-    ) {
-      return { value: null, invalid: true };
-    }
-    return { value, invalid: false };
-  }
-
-  // Match compact human-friendly units: e.g. "1M", "256K", "128k", "1.5M"
-  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*([kmKM])$/);
-  if (match) {
-    const num = Number(match[1]);
-    const unit = match[2].toUpperCase();
-    if (!Number.isFinite(num) || num <= 0) {
-      return { value: null, invalid: true };
-    }
-    const multiplier = unit === "M" ? 1_000_000 : 1_000;
-    const value = Math.round(num * multiplier);
     if (
       !Number.isSafeInteger(value) ||
       value < CONTEXT_WINDOW_MIN ||
@@ -709,40 +705,86 @@ function resolveContextSource(
   return knownContextWindow(mapping.context_window);
 }
 
+export interface AggregateContextResult {
+  /** Complete conservative context window across all unique sources; null if any source has unknown context or no sources exist. */
+  conservative: number | null;
+  /** Minimum context window among all sources that actually have a declared context window; null if no source has declared one. */
+  known: number | null;
+  /** True if there is at least one source without a declared context window (or no sources). */
+  isIncomplete: boolean;
+  /** Total number of unique sources. */
+  totalCount: number;
+  /** Number of sources with known context window. */
+  knownCount: number;
+}
+
 /**
- * Conservative aggregate over deduplicated exact source identities: every
- * source must declare a known value and the advertised bound is their minimum.
+ * Detailed aggregate analysis over deduplicated exact source identities:
+ * tracks both complete conservative coverage and known declared minimums.
  */
-function conservativeSourceContext(
+export function analyzeSourceContext(
   providers: GatewayUpstreamProvider[],
   refs: ContextSourceRef[],
-): number | null {
+): AggregateContextResult {
   const seen = new Set<string>();
-  let minimum: number | null = null;
-  let count = 0;
+  let knownMinimum: number | null = null;
+  let hasUnknown = false;
+  let totalCount = 0;
+  let knownCount = 0;
+
   for (const ref of refs) {
     const key = `${ref.providerId}\u0000${ref.localModel}\u0000${ref.upstreamModel}\u0000${ref.protocol}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    count += 1;
+    totalCount += 1;
     const value = resolveContextSource(providers, ref);
-    if (value === null) return null;
-    minimum = minimum === null ? value : Math.min(minimum, value);
+    if (value === null) {
+      hasUnknown = true;
+    } else {
+      knownCount += 1;
+      knownMinimum =
+        knownMinimum === null ? value : Math.min(knownMinimum, value);
+    }
   }
-  return count === 0 ? null : minimum;
+
+  if (totalCount === 0) {
+    return {
+      conservative: null,
+      known: null,
+      isIncomplete: true,
+      totalCount: 0,
+      knownCount: 0,
+    };
+  }
+
+  const conservative = hasUnknown ? null : knownMinimum;
+  return {
+    conservative,
+    known: knownMinimum,
+    isIncomplete: hasUnknown,
+    totalCount,
+    knownCount,
+  };
 }
 
 /**
- * Conservative ordinary-model context across every configured mapping that
- * serves `model`, plus same-provider default-model declarations. Runtime
- * readiness, keys and enabled state never raise the advertised bound.
+ * Full summary of ordinary-model context: includes conservative effective context
+ * and known conservative bound when some upstream providers lack context.
  */
-export function resolveOrdinaryContextWindow(
+export function resolveOrdinaryContextSummary(
   providers: GatewayUpstreamProvider[],
   model: string,
-): number | null {
+): AggregateContextResult {
   const publicModel = model.trim();
-  if (publicModel === "") return null;
+  if (publicModel === "") {
+    return {
+      conservative: null,
+      known: null,
+      isIncomplete: true,
+      totalCount: 0,
+      knownCount: 0,
+    };
+  }
   const refs: ContextSourceRef[] = [];
   for (const provider of providers) {
     for (const mapping of provider.mappings) {
@@ -755,14 +797,30 @@ export function resolveOrdinaryContextWindow(
       });
     }
   }
-  if (refs.length === 0) return null;
+  if (refs.length === 0) {
+    return {
+      conservative: null,
+      known: null,
+      isIncomplete: true,
+      totalCount: 0,
+      knownCount: 0,
+    };
+  }
   for (const provider of providers) {
     const defaultModel = provider.default_model?.trim();
     if (!defaultModel || defaultModel !== publicModel) continue;
     const declared = provider.mappings.find(
       (mapping) => mapping.upstream_model.trim() === defaultModel,
     );
-    if (!declared) return null;
+    if (!declared) {
+      return {
+        conservative: null,
+        known: null,
+        isIncomplete: true,
+        totalCount: refs.length + 1,
+        knownCount: 0,
+      };
+    }
     refs.push({
       providerId: provider.id,
       localModel: publicModel,
@@ -770,7 +828,19 @@ export function resolveOrdinaryContextWindow(
       protocol: provider.protocol ?? "chat_completions",
     });
   }
-  return conservativeSourceContext(providers, refs);
+  return analyzeSourceContext(providers, refs);
+}
+
+/**
+ * Conservative ordinary-model context across every configured mapping that
+ * serves `model`, plus same-provider default-model declarations. Runtime
+ * readiness, keys and enabled state never raise the advertised bound.
+ */
+export function resolveOrdinaryContextWindow(
+  providers: GatewayUpstreamProvider[],
+  model: string,
+): number | null {
+  return resolveOrdinaryContextSummary(providers, model).conservative;
 }
 
 function expandFallbackModelRefs(
@@ -797,6 +867,60 @@ function expandFallbackModelRefs(
 }
 
 /**
+ * Full summary of pool context: includes conservative effective context
+ * and known conservative bound when some upstream candidates lack context.
+ */
+export function resolvePoolContextSummary(
+  providers: GatewayUpstreamProvider[],
+  pool:
+    | (Pick<GatewayModelPool, "candidates"> & {
+        context_window?: number | null;
+        fallback_models?: string[];
+      })
+    | null
+    | undefined,
+): AggregateContextResult {
+  if (!pool) {
+    return {
+      conservative: null,
+      known: null,
+      isIncomplete: true,
+      totalCount: 0,
+      knownCount: 0,
+    };
+  }
+  if (pool.context_window != null && pool.context_window > 0) {
+    return {
+      conservative: pool.context_window,
+      known: pool.context_window,
+      isIncomplete: false,
+      totalCount: pool.candidates.length,
+      knownCount: pool.candidates.length,
+    };
+  }
+  const refs: ContextSourceRef[] = pool.candidates.map((candidate) => ({
+    providerId: candidate.provider_id,
+    localModel: candidate.local_model,
+    upstreamModel: candidate.upstream_model,
+    protocol: candidate.protocol,
+  }));
+  for (const fallback of pool.fallback_models ?? []) {
+    const expanded = expandFallbackModelRefs(providers, fallback);
+    if (expanded.length === 0) {
+      return {
+        conservative: null,
+        known: null,
+        isIncomplete: true,
+        totalCount: refs.length + 1,
+        knownCount: 0,
+      };
+    }
+    refs.push(...expanded);
+  }
+  return analyzeSourceContext(providers, refs);
+}
+
+/**
  * Conservative pool context across every candidate plus expanded ordered
  * fallback model. Unresolved references make the aggregate unknown; a pool has
  * no independent editable override.
@@ -811,22 +935,7 @@ export function resolvePoolContextWindow(
     | null
     | undefined,
 ): number | null {
-  if (!pool) return null;
-  if (pool.context_window != null && pool.context_window > 0) {
-    return pool.context_window;
-  }
-  const refs: ContextSourceRef[] = pool.candidates.map((candidate) => ({
-    providerId: candidate.provider_id,
-    localModel: candidate.local_model,
-    upstreamModel: candidate.upstream_model,
-    protocol: candidate.protocol,
-  }));
-  for (const fallback of pool.fallback_models ?? []) {
-    const expanded = expandFallbackModelRefs(providers, fallback);
-    if (expanded.length === 0) return null;
-    refs.push(...expanded);
-  }
-  return conservativeSourceContext(providers, refs);
+  return resolvePoolContextSummary(providers, pool).conservative;
 }
 
 /** Context of one exact provider mapping, used for per-source display. */

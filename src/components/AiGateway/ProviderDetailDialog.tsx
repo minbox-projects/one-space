@@ -12,6 +12,7 @@ import {
   EyeOff,
   Info,
   KeyRound,
+  Layers,
   Plus,
   RotateCcw,
   Server,
@@ -30,7 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
-  CONTEXT_WINDOW_PRESETS,
+  CONTEXT_WINDOW_PRESET_ITEMS,
   draftToPriceRow,
   formatContextWindow,
   formatContextWindowCompact,
@@ -301,14 +302,23 @@ export function ProviderDetailDialog({
     setContextError(null);
     setDefaultModel(provider.default_model ?? "");
     setProtocol(provider.protocol ?? "chat_completions");
+    const boundTemplate = provider.template_id
+      ? templates?.find((view) => view.template.id === provider.template_id)
+          ?.template
+      : undefined;
     setMappings(
-      nextMappings.map((mapping) => ({
-        ...mapping,
-        contextDraft:
-          mapping.context_window != null
-            ? formatContextWindowDisplay(mapping.context_window)
-            : "",
-      })),
+      nextMappings.map((mapping) => {
+        const templateContext = boundTemplate
+          ? resolveTemplateContextWindow(boundTemplate, mapping.upstream_model)
+          : null;
+        const initialContext = mapping.context_window ?? templateContext;
+        return {
+          ...mapping,
+          context_window: initialContext,
+          contextDraft:
+            initialContext != null ? String(initialContext) : "",
+        };
+      }),
     );
     setPriceDrafts(seeded);
     setAutoAddedModel(nextAutoAdded);
@@ -671,39 +681,16 @@ export function ProviderDetailDialog({
       marked_at: key.marked_at,
       reason: key.reason,
     }));
-    const boundTemplateId = templateId.trim();
-    const boundTemplateForSave = boundTemplateId
-      ? (templates ?? []).find((view) => view.template.id === boundTemplateId)
-          ?.template
-      : undefined;
     let invalidContextModel: string | null = null;
     const savedMappings = mappings.map((mapping) => {
       const reasoningEfforts = normalizeReasoningEfforts(mapping.reasoning_efforts);
       const { contextDraft, ...mappingFields } = mapping;
-      let contextWindow: number | null;
-      if (boundTemplateId) {
-        contextWindow = resolveTemplateContextWindow(
-          boundTemplateForSave,
-          mapping.upstream_model,
-        );
-      } else {
-        const rawDraft =
-          contextDraft ??
-          (mapping.context_window != null
-            ? formatContextWindowDisplay(mapping.context_window)
-            : "");
-        if (
-          mapping.context_window != null &&
-          (rawDraft.trim() === formatContextWindowDisplay(mapping.context_window) ||
-            rawDraft.trim() === formatContextWindowCompact(mapping.context_window))
-        ) {
-          contextWindow = mapping.context_window;
-        } else {
-          const parsed = parseContextWindowInput(rawDraft);
-          if (parsed.invalid) invalidContextModel = mapping.upstream_model.trim();
-          contextWindow = parsed.value;
-        }
-      }
+      const rawDraft =
+        contextDraft ??
+        (mapping.context_window != null ? String(mapping.context_window) : "");
+      const parsed = parseContextWindowInput(rawDraft);
+      if (parsed.invalid) invalidContextModel = mapping.upstream_model.trim();
+      const contextWindow = parsed.value;
       return {
         ...mappingFields,
         enabled: mapping.enabled !== false,
@@ -1848,6 +1835,30 @@ export function ProviderDetailDialog({
                           )}
                         </option>
                       </select>
+                      {(() => {
+                        const parsedVal = parseContextWindowInput(
+                          mapping.contextDraft ??
+                            (mapping.context_window != null
+                              ? String(mapping.context_window)
+                              : ""),
+                        ).value;
+                        if (parsedVal) {
+                          return (
+                            <span
+                              data-testid={`ai-gateway-mapping-context-badge-${index}`}
+                              className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 py-1 font-mono text-[11px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs shrink-0"
+                              title={t(
+                                "aiGatewayModelListEffectiveContext",
+                                "Conservative effective context",
+                              )}
+                            >
+                              <Layers className="h-3 w-3 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                              <span>{formatContextWindowDisplay(parsedVal)}</span>
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
                       <button
                         type="button"
                         onClick={() => handleRemoveMapping(index)}
@@ -1934,7 +1945,7 @@ export function ProviderDetailDialog({
                           <p className="text-[11px] text-muted-foreground">
                             {t(
                               "aiGatewayContextWindowSectionDesc",
-                              "Limit the maximum context window (tokens) for this model. Supports common units such as 1M, 256K, 128K, or raw tokens; leave blank for unlimited.",
+                              "Limit the maximum context window (tokens) for this model. Supports raw tokens only; leave blank for unlimited.",
                             )}
                           </p>
 
@@ -1942,53 +1953,44 @@ export function ProviderDetailDialog({
                             <input
                               id={`ai-gateway-context-input-${index}`}
                               type="text"
+                              inputMode="numeric"
                               value={
-                                isTemplateBound
-                                  ? (formatContextWindowDisplay(
-                                      resolveTemplateContextWindow(
-                                        boundTemplate,
-                                        mapping.upstream_model,
-                                      ),
-                                    ) || "")
-                                  : (mapping.contextDraft ??
-                                    (mapping.context_window != null
-                                      ? formatContextWindowDisplay(mapping.context_window)
-                                      : ""))
+                                mapping.contextDraft ??
+                                (mapping.context_window != null
+                                  ? String(mapping.context_window)
+                                  : "")
                               }
                               onChange={(event) =>
                                 updateMapping(index, {
                                   contextDraft: event.target.value,
                                 })
                               }
-                              readOnly={isTemplateBound}
-                              disabled={isTemplateBound}
                               placeholder={t(
                                 "aiGatewayContextWindowPlaceholder",
-                                "例如：1M, 256K, 128K（留空不限制）",
+                                "例如：128000, 1048576（留空不限制）",
                               )}
                               aria-label={t("aiGatewayContextWindowLabel", {
                                 index: index + 1,
                                 defaultValue: `Context window (tokens) ${index + 1}`,
                               })}
-                              className={`${mappingInputClass} w-48 font-mono read-only:bg-muted/50`}
+                              className={`${mappingInputClass} w-48 font-mono`}
                             />
 
                             {(() => {
-                              const currentVal = isTemplateBound
-                                ? resolveTemplateContextWindow(boundTemplate, mapping.upstream_model)
-                                : parseContextWindowInput(
-                                    mapping.contextDraft ??
-                                      (mapping.context_window != null
-                                        ? formatContextWindowDisplay(mapping.context_window)
-                                        : ""),
-                                  ).value;
+                              const currentVal = parseContextWindowInput(
+                                mapping.contextDraft ??
+                                  (mapping.context_window != null
+                                    ? String(mapping.context_window)
+                                    : ""),
+                              ).value;
                               if (currentVal != null) {
                                 return (
-                                  <span className="text-xs text-muted-foreground font-mono">
-                                    {t("aiGatewayContextWindowApproxTokens", {
-                                      tokens: formatContextWindow(currentVal),
-                                      defaultValue: `≈ ${formatContextWindow(currentVal)} tokens`,
-                                    })}
+                                  <span className="text-xs text-muted-foreground font-mono flex items-center gap-1">
+                                    <span>≈</span>
+                                    <span className="font-semibold text-foreground/80">
+                                      {formatContextWindowCompact(currentVal)}
+                                    </span>
+                                    <span>({formatContextWindow(currentVal)} tokens)</span>
                                   </span>
                                 );
                               }
@@ -1996,54 +1998,53 @@ export function ProviderDetailDialog({
                             })()}
                           </div>
 
-                          {!isTemplateBound ? (
-                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                              <span className="text-[11px] text-muted-foreground mr-1">
-                                {t("aiGatewayContextWindowQuickPreset", "常用预设")}:
-                              </span>
-                              {CONTEXT_WINDOW_PRESETS.map((preset) => {
-                                const currentDraft = (
-                                  mapping.contextDraft ??
-                                  (mapping.context_window != null
-                                    ? formatContextWindowDisplay(mapping.context_window)
-                                    : "")
-                                ).trim().toUpperCase();
-                                const isSelected = currentDraft === preset;
-                                return (
-                                  <button
-                                    key={preset}
-                                    type="button"
-                                    onClick={() =>
-                                      updateMapping(index, {
-                                        contextDraft: preset,
-                                      })
-                                    }
-                                    className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-mono transition shadow-xs ${
-                                      isSelected
-                                        ? "bg-primary text-primary-foreground font-semibold"
-                                        : "border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground"
-                                    }`}
-                                  >
-                                    {preset}
-                                  </button>
-                                );
-                              })}
-                              {mapping.contextDraft || mapping.context_window != null ? (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <span className="text-[11px] text-muted-foreground mr-1">
+                              {t("aiGatewayContextWindowQuickPreset", "常用预设")}:
+                            </span>
+                            {CONTEXT_WINDOW_PRESET_ITEMS.map((preset) => {
+                              const currentDraft = (
+                                mapping.contextDraft ??
+                                (mapping.context_window != null
+                                  ? String(mapping.context_window)
+                                  : "")
+                              ).trim();
+                              const isSelected =
+                                currentDraft === String(preset.tokens);
+                              return (
                                 <button
+                                  key={preset.label}
                                   type="button"
                                   onClick={() =>
                                     updateMapping(index, {
-                                      contextDraft: "",
-                                      context_window: null,
+                                      contextDraft: String(preset.tokens),
                                     })
                                   }
-                                  className="inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-destructive transition"
+                                  className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-mono transition shadow-xs ${
+                                    isSelected
+                                      ? "bg-primary text-primary-foreground font-semibold"
+                                      : "border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground"
+                                  }`}
                                 >
-                                  {t("clear", "清除")}
+                                  {preset.label}
                                 </button>
-                              ) : null}
-                            </div>
-                          ) : null}
+                              );
+                            })}
+                            {mapping.contextDraft || mapping.context_window != null ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateMapping(index, {
+                                    contextDraft: "",
+                                    context_window: null,
+                                  })
+                                }
+                                className="inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-destructive transition"
+                              >
+                                {t("clear", "清除")}
+                              </button>
+                            ) : null}
+                          </div>
                         </div>
                       <div
                         data-testid={`ai-gateway-mapping-efforts-${index}`}

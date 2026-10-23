@@ -195,7 +195,16 @@ describe("context window limits", () => {
   });
 
   describe("template editor", () => {
-    it("labels each template model's token input and shows its stored value", () => {
+    it("keeps context input hidden in the template model row until expanded", () => {
+      renderTemplateDialog(
+        templateWith([
+          { upstream_model: "model-a", local_model: "model-a", enabled: true, context_window: 128000 },
+        ]),
+      );
+      expect(screen.queryByLabelText(/(context (window|tokens)|上下文窗口).*1/i)).not.toBeInTheDocument();
+    });
+
+    it("labels each template model's token input and shows its stored value in expanded details", () => {
       renderTemplateDialog(
         templateWith([
           { upstream_model: "model-a", local_model: "model-a", enabled: true, context_window: 128000 },
@@ -203,7 +212,10 @@ describe("context window limits", () => {
         ]),
       );
 
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
       expect(contextInput(0)).toHaveValue("128000");
+
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-1"));
       expect(contextInput(1)).toHaveValue("");
     });
 
@@ -215,6 +227,9 @@ describe("context window limits", () => {
           { upstream_model: "model-max", local_model: "model-max", enabled: true, context_window: 4294967295 },
         ]),
       );
+
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-1"));
 
       expect(contextInput(0)).toHaveValue("1");
       expect(contextInput(1)).toHaveValue("4294967295");
@@ -238,6 +253,7 @@ describe("context window limits", () => {
         ]),
       );
 
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
       await user.clear(contextInput(0));
       fireEvent.click(screen.getByTestId("template-edit-save-btn"));
 
@@ -255,13 +271,17 @@ describe("context window limits", () => {
         ]),
       );
 
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
+
       for (const invalid of ["0", "-5", "1.5", "4294967296", "abc"]) {
         await user.clear(contextInput(0));
         await user.type(contextInput(0), invalid);
         fireEvent.click(screen.getByTestId("template-edit-save-btn"));
         expect(onSave).not.toHaveBeenCalled();
         expect(contextInput(0)).toHaveValue(invalid);
-        expect(screen.getByText(/context window|context tokens/i)).toBeInTheDocument();
+        expect(
+          screen.getAllByText(/context window|context tokens/i).length,
+        ).toBeGreaterThan(0);
       }
     });
 
@@ -273,6 +293,7 @@ describe("context window limits", () => {
         ]),
       );
 
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
       await user.clear(contextInput(0));
       await user.type(contextInput(0), "2048");
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -318,12 +339,12 @@ describe("context window limits", () => {
       // 点击展开模型详情
       fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
 
-      // 展开后以常用单位 64K 展示
-      expect(contextInput(0)).toHaveValue("64K");
+      // 展开后以纯 tokens 64000 展示
+      expect(contextInput(0)).toHaveValue("64000");
 
-      // 支持输入常用单位如 128K
+      // 支持输入纯 tokens 如 128000
       await user.clear(contextInput(0));
-      await user.type(contextInput(0), "128K");
+      await user.type(contextInput(0), "128000");
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
       expect(onSave).toHaveBeenCalledTimes(1);
@@ -358,7 +379,7 @@ describe("context window limits", () => {
 
       fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
       fireEvent.click(screen.getByRole("button", { name: "256K" }));
-      expect(contextInput(0)).toHaveValue("256K");
+      expect(contextInput(0)).toHaveValue("256000");
 
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
       expect(onSave).toHaveBeenCalledTimes(1);
@@ -366,14 +387,15 @@ describe("context window limits", () => {
       expect((draft.mappings[0] as ContextMapping).context_window).toBe(256000);
     });
 
-    it("shows a bound mapping's inherited template value read-only", () => {
+    it("allows editing a bound mapping's inherited template value", async () => {
+      const user = userEvent.setup();
       const template = templateWith([
         { upstream_model: "upstream-a", local_model: "local-a", enabled: true, context_window: 200000 },
       ]);
-      renderProviderDialog(
+      const { onSave } = renderProviderDialog(
         providerWith(
           [
-            { local_model: "local-a", upstream_model: "upstream-a", context_window: 1 },
+            { local_model: "local-a", upstream_model: "upstream-a", context_window: 200000 },
             { local_model: "local-b", upstream_model: "upstream-b" },
           ],
           { template_id: template.id },
@@ -382,18 +404,21 @@ describe("context window limits", () => {
       );
 
       fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
-      expect(contextInput(0)).toHaveValue("200K");
+      expect(contextInput(0)).toHaveValue("200000");
       const inherited = contextInput(0) as HTMLInputElement;
-      expect(inherited.readOnly || inherited.disabled).toBe(true);
+      expect(inherited.readOnly || inherited.disabled).toBe(false);
       expect(
         screen.getByText(/inherited from.*Context Template/i),
       ).toBeInTheDocument();
 
-      fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-1"));
-      expect(contextInput(1)).toHaveValue("");
-      expect(
-        screen.getByText(/template model.*(missing|not found)|unspecified/i),
-      ).toBeInTheDocument();
+      // 用户可以自由修改并保存
+      await user.clear(contextInput(0));
+      await user.type(contextInput(0), "512000");
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(onSave).toHaveBeenCalledTimes(1);
+      const draft = onSave.mock.calls[0][0] as GatewayUpstreamProvider;
+      expect((draft.mappings[0] as ContextMapping).context_window).toBe(512000);
     });
   });
 
@@ -911,6 +936,7 @@ describe("context window limits", () => {
         ]),
       );
 
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
       expect(contextInput(0)).toHaveValue("128000");
       expect(screen.getByText(/有效.*(覆盖|替换)/)).toBeInTheDocument();
       expect(screen.getByText(/缺失.*保留/)).toBeInTheDocument();
@@ -926,8 +952,8 @@ describe("context window limits", () => {
       );
 
       fireEvent.click(screen.getByTestId("ai-gateway-mapping-expand-0"));
-      expect(contextInput(0)).toHaveValue("128K");
-      expect(screen.getByText(/≈ 128,000 tokens/)).toBeInTheDocument();
+      expect(contextInput(0)).toHaveValue("128000");
+      expect(screen.getByText(/128,000 tokens/)).toBeInTheDocument();
       expect(screen.getByText(/常用预设/)).toBeInTheDocument();
     });
 
@@ -939,6 +965,7 @@ describe("context window limits", () => {
         ]),
       );
 
+      fireEvent.click(screen.getByTestId("template-edit-model-expand-0"));
       const input = contextInput(0);
       expect(input).toHaveAccessibleName(/context (window|tokens).*1|上下文窗口.*1/i);
       await user.click(input);

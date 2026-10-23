@@ -22,8 +22,8 @@ import {
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
   resolveMappingContextWindow,
-  resolveOrdinaryContextWindow,
-  resolvePoolContextWindow,
+  resolveOrdinaryContextSummary,
+  resolvePoolContextSummary,
   selectPoolReasoningCoverageRow,
   type AggregatedModel,
   type GatewayModelPool,
@@ -102,18 +102,22 @@ function ModelListPanelComponent({
 
   const rows = useMemo(() => {
     if (!isActive) return [];
-    const aggregateRows = aggregateModels(providers).map((entry) => ({
-      entry,
-      name: resolveAggregatedModelName(entry),
-      protocols: Array.from(
-        new Set(entry.providers.map((upstream) => upstream.endpoint)),
-      ) as GatewayUpstreamProtocol[],
-      reasoningEfforts: resolveAggregatedReasoningEfforts(entry),
-      contextWindow: resolveOrdinaryContextWindow(providers, entry.model),
-      pool: undefined as GatewayModelPool | undefined,
-      poolDefault: undefined as string | undefined,
-      poolCoverage: undefined as ModelPoolReasoningCoverage[] | undefined,
-    }));
+    const aggregateRows = aggregateModels(providers).map((entry) => {
+      const contextSummary = resolveOrdinaryContextSummary(providers, entry.model);
+      return {
+        entry,
+        name: resolveAggregatedModelName(entry),
+        protocols: Array.from(
+          new Set(entry.providers.map((upstream) => upstream.endpoint)),
+        ) as GatewayUpstreamProtocol[],
+        reasoningEfforts: resolveAggregatedReasoningEfforts(entry),
+        contextWindow: contextSummary.conservative,
+        contextSummary,
+        pool: undefined as GatewayModelPool | undefined,
+        poolDefault: undefined as string | undefined,
+        poolCoverage: undefined as ModelPoolReasoningCoverage[] | undefined,
+      };
+    });
 
     // Each enabled pool is advertised exactly once, including while all of its
     // candidates are temporarily unavailable; disabled pools are excluded.
@@ -139,6 +143,7 @@ function ModelListPanelComponent({
         const poolHasReasoning =
           pool.candidates.some((candidate) => candidate.reasoning != null) ||
           catalog.default_reasoning_effort !== "auto";
+        const contextSummary = resolvePoolContextSummary(providers, pool);
         return {
           entry,
           name: pool.name,
@@ -150,7 +155,8 @@ function ModelListPanelComponent({
             "responses",
           ] as GatewayUpstreamProtocol[],
           reasoningEfforts: catalog.reasoning_efforts,
-          contextWindow: resolvePoolContextWindow(providers, pool),
+          contextWindow: contextSummary.conservative,
+          contextSummary,
           pool,
           poolDefault: catalog.default_reasoning_effort,
           poolCoverage: poolHasReasoning
@@ -318,7 +324,7 @@ function ModelListPanelComponent({
     name,
     protocols,
     reasoningEfforts,
-    contextWindow,
+    contextSummary,
     pool,
     poolDefault,
     poolCoverage,
@@ -433,36 +439,79 @@ function ModelListPanelComponent({
                 ))}
               </div>
             )}
-            {contextWindow ? (
-              <div
-                data-testid="ai-gateway-model-list-context"
-                className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground"
-              >
-                <span>
-                  {t(
-                    "aiGatewayModelListEffectiveContext",
-                    "Conservative effective context",
-                  )}
-                  :
-                </span>
-                <span className="font-mono font-medium text-foreground/85">
-                  {t("aiGatewayModelListContextTokens", {
-                    value: formatContextWindowDisplay(contextWindow),
-                    defaultValue: "{{value}} tokens",
-                  })}
-                </span>
-              </div>
-            ) : (
-              <div
-                data-testid="ai-gateway-model-list-context"
-                className="text-[10px] font-medium text-amber-600 dark:text-amber-400"
-              >
-                {t(
-                  "aiGatewayModelListContextIncomplete",
-                  "Incomplete — unknown context",
-                )}
-              </div>
-            )}
+            {(() => {
+              if (contextSummary.conservative) {
+                return (
+                  <div
+                    data-testid="ai-gateway-model-list-context"
+                    className="flex flex-wrap items-center gap-1.5 pt-0.5"
+                  >
+                    <span
+                      className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
+                      title={t(
+                        "aiGatewayModelListEffectiveContext",
+                        "Conservative effective context",
+                      )}
+                    >
+                      <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                      <span>
+                        {t(
+                          "aiGatewayModelListEffectiveContext",
+                          "Conservative effective context",
+                        )}
+                        : {t("aiGatewayModelListContextTokens", {
+                            value: formatContextWindowDisplay(contextSummary.conservative),
+                            defaultValue: "{{value}} tokens",
+                          })}
+                      </span>
+                    </span>
+                  </div>
+                );
+              }
+              if (contextSummary.known) {
+                const displayVal = formatContextWindowDisplay(contextSummary.known);
+                return (
+                  <div
+                    data-testid="ai-gateway-model-list-context"
+                    className="flex flex-wrap items-center gap-1.5 pt-0.5"
+                  >
+                    <span
+                      className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400 shadow-2xs"
+                      title={t(
+                        "aiGatewayModelListContextIncomplete",
+                        "Incomplete — unknown context",
+                      )}
+                    >
+                      <Layers className="h-2.5 w-2.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
+                      <span>
+                        {t("aiGatewayModelListContextIncompleteWithKnown", {
+                          value: displayVal,
+                          defaultValue: `${displayVal} — 不完整`,
+                        })}
+                      </span>
+                    </span>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  data-testid="ai-gateway-model-list-context"
+                  className="flex flex-wrap items-center gap-1.5 pt-0.5"
+                >
+                  <span
+                    className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400 shadow-2xs"
+                  >
+                    <Layers className="h-2.5 w-2.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
+                    <span>
+                      {t(
+                        "aiGatewayModelListContextIncomplete",
+                        "Incomplete — unknown context",
+                      )}
+                    </span>
+                  </span>
+                </div>
+              );
+            })()}
             {reasoningEfforts.length > 0 ? (
               <div
                 data-testid="ai-gateway-model-list-reasoning-efforts"
@@ -602,24 +651,29 @@ function ModelListPanelComponent({
                         )}
                       </span>
                     ) : null}
-                    <span
-                      data-testid="ai-gateway-model-list-upstream-context"
-                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
-                        sourceContext
-                          ? "bg-muted/70 text-foreground/75"
-                          : "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                      }`}
-                    >
-                      {sourceContext
-                        ? t("aiGatewayModelListContextTokens", {
-                            value: formatContextWindowDisplay(sourceContext),
-                            defaultValue: "{{value}} tokens",
-                          })
-                        : t(
-                            "aiGatewayContextWindowUnspecified",
-                            "Unspecified",
-                          )}
-                    </span>
+                    {sourceContext ? (
+                      <span
+                        data-testid="ai-gateway-model-list-upstream-context"
+                        className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
+                        title={t(
+                          "aiGatewayModelListEffectiveContext",
+                          "Conservative effective context",
+                        )}
+                      >
+                        <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                        <span>{formatContextWindowDisplay(sourceContext)}</span>
+                      </span>
+                    ) : (
+                      <span
+                        data-testid="ai-gateway-model-list-upstream-context"
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400 shadow-2xs"
+                      >
+                        {t(
+                          "aiGatewayContextWindowUnspecified",
+                          "Unspecified",
+                        )}
+                      </span>
+                    )}
                   </div>
 
                   <div className="shrink-0">
