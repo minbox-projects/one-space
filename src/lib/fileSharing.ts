@@ -13,9 +13,17 @@ export type FileSharingNetwork = {
   address: string;
 };
 
+export type FileSharingPublicState =
+  | "disabled"
+  | "starting"
+  | "running"
+  | "error";
+
 export type FileSharingStartInput = {
   networkId: string;
   paths: string[];
+  publicAccess?: boolean;
+  password?: string;
 };
 
 export type FileSharingFile = {
@@ -49,7 +57,14 @@ export type FileSharingSnapshot = {
     bytesSent: number;
     droppedTransferRecords: number;
   };
+  passwordProtected?: boolean;
+  publicTunnelId?: string | null;
+  publicState?: FileSharingPublicState;
+  publicShareUrl?: string | null;
+  publicError?: string | null;
 };
+
+export const FILE_SHARING_PUBLIC_UPDATED_EVENT = "file-sharing-public-updated";
 
 export class FileSharingError extends Error {
   constructor(message: string) {
@@ -82,7 +97,13 @@ export function fileSharingNetworks() {
 }
 
 export function fileSharingStart(input: FileSharingStartInput) {
-  return fileSharingInvoke<FileSharingSnapshot>("file_sharing_start", { input });
+  const payload: FileSharingStartInput = {
+    networkId: input.networkId,
+    paths: input.paths,
+  };
+  if (input.publicAccess !== undefined) payload.publicAccess = input.publicAccess;
+  if (input.password !== undefined) payload.password = input.password;
+  return fileSharingInvoke<FileSharingSnapshot>("file_sharing_start", { input: payload });
 }
 
 export function fileSharingStatus() {
@@ -91,4 +112,26 @@ export function fileSharingStatus() {
 
 export function fileSharingStop() {
   return fileSharingInvoke<FileSharingSnapshot>("file_sharing_stop");
+}
+
+export function fileSharingPublicStart() {
+  return fileSharingInvoke<FileSharingSnapshot>("file_sharing_public_start");
+}
+
+export function fileSharingPublicStop() {
+  return fileSharingInvoke<FileSharingSnapshot>("file_sharing_public_stop");
+}
+
+/**
+ * The public link is usable only while the share-owned tunnel reports running;
+ * every other state falls back to the LAN link so the UI never advertises a
+ * dead public endpoint.
+ */
+export function getFileSharingPublicUrl(
+  snapshot: Pick<FileSharingSnapshot, "publicState" | "publicShareUrl" | "shareUrl">,
+): string | null {
+  if (snapshot.publicState === "running" && snapshot.publicShareUrl) {
+    return snapshot.publicShareUrl;
+  }
+  return snapshot.shareUrl;
 }

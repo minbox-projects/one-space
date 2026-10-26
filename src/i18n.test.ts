@@ -1380,3 +1380,46 @@ describe("AI 网关模型池推理策略 UI 国际化键", () => {
     }
   });
 });
+
+const FILE_SHARING_PUBLIC_I18N_KEYS = [
+  "fileSharingPublicTitle",
+  "fileSharingPublicEnable",
+  "fileSharingPublicDisable",
+  "fileSharingPublicStarting",
+  "fileSharingPublicRunning",
+  "fileSharingPublicError",
+  "fileSharingPublicRetry",
+  "fileSharingPublicTemporary",
+  "fileSharingPublicExposure",
+  "fileSharingLanLink",
+  "fileSharingOpenLink",
+  "fileSharingPassword",
+  "fileSharingPasswordPlaceholder",
+  "fileSharingPasswordHint",
+  "fileSharingPasswordInvalid",
+  "fileSharingPasswordProtected",
+  "fileSharingShowPassword",
+  "fileSharingHidePassword",
+  "fileSharingPublicMissingDependency",
+] as const;
+
+describe("File Sharing public tunnel 国际化键", () => {
+  it.each(["en", "zh"] as const)("为 %s 提供全部公网共享文案", async (language) => {
+    await i18n.changeLanguage(language);
+    for (const key of FILE_SHARING_PUBLIC_I18N_KEYS) {
+      const translation = i18n.getResource(language, "translation", key);
+      expect(typeof translation).toBe("string");
+      expect((translation as string).trim()).not.toBe("");
+      expect(translation).not.toBe(key);
+    }
+  });
+
+  it("新增公网共享键已登记到 en/zh 键列表", () => {
+    const enKeys = readKeyListFile("en_keys.txt");
+    const zhKeys = readKeyListFile("zh_keys.txt");
+    for (const key of FILE_SHARING_PUBLIC_I18N_KEYS) {
+      expect(enKeys.has(key), `en_keys.txt 缺少 ${key}`).toBe(true);
+      expect(zhKeys.has(key), `zh_keys.txt 缺少 ${key}`).toBe(true);
+    }
+  });
+});

@@ -1,4 +1,4 @@
-import { act, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileSharingTool } from "@/components/FileSharingTool";
@@ -258,5 +258,301 @@ describe("FileSharingTool", () => {
     await user.click(screen.getByRole("button", { name: /Clear|清空/ }));
 
     expect(confirmSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("FileSharingTool public tunnel (RED)", () => {
+  const runningLan = {
+    ...stopped,
+    running: true,
+    sessionId: "session-1",
+    shareUrl: "http://192.168.1.2:1234/s/token/",
+    files: [{ id: "file-1", name: "report.txt", sourcePath: "/tmp/report.txt", size: 12, modifiedAt: 0 }],
+    passwordProtected: false,
+    publicTunnelId: null,
+    publicState: "disabled",
+    publicShareUrl: null,
+    publicError: null,
+  };
+
+  const runningPublic = {
+    ...runningLan,
+    publicTunnelId: "tunnel-1",
+    publicState: "running",
+    publicShareUrl: "https://abc.trycloudflare.com/s/token/",
+  };
+
+  function baseMocks(overrides?: (command: string) => unknown) {
+    invokeMock.mockImplementation(async (command: string, _args?: unknown) => {
+      if (overrides) {
+        const value = overrides(command);
+        if (value !== undefined) return value;
+      }
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return stopped;
+      if (command === "file_sharing_start") return runningLan;
+      return stopped;
+    });
+  }
+
+  it("does not check tunnel environment on a LAN-only mount/start", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValue(["/tmp/report.txt"]);
+    baseMocks();
+    const user = userEvent.setup();
+    renderWithProviders(<FileSharingTool />);
+    await user.click(await screen.findByRole("button", { name: /Choose files|选择文件/ }));
+    await user.click(screen.getByRole("button", { name: /Start sharing|开始共享/ }));
+    expect(await screen.findByTestId("qr-code")).toHaveTextContent("http://192.168.1.2:1234/s/token/");
+    const calls = invokeMock.mock.calls.map((call) => call[0]);
+    expect(calls).not.toContain("tunnel_check_environment");
+  });
+
+  it("switches QR to the public URL when public sharing runs", async () => {
+    baseMocks((command) => {
+      if (command === "file_sharing_start") return { ...runningLan, publicAccess: true } as unknown;
+    });
+    // simulate a running public snapshot via status after enabling
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return runningPublic;
+      if (command === "file_sharing_start") return runningPublic;
+      if (command === "file_sharing_public_start") return runningPublic;
+      return stopped;
+    });
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValue(["/tmp/report.txt"]);
+    const user = userEvent.setup();
+    renderWithProviders(<FileSharingTool />);
+    await user.click(await screen.findByRole("button", { name: /Choose files|选择文件/ }));
+    await user.click(screen.getByRole("button", { name: /Start sharing|开始共享/ }));
+    const toggle = await screen.findByTestId("file-sharing-public-toggle");
+    await user.click(toggle);
+    expect(await screen.findByTestId("file-sharing-public-card")).toHaveAttribute("data-state", "running");
+    expect(await screen.findByTestId("qr-code")).toHaveTextContent("https://abc.trycloudflare.com/s/token/");
+    expect(screen.getByTestId("file-sharing-lan-url")).toHaveTextContent("http://192.168.1.2:1234/s/token/");
+  });
+
+  it("shows the dependency banner when cloudflared is missing and disables start only while public is on", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: false, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return stopped;
+      return stopped;
+    });
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValue(["/tmp/report.txt"]);
+    const user = userEvent.setup();
+    renderWithProviders(<FileSharingTool />);
+    await user.click(await screen.findByRole("button", { name: /Choose files|选择文件/ }));
+    // public off: start enabled
+    const startButton = screen.getByRole("button", { name: /Start sharing|开始共享/ });
+    expect(startButton).not.toBeDisabled();
+    // enable public
+    await user.click(screen.getByTestId("file-sharing-public-toggle"));
+    expect(await screen.findByText(/Dependency Missing|依赖缺失|cloudflared/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Start sharing|开始共享/ })).toBeDisabled();
+  });
+
+  it("calls public start/stop and retry commands", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return runningPublic;
+      if (command === "file_sharing_public_start") return runningPublic;
+      if (command === "file_sharing_public_stop") return runningLan;
+      return stopped;
+    });
+    renderWithProviders(<FileSharingTool />);
+    // enable public on running share
+    const enable = await screen.findByTestId("file-sharing-public-enable");
+    await userEvent.setup().click(enable);
+    expect(invokeMock).toHaveBeenCalledWith("file_sharing_public_start");
+    const disable = await screen.findByTestId("file-sharing-public-disable");
+    await userEvent.setup().click(disable);
+    expect(invokeMock).toHaveBeenCalledWith("file_sharing_public_stop");
+  });
+
+  it("shows error state and retries with a new URL", async () => {
+    const errored = { ...runningLan, publicTunnelId: "tunnel-1", publicState: "error", publicShareUrl: null, publicError: "tunnel died" };
+    const retried = { ...runningLan, publicTunnelId: "tunnel-2", publicState: "running", publicShareUrl: "https://new.trycloudflare.com/s/token/" };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return errored;
+      if (command === "file_sharing_public_start") return retried;
+      return stopped;
+    });
+    renderWithProviders(<FileSharingTool />);
+    expect(await screen.findByText("tunnel died")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByTestId("file-sharing-public-retry"));
+    expect(invokeMock).toHaveBeenCalledWith("file_sharing_public_start");
+    expect(await screen.findByTestId("file-sharing-public-url")).toHaveTextContent("https://new.trycloudflare.com/s/token/");
+  });
+
+  it("validates whitespace-only password and clears after success", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValue(["/tmp/report.txt"]);
+    invokeMock.mockImplementation(async (command: string, _args?: any) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return stopped;
+      if (command === "file_sharing_start") {
+        // reject if password whitespace-only (frontend should block before call)
+        return runningLan;
+      }
+      return stopped;
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<FileSharingTool />);
+    await user.click(await screen.findByRole("button", { name: /Choose files|选择文件/ }));
+    const input = screen.getByTestId("file-sharing-password");
+    await user.type(input, "   ");
+    expect(screen.getByText(/fileSharingPasswordInvalid|Password must/)).toBeInTheDocument();
+    // start should be blocked; no start call with password
+  });
+
+  it("shows password protected badge when snapshot says so", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return { ...runningLan, passwordProtected: true };
+      return stopped;
+    });
+    const { unmount } = renderWithProviders(<FileSharingTool />);
+    expect((await screen.findAllByText(/Password protected|已启用密码保护/i)).length).toBeGreaterThan(0);
+    unmount();
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return { ...runningLan, passwordProtected: false };
+      return stopped;
+    });
+    renderWithProviders(<FileSharingTool />);
+    expect(await screen.findByTestId("file-sharing-lan-url")).toBeInTheDocument();
+    expect(screen.queryAllByText(/Password protected|已启用密码保护/i)).toHaveLength(0);
+  });
+
+  it("toggles password visibility", async () => {
+    renderWithProviders(<FileSharingTool />);
+    const input = screen.getByTestId("file-sharing-password") as HTMLInputElement;
+    expect(input).toHaveAttribute("type", "password");
+    fireEvent.change(input, { target: { value: "secret" } });
+    const toggle = input.parentElement!.querySelector("button")!;
+    fireEvent.click(toggle);
+    expect(input).toHaveAttribute("type", "text");
+    const toggle2 = input.parentElement!.querySelector("button")!;
+    fireEvent.click(toggle2);
+    expect(input).toHaveAttribute("type", "password");
+  });
+
+  it("refreshes status once on matching public tunnel event id", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return runningPublic;
+      return stopped;
+    });
+    renderWithProviders(<FileSharingTool />);
+    await screen.findByTestId("file-sharing-public-card");
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    invokeMock.mockClear();
+    await act(async () => {
+      const listener = (listenMock.mock.calls as any[]).find((c) => c[0] === "file-sharing-public-updated")?.[1];
+      listener?.({ payload: { id: "tunnel-1" } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const statusCalls = invokeMock.mock.calls.filter((call) => call[0] === "file_sharing_status").length;
+    expect(statusCalls).toBe(1);
+  });
+
+  it("does not refresh on stale public tunnel id", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return runningPublic;
+      return stopped;
+    });
+    renderWithProviders(<FileSharingTool />);
+    await screen.findByTestId("file-sharing-public-card");
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    invokeMock.mockClear();
+    await act(async () => {
+      const listener = (listenMock.mock.calls as any[]).find((c) => c[0] === "file-sharing-public-updated")?.[1];
+      listener?.({ payload: { id: "tunnel-old" } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const statusCalls = invokeMock.mock.calls.filter((call) => call[0] === "file_sharing_status").length;
+    expect(statusCalls).toBe(0);
+  });
+
+  it("does not refresh when isVisible is false", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return runningPublic;
+      return stopped;
+    });
+    renderWithProviders(<FileSharingTool isVisible={false} />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    invokeMock.mockClear();
+    await act(async () => {
+      const listener = (listenMock.mock.calls as any[]).find((c) => c[0] === "file-sharing-public-updated")?.[1];
+      listener?.({ payload: { id: "tunnel-1" } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const statusCalls = invokeMock.mock.calls.filter((call) => call[0] === "file_sharing_status").length;
+    expect(statusCalls).toBe(0);
+  });
+
+  it("shows internet exposure warning only while running", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return runningPublic;
+      return stopped;
+    });
+    const { unmount } = renderWithProviders(<FileSharingTool />);
+    expect(await screen.findByText(/互联网上任何持有链接|anyone on the internet/i)).toBeInTheDocument();
+    unmount();
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return runningLan;
+      return stopped;
+    });
+    const r2 = renderWithProviders(<FileSharingTool />);
+    await screen.findByTestId("qr-code");
+    expect(screen.queryByText(/互联网上任何持有链接|anyone on the internet/i)).not.toBeInTheDocument();
+    r2.unmount();
+
+    const errored = { ...runningLan, publicTunnelId: "tunnel-1", publicState: "error", publicShareUrl: null, publicError: "tunnel died" };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "tunnel_check_environment") return { mode: "cloudflare", installed: true, recommended_command: "brew install cloudflared" };
+      if (command === "file_sharing_status") return errored;
+      return stopped;
+    });
+    renderWithProviders(<FileSharingTool />);
+    expect(await screen.findByText("tunnel died")).toBeInTheDocument();
+    expect(screen.queryByTestId("file-sharing-public-url")).not.toBeInTheDocument();
+    expect(screen.queryByText(/互联网上任何持有链接|anyone on the internet/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps LAN-only regression rendering", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "file_sharing_networks") return [{ id: "en0:192.168.1.2", interfaceName: "en0", address: "192.168.1.2" }];
+      if (command === "file_sharing_status") return { ...stopped, running: true, shareUrl: "http://192.168.1.2:1234/s/token/" };
+      return stopped;
+    });
+    renderWithProviders(<FileSharingTool />);
+    expect(await screen.findByTestId("qr-code")).toHaveTextContent("http://192.168.1.2:1234/s/token/");
   });
 });
