@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/feature/2026-10-26-file-sharing-public-tunnel.md
+2026-10-26-file-sharing-public-tunnel.md: 7289a4efa29c8fecb47dd407c3221d487b1adc47
+2026-10-26-file-sharing-public-tunnel.zh.md: 45a748d1292b6c9f308a1d6e5798df4cf4056602
