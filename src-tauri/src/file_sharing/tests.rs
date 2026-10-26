@@ -1,17 +1,22 @@
 use super::http::{
-    listing_document, parse_range, safe_header_filename, DownloadStream, ParsedRange,
+    listing_document, login_document, parse_range, safe_header_filename, DownloadStream, ParsedRange,
 };
 use super::runtime::{
-    begin_transfer, finish_transfer, is_private_ipv4, networks_from, run_listener,
-    should_emit_transfer_update, unexpected_exit_snapshot, SharedFile, SharedSession,
+    begin_transfer, constant_time_eq, finish_transfer, hash_share_password, is_private_ipv4,
+    networks_from, prepare_share_password, run_listener, safe_login_next, session_is_authenticated,
+    should_emit_transfer_update, test_password_session, unexpected_exit_snapshot,
+    validate_share_password, DEFAULT_LOGIN_FAILURE_DELAY, Session, SharedFile, SharedSession,
 };
-use super::types::{FileSharingSnapshot, FileSharingTransferState};
+use super::types::{FileSharingSnapshot, FileSharingStartInput, FileSharingTransferState};
 use futures_util::StreamExt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Semaphore};
+use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 #[test]
 fn filters_and_sorts_private_ipv4_networks() {
@@ -360,4 +365,312 @@ async fn loopback_connection_limit_and_header_timeout_release_resources() {
     );
     let _ = shutdown_tx.send(());
     let _ = listener_task.await;
+}
+
+#[test]
+fn password_validation_boundaries() {
+    assert!(validate_share_password("a").is_ok());
+    assert!(validate_share_password(&"a".repeat(128)).is_ok());
+    assert!(validate_share_password("").is_err());
+    assert!(validate_share_password("   ").is_err());
+    assert!(validate_share_password(&"a".repeat(129)).is_err());
+    assert!(prepare_share_password(None).unwrap().is_none());
+    let hash = prepare_share_password(Some("secret")).unwrap().unwrap();
+    assert_eq!(hash, hash_share_password("secret"));
+    assert!(prepare_share_password(Some("   ")).is_err());
+    assert_ne!(hash_share_password("a"), hash_share_password("b"));
+    assert!(constant_time_eq(b"abc", b"abc"));
+    assert!(!constant_time_eq(b"abc", b"abd"));
+    assert!(!constant_time_eq(b"abc", b"ab"));
+}
+
+#[test]
+fn safe_login_next_validation() {
+    assert_eq!(
+        safe_login_next(Some("/s/test-token/files/x"), "test-token"),
+        "/s/test-token/files/x"
+    );
+    assert_eq!(safe_login_next(None, "test-token"), "/s/test-token/");
+    assert_eq!(
+        safe_login_next(Some("https://evil.example/"), "test-token"),
+        "/s/test-token/"
+    );
+    assert_eq!(
+        safe_login_next(Some("//evil.example/"), "test-token"),
+        "/s/test-token/"
+    );
+    assert_eq!(
+        safe_login_next(Some("/s/other-token/x"), "test-token"),
+        "/s/test-token/"
+    );
+    assert_eq!(
+        safe_login_next(Some("/s/test-token/x#frag"), "test-token"),
+        "/s/test-token/"
+    );
+}
+
+#[test]
+fn snapshot_serde_password() {
+    let snapshot = FileSharingSnapshot::default();
+    assert!(!snapshot.password_protected);
+    let json = serde_json::to_string(&snapshot).unwrap();
+    assert!(!json.contains("password"));
+    let protected = FileSharingSnapshot {
+        password_protected: true,
+        ..FileSharingSnapshot::default()
+    };
+    let json = serde_json::to_string(&protected).unwrap();
+    assert!(json.contains("\"passwordProtected\":true"));
+    assert!(!json.contains("\"password\""));
+    let input: FileSharingStartInput = serde_json::from_str(r#"{"networkId":"n","paths":[]}"#).unwrap();
+    assert!(input.password.is_none());
+    let input: FileSharingStartInput =
+        serde_json::from_str(r#"{"networkId":"n","paths":[],"password":"x"}"#).unwrap();
+    assert_eq!(input.password.as_deref(), Some("x"));
+}
+
+#[test]
+fn login_document_bilingual_no_echo() {
+    let en = login_document(Some("en-US"), "/s/test-token/", false);
+    let zh = login_document(Some("zh-CN"), "/s/test-token/", true);
+    assert!(en.contains("<form") && en.contains("method=\"post\"") || en.contains("method='post'"));
+    assert!(zh.contains("lang=\"zh\"") || zh.contains("zh"));
+    assert!(!en.contains("secret"));
+    assert!(en.contains("Content-Security-Policy") == false);
+    assert!(en.contains("password"));
+}
+
+#[tokio::test]
+async fn loopback_password_gate() {
+    let delay = Duration::from_millis(40);
+    let path = std::env::temp_dir().join(format!(
+        "onespace-file-sharing-pw-{}.bin",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&path, vec![7_u8; 1024]).unwrap();
+    let file = SharedFile {
+        id: "file-1".to_string(),
+        name: "download.bin".to_string(),
+        path: path.clone(),
+        size: 1024,
+        modified_at: 0,
+    };
+    let session = Arc::new(Session {
+        token: "test-token".to_string(),
+        files: vec![file.clone()],
+        transfers: std::sync::Mutex::new(Vec::new()),
+        summary: std::sync::Mutex::new(super::types::FileSharingSummary::default()),
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        connections: Arc::new(Semaphore::new(64)),
+        header_read_timeout: Duration::from_secs(1),
+        transfer_updates: None,
+        password_hash: Some(hash_share_password("secret")),
+        session_secret: "test-secret".to_string(),
+        login_failure_delay: delay,
+    });
+    let (address, shutdown, task) = start_loopback_session(session.clone()).await;
+
+    // unauthenticated listing/file -> 401 password page
+    let listing = request_once(
+        address,
+        "GET /s/test-token/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(listing.starts_with("HTTP/1.1 401"));
+    assert!(!listing.contains("download.bin"));
+
+    let head = request_once(
+        address,
+        "HEAD /s/test-token/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(head.starts_with("HTTP/1.1 401"));
+
+    let file_resp = request_once(
+        address,
+        "GET /s/test-token/files/file-1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(file_resp.starts_with("HTTP/1.1 401"));
+
+    // wrong password -> denied, no set-cookie
+    let wrong = request_once(
+        address,
+        "POST /s/test-token/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 23\r\nConnection: close\r\n\r\npassword=wrong&next=/x",
+    )
+    .await;
+    assert!(wrong.starts_with("HTTP/1.1 401") || wrong.starts_with("HTTP/1.1 403"));
+    assert!(!wrong.to_lowercase().contains("set-cookie"));
+
+    // correct password -> 303 redirect + cookie
+    let correct = request_once(
+        address,
+        "POST /s/test-token/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 31\r\nConnection: close\r\n\r\npassword=secret&next=/s/test-token/",
+    )
+    .await;
+    assert!(correct.starts_with("HTTP/1.1 303"));
+    assert!(correct.to_lowercase().contains("set-cookie: onespace_share=test-secret"));
+    assert!(correct.to_lowercase().contains("httponly"));
+    assert!(correct.to_lowercase().contains("samesite=strict"));
+    assert!(correct.to_lowercase().contains("path=/s/test-token/"));
+    assert!(!correct.to_lowercase().contains("secure"));
+
+    // with cookie: listing/file/range/head succeed
+    let cookie = "Cookie: onespace_share=test-secret\r\n";
+    let listing2 = request_once(
+        address,
+        &format!(
+            "GET /s/test-token/ HTTP/1.1\r\nHost: localhost\r\n{cookie}Connection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert!(listing2.starts_with("HTTP/1.1 200"));
+
+    let file2 = request_once(
+        address,
+        &format!(
+            "GET /s/test-token/files/file-1 HTTP/1.1\r\nHost: localhost\r\n{cookie}Connection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert!(file2.starts_with("HTTP/1.1 200"));
+
+    let range = request_once(
+        address,
+        &format!(
+            "GET /s/test-token/files/file-1 HTTP/1.1\r\nHost: localhost\r\nRange: bytes=0-3\r\n{cookie}Connection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert!(range.starts_with("HTTP/1.1 206"));
+
+    let head2 = request_once(
+        address,
+        &format!(
+            "HEAD /s/test-token/files/file-1 HTTP/1.1\r\nHost: localhost\r\n{cookie}Connection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert!(head2.starts_with("HTTP/1.1 200"));
+
+    let _ = shutdown.send(());
+    let _ = task.await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn loopback_password_secure_cookie() {
+    let session = test_password_session("secret", Duration::from_millis(40));
+    let (address, shutdown, task) = start_loopback_session(session).await;
+    let correct = request_once(
+        address,
+        "POST /s/test-token/login HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-Proto: https\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 16\r\nConnection: close\r\n\r\npassword=secret",
+    )
+    .await;
+    assert!(correct.to_lowercase().contains("secure"));
+    let _ = shutdown.send(());
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn loopback_password_delay_no_lockout() {
+    let delay = Duration::from_millis(40);
+    let session = test_password_session("secret", delay);
+    let (address, shutdown, task) = start_loopback_session(session).await;
+    let start = std::time::Instant::now();
+    let wrong = request_once(
+        address,
+        "POST /s/test-token/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 13\r\nConnection: close\r\n\r\npassword=wrong",
+    )
+    .await;
+    assert!(start.elapsed() >= delay);
+    assert!(wrong.starts_with("HTTP/1.1 401") || wrong.starts_with("HTTP/1.1 403"));
+    // immediate correct login succeeds
+    let ok = request_once(
+        address,
+        "POST /s/test-token/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 16\r\nConnection: close\r\n\r\npassword=secret",
+    )
+    .await;
+    assert!(ok.starts_with("HTTP/1.1 303"));
+    let _ = shutdown.send(());
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn loopback_no_password_behaves_as_before() {
+    let session = super::runtime::test_session(Vec::new(), 64, Duration::from_secs(1));
+    let (address, shutdown, task) = start_loopback_session(session).await;
+    let listing = request_once(
+        address,
+        "GET /s/test-token/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(listing.starts_with("HTTP/1.1 200"));
+    let head = request_once(
+        address,
+        "HEAD /s/test-token/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(head.starts_with("HTTP/1.1 200"));
+    let post = request_once(
+        address,
+        "POST /s/test-token/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(!post.starts_with("HTTP/1.1 303"));
+    let _ = shutdown.send(());
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn loopback_login_body_limit() {
+    let session = test_password_session("secret", Duration::from_millis(40));
+    let (address, shutdown, task) = start_loopback_session(session).await;
+    let big = "a".repeat(100_000);
+    let request = format!(
+        "POST /s/test-token/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\npassword={}",
+        big.len() + 9,
+        big
+    );
+    let result = timeout(Duration::from_secs(2), request_once(address, &request)).await;
+    assert!(result.is_ok());
+    let resp = result.unwrap();
+    assert!(resp.starts_with("HTTP/1.1 4") || resp.starts_with("HTTP/1.1 5"));
+    let _ = shutdown.send(());
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn loopback_auth_security_headers() {
+    let session = test_password_session("secret", Duration::from_millis(40));
+    let (address, shutdown, task) = start_loopback_session(session).await;
+    let resp = request_once(
+        address,
+        "GET /s/test-token/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(resp.to_lowercase().contains("cache-control: no-store"));
+    assert!(resp.to_lowercase().contains("x-content-type-options: nosniff"));
+    assert!(resp.to_lowercase().contains("content-security-policy"));
+    let _ = shutdown.send(());
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn session_is_authenticated_cookie() {
+    let session = test_password_session("secret", Duration::from_millis(40));
+    assert!(!session_is_authenticated(&session, None));
+    assert!(session_is_authenticated(
+        &session,
+        Some("onespace_share=test-secret")
+    ));
+    assert!(!session_is_authenticated(
+        &session,
+        Some("onespace_share=wrong")
+    ));
+}
+
+#[test]
+fn default_login_failure_delay_value() {
+    assert_eq!(DEFAULT_LOGIN_FAILURE_DELAY, Duration::from_millis(500));
 }

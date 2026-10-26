@@ -13,6 +13,8 @@ pub struct FileSharingNetwork {
 pub struct FileSharingStartInput {
     pub network_id: String,
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -75,6 +77,12 @@ pub struct FileSharingSnapshot {
     pub transfers: Vec<FileSharingTransfer>,
     pub summary: FileSharingSummary,
     pub last_error: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub password_protected: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Default for FileSharingSnapshot {
@@ -91,6 +99,7 @@ impl Default for FileSharingSnapshot {
             transfers: Vec::new(),
             summary: FileSharingSummary::default(),
             last_error: None,
+            password_protected: false,
         }
     }
 }

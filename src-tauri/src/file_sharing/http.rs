@@ -1,5 +1,6 @@
 use super::runtime::{
-    begin_transfer, finish_transfer, update_transfer_progress, SharedFile, SharedSession,
+    begin_transfer, constant_time_eq, finish_transfer, hash_share_password, safe_login_next,
+    session_is_authenticated, update_transfer_progress, SharedFile, SharedSession,
 };
 use super::types::FileSharingTransferState;
 use bytes::Bytes;
@@ -12,6 +13,7 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_util::{
     io::ReaderStream,
@@ -19,6 +21,10 @@ use tokio_util::{
 };
 
 type ResponseBody = BoxBody<Bytes, io::Error>;
+
+const MAX_LOGIN_BODY_BYTES: usize = 8 * 1024;
+const MAX_LOGIN_BODY_DRAIN_BYTES: usize = 1024 * 1024;
+const LOGIN_BODY_READ_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub(crate) struct DownloadStream {
     reader: ReaderStream<tokio::io::Take<tokio::fs::File>>,
@@ -229,6 +235,168 @@ pub(crate) fn listing_document(session: &SharedSession, accept_language: Option<
     format!("<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>body{{font:16px system-ui,sans-serif;margin:0;background:#f7f8fa;color:#172033}}main{{max-width:680px;margin:32px auto;padding:24px}}ul{{list-style:none;padding:0}}li{{display:flex;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid #dfe3e8}}a{{color:#155eef;overflow-wrap:anywhere}}span{{color:#667085;white-space:nowrap}}</style></head><body><main><h1>{title}</h1><p>{summary}</p><ul>{files}</ul></main></body></html>")
 }
 
+fn login_action(next: &str) -> String {
+    let token = next
+        .split('/')
+        .filter(|piece| !piece.is_empty())
+        .nth(1)
+        .unwrap_or_default();
+    format!("/s/{token}/login")
+}
+
+pub(crate) fn login_document(accept_language: Option<&str>, next: &str, failed: bool) -> String {
+    let chinese = prefers_chinese(accept_language);
+    let language = if chinese { "zh" } else { "en" };
+    let title = if chinese {
+        "OneSpace 文件共享"
+    } else {
+        "OneSpace File Sharing"
+    };
+    let heading = if chinese {
+        "需要访问密码"
+    } else {
+        "Password required"
+    };
+    let description = if chinese {
+        "此文件共享已启用访问密码，请输入密码后继续。"
+    } else {
+        "This file share is protected. Enter the access password to continue."
+    };
+    let label = if chinese { "访问密码" } else { "Access password" };
+    let submit = if chinese { "继续" } else { "Continue" };
+    let error = if failed {
+        if chinese {
+            "<p class=\"error\">密码不正确，请重试。</p>"
+        } else {
+            "<p class=\"error\">Incorrect password. Try again.</p>"
+        }
+    } else {
+        ""
+    };
+    let action = html_escape(&login_action(next));
+    let next = html_escape(next);
+    format!("<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>body{{font:16px system-ui,sans-serif;margin:0;background:#f7f8fa;color:#172033}}main{{max-width:420px;margin:32px auto;padding:24px}}form{{display:flex;flex-direction:column;gap:12px;margin-top:24px}}input{{font:inherit;padding:10px 12px;border:1px solid #c7ccd4;border-radius:8px}}button{{font:inherit;padding:10px 12px;border:0;border-radius:8px;background:#155eef;color:#fff;cursor:pointer}}.error{{color:#b42318;margin:12px 0 0}}</style></head><body><main><h1>{heading}</h1><p>{description}</p>{error}<form method=\"post\" action=\"{action}\"><input type=\"hidden\" name=\"next\" value=\"{next}\"><label for=\"password\">{label}</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" maxlength=\"128\" required autofocus><button type=\"submit\">{submit}</button></form></main></body></html>")
+}
+
+fn login_page(
+    accept_language: Option<&str>,
+    next: &str,
+    failed: bool,
+    head: bool,
+    status: StatusCode,
+) -> Response<ResponseBody> {
+    let document = login_document(accept_language, next, failed);
+    security_headers(Response::builder())
+        .status(status)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+        )
+        .header("Content-Length", document.len())
+        .body(
+            Full::new(if head {
+                Bytes::new()
+            } else {
+                Bytes::from(document)
+            })
+            .map_err(|never: Infallible| match never {})
+            .boxed(),
+        )
+        .expect("valid login response")
+}
+
+fn method_not_allowed() -> Response<ResponseBody> {
+    security_headers(Response::builder())
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header("Allow", "GET, HEAD")
+        .body(
+            Full::new(Bytes::new())
+                .map_err(|never: Infallible| match never {})
+                .boxed(),
+        )
+        .expect("valid 405 response")
+}
+
+async fn read_login_body(mut body: Incoming) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let mut received = 0_usize;
+    loop {
+        if received >= MAX_LOGIN_BODY_DRAIN_BYTES {
+            break;
+        }
+        match tokio::time::timeout(LOGIN_BODY_READ_TIMEOUT, body.frame()).await {
+            Ok(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    received = received.saturating_add(data.len());
+                    if buffer.len() < MAX_LOGIN_BODY_BYTES {
+                        let remaining = MAX_LOGIN_BODY_BYTES - buffer.len();
+                        let take = data.len().min(remaining);
+                        buffer.extend_from_slice(&data[..take]);
+                    }
+                }
+            }
+            Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+        }
+    }
+    buffer
+}
+
+fn form_value(body: &[u8], key: &str) -> Option<String> {
+    url::form_urlencoded::parse(body)
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.into_owned())
+}
+
+async fn login(request: Request<Incoming>, session: SharedSession) -> Response<ResponseBody> {
+    let accept_language = request
+        .headers()
+        .get("accept-language")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
+    let secure_cookie = request
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("https"));
+    let body = read_login_body(request.into_body()).await;
+    let password = form_value(&body, "password").unwrap_or_default();
+    let next = safe_login_next(form_value(&body, "next").as_deref(), &session.token);
+    let authenticated = session
+        .password_hash
+        .as_ref()
+        .is_some_and(|expected| constant_time_eq(&hash_share_password(&password), expected));
+    if !authenticated {
+        tokio::time::sleep(session.login_failure_delay).await;
+        return login_page(
+            accept_language.as_deref(),
+            &next,
+            true,
+            false,
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+    let mut cookie = format!(
+        "onespace_share={}; HttpOnly; SameSite=Strict; Path=/s/{}/",
+        session.session_secret, session.token
+    );
+    if secure_cookie {
+        cookie.push_str("; Secure");
+    }
+    security_headers(Response::builder())
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", next.as_str())
+        .header("Set-Cookie", cookie)
+        .header("Content-Length", 0)
+        .body(
+            Full::new(Bytes::new())
+                .map_err(|never: Infallible| match never {})
+                .boxed(),
+        )
+        .expect("valid login redirect")
+}
+
+
 fn listing(
     session: &SharedSession,
     accept_language: Option<&str>,
@@ -429,25 +597,66 @@ pub(crate) async fn handle(
     if session.cancellation.is_cancelled() {
         return Ok(empty(StatusCode::NOT_FOUND));
     }
-    if request.method() != Method::GET && request.method() != Method::HEAD {
-        return Ok(security_headers(Response::builder())
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .header("Allow", "GET, HEAD")
-            .body(
-                Full::new(Bytes::new())
-                    .map_err(|never: Infallible| match never {})
-                    .boxed(),
-            )
-            .expect("valid 405 response"));
-    }
-    let pieces = request
-        .uri()
-        .path()
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let pieces = path
         .split('/')
         .filter(|piece| !piece.is_empty())
         .collect::<Vec<_>>();
     if pieces.len() < 2 || pieces[0] != "s" || pieces[1] != session.token {
         return Ok(empty(StatusCode::NOT_FOUND));
+    }
+    let protected = session.password_hash.is_some();
+    let is_login = pieces.len() == 3 && pieces[2] == "login";
+    if is_login {
+        if !protected {
+            return Ok(empty(StatusCode::NOT_FOUND));
+        }
+        return Ok(match method {
+            Method::POST => login(request, session).await,
+            Method::GET | Method::HEAD => {
+                let next = safe_login_next(Some(path.as_str()), &session.token);
+                let accept_language = request
+                    .headers()
+                    .get("accept-language")
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| value.to_string());
+                login_page(
+                    accept_language.as_deref(),
+                    &next,
+                    false,
+                    method == Method::HEAD,
+                    StatusCode::UNAUTHORIZED,
+                )
+            }
+            _ => method_not_allowed(),
+        });
+    }
+    if method != Method::GET && method != Method::HEAD {
+        return Ok(method_not_allowed());
+    }
+    if protected
+        && !session_is_authenticated(
+            &session,
+            request
+                .headers()
+                .get("cookie")
+                .and_then(|value| value.to_str().ok()),
+        )
+    {
+        let next = safe_login_next(Some(path.as_str()), &session.token);
+        let accept_language = request
+            .headers()
+            .get("accept-language")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_string());
+        return Ok(login_page(
+            accept_language.as_deref(),
+            &next,
+            false,
+            method == Method::HEAD,
+            StatusCode::UNAUTHORIZED,
+        ));
     }
     if pieces.len() == 2 && request.uri().path().ends_with('/') {
         return Ok(listing(

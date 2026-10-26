@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
@@ -19,6 +20,8 @@ use uuid::Uuid;
 const MAX_CONNECTIONS: usize = 64;
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const TRANSFER_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const DEFAULT_LOGIN_FAILURE_DELAY: Duration = Duration::from_millis(500);
+pub(crate) const MAX_SHARE_PASSWORD_CHARS: usize = 128;
 
 #[derive(Clone)]
 pub(crate) struct SharedFile {
@@ -39,10 +42,13 @@ pub(crate) struct Session {
     pub cancellation: CancellationToken,
     pub connections: Arc<Semaphore>,
     pub header_read_timeout: Duration,
-    transfer_updates: Option<TransferUpdates>,
+    pub password_hash: Option<[u8; 32]>,
+    pub session_secret: String,
+    pub login_failure_delay: Duration,
+    pub(crate) transfer_updates: Option<TransferUpdates>,
 }
 
-struct TransferUpdates {
+pub(crate) struct TransferUpdates {
     app: tauri::AppHandle,
     last_emitted: Mutex<Option<Instant>>,
 }
@@ -85,6 +91,91 @@ pub(crate) fn is_private_ipv4(address: Ipv4Addr) -> bool {
         && !address.is_multicast()
 }
 
+pub(crate) fn validate_share_password(password: &str) -> Result<(), String> {
+    let characters = password.chars().count();
+    if characters == 0 {
+        return Err("access password must not be empty".to_string());
+    }
+    if characters > MAX_SHARE_PASSWORD_CHARS {
+        return Err(format!(
+            "access password must be at most {MAX_SHARE_PASSWORD_CHARS} characters"
+        ));
+    }
+    if !password.chars().any(|character| !character.is_whitespace()) {
+        return Err("access password must contain a non-whitespace character".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn hash_share_password(password: &str) -> [u8; 32] {
+    let digest = Sha256::digest(password.as_bytes());
+    let mut hash = [0_u8; 32];
+    hash.copy_from_slice(&digest);
+    hash
+}
+
+pub(crate) fn prepare_share_password(password: Option<&str>) -> Result<Option<[u8; 32]>, String> {
+    match password {
+        Some(password) => {
+            validate_share_password(password)?;
+            Ok(Some(hash_share_password(password)))
+        }
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0_u8;
+    for (left, right) in left.iter().zip(right) {
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
+pub(crate) fn safe_login_next(next: Option<&str>, token: &str) -> String {
+    let fallback = format!("/s/{token}/");
+    let Some(next) = next else {
+        return fallback;
+    };
+    if next.is_empty()
+        || !next.starts_with('/')
+        || next.starts_with("//")
+        || next.contains('#')
+        || next.contains('\\')
+        || !next.chars().all(|character| character.is_ascii_graphic())
+    {
+        return fallback;
+    }
+    if next.starts_with(&fallback) {
+        next.to_string()
+    } else {
+        fallback
+    }
+}
+
+pub(crate) fn session_is_authenticated(
+    session: &SharedSession,
+    cookie_header: Option<&str>,
+) -> bool {
+    if session.password_hash.is_none() {
+        return true;
+    }
+    let Some(cookie_header) = cookie_header else {
+        return false;
+    };
+    let value = cookie_header.split(';').find_map(|cookie| {
+        let (name, value) = cookie.trim().split_once('=')?;
+        (name.trim() == "onespace_share").then_some(value.trim())
+    });
+    let Some(value) = value else {
+        return false;
+    };
+    constant_time_eq(value.as_bytes(), session.session_secret.as_bytes())
+}
+
 pub(crate) fn networks_from<I>(interfaces: I) -> Vec<FileSharingNetwork>
 where
     I: IntoIterator<Item = (String, IpAddr)>,
@@ -120,6 +211,7 @@ fn discover_networks() -> Result<Vec<FileSharingNetwork>, String> {
 }
 
 fn snapshot_for(session: &SharedSession, mut snapshot: FileSharingSnapshot) -> FileSharingSnapshot {
+    snapshot.password_protected = session.password_hash.is_some();
     snapshot.files = session
         .files
         .iter()
@@ -307,6 +399,29 @@ pub(crate) fn test_session(
         cancellation: CancellationToken::new(),
         connections: Arc::new(Semaphore::new(max_connections)),
         header_read_timeout,
+        password_hash: None,
+        session_secret: "test-session-secret".to_string(),
+        login_failure_delay: DEFAULT_LOGIN_FAILURE_DELAY,
+        transfer_updates: None,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn test_password_session(
+    password: &str,
+    login_failure_delay: Duration,
+) -> SharedSession {
+    Arc::new(Session {
+        token: "test-token".to_string(),
+        files: Vec::new(),
+        transfers: Mutex::new(Vec::new()),
+        summary: Mutex::new(FileSharingSummary::default()),
+        cancellation: CancellationToken::new(),
+        connections: Arc::new(Semaphore::new(64)),
+        header_read_timeout: Duration::from_secs(1),
+        password_hash: Some(hash_share_password(password)),
+        session_secret: "test-secret".to_string(),
+        login_failure_delay,
         transfer_updates: None,
     })
 }
@@ -370,6 +485,7 @@ pub(crate) async fn start(
     {
         return Err("file sharing is already running".to_string());
     }
+    let password_hash = prepare_share_password(input.password.as_deref())?;
     let network = discover_networks()?
         .into_iter()
         .find(|network| network.id == input.network_id)
@@ -389,6 +505,9 @@ pub(crate) async fn start(
     let mut token_bytes = [0_u8; 32];
     rand::thread_rng().fill_bytes(&mut token_bytes);
     let token = URL_SAFE_NO_PAD.encode(token_bytes);
+    let mut secret_bytes = [0_u8; 32];
+    rand::thread_rng().fill_bytes(&mut secret_bytes);
+    let session_secret = URL_SAFE_NO_PAD.encode(secret_bytes);
     let session = Arc::new(Session {
         token: token.clone(),
         files,
@@ -397,6 +516,9 @@ pub(crate) async fn start(
         cancellation: CancellationToken::new(),
         connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
         header_read_timeout: HEADER_READ_TIMEOUT,
+        password_hash,
+        session_secret,
+        login_failure_delay: DEFAULT_LOGIN_FAILURE_DELAY,
         transfer_updates: Some(TransferUpdates {
             app: app.clone(),
             last_emitted: Mutex::new(None),
@@ -426,6 +548,7 @@ pub(crate) async fn start(
         transfers: Vec::new(),
         summary: FileSharingSummary::default(),
         last_error: None,
+        password_protected: session.password_hash.is_some(),
     };
     let snapshot = snapshot_for(&session, snapshot);
     let mut runtime = state()
