@@ -2,12 +2,13 @@ use super::http::{
     listing_document, login_document, parse_range, safe_header_filename, DownloadStream, ParsedRange,
 };
 use super::runtime::{
-    begin_transfer, constant_time_eq, finish_transfer, hash_share_password, is_private_ipv4,
-    networks_from, prepare_share_password, run_listener, safe_login_next, session_is_authenticated,
-    should_emit_transfer_update, test_password_session, unexpected_exit_snapshot,
-    validate_share_password, DEFAULT_LOGIN_FAILURE_DELAY, Session, SharedFile, SharedSession,
+    begin_transfer, constant_time_eq, ensure_public_dependency, finish_transfer, hash_share_password,
+    is_private_ipv4, networks_from, new_public_tunnel_id, prepare_share_password, public_state_from_status,
+    public_url, run_listener, safe_login_next, session_is_authenticated, should_emit_transfer_update,
+    test_password_session, unexpected_exit_snapshot, validate_share_password, DEFAULT_LOGIN_FAILURE_DELAY,
+    PublicAccessState, Session, SharedFile, SharedSession, PUBLIC_TUNNEL_EVENT,
 };
-use super::types::{FileSharingSnapshot, FileSharingStartInput, FileSharingTransferState};
+use super::types::{FileSharingPublicState, FileSharingSnapshot, FileSharingStartInput, FileSharingTransferState};
 use futures_util::StreamExt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
@@ -414,7 +415,8 @@ fn snapshot_serde_password() {
     let snapshot = FileSharingSnapshot::default();
     assert!(!snapshot.password_protected);
     let json = serde_json::to_string(&snapshot).unwrap();
-    assert!(!json.contains("password"));
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(value.get("password").is_none());
     let protected = FileSharingSnapshot {
         password_protected: true,
         ..FileSharingSnapshot::default()
@@ -673,4 +675,273 @@ async fn session_is_authenticated_cookie() {
 #[test]
 fn default_login_failure_delay_value() {
     assert_eq!(DEFAULT_LOGIN_FAILURE_DELAY, Duration::from_millis(500));
+}
+
+#[test]
+fn file_sharing_start_input_defaults_public_access_false() {
+    let input: FileSharingStartInput =
+        serde_json::from_str(r#"{"networkId":"net","paths":["/tmp/a.txt"]}"#).unwrap();
+    assert!(!input.public_access);
+    let with_public: FileSharingStartInput = serde_json::from_str(
+        r#"{"networkId":"net","paths":["/tmp/a.txt"],"publicAccess":true}"#,
+    )
+    .unwrap();
+    assert!(with_public.public_access);
+}
+
+#[test]
+fn snapshot_default_serializes_public_state_disabled_and_additive_fields() {
+    let snapshot = FileSharingSnapshot::default();
+    let value = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(value["publicState"], "disabled");
+    assert!(value.get("publicTunnelId").is_some());
+    assert!(value.get("publicShareUrl").is_some());
+    assert!(value.get("publicError").is_some());
+    assert!(value.get("passwordProtected").is_some());
+    assert!(value["publicTunnelId"].is_null());
+    assert!(value["publicShareUrl"].is_null());
+    assert!(value["publicError"].is_null());
+}
+
+#[test]
+fn ensure_public_dependency_returns_install_guidance_when_missing() {
+    assert!(ensure_public_dependency(false).is_err());
+    let err = ensure_public_dependency(false).unwrap_err();
+    assert!(err.to_lowercase().contains("cloudflared"));
+    assert!(ensure_public_dependency(true).is_ok());
+}
+
+#[test]
+fn public_url_normalizes_trailing_slash() {
+    assert_eq!(
+        public_url("https://x.trycloudflare.com", "token"),
+        "https://x.trycloudflare.com/s/token/"
+    );
+    assert_eq!(
+        public_url("https://x.trycloudflare.com/", "token"),
+        "https://x.trycloudflare.com/s/token/"
+    );
+}
+
+#[test]
+fn public_state_from_status_maps_all_states() {
+    assert_eq!(
+        public_state_from_status("starting"),
+        FileSharingPublicState::Starting
+    );
+    assert_eq!(
+        public_state_from_status("running"),
+        FileSharingPublicState::Running
+    );
+    assert_eq!(public_state_from_status("error"), FileSharingPublicState::Error);
+    assert_eq!(
+        public_state_from_status("stopped"),
+        FileSharingPublicState::Disabled
+    );
+    assert_eq!(public_state_from_status("weird"), FileSharingPublicState::Error);
+}
+
+#[test]
+fn new_public_tunnel_id_uses_prefix_and_is_unique() {
+    let first = new_public_tunnel_id();
+    let second = new_public_tunnel_id();
+    assert!(first.starts_with("file-sharing-"));
+    assert!(second.starts_with("file-sharing-"));
+    assert_ne!(first, second);
+}
+
+#[test]
+fn public_access_state_success_transition() {
+    let mut state = PublicAccessState::default();
+    assert_eq!(state.state, FileSharingPublicState::Disabled);
+    let previous = state.begin("tunnel-1".to_string());
+    assert!(previous.is_none());
+    assert_eq!(state.state, FileSharingPublicState::Starting);
+    assert_eq!(state.tunnel_id.as_deref(), Some("tunnel-1"));
+
+    let status = crate::tunnel::TunnelRuntimeStatus {
+        id: "tunnel-1".to_string(),
+        state: "running".to_string(),
+        public_url: Some("https://x.trycloudflare.com".to_string()),
+        error: None,
+        started_at: None,
+        active_connections: 0,
+    };
+    assert!(state.apply_tunnel_status(&status));
+    let fields = state.snapshot_fields("token", Some(&status));
+    assert_eq!(fields.state, FileSharingPublicState::Running);
+    assert_eq!(
+        fields.share_url.as_deref(),
+        Some("https://x.trycloudflare.com/s/token/")
+    );
+}
+
+#[test]
+fn public_access_state_failure_and_retry() {
+    let mut state = PublicAccessState::default();
+    state.begin("tunnel-1".to_string());
+    state.mark_failed("boom".to_string());
+    assert_eq!(state.state, FileSharingPublicState::Error);
+    assert_eq!(state.error.as_deref(), Some("boom"));
+    let fields = state.snapshot_fields("token", None);
+    assert!(fields.share_url.is_none());
+
+    let previous = state.begin("tunnel-2".to_string());
+    assert_eq!(previous.as_deref(), Some("tunnel-1"));
+    assert_eq!(state.state, FileSharingPublicState::Starting);
+    assert!(state.error.is_none());
+    assert_ne!(state.tunnel_id.as_deref(), Some("tunnel-1"));
+
+    let status = crate::tunnel::TunnelRuntimeStatus {
+        id: "tunnel-2".to_string(),
+        state: "running".to_string(),
+        public_url: Some("https://y.trycloudflare.com".to_string()),
+        error: None,
+        started_at: None,
+        active_connections: 0,
+    };
+    assert!(state.apply_tunnel_status(&status));
+    let fields = state.snapshot_fields("token", Some(&status));
+    assert_eq!(fields.state, FileSharingPublicState::Running);
+    assert_eq!(
+        fields.share_url.as_deref(),
+        Some("https://y.trycloudflare.com/s/token/")
+    );
+}
+
+#[test]
+fn public_access_state_toggle_disable_and_reenable() {
+    let mut state = PublicAccessState::default();
+    state.begin("tunnel-1".to_string());
+    let status = crate::tunnel::TunnelRuntimeStatus {
+        id: "tunnel-1".to_string(),
+        state: "running".to_string(),
+        public_url: Some("https://x.trycloudflare.com".to_string()),
+        error: None,
+        started_at: None,
+        active_connections: 0,
+    };
+    state.apply_tunnel_status(&status);
+    let stopped = state.disable();
+    assert_eq!(stopped.as_deref(), Some("tunnel-1"));
+    assert_eq!(state.state, FileSharingPublicState::Disabled);
+    assert!(state.tunnel_id.is_none());
+    assert!(state.error.is_none());
+    let fields = state.snapshot_fields("token", None);
+    assert!(fields.share_url.is_none());
+
+    state.begin("tunnel-2".to_string());
+    assert_ne!(state.tunnel_id.as_deref(), Some("tunnel-1"));
+    let status2 = crate::tunnel::TunnelRuntimeStatus {
+        id: "tunnel-2".to_string(),
+        state: "running".to_string(),
+        public_url: Some("https://z.trycloudflare.com".to_string()),
+        error: None,
+        started_at: None,
+        active_connections: 0,
+    };
+    state.apply_tunnel_status(&status2);
+    let fields = state.snapshot_fields("token", Some(&status2));
+    assert_ne!(
+        fields.share_url.as_deref(),
+        Some("https://x.trycloudflare.com/s/token/")
+    );
+}
+
+#[test]
+fn stale_tunnel_status_is_ignored() {
+    let mut state = PublicAccessState::default();
+    state.begin("tunnel-new".to_string());
+    let stale = crate::tunnel::TunnelRuntimeStatus {
+        id: "tunnel-old".to_string(),
+        state: "running".to_string(),
+        public_url: Some("https://old.trycloudflare.com".to_string()),
+        error: None,
+        started_at: None,
+        active_connections: 0,
+    };
+    assert!(!state.apply_tunnel_status(&stale));
+    assert_eq!(state.state, FileSharingPublicState::Starting);
+    assert_eq!(state.tunnel_id.as_deref(), Some("tunnel-new"));
+    assert_eq!(PUBLIC_TUNNEL_EVENT, "file-sharing-public-updated");
+}
+
+#[test]
+fn disable_from_running_clears_all_public_fields() {
+    let mut state = PublicAccessState::default();
+    state.begin("tunnel-1".to_string());
+    let status = crate::tunnel::TunnelRuntimeStatus {
+        id: "tunnel-1".to_string(),
+        state: "running".to_string(),
+        public_url: Some("https://x.trycloudflare.com".to_string()),
+        error: None,
+        started_at: None,
+        active_connections: 0,
+    };
+    state.apply_tunnel_status(&status);
+    let stopped = state.disable();
+    assert_eq!(stopped.as_deref(), Some("tunnel-1"));
+    let fields = state.snapshot_fields("token", None);
+    assert_eq!(fields.state, FileSharingPublicState::Disabled);
+    assert!(fields.tunnel_id.is_none());
+    assert!(fields.share_url.is_none());
+    assert!(fields.error.is_none());
+}
+
+#[test]
+fn unexpected_exit_snapshot_clears_public_exposure() {
+    let session = test_session();
+    let snapshot = unexpected_exit_snapshot(
+        FileSharingSnapshot {
+            running: true,
+            share_url: Some("http://lan".to_string()),
+            public_tunnel_id: Some("tunnel-1".to_string()),
+            public_state: FileSharingPublicState::Running,
+            public_share_url: Some("https://x.trycloudflare.com/s/token/".to_string()),
+            public_error: None,
+            ..FileSharingSnapshot::default()
+        },
+        &session,
+        "accept failed".to_string(),
+    );
+    assert!(!snapshot.running);
+    assert!(snapshot.share_url.is_none());
+    assert!(snapshot.public_tunnel_id.is_none());
+    assert_eq!(snapshot.public_state, FileSharingPublicState::Disabled);
+    assert!(snapshot.public_share_url.is_none());
+    assert!(snapshot.public_error.is_none());
+    assert_eq!(snapshot.last_error.as_deref(), Some("accept failed"));
+}
+
+#[test]
+fn apply_tunnel_status_captures_error_message() {
+    let mut state = PublicAccessState::default();
+    state.begin("tunnel-1".to_string());
+    let status = crate::tunnel::TunnelRuntimeStatus {
+        id: "tunnel-1".to_string(),
+        state: "error".to_string(),
+        public_url: None,
+        error: Some("tunnel died".to_string()),
+        started_at: None,
+        active_connections: 0,
+    };
+    assert!(state.apply_tunnel_status(&status));
+    let fields = state.snapshot_fields("token", Some(&status));
+    assert_eq!(fields.state, FileSharingPublicState::Error);
+    assert_eq!(fields.error.as_deref(), Some("tunnel died"));
+    assert!(fields.share_url.is_none());
+}
+
+#[test]
+fn snapshot_fields_starting_and_error_have_no_url() {
+    let mut state = PublicAccessState::default();
+    state.begin("tunnel-1".to_string());
+    let fields = state.snapshot_fields("token", None);
+    assert_eq!(fields.state, FileSharingPublicState::Starting);
+    assert!(fields.share_url.is_none());
+    state.mark_failed("boom".to_string());
+    let fields = state.snapshot_fields("token", None);
+    assert_eq!(fields.state, FileSharingPublicState::Error);
+    assert!(fields.share_url.is_none());
+    assert_eq!(fields.error.as_deref(), Some("boom"));
 }

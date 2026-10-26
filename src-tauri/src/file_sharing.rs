@@ -30,3 +30,17 @@ pub async fn file_sharing_stop(
 ) -> Result<types::FileSharingSnapshot, String> {
     runtime::stop(app).await
 }
+
+#[tauri::command]
+pub async fn file_sharing_public_start(
+    app: tauri::AppHandle,
+) -> Result<types::FileSharingSnapshot, String> {
+    runtime::start_public(app).await
+}
+
+#[tauri::command]
+pub async fn file_sharing_public_stop(
+    app: tauri::AppHandle,
+) -> Result<types::FileSharingSnapshot, String> {
+    runtime::stop_public(app).await
+}

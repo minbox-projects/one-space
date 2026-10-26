@@ -1,5 +1,6 @@
 use super::http;
 use super::types::*;
+use crate::tunnel::{TunnelMode, TunnelRuntimeStatus};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -22,6 +23,136 @@ const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const TRANSFER_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_LOGIN_FAILURE_DELAY: Duration = Duration::from_millis(500);
 pub(crate) const MAX_SHARE_PASSWORD_CHARS: usize = 128;
+pub(crate) const PUBLIC_TUNNEL_EVENT: &str = "file-sharing-public-updated";
+
+pub(crate) fn ensure_public_dependency(installed: bool) -> Result<(), String> {
+    if installed {
+        return Ok(());
+    }
+    Err(format!(
+        "public sharing requires cloudflared, but it was not found. Install it with `{}` and try again.",
+        crate::tunnel::recommended_command_for(TunnelMode::Cloudflare)
+    ))
+}
+
+pub(crate) fn new_public_tunnel_id() -> String {
+    format!(
+        "{}{}",
+        crate::tunnel::EPHEMERAL_TUNNEL_ID_PREFIX,
+        Uuid::new_v4().simple()
+    )
+}
+
+pub(crate) fn public_url(tunnel_url: &str, token: &str) -> String {
+    format!("{}/s/{token}/", tunnel_url.trim_end_matches('/'))
+}
+
+pub(crate) fn public_state_from_status(status: &str) -> FileSharingPublicState {
+    match status {
+        "starting" => FileSharingPublicState::Starting,
+        "running" => FileSharingPublicState::Running,
+        "stopped" => FileSharingPublicState::Disabled,
+        _ => FileSharingPublicState::Error,
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PublicAccessState {
+    pub(crate) state: FileSharingPublicState,
+    pub(crate) tunnel_id: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicSnapshotFields {
+    pub(crate) tunnel_id: Option<String>,
+    pub(crate) state: FileSharingPublicState,
+    pub(crate) share_url: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+impl PublicAccessState {
+    pub(crate) fn begin(&mut self, tunnel_id: String) -> Option<String> {
+        let previous = self.tunnel_id.take();
+        self.state = FileSharingPublicState::Starting;
+        self.error = None;
+        self.tunnel_id = Some(tunnel_id);
+        previous
+    }
+
+    pub(crate) fn apply_tunnel_status(&mut self, status: &TunnelRuntimeStatus) -> bool {
+        if self.tunnel_id.as_deref() != Some(status.id.as_str()) {
+            return false;
+        }
+        self.state = public_state_from_status(&status.state);
+        match self.state {
+            FileSharingPublicState::Error => {
+                self.error = status
+                    .error
+                    .clone()
+                    .or_else(|| Some("public tunnel exited unexpectedly".to_string()));
+            }
+            FileSharingPublicState::Disabled => {
+                self.tunnel_id = None;
+                self.error = None;
+            }
+            FileSharingPublicState::Starting | FileSharingPublicState::Running => {
+                self.error = None;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn disable(&mut self) -> Option<String> {
+        self.state = FileSharingPublicState::Disabled;
+        self.error = None;
+        self.tunnel_id.take()
+    }
+
+    pub(crate) fn mark_failed(&mut self, error: String) {
+        self.state = FileSharingPublicState::Error;
+        self.error = Some(error);
+    }
+
+    pub(crate) fn snapshot_fields(
+        &self,
+        token: &str,
+        status: Option<&TunnelRuntimeStatus>,
+    ) -> PublicSnapshotFields {
+        let Some(tunnel_id) = self.tunnel_id.as_deref() else {
+            return PublicSnapshotFields {
+                tunnel_id: None,
+                state: FileSharingPublicState::Disabled,
+                share_url: None,
+                error: None,
+            };
+        };
+        let status = status.filter(|status| status.id == tunnel_id);
+        let state = status
+            .map(|status| public_state_from_status(&status.state))
+            .unwrap_or(self.state);
+        let share_url = if state == FileSharingPublicState::Running {
+            status
+                .and_then(|status| status.public_url.as_deref())
+                .map(|url| public_url(url, token))
+        } else {
+            None
+        };
+        let error = if state == FileSharingPublicState::Error {
+            status
+                .and_then(|status| status.error.clone())
+                .or_else(|| self.error.clone())
+        } else {
+            None
+        };
+        PublicSnapshotFields {
+            tunnel_id: Some(tunnel_id.to_string()),
+            state,
+            share_url,
+            error,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct SharedFile {
@@ -63,6 +194,7 @@ struct RuntimeState {
     snapshot: FileSharingSnapshot,
     session: Option<SharedSession>,
     active: Option<ActiveRuntime>,
+    public: PublicAccessState,
 }
 
 impl Default for RuntimeState {
@@ -71,6 +203,7 @@ impl Default for RuntimeState {
             snapshot: FileSharingSnapshot::default(),
             session: None,
             active: None,
+            public: PublicAccessState::default(),
         }
     }
 }
@@ -234,6 +367,43 @@ fn snapshot_for(session: &SharedSession, mut snapshot: FileSharingSnapshot) -> F
         .map(|summary| summary.clone())
         .unwrap_or_default();
     snapshot
+}
+
+fn with_public_fields(
+    mut snapshot: FileSharingSnapshot,
+    public: &PublicAccessState,
+    token: &str,
+    status: Option<&TunnelRuntimeStatus>,
+) -> FileSharingSnapshot {
+    let fields = public.snapshot_fields(token, status);
+    snapshot.public_tunnel_id = fields.tunnel_id;
+    snapshot.public_state = fields.state;
+    snapshot.public_share_url = fields.share_url;
+    snapshot.public_error = fields.error;
+    snapshot
+}
+
+fn clear_public_fields(snapshot: &mut FileSharingSnapshot) {
+    snapshot.public_tunnel_id = None;
+    snapshot.public_state = FileSharingPublicState::Disabled;
+    snapshot.public_share_url = None;
+    snapshot.public_error = None;
+}
+
+fn refresh_public_state(public: &mut PublicAccessState) -> Option<TunnelRuntimeStatus> {
+    let status = public
+        .tunnel_id
+        .as_deref()
+        .map(crate::tunnel::supervisor::get_status);
+    if let Some(status) = status.as_ref() {
+        public.apply_tunnel_status(status);
+    }
+    status
+}
+
+fn public_action_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 pub(crate) fn begin_transfer(
@@ -485,6 +655,9 @@ pub(crate) async fn start(
     {
         return Err("file sharing is already running".to_string());
     }
+    if input.public_access {
+        ensure_public_dependency(crate::tunnel::find_binary(TunnelMode::Cloudflare).is_some())?;
+    }
     let password_hash = prepare_share_password(input.password.as_deref())?;
     let network = discover_networks()?
         .into_iter()
@@ -549,8 +722,32 @@ pub(crate) async fn start(
         summary: FileSharingSummary::default(),
         last_error: None,
         password_protected: session.password_hash.is_some(),
+        public_tunnel_id: None,
+        public_state: FileSharingPublicState::Disabled,
+        public_share_url: None,
+        public_error: None,
     };
-    let snapshot = snapshot_for(&session, snapshot);
+    let mut snapshot = snapshot_for(&session, snapshot);
+    let mut public = PublicAccessState::default();
+    if input.public_access {
+        let tunnel_id = new_public_tunnel_id();
+        let _ = public.begin(tunnel_id.clone());
+        let target_url = format!("http://{address}:{port}");
+        if let Err(error) = crate::tunnel::start_ephemeral_cloudflare_tunnel(
+            tunnel_id,
+            target_url,
+            PUBLIC_TUNNEL_EVENT.to_string(),
+            Some(app.clone()),
+        )
+        .await
+        {
+            session.cancellation.cancel();
+            let _ = shutdown.send(());
+            let _ = task.await;
+            return Err(format!("failed to start public tunnel: {error}"));
+        }
+    }
+    snapshot = with_public_fields(snapshot, &public, &session.token, None);
     let mut runtime = state()
         .lock()
         .map_err(|_| "file sharing runtime state is unavailable".to_string())?;
@@ -561,6 +758,7 @@ pub(crate) async fn start(
         cancellation: session.cancellation.clone(),
         task,
     });
+    runtime.public = public;
     drop(runtime);
     emit_update(&app, "session");
     Ok(snapshot)
@@ -635,36 +833,50 @@ pub(crate) fn unexpected_exit_snapshot(
     snapshot.share_url = None;
     snapshot.stopped_at = Some(now_ms());
     snapshot.last_error = Some(error);
+    clear_public_fields(&mut snapshot);
     snapshot
 }
 
 fn handle_unexpected_listener_exit(app: &tauri::AppHandle, session: &SharedSession, error: String) {
+    let mut public_tunnel_id = None;
     if let Ok(mut runtime) = state().lock() {
         if runtime
             .session
             .as_ref()
             .is_some_and(|active_session| Arc::ptr_eq(active_session, session))
         {
+            public_tunnel_id = runtime.public.disable();
+            runtime.public = PublicAccessState::default();
             runtime.snapshot = unexpected_exit_snapshot(runtime.snapshot.clone(), session, error);
             runtime.active = None;
         }
+    }
+    if let Some(tunnel_id) = public_tunnel_id {
+        crate::tunnel::kill_tunnel(&tunnel_id);
     }
     emit_update(app, "session");
 }
 
 pub(crate) fn status() -> Result<FileSharingSnapshot, String> {
-    let runtime = state()
+    let mut runtime = state()
         .lock()
         .map_err(|_| "file sharing runtime state is unavailable".to_string())?;
-    Ok(runtime
-        .session
-        .as_ref()
-        .map(|session| snapshot_for(session, runtime.snapshot.clone()))
-        .unwrap_or_else(|| runtime.snapshot.clone()))
+    let Some(session) = runtime.session.clone() else {
+        return Ok(runtime.snapshot.clone());
+    };
+    let status = refresh_public_state(&mut runtime.public);
+    let snapshot = with_public_fields(
+        snapshot_for(&session, runtime.snapshot.clone()),
+        &runtime.public,
+        &session.token,
+        status.as_ref(),
+    );
+    runtime.snapshot = snapshot.clone();
+    Ok(snapshot)
 }
 
 pub(crate) async fn stop(app: tauri::AppHandle) -> Result<FileSharingSnapshot, String> {
-    let (active, session, mut snapshot) = {
+    let (active, session, mut snapshot, mut public) = {
         let mut runtime = state()
             .lock()
             .map_err(|_| "file sharing runtime state is unavailable".to_string())?;
@@ -672,8 +884,12 @@ pub(crate) async fn stop(app: tauri::AppHandle) -> Result<FileSharingSnapshot, S
             runtime.active.take(),
             runtime.session.take(),
             runtime.snapshot.clone(),
+            std::mem::take(&mut runtime.public),
         )
     };
+    if let Some(tunnel_id) = public.disable() {
+        let _ = crate::tunnel::supervisor::stop_tunnel(&tunnel_id, Some(app.clone())).await;
+    }
     if let Some(active) = active {
         active.cancellation.cancel();
         let _ = active.shutdown.send(());
@@ -686,17 +902,144 @@ pub(crate) async fn stop(app: tauri::AppHandle) -> Result<FileSharingSnapshot, S
     snapshot.running = false;
     snapshot.share_url = None;
     snapshot.stopped_at = Some(now_ms());
+    clear_public_fields(&mut snapshot);
     let mut runtime = state()
         .lock()
         .map_err(|_| "file sharing runtime state is unavailable".to_string())?;
     runtime.snapshot = snapshot.clone();
+    runtime.public = PublicAccessState::default();
     drop(runtime);
     emit_update(&app, "session");
     Ok(snapshot)
 }
 
+pub(crate) async fn start_public(
+    app: tauri::AppHandle,
+) -> Result<FileSharingSnapshot, String> {
+    let _guard = public_action_lock().lock().await;
+    ensure_public_dependency(crate::tunnel::find_binary(TunnelMode::Cloudflare).is_some())?;
+    let (session, target_url, tunnel_id, previous) = {
+        let mut runtime = state()
+            .lock()
+            .map_err(|_| "file sharing runtime state is unavailable".to_string())?;
+        let session = runtime
+            .session
+            .clone()
+            .ok_or_else(|| "file sharing is not running".to_string())?;
+        let target_url = match (runtime.snapshot.address.as_deref(), runtime.snapshot.port) {
+            (Some(address), Some(port)) => format!("http://{address}:{port}"),
+            _ => return Err("file sharing listener address is unavailable".to_string()),
+        };
+        let tunnel_id = new_public_tunnel_id();
+        let previous = runtime.public.begin(tunnel_id.clone());
+        (session, target_url, tunnel_id, previous)
+    };
+    if let Some(previous) = previous.as_deref() {
+        crate::tunnel::kill_tunnel(previous);
+    }
+    if let Err(error) = crate::tunnel::start_ephemeral_cloudflare_tunnel(
+        tunnel_id.clone(),
+        target_url,
+        PUBLIC_TUNNEL_EVENT.to_string(),
+        Some(app.clone()),
+    )
+    .await
+    {
+        let message = format!("failed to start public tunnel: {error}");
+        let recorded = {
+            let mut runtime = state()
+                .lock()
+                .map_err(|_| "file sharing runtime state is unavailable".to_string())?;
+            let active = runtime
+                .session
+                .as_ref()
+                .is_some_and(|active_session| Arc::ptr_eq(active_session, &session))
+                && runtime.public.tunnel_id.as_deref() == Some(tunnel_id.as_str());
+            if active {
+                runtime.public.mark_failed(message.clone());
+                let snapshot = with_public_fields(
+                    snapshot_for(&session, runtime.snapshot.clone()),
+                    &runtime.public,
+                    &session.token,
+                    None,
+                );
+                runtime.snapshot = snapshot;
+            }
+            active
+        };
+        if recorded {
+            emit_update(&app, "session");
+        }
+        return Err(message);
+    }
+    let snapshot = {
+        let mut runtime = state()
+            .lock()
+            .map_err(|_| "file sharing runtime state is unavailable".to_string())?;
+        let active = runtime
+            .session
+            .as_ref()
+            .is_some_and(|active_session| Arc::ptr_eq(active_session, &session))
+            && runtime.public.tunnel_id.as_deref() == Some(tunnel_id.as_str());
+        if !active {
+            None
+        } else {
+            let snapshot = with_public_fields(
+                snapshot_for(&session, runtime.snapshot.clone()),
+                &runtime.public,
+                &session.token,
+                None,
+            );
+            runtime.snapshot = snapshot.clone();
+            Some(snapshot)
+        }
+    };
+    let Some(snapshot) = snapshot else {
+        crate::tunnel::kill_tunnel(&tunnel_id);
+        return Err("file sharing is not running".to_string());
+    };
+    emit_update(&app, "session");
+    Ok(snapshot)
+}
+
+pub(crate) async fn stop_public(
+    app: tauri::AppHandle,
+) -> Result<FileSharingSnapshot, String> {
+    let _guard = public_action_lock().lock().await;
+    let (stopped, was_public, snapshot) = {
+        let mut runtime = state()
+            .lock()
+            .map_err(|_| "file sharing runtime state is unavailable".to_string())?;
+        let session = runtime
+            .session
+            .clone()
+            .ok_or_else(|| "file sharing is not running".to_string())?;
+        let was_public = runtime.public.state != FileSharingPublicState::Disabled
+            || runtime.public.tunnel_id.is_some();
+        let stopped = runtime.public.disable();
+        let snapshot = with_public_fields(
+            snapshot_for(&session, runtime.snapshot.clone()),
+            &runtime.public,
+            &session.token,
+            None,
+        );
+        runtime.snapshot = snapshot.clone();
+        (stopped, was_public, snapshot)
+    };
+    if let Some(tunnel_id) = stopped.as_deref() {
+        let _ = crate::tunnel::supervisor::stop_tunnel(tunnel_id, Some(app.clone())).await;
+    }
+    if was_public {
+        emit_update(&app, "session");
+    }
+    Ok(snapshot)
+}
+
 pub(crate) fn request_shutdown() {
+    let mut public_tunnel_id = None;
     if let Ok(mut runtime) = state().lock() {
+        public_tunnel_id = runtime.public.disable();
+        runtime.public = PublicAccessState::default();
         if let Some(active) = runtime.active.take() {
             active.cancellation.cancel();
             let _ = active.shutdown.send(());
@@ -709,5 +1052,9 @@ pub(crate) fn request_shutdown() {
         runtime.snapshot.running = false;
         runtime.snapshot.share_url = None;
         runtime.snapshot.stopped_at = Some(now_ms());
+        clear_public_fields(&mut runtime.snapshot);
+    }
+    if let Some(tunnel_id) = public_tunnel_id {
+        crate::tunnel::kill_tunnel(&tunnel_id);
     }
 }

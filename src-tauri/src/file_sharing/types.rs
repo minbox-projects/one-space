@@ -14,6 +14,8 @@ pub struct FileSharingStartInput {
     pub network_id: String,
     pub paths: Vec<String>,
     #[serde(default)]
+    pub public_access: bool,
+    #[serde(default)]
     pub password: Option<String>,
 }
 
@@ -63,6 +65,16 @@ pub struct FileSharingSummary {
     pub dropped_transfer_records: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileSharingPublicState {
+    #[default]
+    Disabled,
+    Starting,
+    Running,
+    Error,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FileSharingSnapshot {
@@ -77,12 +89,11 @@ pub struct FileSharingSnapshot {
     pub transfers: Vec<FileSharingTransfer>,
     pub summary: FileSharingSummary,
     pub last_error: Option<String>,
-    #[serde(skip_serializing_if = "is_false")]
     pub password_protected: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
+    pub public_tunnel_id: Option<String>,
+    pub public_state: FileSharingPublicState,
+    pub public_share_url: Option<String>,
+    pub public_error: Option<String>,
 }
 
 impl Default for FileSharingSnapshot {
@@ -100,6 +111,10 @@ impl Default for FileSharingSnapshot {
             summary: FileSharingSummary::default(),
             last_error: None,
             password_protected: false,
+            public_tunnel_id: None,
+            public_state: FileSharingPublicState::Disabled,
+            public_share_url: None,
+            public_error: None,
         }
     }
 }
