@@ -1512,7 +1512,13 @@ async fn attempt_non_streaming_inner(
                     if selected.probe {
                         settle_key_probe_success(&mut provider, &selected);
                     }
-                    settle_success(&mut health, &provider, requested, &model);
+                    settle_success(
+                        &mut health,
+                        &provider,
+                        requested,
+                        &model,
+                        upstream_protocol,
+                    );
                     health.apply();
                     return response;
                 }
@@ -1686,7 +1692,13 @@ async fn attempt_non_streaming_inner(
                     if selected.probe {
                         settle_key_probe_success(&mut candidate.provider, &selected);
                     }
-                    settle_success(&mut health, &candidate.provider, requested, &model);
+                    settle_success(
+                        &mut health,
+                        &candidate.provider,
+                        requested,
+                        &model,
+                        upstream_protocol,
+                    );
                     health.apply();
                     return response;
                 }
@@ -2036,7 +2048,13 @@ async fn attempt_non_streaming_inner(
                                 if selected.probe {
                                     settle_key_probe_success(&mut provider, &selected);
                                 }
-                                settle_success(&mut health, &provider, requested, &model);
+                                settle_success(
+                                    &mut health,
+                                    &provider,
+                                    requested,
+                                    &model,
+                                    upstream_protocol,
+                                );
                                 health.apply();
                                 if let Some(capture) = response.capture.as_mut() {
                                     capture.fallback_stage = true;
@@ -3307,6 +3325,7 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                                         provider,
                                         requested,
                                         &candidate.model,
+                                        upstream_protocol,
                                     );
                                 }
                                 if selected.probe {

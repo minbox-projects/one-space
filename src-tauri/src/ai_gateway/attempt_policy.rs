@@ -24,7 +24,7 @@ use super::selection::{
 };
 use super::storage::{modify_config, read_config_shared};
 use super::usage_log::sanitize_error_text;
-use super::{now_ts, GatewayConfig, GatewayUpstreamProvider, KeyFailureKind};
+use super::{now_ts, GatewayConfig, GatewayUpstreamProvider, KeyFailureKind, UpstreamProtocol};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::time::{sleep, Instant};
@@ -631,15 +631,34 @@ pub(in crate::ai_gateway) fn settle_failure(
 }
 
 /// Settle a served attempt on the mapping row it belongs to, if any.
+///
+/// A served source also releases its candidate-scoped cooldown across every
+/// pool. A prepared pool attempt uses the exact original identity it carries;
+/// an ordinary attempt uses `protocol`, the effective upstream protocol that
+/// was actually attempted, so a converted request never matches the ingress
+/// protocol or a sibling mapping that shares the same model names.
 pub(in crate::ai_gateway) fn settle_success(
     health: &mut RequestHealth,
     provider: &GatewayUpstreamProvider,
     requested: Option<&str>,
     upstream_model: &str,
+    protocol: UpstreamProtocol,
 ) {
-    if let Some(target) = resolved_health_target(provider, requested, upstream_model) {
-        health.record_success(&target);
-    }
+    let Some(target) = resolved_health_target(provider, requested, upstream_model) else {
+        return;
+    };
+    let protocol = provider
+        .pool_candidate
+        .as_ref()
+        .map(|identity| identity.protocol)
+        .unwrap_or(protocol);
+    super::model_pools::clear_pool_candidate_cooldowns(
+        &target.provider_id,
+        &target.local_model,
+        &target.upstream_model,
+        protocol,
+    );
+    health.record_success(&target);
 }
 
 /// The mapping row an attempt settles on. A prepared model-pool candidate

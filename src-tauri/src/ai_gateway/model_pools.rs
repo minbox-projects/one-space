@@ -35,8 +35,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// Candidate-scoped cooldown applied when an upstream names no delay. Matches
-/// the documented 60-second boundary; a valid header delay overrides it.
+/// Candidate-scoped cooldown applied when an upstream names no delay, and the
+/// maximum for any longer header delay. A model-scoped failure therefore never
+/// excludes a candidate for more than this bound, while zero and shorter
+/// delays keep their exact duration.
 pub(in crate::ai_gateway) const POOL_CANDIDATE_COOLDOWN_SECS: u64 = 60;
 
 /// Composite identity of one pool candidate, used for the candidate-scoped
@@ -1064,21 +1066,52 @@ fn is_explicit_account_scope(message: Option<&str>) -> bool {
 }
 
 /// Cool one candidate until `Instant::now() + delay`, where a valid header delay
-/// wins and an absent/invalid delay falls back to
-/// [`POOL_CANDIDATE_COOLDOWN_SECS`]. The exact `Duration` is preserved, so a
-/// `retry-after-ms: 0` yields no cooldown at all and a long delay is stored
-/// across requests instead of consuming a request wait budget. Process memory
-/// only; nothing is persisted.
+/// wins up to the [`POOL_CANDIDATE_COOLDOWN_SECS`] bound and an absent/invalid
+/// delay falls back to that same bound. Zero, shorter and subsecond durations
+/// are preserved exactly, so a `retry-after-ms: 0` yields no cooldown at all; a
+/// longer upstream delay is capped so a model-scoped failure cannot exclude the
+/// candidate until an unrelated reset boundary. Process memory only; nothing is
+/// persisted.
 pub(in crate::ai_gateway) fn cool_pool_candidate(
     identity: &PoolCandidateIdentity,
     delay: Option<Duration>,
 ) {
-    let delay = delay.unwrap_or(Duration::from_secs(POOL_CANDIDATE_COOLDOWN_SECS));
+    let max_delay = Duration::from_secs(POOL_CANDIDATE_COOLDOWN_SECS);
+    let delay = delay.unwrap_or(max_delay).min(max_delay);
     let deadline = Instant::now() + delay;
     pool_cooldown()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(candidate_key(&identity.pool_id, identity), deadline);
+}
+
+/// Release the candidate-scoped cooldown of the exact source that just served a
+/// request. Matching spans every pool and every ownership role (regular, key
+/// probe and fallback) because one source shared by several pools recovers
+/// together, while the original provider, trimmed local/upstream mapping pair
+/// and effective upstream protocol must all match. A sibling model, another
+/// protocol, a provider-wide clear, a failed or cancelled request and persisted
+/// key/mapping marks are therefore untouched. Process memory only; nothing is
+/// persisted.
+pub(in crate::ai_gateway) fn clear_pool_candidate_cooldowns(
+    provider_id: &str,
+    local_model: &str,
+    upstream_model: &str,
+    protocol: UpstreamProtocol,
+) {
+    let provider_id = provider_id.trim();
+    let local_model = local_model.trim();
+    let upstream_model = upstream_model.trim();
+    let protocol = protocol.endpoint_path();
+    pool_cooldown()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|key, _| {
+            key.provider_id != provider_id
+                || key.local_model != local_model
+                || key.upstream_model != upstream_model
+                || key.protocol != protocol
+        });
 }
 
 /// The cooldown deadline of one candidate when it is still in the future.

@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (.ai-workflow/notes/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+# ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-10-26-model-pool-cooldown-recovery.md
+2026-10-26-model-pool-cooldown-recovery.md: 40aa03df60575aff7a7d95c76f3f5b9156e8d0ba
+2026-10-26-model-pool-cooldown-recovery.zh.md: c742ed9ebaf508c7d4e43162e1f7fcfc7b3fbe82

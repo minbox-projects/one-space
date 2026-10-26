@@ -7603,3 +7603,413 @@ async fn pool_gone_ordinary_non_pool_413_preserved() {
         stop_server().await.expect("stop");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn pool_cooldown_caps_free_limit_retry_after_to_sixty_seconds() {
+    let _home = temp_home("pool-cooldown-cap-free-limit");
+    let _ticker = super::spawn_paused_clock_ticker();
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let alias = format!("free-model-{tag}");
+    let limited_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let limited_attempts_for_mock = limited_attempts.clone();
+    let (provider_url, log) = spawn_mock_upstream(move |captured| {
+        if captured_model(captured) == "remote-limited" {
+            let attempt = limited_attempts_for_mock.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt == 0 {
+                MockReply::JsonWithHeaders(
+                    429,
+                    json!({"error": {"type": "FreeUsageLimitError", "message": "free usage limit reached"}}),
+                    vec![("retry-after".to_string(), "86400".to_string())],
+                )
+            } else {
+                MockReply::Json(200, json!({"id": "ok", "choices": []}))
+            }
+        } else {
+            MockReply::Json(200, json!({"id": "ok", "choices": []}))
+        }
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider One",
+        &provider_url,
+        vec![pool_key("key-shared", "Shared", "sk-shared", true)],
+        vec![
+            provider_mapping("local-limited", "remote-limited", "chat_completions"),
+            provider_mapping("local-ok", "remote-ok", "chat_completions"),
+        ],
+    );
+    let pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Free Model",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-limited", "remote-limited", "chat_completions", Some(100)),
+            pool_candidate(provider_id.as_str(), "local-ok", "remote-ok", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(0, vec![provider], vec![pool]));
+
+    // First request serves through the fallback and cools the limited candidate.
+    let (mut client, handler) = spawn_relay_connection(
+        "/v1/chat/completions",
+        json!({"model": alias, "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await;
+    let (status, text) = read_relay_response(&mut client).await;
+    assert_eq!(status, 200, "fallback must serve: {text}");
+    let _ = handler.await;
+
+    // Remove the fallback candidate so selection cannot avoid the cooled source.
+    let limited_only_pool = json!({
+        "id": format!("pool-{tag}"),
+        "name": "Free Model",
+        "model": alias,
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-limited", "remote-limited", "chat_completions", Some(100)),
+        ],
+    });
+    let pool: ModelPool = serde_json::from_value(limited_only_pool).expect("pool fixture");
+    crate::ai_gateway::commands::ai_gateway_upsert_model_pool(pool).expect("upsert pool");
+
+    let row = pool_status_json(&format!("pool-{tag}"));
+    let candidate = row["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["upstream_model"] == "remote-limited")
+        .unwrap();
+    assert_eq!(candidate["availability"], "cooling", "{candidate}");
+    assert_eq!(candidate["ready"], false, "{candidate}");
+    let cooling_until = candidate["cooling_until"].as_u64().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(
+        cooling_until <= now + 61,
+        "cooldown must be capped to 60s, got {}s: {candidate}",
+        cooling_until.saturating_sub(now)
+    );
+
+    assert_eq!(candidate["availability"], "cooling", "{candidate}");
+    assert_eq!(candidate["ready"], false, "{candidate}");
+    tokio::time::advance(std::time::Duration::from_secs(59)).await;
+    let row = pool_status_json(&format!("pool-{tag}"));
+    let candidate = row["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["upstream_model"] == "remote-limited")
+        .unwrap();
+    assert_eq!(candidate["availability"], "cooling", "still cooling at 59s: {candidate}");
+    assert_eq!(candidate["ready"], false, "not eligible at 59s: {candidate}");
+
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    let row = pool_status_json(&format!("pool-{tag}"));
+    let candidate = row["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["upstream_model"] == "remote-limited")
+        .unwrap();
+    assert_ne!(candidate["availability"], "cooling", "eligible at 60s: {candidate}");
+    assert_eq!(candidate["ready"], true, "eligible at 60s: {candidate}");
+
+    // A later pool request reaches the recovered limited source.
+    let before = log.lock().expect("mock log").len();
+    let (mut client, handler) = spawn_relay_connection(
+        "/v1/chat/completions",
+        json!({"model": alias, "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await;
+    let (status, text) = read_relay_response(&mut client).await;
+    assert_eq!(status, 200, "recovered source must serve: {text}");
+    let _ = handler.await;
+    let routed = models_of(&log);
+    assert!(
+        routed[before..].contains(&"remote-limited".to_string()),
+        "the recovered limited source must be reached: {routed:?}"
+    );
+}
+
+
+#[tokio::test]
+async fn pool_cooldown_clears_across_pools_on_successful_ordinary_request() {
+    for stream in [false, true] {
+        let _home = temp_home("pool-cooldown-clear-success");
+        let port = free_port().await;
+        let tag = tag();
+        let provider_id = format!("p-{tag}");
+        let pool_a = format!("pool-a-{tag}");
+        let pool_b = format!("pool-b-{tag}");
+        let alias = format!("free-model-{tag}");
+
+        let (provider_url, log) = spawn_mock_upstream(|captured| {
+            let stream = serde_json::from_slice::<Value>(&captured.body)
+                .ok()
+                .and_then(|v| v.get("stream").and_then(Value::as_bool))
+                .unwrap_or(false);
+            if stream {
+                MockReply::Stream(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+                        .to_string(),
+                )
+            } else {
+                MockReply::Json(200, json!({"id": "ok", "choices": [{"message": {"content": "ok"}}]}))
+            }
+        })
+        .await;
+
+        let provider = pool_provider(
+            &provider_id,
+            "Provider",
+            &provider_url,
+            vec![pool_key("key", "K", "sk", true)],
+            vec![
+                provider_mapping("local-main", "remote-main", "chat_completions"),
+                provider_mapping("local-sib", "remote-sib", "responses"),
+            ],
+        );
+        let pool = json!({
+            "id": pool_a.clone(),
+            "name": "Free Model A",
+            "model": alias.clone(),
+            "enabled": true,
+            "candidates": [
+                pool_candidate(provider_id.as_str(), "local-main", "remote-main", "chat_completions", Some(1)),
+                pool_candidate(provider_id.as_str(), "local-sib", "remote-sib", "responses", Some(1)),
+            ],
+        });
+        let pool2 = json!({
+            "id": pool_b.clone(),
+            "name": "Free Model B",
+            "model": format!("free-model-b-{tag}"),
+            "enabled": true,
+            "candidates": [
+                pool_candidate(provider_id.as_str(), "local-main", "remote-main", "chat_completions", Some(1)),
+                pool_candidate(provider_id.as_str(), "local-sib", "remote-sib", "responses", Some(1)),
+            ],
+        });
+        write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool, pool2]));
+        start_server(None).await.expect("start");
+
+        for pool_id in [&pool_a, &pool_b] {
+            for (upstream, protocol) in [("remote-main", UpstreamProtocol::ChatCompletions), ("remote-sib", UpstreamProtocol::Responses)] {
+                cool_pool_candidate(
+                    &PoolCandidateIdentity {
+                        pool_id: pool_id.clone(),
+                        provider_id: provider_id.clone(),
+                        local_model: if upstream == "remote-main" { "local-main".into() } else { "local-sib".into() },
+                        upstream_model: upstream.into(),
+                        protocol,
+                        reasoning: None,
+                    },
+                    Some(Duration::from_secs(60)),
+                );
+            }
+        }
+
+        // Both identities are cooling in both pools before the successful request.
+        for pool_id in [&pool_a, &pool_b] {
+            let row = pool_status_json(pool_id);
+            for upstream in ["remote-main", "remote-sib"] {
+                let candidate = row["candidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c["upstream_model"] == upstream)
+                    .unwrap();
+                assert_eq!(candidate["availability"], "cooling", "{candidate}");
+            }
+        }
+
+        let body = json!({"model": "local-main", "stream": stream, "messages": [{"role":"user","content":"hi"}]});
+        let (status, _ct, text) = call_gateway(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            &[("authorization", "Bearer local-key")],
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, 200, "ordinary successful request: {text}");
+
+        // The successful ordinary request clears the matching identity across pools.
+        for pool_id in [&pool_a, &pool_b] {
+            let row = pool_status_json(pool_id);
+            let main = row["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["upstream_model"] == "remote-main")
+                .unwrap();
+            assert_ne!(main["availability"], "cooling", "main must clear: {main}");
+            let sib = row["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["upstream_model"] == "remote-sib")
+                .unwrap();
+            assert_eq!(sib["availability"], "cooling", "sibling stays cooling: {sib}");
+        }
+
+        // Subsequent pool route uses the cleared candidate.
+        let before = log.lock().expect("mock log").len();
+        let (status, _ct, text) = post_chat(port, &alias).await;
+        assert_eq!(status, 200, "pool request after clearing: {text}");
+        let routed = models_of(&log);
+        assert_eq!(
+            &routed[before..],
+            &["remote-main".to_string()],
+            "the cleared candidate must serve the next pool route"
+        );
+
+        stop_server().await.expect("stop");
+    }
+}
+
+#[tokio::test]
+async fn pool_cooldown_streaming_request_failure_does_not_clear() {
+    let _home = temp_home("pool-cooldown-failed-stream");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let pool_id = format!("pool-{tag}");
+    let alias = format!("free-model-{tag}");
+
+    let (provider_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(500, json!({"error": {"message": "upstream failure"}}))
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![provider_mapping("local-main", "remote-main", "chat_completions")],
+    );
+    let pool = json!({
+        "id": pool_id.clone(),
+        "name": "Free Model",
+        "model": alias.clone(),
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-main", "remote-main", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start");
+
+    cool_pool_candidate(
+        &PoolCandidateIdentity {
+            pool_id: pool_id.clone(),
+            provider_id: provider_id.clone(),
+            local_model: "local-main".into(),
+            upstream_model: "remote-main".into(),
+            protocol: UpstreamProtocol::ChatCompletions,
+            reasoning: None,
+        },
+        Some(Duration::from_secs(60)),
+    );
+
+    let body = json!({"model": "local-main", "stream": true, "messages": [{"role":"user","content":"hi"}]});
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+    assert_ne!(status, 200, "failed stream must not succeed: {text}");
+
+    let row = pool_status_json(&pool_id);
+    let main = row["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["upstream_model"] == "remote-main")
+        .unwrap();
+    assert_eq!(main["availability"], "cooling", "failed stream must not clear: {main}");
+
+    stop_server().await.expect("stop");
+}
+
+#[tokio::test]
+async fn pool_cooldown_wrong_protocol_does_not_clear() {
+    let _home = temp_home("pool-cooldown-wrong-protocol");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let pool_id = format!("pool-{tag}");
+    let alias = format!("free-model-{tag}");
+
+    let (provider_url, _log) = spawn_mock_upstream(|_| {
+        MockReply::Json(200, json!({"id": "ok", "choices": [{"message": {"content": "ok"}}]}))
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Provider",
+        &provider_url,
+        vec![pool_key("key", "K", "sk", true)],
+        vec![
+            provider_mapping("local-main", "remote-main", "chat_completions"),
+            provider_mapping("local-main", "remote-main", "responses"),
+        ],
+    );
+    let pool = json!({
+        "id": pool_id.clone(),
+        "name": "Free Model",
+        "model": alias.clone(),
+        "enabled": true,
+        "candidates": [
+            pool_candidate(provider_id.as_str(), "local-main", "remote-main", "chat_completions", Some(1)),
+        ],
+    });
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![pool]));
+    start_server(None).await.expect("start");
+
+    cool_pool_candidate(
+        &PoolCandidateIdentity {
+            pool_id: pool_id.clone(),
+            provider_id: provider_id.clone(),
+            local_model: "local-main".into(),
+            upstream_model: "remote-main".into(),
+            protocol: UpstreamProtocol::ChatCompletions,
+            reasoning: None,
+        },
+        Some(Duration::from_secs(60)),
+    );
+
+    // Successful request to the same provider/local/upstream tuple but a
+    // different effective protocol must not clear the cooled candidate.
+    let body = json!({"model": "local-main", "input": "hi"});
+    let (status, _ct, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/responses",
+        &[("authorization", "Bearer local-key")],
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, 200, "ordinary request: {text}");
+
+    let row = pool_status_json(&pool_id);
+    let main = row["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["upstream_model"] == "remote-main")
+        .unwrap();
+    assert_eq!(main["availability"], "cooling", "wrong protocol must not clear: {main}");
+
+    stop_server().await.expect("stop");
+}
