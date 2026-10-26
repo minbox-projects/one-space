@@ -153,3 +153,55 @@ fn test_supervisor_initial_status_is_stopped() {
     // Should return a vector without panic
     assert!(all_status.is_empty() || !all_status.is_empty());
 }
+
+#[test]
+fn test_cloudflare_tunnel_args_lan_and_https() {
+    use super::supervisor::cloudflare_tunnel_args;
+    let lan = cloudflare_tunnel_args("http://192.168.1.5:8080");
+    assert_eq!(lan, vec!["tunnel".to_string(), "--url".to_string(), "http://192.168.1.5:8080".to_string()]);
+
+    let https = cloudflare_tunnel_args("https://example.com");
+    assert_eq!(https, vec!["tunnel".to_string(), "--url".to_string(), "https://example.com".to_string()]);
+}
+
+#[test]
+fn test_validate_ephemeral_tunnel_request_accepts_and_rejects() {
+    use super::supervisor::validate_ephemeral_tunnel_request;
+    assert!(validate_ephemeral_tunnel_request("file-sharing-abc", "http://127.0.0.1:3000", "file-sharing-public-updated").is_ok());
+    assert!(validate_ephemeral_tunnel_request("file-sharing-abc", "https://example.com/x", "evt").is_ok());
+
+    assert!(validate_ephemeral_tunnel_request("abc", "http://127.0.0.1:3000", "evt").is_err());
+    assert!(validate_ephemeral_tunnel_request("file-sharing-", "http://127.0.0.1:3000", "evt").is_err());
+
+    assert!(validate_ephemeral_tunnel_request("file-sharing-abc", "ftp://example.com", "evt").is_err());
+    assert!(validate_ephemeral_tunnel_request("file-sharing-abc", "/relative/path", "evt").is_err());
+    assert!(validate_ephemeral_tunnel_request("file-sharing-abc", "", "evt").is_err());
+    assert!(validate_ephemeral_tunnel_request("file-sharing-abc", "http://127.0.0.1:3000", "   ").is_err());
+}
+
+#[test]
+fn test_is_ephemeral_tunnel_id_reserved_prefix() {
+    use super::supervisor::{is_ephemeral_tunnel_id, EPHEMERAL_TUNNEL_ID_PREFIX};
+    assert_eq!(EPHEMERAL_TUNNEL_ID_PREFIX, "file-sharing-");
+    assert!(is_ephemeral_tunnel_id("file-sharing-abc"));
+    assert!(!is_ephemeral_tunnel_id("file-sharing"));
+    assert!(!is_ephemeral_tunnel_id("saved-tunnel-1"));
+}
+
+#[test]
+fn test_kill_tunnel_unknown_returns_false() {
+    use super::supervisor::kill_tunnel;
+    assert!(!kill_tunnel("definitely-unknown-id"));
+    assert!(!kill_tunnel("file-sharing-ghost"));
+
+    let status = super::supervisor::get_status("definitely-unknown-id");
+    assert_eq!(status.state, "stopped");
+}
+
+#[test]
+fn test_get_all_status_excludes_ephemeral_prefix() {
+    use super::supervisor::{get_all_status, EPHEMERAL_TUNNEL_ID_PREFIX};
+    for status in get_all_status() {
+        assert!(!status.id.starts_with(EPHEMERAL_TUNNEL_ID_PREFIX));
+    }
+}
