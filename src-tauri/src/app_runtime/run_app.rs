@@ -312,6 +312,8 @@ pub fn run() {
             file_sharing::file_sharing_start,
             file_sharing::file_sharing_status,
             file_sharing::file_sharing_stop,
+            file_sharing::file_sharing_public_start,
+            file_sharing::file_sharing_public_stop,
             // AI Gateway
             ai_gateway::ai_gateway_get_config,
             ai_gateway::ai_gateway_get_settings,

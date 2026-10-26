@@ -161,6 +161,7 @@
         "src/components/Mail.tsx",
         "src/components/Md5EncryptionTool.tsx",
         "src/components/MessageCenter.tsx",
+        "src/components/MessageCenter/FocusedSubscriptionsDialog.tsx",
         "src/components/MessageCenter/MessageCenter.tsx",
         "src/components/MessageCenter/MessageCenterHeader.tsx",
         "src/components/MessageCenter/MessageCenterToolbar.tsx",
@@ -229,6 +230,8 @@
         "src/components/Workspaces/index.tsx",
         "src/components/Workspaces/types.ts",
         "src/components/common/CustomSelect.tsx",
+        "src/components/fileSharing/PasswordField.tsx",
+        "src/components/fileSharing/PublicAccessCard.tsx",
         "src/components/settings/SettingsContainer.tsx",
         "src/components/settings/SettingsSidebar.tsx",
         "src/components/settings/common/EcoSourceManager.tsx",
@@ -297,6 +300,7 @@
         "src/lib/launcherToolOrder.ts",
         "src/lib/launcherToolVisibility.ts",
         "src/lib/md5.ts",
+        "src/lib/messageSubscriptions.ts",
         "src/lib/messages.ts",
         "src/lib/navigation.ts",
         "src/lib/networkCircuitBreaker.ts",
@@ -1490,6 +1494,12 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/MessageCenter/FocusedSubscriptionsDialog.tsx",
+          "name": "FocusedSubscriptionsDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/MessageCenter/MessageCenter.tsx",
           "name": "MessageCenter",
           "kind": "function",
@@ -2600,6 +2610,18 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/fileSharing/PasswordField.tsx",
+          "name": "PasswordField",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/fileSharing/PublicAccessCard.tsx",
+          "name": "PublicAccessCard",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/settings/SettingsContainer.tsx",
           "name": "SettingsContainer",
           "kind": "function",
@@ -3693,6 +3715,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "AggregateContextResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "AggregatedModel",
           "kind": "interface",
           "visibility": "public"
@@ -3711,12 +3739,6 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
-          "name": "CanonicalReasoningEffort",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
           "name": "CLAUDE_COMPACTION_CAP",
           "kind": "variable",
           "visibility": "public"
@@ -3729,12 +3751,6 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
-          "name": "ClaudeModelSelection",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway.ts",
           "name": "CONTEXT_WINDOW_MAX",
           "kind": "variable",
           "visibility": "public"
@@ -3743,6 +3759,36 @@
           "file": "src/lib/aiGateway.ts",
           "name": "CONTEXT_WINDOW_MIN",
           "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CONTEXT_WINDOW_PRESETS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CONTEXT_WINDOW_PRESET_ITEMS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "CanonicalReasoningEffort",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ClaudeModelSelection",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "ContextWindowPresetItem",
+          "kind": "interface",
           "visibility": "public"
         },
         {
@@ -4485,6 +4531,12 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "analyzeSourceContext",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "autoBindCandidateReasoning",
           "kind": "function",
           "visibility": "public"
@@ -4522,6 +4574,18 @@
         {
           "file": "src/lib/aiGateway.ts",
           "name": "formatContextWindow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "formatContextWindowCompact",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "formatContextWindowDisplay",
           "kind": "function",
           "visibility": "public"
         },
@@ -4827,7 +4891,19 @@
         },
         {
           "file": "src/lib/aiGateway.ts",
+          "name": "resolveOrdinaryContextSummary",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
           "name": "resolveOrdinaryContextWindow",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway.ts",
+          "name": "resolvePoolContextSummary",
           "kind": "function",
           "visibility": "public"
         },
@@ -5475,6 +5551,12 @@
         },
         {
           "file": "src/lib/fileSharing.ts",
+          "name": "FILE_SHARING_PUBLIC_UPDATED_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/fileSharing.ts",
           "name": "FileSharingError",
           "kind": "class",
           "visibility": "public"
@@ -5488,6 +5570,12 @@
         {
           "file": "src/lib/fileSharing.ts",
           "name": "FileSharingNetwork",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/fileSharing.ts",
+          "name": "FileSharingPublicState",
           "kind": "type",
           "visibility": "public"
         },
@@ -5523,6 +5611,18 @@
         },
         {
           "file": "src/lib/fileSharing.ts",
+          "name": "fileSharingPublicStart",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/fileSharing.ts",
+          "name": "fileSharingPublicStop",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/fileSharing.ts",
           "name": "fileSharingStart",
           "kind": "function",
           "visibility": "public"
@@ -5536,6 +5636,12 @@
         {
           "file": "src/lib/fileSharing.ts",
           "name": "fileSharingStop",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/fileSharing.ts",
+          "name": "getFileSharingPublicUrl",
           "kind": "function",
           "visibility": "public"
         },
@@ -6634,6 +6740,60 @@
         {
           "file": "src/lib/md5.ts",
           "name": "md5Hex",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "FOCUSED_MESSAGE_TYPE_CATALOG",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "FOCUSED_SUBSCRIPTIONS_STORAGE_KEY",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "FocusedMessageSubscriptionConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "FocusedMessageTypeDef",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "FocusedPreferences",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "getDefaultFocusedSubscriptionConfig",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "isMessageFocused",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "loadFocusedSubscriptionConfig",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/messageSubscriptions.ts",
+          "name": "saveFocusedSubscriptionConfig",
           "kind": "function",
           "visibility": "public"
         },
@@ -8896,6 +9056,7 @@
         "src/lib/launcherToolOrder.test.ts",
         "src/lib/launcherToolVisibility.test.ts",
         "src/lib/md5.test.ts",
+        "src/lib/messageSubscriptions.test.ts",
         "src/lib/messages.test.ts",
         "src/lib/navigation.test.ts",
         "src/lib/runtimeStatus.test.ts",
@@ -9687,6 +9848,16 @@
           "kind": "imports",
           "from": "src/components/Md5EncryptionTool.tsx#Md5EncryptionTool",
           "to": "src/components/ToastProvider.tsx#useToast"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/FocusedSubscriptionsDialog.tsx#FocusedSubscriptionsDialog",
+          "to": "src/components/MessageCenter/types.ts#getSourceLabel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/MessageCenter/MessageCenter.tsx#MessageCenter",
+          "to": "src/components/MessageCenter/FocusedSubscriptionsDialog.tsx#FocusedSubscriptionsDialog"
         },
         {
           "kind": "imports",
@@ -12595,6 +12766,21 @@
         },
         {
           "kind": "imports",
+          "from": "src/lib/messageSubscriptions.ts#FocusedMessageTypeDef",
+          "to": "src/lib/messages.ts#MessageSeverity"
+        },
+        {
+          "kind": "imports",
+          "from": "src/lib/messageSubscriptions.ts#FocusedMessageTypeDef",
+          "to": "src/lib/messages.ts#MessageSource"
+        },
+        {
+          "kind": "imports",
+          "from": "src/lib/messageSubscriptions.ts#isMessageFocused",
+          "to": "src/lib/messages.ts#MessageRecord"
+        },
+        {
+          "kind": "imports",
           "from": "src/lib/portTunnelSummary.ts#derivePortTunnelHeaderSummary",
           "to": "src/lib/portTunnel.ts#TunnelRuntimeStatus"
         },
@@ -13015,6 +13201,7 @@
         "src/components/Md5EncryptionTool.test.tsx",
         "src/components/Md5EncryptionTool.tsx",
         "src/components/MessageCenter.tsx",
+        "src/components/MessageCenter/FocusedSubscriptionsDialog.tsx",
         "src/components/MessageCenter/MessageCenter.test.tsx",
         "src/components/MessageCenter/MessageCenter.tsx",
         "src/components/MessageCenter/MessageCenterHeader.tsx",
@@ -13105,6 +13292,8 @@
         "src/components/Workspaces/types.ts",
         "src/components/common/CustomSelect.test.tsx",
         "src/components/common/CustomSelect.tsx",
+        "src/components/fileSharing/PasswordField.tsx",
+        "src/components/fileSharing/PublicAccessCard.tsx",
         "src/components/modelOptions.test.ts",
         "src/components/settings/SettingsContainer.tsx",
         "src/components/settings/SettingsSidebar.tsx",
@@ -13203,6 +13392,8 @@
         "src/lib/launcherToolVisibility.ts",
         "src/lib/md5.test.ts",
         "src/lib/md5.ts",
+        "src/lib/messageSubscriptions.test.ts",
+        "src/lib/messageSubscriptions.ts",
         "src/lib/messages.test.ts",
         "src/lib/messages.ts",
         "src/lib/navigation.test.ts",
