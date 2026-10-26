@@ -186,9 +186,11 @@ impl MonitorSession {
     }
 
     /// Prevents publishing from this generation and closes its owned resources.
+    /// An in-progress operation keeps the state lock; it observes invalidation
+    /// as soon as the operation returns and closes the connection then.
     pub(crate) fn invalidate(&self) {
         self.invalidated.store(true, Ordering::SeqCst);
-        if let Ok(mut state) = self.state.lock() {
+        if let Ok(mut state) = self.state.try_lock() {
             self.close_connection(&mut state);
         }
     }
@@ -208,7 +210,7 @@ impl MonitorSession {
 impl Drop for MonitorSession {
     fn drop(&mut self) {
         self.invalidated.store(true, Ordering::SeqCst);
-        if let Ok(mut state) = self.state.lock() {
+        if let Ok(mut state) = self.state.try_lock() {
             if let Some(mut connection) = state.connection.take() {
                 connection.close();
             }

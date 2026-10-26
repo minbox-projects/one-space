@@ -1,9 +1,9 @@
 use crate::{
     ai_env, ai_news, ai_sessions, ai_workflow_profiles, ai_gateway, app_store, backup, cli_updates,
     config, file_sharing, http_client, mcp_export,
-    mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, sftp, short_link, skills,
-    ssl_certificate, ssh_tunnels, storage, subagents, uptime_monitor, version_detect,
-    webhook_catcher, workspaces,
+    mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, server_monitor, sftp,
+    short_link, skills, ssl_certificate, ssh_tunnels, storage, subagents, uptime_monitor,
+    version_detect, webhook_catcher, workspaces,
 };
 use std::path::Path;
 use std::str::FromStr;
@@ -122,6 +122,9 @@ pub fn run() {
             // and the template-refresh preference.
             ai_gateway::start_daily_reset_scanner(app.handle().clone());
             ssl_certificate::start_ssl_scheduler(app.handle().clone());
+            if let Err(error) = server_monitor::commands::init_runtime(app.handle().clone()) {
+                log::error!("Failed to start the server monitor runtime: {error}");
+            }
             let uptime_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 uptime_monitor::scheduler::UptimeScheduler::init_global(uptime_app_handle);
@@ -252,6 +255,15 @@ pub fn run() {
             uptime_monitor::uptime_toggle_monitor,
             uptime_monitor::uptime_test_probe,
             uptime_monitor::uptime_clear_history,
+            server_monitor::commands::server_monitor_snapshot,
+            server_monitor::commands::server_monitor_upsert,
+            server_monitor::commands::server_monitor_delete,
+            server_monitor::commands::server_monitor_set_enabled,
+            server_monitor::commands::server_monitor_refresh,
+            server_monitor::commands::server_monitor_test_connection,
+            server_monitor::commands::server_monitor_history,
+            server_monitor::commands::server_monitor_get_settings,
+            server_monitor::commands::server_monitor_save_settings,
             webhook_catcher::webhook_get_server_status,
             webhook_catcher::webhook_start_server,
             webhook_catcher::webhook_list_endpoints,

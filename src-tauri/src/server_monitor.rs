@@ -5,7 +5,10 @@
 //! repository-owned `/bin/sh -s` script; no installer, agent or remotely
 //! interpolated command text is involved.
 
+pub(crate) mod commands;
 pub(crate) mod metrics;
+pub(crate) mod runtime;
+pub(crate) mod storage;
 pub(crate) mod transport;
 pub(crate) mod types;
 

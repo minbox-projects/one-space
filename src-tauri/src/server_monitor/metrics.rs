@@ -68,12 +68,15 @@ pub(crate) fn build_collection(
     let cpu = calculate_cpu(&sections);
     let memory = calculate_memory(&sections);
     let disks = calculate_disks(&sections);
-    let network = calculate_network(&sections, selected_interface);
+    let sampling_window_seconds = sampling_window_seconds(&sections);
+    let networks = calculate_networks(&sections);
+    let network = select_network(&networks, selected_interface);
+    let network_interface = network.as_ref().map(|metric| metric.interface.clone());
 
     let available = usize::from(cpu.is_some())
         + usize::from(memory.is_some())
         + usize::from(disks.is_some())
-        + usize::from(network.is_some());
+        + usize::from(!networks.is_empty());
 
     if available == 0 {
         return CollectionOutcome::Failed(CollectionFailure {
@@ -84,10 +87,13 @@ pub(crate) fn build_collection(
 
     let snapshot = MetricSnapshot {
         collected_at_ms,
+        sampling_window_seconds,
         cpu,
         memory,
         disks,
         network,
+        networks,
+        network_interface,
     };
 
     if available == 4 {
@@ -260,41 +266,59 @@ fn is_excluded_filesystem(value: &str) -> bool {
         .any(|excluded| value.eq_ignore_ascii_case(excluded))
 }
 
-fn calculate_network(
-    sections: &BTreeMap<String, String>,
-    selected_interface: Option<&str>,
-) -> Option<NetworkMetric> {
-    let boot_first = sections.get("boot_id_1")?.trim();
-    let boot_second = sections.get("boot_id_2")?.trim();
+/// Rates for every interface with a valid pair of samples, ordered by name.
+fn calculate_networks(sections: &BTreeMap<String, String>) -> Vec<NetworkMetric> {
+    let (Some(boot_first), Some(boot_second)) = (sections.get("boot_id_1"), sections.get("boot_id_2"))
+    else {
+        return Vec::new();
+    };
+    let boot_first = boot_first.trim();
+    let boot_second = boot_second.trim();
     if boot_first.is_empty() || boot_first != boot_second {
-        return None;
+        return Vec::new();
     }
 
-    let uptime_first = parse_uptime(sections.get("uptime_1")?)?;
-    let uptime_second = parse_uptime(sections.get("uptime_2")?)?;
+    let (Some(uptime_first), Some(uptime_second)) = (
+        sections.get("uptime_1").and_then(|value| parse_uptime(value)),
+        sections.get("uptime_2").and_then(|value| parse_uptime(value)),
+    ) else {
+        return Vec::new();
+    };
     let elapsed = uptime_second - uptime_first;
     if !elapsed.is_finite() || elapsed <= 0.0 {
-        return None;
+        return Vec::new();
     }
 
-    let first = parse_net_dev(sections.get("net_1")?);
-    let second = parse_net_dev(sections.get("net_2")?);
+    let (Some(net_first), Some(net_second)) = (sections.get("net_1"), sections.get("net_2")) else {
+        return Vec::new();
+    };
+    let first = parse_net_dev(net_first);
+    let second = parse_net_dev(net_second);
 
-    if let Some(requested) = selected_interface {
-        let before = first.get(requested)?;
-        let after = second.get(requested)?;
-        return network_rate(requested, before, after, elapsed);
-    }
-
+    let mut metrics = Vec::new();
     for (name, before) in &first {
         let Some(after) = second.get(name) else {
             continue;
         };
         if let Some(metric) = network_rate(name, before, after, elapsed) {
-            return Some(metric);
+            metrics.push(metric);
         }
     }
-    None
+    metrics
+}
+
+/// Picks the requested interface or the first interface in name order.
+fn select_network(
+    networks: &[NetworkMetric],
+    selected_interface: Option<&str>,
+) -> Option<NetworkMetric> {
+    if let Some(requested) = selected_interface {
+        return networks
+            .iter()
+            .find(|metric| metric.interface == requested)
+            .cloned();
+    }
+    networks.first().cloned()
 }
 
 fn parse_uptime(section: &str) -> Option<f64> {
@@ -302,6 +326,22 @@ fn parse_uptime(section: &str) -> Option<f64> {
         .split_whitespace()
         .next()
         .and_then(|value| value.parse::<f64>().ok())
+}
+
+/// The collector's real second sample window, independent of network validity.
+fn sampling_window_seconds(sections: &BTreeMap<String, String>) -> f64 {
+    let (Some(first), Some(second)) = (
+        sections.get("uptime_1").and_then(|value| parse_uptime(value)),
+        sections.get("uptime_2").and_then(|value| parse_uptime(value)),
+    ) else {
+        return 0.0;
+    };
+    let elapsed = second - first;
+    if elapsed.is_finite() && elapsed > 0.0 {
+        elapsed
+    } else {
+        0.0
+    }
 }
 
 fn parse_net_dev(section: &str) -> BTreeMap<String, (u64, u64)> {

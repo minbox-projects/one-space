@@ -13638,12 +13638,69 @@
       "entries": [
         "src-tauri/src/server_monitor.rs",
         "src-tauri/src/server_monitor/collector.sh",
+        "src-tauri/src/server_monitor/commands.rs",
         "src-tauri/src/server_monitor/metrics.rs",
+        "src-tauri/src/server_monitor/runtime.rs",
+        "src-tauri/src/server_monitor/storage.rs",
         "src-tauri/src/server_monitor/transport.rs",
         "src-tauri/src/server_monitor/types.rs",
         "src-tauri/src/ssh_tunnels/monitor_transport.rs"
       ],
       "symbols": [
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_snapshot",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_upsert",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_delete",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_set_enabled",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_refresh",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_test_connection",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_history",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_get_settings",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_save_settings",
+          "kind": "function",
+          "visibility": "private"
+        },
         {
           "file": "src-tauri/src/server_monitor/metrics.rs",
           "name": "build_collection",
@@ -13715,25 +13772,38 @@
         "src-tauri/src/lib.rs",
         "src-tauri/src/server_monitor/tests/fixtures/sample.txt",
         "src-tauri/src/ssh_tunnels.rs",
-        "src-tauri/src/ssh_tunnels/validation_ssh_config.rs"
+        "src-tauri/src/ssh_tunnels/validation_ssh_config.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs"
       ],
       "tests": [
         "src-tauri/src/server_monitor/tests.rs",
         "src-tauri/src/server_monitor/tests/metrics.rs",
-        "src-tauri/src/server_monitor/tests/transport.rs"
+        "src-tauri/src/server_monitor/tests/transport.rs",
+        "src-tauri/src/server_monitor/tests/storage.rs",
+        "src-tauri/src/server_monitor/tests/runtime.rs",
+        "src-tauri/src/server_monitor/tests/commands.rs"
       ],
       "depends_on": [],
       "relations": [],
       "owner_role": "backend",
-      "responsibility": "Direct Linux resource collection over owned SSH sessions with a fixed read-only script, honest partial metrics and mode-specific session lifetime",
+      "responsibility": "Persisted monitor targets and interval/daily backend scheduling over owned SSH sessions with encrypted local configuration, SQLite samples and slot claims, honest partial metrics and safe state publication",
       "read_scope": [
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs",
         "src-tauri/src/lib.rs",
         "src-tauri/src/server_monitor.rs",
         "src-tauri/src/server_monitor/collector.sh",
+        "src-tauri/src/server_monitor/commands.rs",
         "src-tauri/src/server_monitor/metrics.rs",
+        "src-tauri/src/server_monitor/runtime.rs",
+        "src-tauri/src/server_monitor/storage.rs",
         "src-tauri/src/server_monitor/tests.rs",
+        "src-tauri/src/server_monitor/tests/commands.rs",
         "src-tauri/src/server_monitor/tests/fixtures/sample.txt",
         "src-tauri/src/server_monitor/tests/metrics.rs",
+        "src-tauri/src/server_monitor/tests/runtime.rs",
+        "src-tauri/src/server_monitor/tests/storage.rs",
         "src-tauri/src/server_monitor/tests/transport.rs",
         "src-tauri/src/server_monitor/transport.rs",
         "src-tauri/src/server_monitor/types.rs",
