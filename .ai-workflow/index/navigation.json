@@ -13624,6 +13624,124 @@
         "src-tauri/src/claude_profiles.rs"
       ],
       "shared_entry": false
+    },
+    {
+      "id": "server-monitor",
+      "name": "Server Monitor Collection",
+      "aliases": [
+        "server-monitor",
+        "server-monitor-collection",
+        "linux-resource-collection",
+        "server-metrics"
+      ],
+      "module_root": "src-tauri/src",
+      "entries": [
+        "src-tauri/src/server_monitor.rs",
+        "src-tauri/src/server_monitor/collector.sh",
+        "src-tauri/src/server_monitor/metrics.rs",
+        "src-tauri/src/server_monitor/transport.rs",
+        "src-tauri/src/server_monitor/types.rs",
+        "src-tauri/src/ssh_tunnels/monitor_transport.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src-tauri/src/server_monitor/metrics.rs",
+          "name": "build_collection",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/metrics.rs",
+          "name": "parse_sections",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "COLLECTION_DEADLINE",
+          "kind": "variable",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "KEEPALIVE_INTERVAL",
+          "kind": "variable",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "MonitorConnection",
+          "kind": "trait",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "MonitorConnector",
+          "kind": "trait",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "MonitorSession",
+          "kind": "struct",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/types.rs",
+          "name": "CollectionOutcome",
+          "kind": "enum",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/types.rs",
+          "name": "MetricSnapshot",
+          "kind": "struct",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/types.rs",
+          "name": "SessionLifetime",
+          "kind": "enum",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/ssh_tunnels/monitor_transport.rs",
+          "name": "SshMonitorConnector",
+          "kind": "struct",
+          "visibility": "private"
+        }
+      ],
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/server_monitor/tests/fixtures/sample.txt",
+        "src-tauri/src/ssh_tunnels.rs",
+        "src-tauri/src/ssh_tunnels/validation_ssh_config.rs"
+      ],
+      "tests": [
+        "src-tauri/src/server_monitor/tests.rs",
+        "src-tauri/src/server_monitor/tests/metrics.rs",
+        "src-tauri/src/server_monitor/tests/transport.rs"
+      ],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "backend",
+      "responsibility": "Direct Linux resource collection over owned SSH sessions with a fixed read-only script, honest partial metrics and mode-specific session lifetime",
+      "read_scope": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/server_monitor.rs",
+        "src-tauri/src/server_monitor/collector.sh",
+        "src-tauri/src/server_monitor/metrics.rs",
+        "src-tauri/src/server_monitor/tests.rs",
+        "src-tauri/src/server_monitor/tests/fixtures/sample.txt",
+        "src-tauri/src/server_monitor/tests/metrics.rs",
+        "src-tauri/src/server_monitor/tests/transport.rs",
+        "src-tauri/src/server_monitor/transport.rs",
+        "src-tauri/src/server_monitor/types.rs",
+        "src-tauri/src/ssh_tunnels.rs",
+        "src-tauri/src/ssh_tunnels/monitor_transport.rs",
+        "src-tauri/src/ssh_tunnels/validation_ssh_config.rs"
+      ],
+      "shared_entry": false
     }
   ]
 }
