@@ -301,7 +301,7 @@ export function HistoryChart({
       }
 
       return {
-        isRate: true,
+        isRate: true as const,
         hasData,
         x,
         y,
@@ -383,7 +383,7 @@ export function HistoryChart({
     }
 
     return {
-      isRate: false,
+      isRate: false as const,
       hasData: series.points.length > 0,
       x,
       y,
