@@ -993,3 +993,35 @@ describe("SettingsView", () => {
     expect(screen.getByText(/Session & Context Affinity|会话与上下文保持/i)).toBeInTheDocument();
   });
 });
+
+describe("SettingsView server-monitor section", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    await i18n.changeLanguage("en");
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "server_monitor_get_settings") {
+        return {
+          autoCollectEnabled: true,
+          scheduleMode: "interval",
+          intervalMinutes: 5,
+          dailyTimes: ["09:00"],
+          retentionDays: 7,
+        };
+      }
+      if (command === "server_monitor_save_settings") {
+        return args?.settings;
+      }
+      if (command === "get_storage_config") {
+        return structuredClone(baseStorageConfig);
+      }
+      return null;
+    });
+  });
+
+  it("renders server monitor section for initialTab", async () => {
+    renderWithProviders(<SettingsView initialTab="server-monitor" />);
+    await waitFor(() => {
+      expect(screen.getByText(/server monitor/i)).toBeTruthy();
+    });
+  });
+});

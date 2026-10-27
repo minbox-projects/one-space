@@ -14,6 +14,7 @@ import { portTunnelTool } from "./plugins/port-tunnel";
 import { protocolRouterTool } from "./plugins/protocol-router";
 import { quickSftpTool } from "./plugins/quick-sftp";
 import { randomPasswordTool } from "./plugins/random-password";
+import { serverMonitorTool } from "./plugins/server-monitor";
 import { shortLinkTool } from "./plugins/short-link";
 import { snippetsTool } from "./plugins/snippets";
 import { sslCertificateTool } from "./plugins/ssl-certificate";
@@ -48,6 +49,7 @@ export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   sslCertificateTool,
   uptimeMonitorTool,
   webhookCatcherTool,
+  serverMonitorTool,
   snippetsTool,
   notesTool,
 ];

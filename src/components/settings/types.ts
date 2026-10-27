@@ -23,6 +23,7 @@ export type LegacySettingsSection =
   | "protocol-router"
   | "ai-gateway"
   | "ssl-certificate"
+  | "server-monitor"
   | "shortcuts"
   | "ai"
   | "appearance"
@@ -60,6 +61,8 @@ export function resolveSettingsTab(input?: string): ResolvedSettingsRoute {
       return { mainTab: "services", subTab: "ai-gateway" };
     case "ssl-certificate":
       return { mainTab: "services", subTab: "ssl-certificate" };
+    case "server-monitor":
+      return { mainTab: "services", subTab: "server-monitor" };
     case "services":
       return { mainTab: "services", subTab: "proxy" };
 
@@ -314,6 +317,7 @@ export const MAIN_SETTINGS_CATEGORIES: {
       { id: "protocol-router", titleKey: "protocolRouter", fallbackTitle: "协议路由" },
       { id: "ai-gateway", titleKey: "aiGatewaySettings", fallbackTitle: "AI 网关" },
       { id: "ssl-certificate", titleKey: "sslCertificate", fallbackTitle: "SSL 证书" },
+      { id: "server-monitor", titleKey: "serverMonitor", fallbackTitle: "服务器监控" },
     ],
   },
   {

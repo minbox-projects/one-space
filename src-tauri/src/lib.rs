@@ -23,6 +23,7 @@ mod protocol_router;
 mod proxy;
 mod runtime_profiles;
 mod secrets;
+mod server_monitor;
 pub mod sftp;
 mod short_link;
 mod skills;

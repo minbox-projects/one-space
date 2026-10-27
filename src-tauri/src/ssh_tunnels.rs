@@ -1,6 +1,7 @@
 mod commands;
 mod constants;
 mod forwarding_runtime;
+pub(crate) mod monitor_transport;
 mod reconnect;
 #[cfg(test)]
 mod tests;

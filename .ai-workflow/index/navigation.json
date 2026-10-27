@@ -13624,6 +13624,598 @@
         "src-tauri/src/claude_profiles.rs"
       ],
       "shared_entry": false
+    },
+    {
+      "id": "server-monitor",
+      "name": "Server Monitor Collection",
+      "aliases": [
+        "server-monitor",
+        "server-monitor-collection",
+        "linux-resource-collection",
+        "server-metrics"
+      ],
+      "module_root": "src-tauri/src",
+      "entries": [
+        "src-tauri/src/server_monitor.rs",
+        "src-tauri/src/server_monitor/collector.sh",
+        "src-tauri/src/server_monitor/commands.rs",
+        "src-tauri/src/server_monitor/metrics.rs",
+        "src-tauri/src/server_monitor/runtime.rs",
+        "src-tauri/src/server_monitor/storage.rs",
+        "src-tauri/src/server_monitor/transport.rs",
+        "src-tauri/src/server_monitor/types.rs",
+        "src-tauri/src/ssh_tunnels/monitor_transport.rs",
+        "src/lib/serverMonitor.ts",
+        "src/toolbox/plugins/server-monitor.ts",
+        "src/components/ServerMonitor/index.tsx",
+        "src/components/ServerMonitor/ServerFormDialog.tsx",
+        "src/components/ServerMonitor/MetricCards.tsx",
+        "src/components/ServerMonitor/HistoryChart.tsx",
+        "src/components/settings/sections/ServerMonitorSettings.tsx"
+      ],
+      "symbols": [
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_snapshot",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_upsert",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_delete",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_set_enabled",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_refresh",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_test_connection",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_history",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_get_settings",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/commands.rs",
+          "name": "server_monitor_save_settings",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/metrics.rs",
+          "name": "build_collection",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/metrics.rs",
+          "name": "parse_sections",
+          "kind": "function",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "COLLECTION_DEADLINE",
+          "kind": "variable",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "KEEPALIVE_INTERVAL",
+          "kind": "variable",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "MonitorConnection",
+          "kind": "trait",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "MonitorConnector",
+          "kind": "trait",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/transport.rs",
+          "name": "MonitorSession",
+          "kind": "struct",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/types.rs",
+          "name": "CollectionOutcome",
+          "kind": "enum",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/types.rs",
+          "name": "MetricSnapshot",
+          "kind": "struct",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/server_monitor/types.rs",
+          "name": "SessionLifetime",
+          "kind": "enum",
+          "visibility": "private"
+        },
+        {
+          "file": "src-tauri/src/ssh_tunnels/monitor_transport.rs",
+          "name": "SshMonitorConnector",
+          "kind": "struct",
+          "visibility": "private"
+        },
+        {
+          "file": "src/components/ServerMonitor/index.tsx",
+          "name": "ServerMonitorTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/ServerMonitor/index.tsx",
+          "name": "ServerMonitorToolProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/ServerMonitor/ServerFormDialog.tsx",
+          "name": "ServerFormDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/ServerMonitor/ServerFormDialog.tsx",
+          "name": "ServerFormDialogProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/ServerMonitor/MetricCards.tsx",
+          "name": "MetricCards",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/ServerMonitor/MetricCards.tsx",
+          "name": "MetricCardsProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/ServerMonitor/HistoryChart.tsx",
+          "name": "HistoryChart",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/ServerMonitor/HistoryChart.tsx",
+          "name": "HistoryChartProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/ServerMonitorSettings.tsx",
+          "name": "ServerMonitorSettingsView",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/ServerMonitorSettings.tsx",
+          "name": "ServerMonitorSettingsViewProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "SERVER_MONITOR_UPDATED_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "isServerMonitorAvailable",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorSnapshot",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorUpsert",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorDelete",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorSetEnabled",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorRefresh",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorTestConnection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorHistory",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorGetSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "serverMonitorSaveSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "formatPercent",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "formatBytes",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "formatRate",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "formatMonitorTimestamp",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "sampleOutcome",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "sampleMetrics",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "latestGoodSample",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "selectNetworkInterface",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "isValidDailyTime",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "validateServerMonitorSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "validateServerMonitorDraft",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "normalizeServerMonitorSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorHistoryRange",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorScheduleMode",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorSourceKind",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorAuthKind",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorFailureKind",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorOutcome",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "CpuMetric",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "MemoryMetric",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "DiskMetric",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "NetworkMetric",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "MetricSnapshot",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorSample",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorSettings",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorTargetView",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorState",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorCustomDraft",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorTargetDraft",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorTestResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "DEFAULT_SERVER_MONITOR_SETTINGS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.test.ts",
+          "name": "SERVER_MONITOR_UPDATED_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/plugins/server-monitor.ts",
+          "name": "serverMonitorTool",
+          "kind": "variable",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/server_monitor/tests/fixtures/sample.txt",
+        "src-tauri/src/ssh_tunnels.rs",
+        "src-tauri/src/ssh_tunnels/validation_ssh_config.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src/components/settings/sections/ServicesSection.tsx",
+        "src/components/settings/SettingsContainer.tsx",
+        "src/components/settings/types.ts",
+        "src/i18n.ts",
+        "src/toolbox/registry.ts",
+        "src/toolbox/types.ts",
+        "docs/server-monitor.md",
+        "docs/server-monitor.zh.md",
+        "en_keys.txt",
+        "zh_keys.txt"
+      ],
+      "tests": [
+        "src-tauri/src/server_monitor/tests.rs",
+        "src-tauri/src/server_monitor/tests/metrics.rs",
+        "src-tauri/src/server_monitor/tests/transport.rs",
+        "src-tauri/src/server_monitor/tests/storage.rs",
+        "src-tauri/src/server_monitor/tests/runtime.rs",
+        "src-tauri/src/server_monitor/tests/commands.rs",
+        "src/components/ServerMonitor/ServerMonitor.test.tsx",
+        "src/lib/serverMonitor.test.ts",
+        "src/components/settings/sections/ServerMonitorSettings.test.tsx",
+        "src/components/SettingsView.test.tsx",
+        "src/toolbox/registry.test.ts"
+      ],
+      "depends_on": [],
+      "relations": [
+        {
+          "kind": "imports",
+          "from": "src/components/ServerMonitor/index.tsx#ServerMonitorTool",
+          "to": "src/components/ServerMonitor/MetricCards.tsx#MetricCards"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/ServerMonitor/index.tsx#ServerMonitorTool",
+          "to": "src/components/ServerMonitor/HistoryChart.tsx#HistoryChart"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/ServerMonitor/index.tsx#ServerMonitorTool",
+          "to": "src/components/ServerMonitor/ServerFormDialog.tsx#ServerFormDialog"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServerMonitorSettings.tsx#ServerMonitorSettingsView",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
+          "to": "src/components/settings/sections/ServerMonitorSettings.tsx#ServerMonitorSettingsView"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/plugins/server-monitor.ts#serverMonitorTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/server-monitor.ts#serverMonitorTool"
+        }
+      ],
+      "owner_role": "backend",
+      "responsibility": "Persisted monitor targets and interval/daily backend scheduling over owned SSH sessions with encrypted local configuration, SQLite samples and slot claims, honest partial metrics and safe state publication, plus the existing-style monitoring interface, gap-aware history and independently saved scheduling settings",
+      "read_scope": [
+        "docs/server-monitor.md",
+        "docs/server-monitor.zh.md",
+        "en_keys.txt",
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/server_monitor.rs",
+        "src-tauri/src/server_monitor/collector.sh",
+        "src-tauri/src/server_monitor/commands.rs",
+        "src-tauri/src/server_monitor/metrics.rs",
+        "src-tauri/src/server_monitor/runtime.rs",
+        "src-tauri/src/server_monitor/storage.rs",
+        "src-tauri/src/server_monitor/tests.rs",
+        "src-tauri/src/server_monitor/tests/commands.rs",
+        "src-tauri/src/server_monitor/tests/fixtures/sample.txt",
+        "src-tauri/src/server_monitor/tests/metrics.rs",
+        "src-tauri/src/server_monitor/tests/runtime.rs",
+        "src-tauri/src/server_monitor/tests/storage.rs",
+        "src-tauri/src/server_monitor/tests/transport.rs",
+        "src-tauri/src/server_monitor/transport.rs",
+        "src-tauri/src/server_monitor/types.rs",
+        "src-tauri/src/ssh_tunnels.rs",
+        "src-tauri/src/ssh_tunnels/monitor_transport.rs",
+        "src-tauri/src/ssh_tunnels/validation_ssh_config.rs",
+        "src/components/ServerMonitor/HistoryChart.tsx",
+        "src/components/ServerMonitor/MetricCards.tsx",
+        "src/components/ServerMonitor/ServerFormDialog.tsx",
+        "src/components/ServerMonitor/ServerMonitor.test.tsx",
+        "src/components/ServerMonitor/index.tsx",
+        "src/components/SettingsView.test.tsx",
+        "src/components/settings/SettingsContainer.tsx",
+        "src/components/settings/sections/ServerMonitorSettings.test.tsx",
+        "src/components/settings/sections/ServerMonitorSettings.tsx",
+        "src/components/settings/sections/ServicesSection.tsx",
+        "src/components/settings/types.ts",
+        "src/i18n.ts",
+        "src/lib/serverMonitor.test.ts",
+        "src/lib/serverMonitor.ts",
+        "src/toolbox/plugins/server-monitor.ts",
+        "src/toolbox/registry.test.ts",
+        "src/toolbox/registry.ts",
+        "src/toolbox/types.ts",
+        "zh_keys.txt"
+      ],
+      "shared_entry": false
     }
   ]
 }

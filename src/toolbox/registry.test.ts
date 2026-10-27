@@ -37,6 +37,7 @@ const CANONICAL_HUB_IDS = [
   "ssl-certificate",
   "uptime-monitor",
   "webhook-catcher",
+  "server-monitor",
 ] as const;
 
 const NON_HUB_IDS = ["notes", "snippets"] as const;
@@ -314,5 +315,28 @@ describe("assertToolboxRegistryIntegrity", () => {
         { ...base, id: "alias-less-tool", aliases: [aliasWithoutTarget] },
       ]),
     ).toThrow();
+  });
+});
+
+describe("server-monitor toolbox entry", () => {
+  it("resolves the server-monitor alias to the hub tool", () => {
+    const tool = getToolboxTool("server-monitor");
+    expect(tool).toBeDefined();
+    expect(tool!.defaultVisible).toBe(true);
+    expect(resolveToolboxNavigationAlias("server-monitor")).toEqual({
+      toolId: "server-monitor",
+      tab: "more-tools",
+      moreToolsSection: "server-monitor",
+    });
+  });
+
+  it("lazily loads the ServerMonitor component", async () => {
+    const tool = getToolboxTool("server-monitor");
+    expect(tool).toBeDefined();
+    expect(tool).not.toHaveProperty("component");
+    expect(typeof tool!.loadComponent).toBe("function");
+    const resolved = await tool!.loadComponent();
+    expect(resolved).toBeTruthy();
+    expect(["function", "object"]).toContain(typeof resolved.default);
   });
 });

@@ -244,6 +244,8 @@ pub(super) fn shutdown_runtime_services() {
     crate::tunnel::shutdown_all();
     // Stop the process-owned SSL certificate scheduler.
     crate::ssl_certificate::stop_ssl_scheduler();
+    // Stop the process-owned server monitor scheduler and close owned sessions.
+    crate::server_monitor::runtime::shutdown_global();
     // Stop the process-owned webhook listener; `stop` is idempotent.
     let _ = crate::webhook_catcher::server::WebhookServerManager::global().stop();
 }
