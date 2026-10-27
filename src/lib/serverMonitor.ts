@@ -103,6 +103,18 @@ export const DEFAULT_SERVER_MONITOR_SETTINGS: ServerMonitorSettings = {
   retentionDays: 7,
 };
 
+export interface ServerMonitorTunnelView {
+  enabled: boolean;
+  sourceKind: ServerMonitorSourceKind;
+  savedHostName: string | null;
+  host: string | null;
+  port: number | null;
+  user: string | null;
+  authKind: ServerMonitorAuthKind | null;
+  keyPath: string | null;
+  hasPassword: boolean;
+}
+
 export interface ServerMonitorTargetView {
   id: string;
   name: string;
@@ -115,6 +127,7 @@ export interface ServerMonitorTargetView {
   authKind: ServerMonitorAuthKind | null;
   keyPath: string | null;
   hasPassword: boolean;
+  tunnel?: ServerMonitorTunnelView | null;
   blocked: boolean;
   lastErrorKind: ServerMonitorFailureKind | null;
   lastError: string | null;
@@ -140,6 +153,18 @@ export interface ServerMonitorCustomDraft {
   password?: string | null;
 }
 
+export interface ServerMonitorTunnelDraft {
+  enabled: boolean;
+  sourceKind: ServerMonitorSourceKind;
+  savedHostName?: string | null;
+  host?: string | null;
+  port?: number | null;
+  user?: string | null;
+  authKind?: ServerMonitorAuthKind | null;
+  keyPath?: string | null;
+  password?: string | null;
+}
+
 export interface ServerMonitorTargetDraft {
   id?: string | null;
   name: string;
@@ -147,6 +172,7 @@ export interface ServerMonitorTargetDraft {
   sourceKind: ServerMonitorSourceKind;
   savedHostName?: string | null;
   custom?: ServerMonitorCustomDraft | null;
+  tunnel?: ServerMonitorTunnelDraft | null;
 }
 
 export interface ServerMonitorTestResult {
@@ -383,6 +409,36 @@ export function validateServerMonitorDraft(
 ): boolean {
   const name = typeof draft.name === "string" ? draft.name.trim() : "";
   if (name.length < 1 || name.length > 80) return false;
+
+  if (draft.tunnel && draft.tunnel.enabled) {
+    const tunnel = draft.tunnel;
+    if (tunnel.sourceKind === "savedHost") {
+      if (typeof tunnel.savedHostName !== "string" || tunnel.savedHostName.trim().length === 0) {
+        return false;
+      }
+    } else if (tunnel.sourceKind === "custom") {
+      if (typeof tunnel.host !== "string" || tunnel.host.trim().length === 0) {
+        return false;
+      }
+      if (!isIntegerInRange(tunnel.port, 1, 65535)) return false;
+      if (typeof tunnel.user !== "string" || tunnel.user.trim().length === 0) {
+        return false;
+      }
+      if (tunnel.authKind === "key") {
+        if (typeof tunnel.keyPath !== "string" || tunnel.keyPath.trim().length === 0) {
+          return false;
+        }
+      } else if (tunnel.authKind === "password") {
+        const hasPassword = typeof tunnel.password === "string" && tunnel.password.length > 0;
+        const editing = Boolean(editingTargetId || draft.id);
+        if (!hasPassword && !editing) return false;
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
 
   if (draft.sourceKind === "savedHost") {
     return (

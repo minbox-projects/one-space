@@ -84,6 +84,7 @@ fn encrypted_config_round_trips_and_hides_credentials() {
             key_path: None,
             password: Some(password.to_string()),
         }),
+        tunnel: None,
         created_at_ms: 10,
         updated_at_ms: 20,
         blocked: false,

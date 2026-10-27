@@ -39,8 +39,10 @@ fn runtime_public_methods_are_callable_boundary() {
 
 use crate::server_monitor::transport::{MonitorConnector, MonitorConnection};
 use crate::server_monitor::types::{
-    MonitorConnectRequest, MonitorSource, MonitorTransportError, ServerMonitorScheduleMode,
-    ServerMonitorSettings, ServerMonitorState, ServerMonitorTargetDraft, ServerMonitorTargetRecord,
+    MonitorConnectRequest, MonitorSource, MonitorTransportError, ServerMonitorAuthKind,
+    ServerMonitorScheduleMode, ServerMonitorSettings, ServerMonitorSourceKind, ServerMonitorState,
+    ServerMonitorTargetDraft, ServerMonitorTargetRecord, ServerMonitorTunnelDraft,
+    ServerMonitorTunnelRecord,
 };
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -138,6 +140,7 @@ fn runtime_behavior_additive_fields_and_tick() {
             key_path: None,
             password: Some("p".to_string()),
         }),
+        tunnel: None,
     };
     runtime.upsert_target(draft).unwrap();
 
@@ -288,6 +291,7 @@ fn make_target_draft(id: &str) -> ServerMonitorTargetDraft {
             key_path: None,
             password: Some("p".to_string()),
         }),
+        tunnel: None,
     }
 }
 
@@ -1091,6 +1095,7 @@ fn test_connection_uses_stored_password_and_persists_nothing() {
             key_path: None,
             password: Some("".to_string()),
         }),
+        tunnel: None,
     };
     let result = runtime.test_connection(draft).unwrap();
     assert!(result.succeeded);
@@ -1391,6 +1396,7 @@ fn real_ssh_runtime_interval_daily_and_pause_smoke() {
             key_path: None,
             password: Some(password.clone()),
         }),
+        tunnel: None,
     };
     runtime.upsert_target(draft).unwrap();
     runtime.start();
@@ -1505,6 +1511,132 @@ fn collection_failure_notifies_event_sink() {
     assert_eq!(failures[0].1, "My Server");
     assert!(!failures[0].2.is_empty());
 
+    runtime.shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn tunnel_target_upsert_validation_and_password_preservation() {
+    let root = std::env::temp_dir().join(format!("onespace-sm-tunnel-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(ServerMonitorStore::new(root.clone()));
+    let config = ServerMonitorConfig::default();
+    store.save_config(&config).unwrap();
+
+    let connector = Arc::new(FakeConnector {
+        output: framed_output(),
+    });
+    let events: Arc<dyn ServerMonitorEventSink> = Arc::new(NoopEventSink);
+    let clock = Arc::new(AtomicClock {
+        value: AtomicI64::new(0),
+    });
+    let runtime = ServerMonitorRuntime::new_with_clock(
+        store.clone(),
+        connector.clone() as Arc<dyn MonitorConnector>,
+        events,
+        clock.clone(),
+    );
+
+    // 1. Invalid tunnel validation failure (custom missing host)
+    let mut invalid_draft = make_target_draft("t-bad-tunnel");
+    invalid_draft.tunnel = Some(ServerMonitorTunnelDraft {
+        enabled: true,
+        source_kind: ServerMonitorSourceKind::Custom,
+        saved_host_name: None,
+        host: Some("".to_string()),
+        port: Some(22),
+        user: Some("jump".to_string()),
+        auth_kind: Some(ServerMonitorAuthKind::Password),
+        key_path: None,
+        password: Some("secret".to_string()),
+    });
+    assert!(runtime.upsert_target(invalid_draft).is_err());
+
+    // 2. Valid tunnel upsert with password
+    let mut valid_draft = make_target_draft("t-tunnel");
+    valid_draft.tunnel = Some(ServerMonitorTunnelDraft {
+        enabled: true,
+        source_kind: ServerMonitorSourceKind::Custom,
+        saved_host_name: None,
+        host: Some("1.2.3.4".to_string()),
+        port: Some(22),
+        user: Some("jump".to_string()),
+        auth_kind: Some(ServerMonitorAuthKind::Password),
+        key_path: None,
+        password: Some("secret-jump-password".to_string()),
+    });
+    let state = runtime.upsert_target(valid_draft).unwrap();
+    let target_view = state.targets.iter().find(|t| t.id == "t-tunnel").unwrap();
+    assert!(target_view.tunnel.is_some());
+    let tunnel_view = target_view.tunnel.as_ref().unwrap();
+    assert!(tunnel_view.enabled);
+    assert_eq!(tunnel_view.host.as_deref(), Some("1.2.3.4"));
+    assert!(tunnel_view.has_password);
+
+    // 3. Edit target keeping existing tunnel password (empty password submitted)
+    let mut edit_draft = make_target_draft("t-tunnel");
+    edit_draft.name = "Renamed Internal Server".to_string();
+    edit_draft.tunnel = Some(ServerMonitorTunnelDraft {
+        enabled: true,
+        source_kind: ServerMonitorSourceKind::Custom,
+        saved_host_name: None,
+        host: Some("1.2.3.4".to_string()),
+        port: Some(22),
+        user: Some("bastion".to_string()),
+        auth_kind: Some(ServerMonitorAuthKind::Password),
+        key_path: None,
+        password: Some("".to_string()),
+    });
+    let updated_state = runtime.upsert_target(edit_draft).unwrap();
+    let updated_view = updated_state.targets.iter().find(|t| t.id == "t-tunnel").unwrap();
+    assert_eq!(updated_view.name, "Renamed Internal Server");
+    assert!(updated_view.tunnel.as_ref().unwrap().has_password);
+
+    runtime.shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+#[ignore = "requires real SSH jump host and target in ~/.ssh/config"]
+fn real_ssh_tunnel_node3_via_node2_smoke() {
+    let root = std::env::temp_dir().join(format!("onespace-sm-dbg-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(ServerMonitorStore::new(root.clone()));
+    let config = ServerMonitorConfig::default();
+    store.save_config(&config).unwrap();
+
+    let connector = Arc::new(crate::ssh_tunnels::monitor_transport::SshMonitorConnector::new());
+    let events: Arc<dyn ServerMonitorEventSink> = Arc::new(NoopEventSink);
+    let clock = Arc::new(AtomicClock {
+        value: AtomicI64::new(0),
+    });
+    let runtime = ServerMonitorRuntime::new_with_clock(
+        store.clone(),
+        connector.clone() as Arc<dyn MonitorConnector>,
+        events,
+        clock.clone(),
+    );
+
+    let draft = ServerMonitorTargetDraft {
+        id: None,
+        name: "node3".to_string(),
+        enabled: true,
+        source_kind: ServerMonitorSourceKind::SavedHost,
+        saved_host_name: Some("node3-prod-root".to_string()),
+        custom: None,
+        tunnel: Some(ServerMonitorTunnelDraft {
+            enabled: true,
+            source_kind: ServerMonitorSourceKind::SavedHost,
+            saved_host_name: Some("node2-prod-root".to_string()),
+            host: None,
+            port: None,
+            user: None,
+            auth_kind: None,
+            key_path: None,
+            password: None,
+        }),
+    };
+
+    let res = runtime.test_connection(draft);
+    assert!(matches!(res, Ok(ref r) if r.succeeded));
     runtime.shutdown();
     let _ = std::fs::remove_dir_all(root);
 }

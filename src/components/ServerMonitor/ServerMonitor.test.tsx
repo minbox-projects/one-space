@@ -306,9 +306,72 @@ describe("ServerMonitorTool", () => {
     await act(async () => {
       renderWithProviders(<ServerMonitorTool />);
     });
-    const btn = await screen.findByRole("button", { name: /collect now|refresh/i });
-    await user.click(btn);
-    expect(invokeMock).toHaveBeenCalledWith("server_monitor_refresh", { targetId: "t1" });
+    const toolbarBtn = await screen.findByTestId("toolbar-collect-now-btn");
+    await user.click(toolbarBtn);
+
+    const detailBtn = await screen.findByTestId("detail-collect-now-btn");
+    await user.click(detailBtn);
+
+    const refreshCalls = invokeMock.mock.calls.filter((call) => call[0] === "server_monitor_refresh");
+    expect(refreshCalls).toHaveLength(2);
+    expect(refreshCalls[0]).toEqual(["server_monitor_refresh", { targetId: "t1" }]);
+    expect(refreshCalls[1]).toEqual(["server_monitor_refresh", { targetId: "t1" }]);
+  });
+
+  it("disables collect-now buttons when collecting is true", async () => {
+    const collectingState = {
+      ...statePopulated,
+      targets: [
+        {
+          ...targetA,
+          collecting: true,
+        },
+      ],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return collectingState;
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const toolbarBtn = await screen.findByTestId("toolbar-collect-now-btn");
+    const detailBtn = await screen.findByTestId("detail-collect-now-btn");
+    expect(toolbarBtn).toBeDisabled();
+    expect(detailBtn).toBeDisabled();
+  });
+
+  it("renders ssh tunnel badge when target has tunnel enabled", async () => {
+    const tunnelState = {
+      ...statePopulated,
+      targets: [
+        {
+          ...targetA,
+          tunnel: {
+            enabled: true,
+            sourceKind: "custom",
+            savedHostName: null,
+            host: "jump.example.com",
+            port: 22,
+            user: "jumpuser",
+            authKind: "password",
+            keyPath: null,
+            hasPassword: true,
+          },
+        },
+      ],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return tunnelState;
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const badges = await screen.findAllByText(/SSH 隧道|SSH Tunnel/i);
+    expect(badges.length).toBeGreaterThanOrEqual(1);
   });
 
   it("error state shows banner and clears on empty reload", async () => {
@@ -475,6 +538,84 @@ describe("ServerFormDialog", () => {
         name: "prod-cloud",
         sourceKind: "savedHost",
         savedHostName: "prod-cloud",
+      }),
+    );
+  });
+
+  it("supports configuring and saving ssh tunnel", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_ssh_hosts") {
+        return [
+          {
+            name: "jump-box",
+            host_name: "1.2.3.4",
+            user: "jump",
+            port: 22,
+          },
+        ];
+      }
+      if (command === "get_secret") return null;
+      return undefined;
+    });
+
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onTestConnection = vi.fn().mockResolvedValue({ succeeded: true, partial: false, snapshot: sampleSnapshot });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      renderWithProviders(
+        <ServerFormDialog
+          isOpen={true}
+          target={null}
+          onClose={vi.fn()}
+          onSave={onSave}
+          onTestConnection={onTestConnection}
+        />,
+      );
+    });
+
+    // 切换为 custom 模式
+    const customOption = screen.getByTestId("source-custom");
+    await user.click(customOption);
+
+    // 填写目标服务器名称和内网 IP
+    const nameInput = screen.getByTestId("target-name-input");
+    await user.type(nameInput, "internal-db");
+
+    const hostInput = screen.getByTestId("target-host-input");
+    await user.type(hostInput, "10.0.1.50");
+
+    const userInput = screen.getByTestId("target-user-input");
+    await user.type(userInput, "dbadmin");
+
+    const passwordInput = screen.getByTestId("target-password-input");
+    await user.type(passwordInput, "dbpassword");
+
+    // 点击开启 SSH 隧道开关
+    const tunnelSwitch = screen.getByRole("switch", { name: /通过 ssh 隧道连接|connect via ssh tunnel/i });
+    await user.click(tunnelSwitch);
+
+    // 选择跳板机为 savedHost
+    const select = await screen.findByTestId("tunnel-saved-host-select");
+    await user.selectOptions(select, "config:jump-box");
+
+    // 保存提交
+    const saveBtn = screen.getByRole("button", { name: /save|保存/i });
+    await user.click(saveBtn);
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "internal-db",
+        sourceKind: "custom",
+        custom: expect.objectContaining({
+          host: "10.0.1.50",
+          user: "dbadmin",
+        }),
+        tunnel: expect.objectContaining({
+          enabled: true,
+          sourceKind: "savedHost",
+          savedHostName: "jump-box",
+        }),
       }),
     );
   });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  Loader2,
   Pencil,
   Plus,
   Search,
@@ -148,6 +149,7 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
   const available = isServerMonitorAvailable();
   const [state, setState] = useState<ServerMonitorState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [collectingId, setCollectingId] = useState<string | null>(null);
   const [samples, setSamples] = useState<ServerMonitorSample[]>([]);
   const [range, setRange] = useState<ServerMonitorHistoryRange>("twentyFourHours");
   const [selectedInterface, setSelectedInterface] = useState<string | null>(null);
@@ -339,6 +341,7 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
   };
 
   const handleCollectNow = async (target: ServerMonitorTargetView) => {
+    setCollectingId(target.id);
     try {
       const next = await serverMonitorRefresh(target.id);
       if (next && Array.isArray(next.targets)) {
@@ -351,12 +354,15 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
         description: text("serverMonitorCollected"),
         kind: "success",
       });
+      await loadHistory(target.id, range);
     } catch (reason) {
       pushToast({
         title: t("serverMonitorCollectFailed"),
         description: reason instanceof Error ? reason.message : String(reason),
         kind: "error",
       });
+    } finally {
+      setCollectingId(null);
     }
   };
 
@@ -487,10 +493,16 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
               type="button"
               size="sm"
               variant="outline"
+              data-testid="toolbar-collect-now-btn"
+              disabled={selectedTarget.collecting || collectingId === selectedTarget.id}
               onClick={() => void handleCollectNow(selectedTarget)}
               className="rounded-xl border-slate-200 dark:border-slate-800"
             >
-              <Activity className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+              {selectedTarget.collecting || collectingId === selectedTarget.id ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <Activity className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+              )}
               <BiText translationKey="serverMonitorCollectNow" />
             </Button>
           ) : null}
@@ -708,11 +720,18 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                           <span className="font-medium text-slate-500 dark:text-slate-400">
                             <BiText translationKey={listKey} />
                           </span>
-                          {target.savedHostName ? (
-                            <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                              SSH
-                            </span>
-                          ) : null}
+                          <div className="flex items-center gap-1">
+                            {target.tunnel?.enabled ? (
+                              <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                                <BiText translationKey="serverMonitorTunnelBadge" />
+                              </span>
+                            ) : null}
+                            {target.savedHostName ? (
+                              <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                SSH
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       </button>
                     );
@@ -750,6 +769,16 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                           {partial ? (
                             <StatusPill translationKey="serverMonitorPartial" tone="warning" />
                           ) : null}
+                          {selectedTarget.tunnel?.enabled ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                              <BiText translationKey="serverMonitorTunnelBadge" />
+                              <span className="font-mono text-[10px] opacity-80">
+                                ({selectedTarget.tunnel.sourceKind === "savedHost"
+                                  ? selectedTarget.tunnel.savedHostName
+                                  : `${selectedTarget.tunnel.host}:${selectedTarget.tunnel.port || 22}`})
+                              </span>
+                            </span>
+                          ) : null}
                         </div>
                         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                           {settings.scheduleMode === "daily" ? (
@@ -767,6 +796,22 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          data-testid="detail-collect-now-btn"
+                          disabled={selectedTarget.collecting || collectingId === selectedTarget.id}
+                          onClick={() => void handleCollectNow(selectedTarget)}
+                          className="rounded-xl border-emerald-200 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/20 dark:text-emerald-300 dark:hover:bg-emerald-950/40"
+                        >
+                          {selectedTarget.collecting || collectingId === selectedTarget.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Activity className="h-3.5 w-3.5" />
+                          )}
+                          <BiText translationKey="serverMonitorCollectNow" />
+                        </Button>
                         <Button
                           type="button"
                           size="sm"

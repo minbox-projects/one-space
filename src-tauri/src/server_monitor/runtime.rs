@@ -13,7 +13,8 @@ use crate::server_monitor::types::{
     MonitorSource, MonitorTransportErrorKind, ServerMonitorCustomDraft, ServerMonitorCustomRecord,
     ServerMonitorOutcome, ServerMonitorSample,
     ServerMonitorScheduleMode, ServerMonitorSettings, ServerMonitorSourceKind, ServerMonitorState,
-    ServerMonitorTargetDraft, ServerMonitorTargetRecord, ServerMonitorTestResult, SessionLifetime,
+    ServerMonitorTargetDraft, ServerMonitorTargetRecord, ServerMonitorTestResult,
+    ServerMonitorTunnelDraft, ServerMonitorTunnelRecord, SessionLifetime,
 };
 pub(crate) use crate::server_monitor::types::ServerMonitorHistoryRange;
 use chrono::{Datelike, Local, LocalResult, TimeZone};
@@ -649,6 +650,8 @@ impl ServerMonitorRuntime {
             (handle, session, generation, self.clock.now_ms())
         };
 
+        self.publish();
+
         let runtime = self.clone();
         let worker_handle = handle.clone();
         let worker_session = session.clone();
@@ -944,6 +947,10 @@ impl ServerMonitorRuntime {
             .custom
             .as_ref()
             .map(|custom| build_custom_record(custom, existing.as_ref()));
+        let tunnel = draft
+            .tunnel
+            .as_ref()
+            .map(|tunnel| build_tunnel_record(tunnel, existing.as_ref()));
         let record = ServerMonitorTargetRecord {
             id: id.clone(),
             name,
@@ -955,6 +962,7 @@ impl ServerMonitorRuntime {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             custom,
+            tunnel,
             created_at_ms: existing
                 .as_ref()
                 .map(|record| record.created_at_ms)
@@ -1539,6 +1547,52 @@ fn build_custom_record(
     }
 }
 
+fn build_tunnel_record(
+    draft: &ServerMonitorTunnelDraft,
+    existing: Option<&ServerMonitorTargetRecord>,
+) -> ServerMonitorTunnelRecord {
+    let preserved_password = existing
+        .and_then(|record| record.tunnel.as_ref())
+        .and_then(|tunnel| tunnel.password.clone())
+        .filter(|password| !password.is_empty());
+    let password = if draft.auth_kind == Some(crate::server_monitor::types::ServerMonitorAuthKind::Password) {
+        draft
+            .password
+            .clone()
+            .filter(|password| !password.is_empty())
+            .or(preserved_password)
+    } else {
+        None
+    };
+    ServerMonitorTunnelRecord {
+        enabled: draft.enabled,
+        source_kind: draft.source_kind,
+        saved_host_name: draft
+            .saved_host_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        host: draft
+            .host
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        port: draft.port,
+        user: draft
+            .user
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        auth_kind: draft.auth_kind,
+        key_path: draft
+            .key_path
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        password,
+    }
+}
+
 fn draft_record(
     draft: &ServerMonitorTargetDraft,
     existing: Option<&ServerMonitorTargetRecord>,
@@ -1562,6 +1616,10 @@ fn draft_record(
             .custom
             .as_ref()
             .map(|custom| build_custom_record(custom, existing)),
+        tunnel: draft
+            .tunnel
+            .as_ref()
+            .map(|tunnel| build_tunnel_record(tunnel, existing)),
         created_at_ms: now,
         updated_at_ms: now,
         blocked: false,
@@ -1634,11 +1692,72 @@ fn validate_target(record: &ServerMonitorTargetRecord) -> Result<(), String> {
             }
         }
     }
+    if let Some(tunnel) = &record.tunnel {
+        if tunnel.enabled {
+            match tunnel.source_kind {
+                ServerMonitorSourceKind::SavedHost => {
+                    if tunnel
+                        .saved_host_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .is_none()
+                    {
+                        return Err("Select an existing SSH host for the tunnel".to_string());
+                    }
+                }
+                ServerMonitorSourceKind::Custom => {
+                    if tunnel.host.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
+                        return Err("Tunnel SSH host is required".to_string());
+                    }
+                    if tunnel.user.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
+                        return Err("Tunnel SSH user is required".to_string());
+                    }
+                    if tunnel.port.unwrap_or(0) == 0 {
+                        return Err("Tunnel SSH port must be from 1 to 65535".to_string());
+                    }
+                    match tunnel.auth_kind {
+                        Some(crate::server_monitor::types::ServerMonitorAuthKind::Key) => {
+                            if tunnel
+                                .key_path
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .is_none()
+                            {
+                                return Err("Tunnel key authentication requires a key path".to_string());
+                            }
+                        }
+                        Some(crate::server_monitor::types::ServerMonitorAuthKind::Password) => {
+                            if tunnel
+                                .password
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .is_none()
+                            {
+                                return Err("Tunnel password authentication requires a password".to_string());
+                            }
+                        }
+                        Some(crate::server_monitor::types::ServerMonitorAuthKind::Agent) => {
+                            return Err("Tunnel agent authentication requires a saved SSH host".to_string());
+                        }
+                        None => {
+                            return Err("Tunnel authentication method is required".to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
 fn same_source(left: &ServerMonitorTargetRecord, right: &ServerMonitorTargetRecord) -> bool {
     if left.source_kind != right.source_kind || left.saved_host_name != right.saved_host_name {
+        return false;
+    }
+    if left.tunnel != right.tunnel {
         return false;
     }
     match (&left.custom, &right.custom) {
@@ -1693,6 +1812,7 @@ fn connect_request(target: &ServerMonitorTargetRecord) -> Result<MonitorConnectR
             .custom
             .as_ref()
             .and_then(|custom| custom.password.clone()),
+        tunnel: target.tunnel.clone(),
     })
 }
 
