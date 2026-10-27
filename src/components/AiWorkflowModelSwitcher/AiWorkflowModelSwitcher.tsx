@@ -28,7 +28,6 @@ import {
   listProfiles,
   normalizeEffortForModel,
   renameProfile,
-  resolveExcludedEfforts,
   resolveWritableEfforts,
   saveProfile,
 
@@ -36,7 +35,6 @@ import {
   type ModelSourcesResult,
   type ProfileActivationReport,
   type ProfileSummary,
-  type SupportedRole,
   type SupportedTool,
   type ValidEffort,
 } from "@/lib/aiWorkflowProfiles";
@@ -45,72 +43,14 @@ import type { ToolboxNavigationProps } from "@/toolbox/types";
 import { useConfirmDialog } from "../ConfirmDialogProvider";
 import { useToast } from "../ToastProvider";
 import { ToolErrorBanner } from "@/components/toolbox/ToolErrorBanner";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../ui/dialog";
-import { SearchableModelCombobox } from "./SearchableModelCombobox";
+import { getRoleStyle } from "./styles";
+import { ModelMatrix } from "./ModelMatrix";
+import { CreateProfileDialog } from "./CreateProfileDialog";
+import { EditProfileDialog } from "./EditProfileDialog";
 
 export type AiWorkflowModelSwitcherProps = ToolboxNavigationProps;
 
 const PROFILE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/i;
-
-const ROLE_BADGE_STYLES: Record<SupportedRole, { badge: string; dot: string }> =
-  {
-    backend: {
-      badge: "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-400",
-      dot: "bg-sky-500",
-    },
-    frontend: {
-      badge:
-        "border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-400",
-      dot: "bg-violet-500",
-    },
-    test: {
-      badge:
-        "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-      dot: "bg-emerald-500",
-    },
-    "documentation-maintainer": {
-      badge:
-        "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-      dot: "bg-amber-500",
-    },
-    "file-explorer": {
-      badge: "border-cyan-500/25 bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
-      dot: "bg-cyan-500",
-    },
-    "git-operator": {
-      badge: "border-rose-500/25 bg-rose-500/10 text-rose-700 dark:text-rose-400",
-      dot: "bg-rose-500",
-    },
-    researcher: {
-      badge:
-        "border-indigo-500/25 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400",
-      dot: "bg-indigo-500",
-    },
-    "spec-review": {
-      badge: "border-teal-500/25 bg-teal-500/10 text-teal-700 dark:text-teal-400",
-      dot: "bg-teal-500",
-    },
-    "standards-review": {
-      badge:
-        "border-fuchsia-500/25 bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-400",
-      dot: "bg-fuchsia-500",
-    },
-  };
-
-const ROLE_BADGE_FALLBACK = {
-  badge: "border-border bg-muted text-muted-foreground",
-  dot: "bg-muted-foreground",
-};
-
-const getRoleStyle = (role: string) =>
-  ROLE_BADGE_STYLES[role as SupportedRole] ?? ROLE_BADGE_FALLBACK;
 
 export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
   const { t } = useTranslation();
@@ -1108,713 +1048,57 @@ export const AiWorkflowModelSwitcher: FC<AiWorkflowModelSwitcherProps> = () => {
       ) : null}
 
       {/* 9×3 矩阵表格 */}
-      {matrix.length > 0 ? (
-        <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-xs">
-              <thead>
-                <tr className="border-b bg-muted/40 text-left text-muted-foreground">
-                  <th className="w-48 px-3.5 py-2.5 font-medium">
-                    {t("aiWorkflow.role", "角色")}
-                  </th>
-                  {SUPPORTED_TOOLS.map((tool) => {
-                    const degradedError = modelSources?.[tool]?.error;
-                    const capabilityWarning =
-                      modelSources?.[tool]?.capability_warning;
-                    const isBatchActive = batchColumnTool === tool;
-                    const candidateModels = modelSources?.[tool]?.models || [];
-
-                    return (
-                      <th
-                        key={tool}
-                        data-testid={`column-header-${tool}`}
-                        className="px-3.5 py-2.5 font-medium"
-                      >
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="uppercase tracking-wider">
-                              {tool}
-                            </span>
-                            <button
-                              type="button"
-                              data-testid={`batch-fill-column-${tool}`}
-                              onClick={() => {
-                                setBatchColumnTool(isBatchActive ? null : tool);
-                                setBatchColumnValue("");
-                              }}
-                              className="shrink-0 whitespace-nowrap rounded border bg-background px-2 py-0.5 text-[11px] font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
-                            >
-                              {t("aiWorkflow.batchFillColumn", "整列填充")}
-                            </button>
-                          </div>
-
-                          {degradedError ? (
-                            <div
-                              data-testid={`column-degraded-warning-${tool}`}
-                              className="flex items-center gap-1 text-[11px] font-normal text-amber-600 dark:text-amber-400"
-                              title={degradedError}
-                            >
-                              <AlertTriangle className="h-3 w-3 shrink-0" />
-                              <span className="truncate">{degradedError}</span>
-                            </div>
-                          ) : null}
-
-                          {/* Capability-read warning stays separate from the
-                              column error and never hides the model candidates. */}
-                          {capabilityWarning ? (
-                            <div
-                              data-testid={`column-capability-warning-${tool}`}
-                              className="flex items-center gap-1 text-[11px] font-normal text-amber-600 dark:text-amber-400"
-                              title={capabilityWarning}
-                            >
-                              <AlertTriangle className="h-3 w-3 shrink-0" />
-                              <span className="truncate">{capabilityWarning}</span>
-                            </div>
-                          ) : null}
-
-                          {/* 整列填充展开面板：支持模糊检索、列表选择、防折行按钮与关闭隐藏 */}
-                          {isBatchActive ? (
-                            <div className="mt-1 flex flex-col gap-1.5 rounded-lg border bg-card p-2 shadow-sm font-normal">
-                              <div className="flex items-center justify-between gap-1">
-                                <span className="text-[11px] font-medium text-muted-foreground">
-                                  {t("aiWorkflow.batchFillColumn", "整列填充")}
-                                </span>
-                                <button
-                                  type="button"
-                                  data-testid={`batch-fill-hide-${tool}`}
-                                  onClick={() => {
-                                    setBatchColumnTool(null);
-                                    setBatchColumnValue("");
-                                  }}
-                                  title={t(
-                                    "aiWorkflow.hideBatchFill",
-                                    "收起隐藏",
-                                  )}
-                                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-
-                              <SearchableModelCombobox
-                                value={batchColumnValue}
-                                onChange={(val) => setBatchColumnValue(val)}
-                                candidates={candidateModels}
-                                placeholder={t(
-                                  "aiWorkflow.modelPlaceholder",
-                                  "输入或选择模型...",
-                                )}
-                                testId={`batch-fill-input-${tool}`}
-                                autoFocus
-                              />
-
-                              <div className="flex items-center justify-end gap-1.5 pt-0.5">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setBatchColumnTool(null);
-                                    setBatchColumnValue("");
-                                  }}
-                                  className="shrink-0 whitespace-nowrap rounded border border-input bg-background px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                                >
-                                  {t("aiWorkflow.cancel", "取消")}
-                                </button>
-                                <button
-                                  type="button"
-                                  data-testid={`batch-fill-apply-${tool}`}
-                                  onClick={() => handleApplyColumnBatch(tool)}
-                                  className="shrink-0 whitespace-nowrap rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                                >
-                                  {t("aiWorkflow.apply", "应用")}
-                                </button>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60">
-                {SUPPORTED_ROLES.map((role) => {
-                  const row = matrix.find((r) => r.role === role);
-                  const isRowBatchActive = batchRowRole === role;
-
-                  return (
-                    <tr
-                      key={role}
-                      data-testid={`matrix-row-role-${role}`}
-                      className="transition-colors hover:bg-muted/20"
-                    >
-                      <td className="px-3.5 py-2.5 align-top">
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between gap-1">
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${ROLE_BADGE_STYLES[role].badge}`}
-                            >
-                              <span
-                                className={`h-1.5 w-1.5 rounded-full ${ROLE_BADGE_STYLES[role].dot}`}
-                              />
-                              {role}
-                            </span>
-                            <button
-                              type="button"
-                              data-testid={`batch-fill-row-${role}`}
-                              onClick={() => {
-                                setBatchRowRole(isRowBatchActive ? null : role);
-                                setBatchRowValue("");
-                              }}
-                              className="shrink-0 whitespace-nowrap rounded border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-                            >
-                              {t("aiWorkflow.batchFillRow", "整行填充")}
-                            </button>
-                          </div>
-
-                          {isRowBatchActive ? (
-                            <div className="mt-1 flex flex-col gap-1.5 rounded-lg border bg-card p-2 shadow-sm font-normal">
-                              <div className="flex items-center justify-between gap-1">
-                                <span className="text-[11px] font-medium text-muted-foreground">
-                                  {t("aiWorkflow.batchFillRow", "整行填充")}
-                                </span>
-                                <button
-                                  type="button"
-                                  data-testid={`batch-fill-row-hide-${role}`}
-                                  onClick={() => {
-                                    setBatchRowRole(null);
-                                    setBatchRowValue("");
-                                  }}
-                                  title={t(
-                                    "aiWorkflow.hideBatchFill",
-                                    "收起隐藏",
-                                  )}
-                                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-
-                              <SearchableModelCombobox
-                                value={batchRowValue}
-                                onChange={(val) => setBatchRowValue(val)}
-                                candidates={allCandidateModels}
-                                placeholder={t(
-                                  "aiWorkflow.modelPlaceholder",
-                                  "输入或选择模型...",
-                                )}
-                                testId={`batch-fill-row-input-${role}`}
-                                autoFocus
-                              />
-
-                              <div className="flex items-center justify-end gap-1.5 pt-0.5">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setBatchRowRole(null);
-                                    setBatchRowValue("");
-                                  }}
-                                  className="shrink-0 whitespace-nowrap rounded border border-input bg-background px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                                >
-                                  {t("aiWorkflow.cancel", "取消")}
-                                </button>
-                                <button
-                                  type="button"
-                                  data-testid={`batch-fill-row-apply-${role}`}
-                                  onClick={() => handleApplyRowBatch(role)}
-                                  className="shrink-0 whitespace-nowrap rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                                >
-                                  {t("aiWorkflow.apply", "应用")}
-                                </button>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      </td>
-
-                      {SUPPORTED_TOOLS.map((tool) => {
-                        const cellData = row?.[tool];
-                        const origRow = originalMatrix.find(
-                          (r) => r.role === role,
-                        );
-                        const origCell = origRow?.[tool];
-                        const isCellDirty =
-                          JSON.stringify(cellData) !== JSON.stringify(origCell);
-
-                        const isCellEditing =
-                          editingCell?.role === role &&
-                          editingCell?.tool === tool;
-
-                        const candidateModels =
-                          modelSources?.[tool]?.models || [];
-
-                        const trimmedModel = cellData?.model?.trim() ?? "";
-                        const isCellConfigured = trimmedModel !== "";
-                        const capability = isCellConfigured
-                          ? getModelCapability(modelSources?.[tool], trimmedModel)
-                          : undefined;
-                        const writableEfforts =
-                          resolveWritableEfforts(capability);
-                        const excludedEfforts =
-                          resolveExcludedEfforts(capability);
-                        const cellEffort = cellData?.reasoning_effort ?? "";
-                        const knownIncompatible =
-                          !!capability && writableEfforts.length === 0;
-                        const knownInvalid =
-                          !!capability &&
-                          writableEfforts.length > 0 &&
-                          !writableEfforts.includes(cellEffort as ValidEffort);
-                        const unknownInvalid =
-                          !capability &&
-                          isCellConfigured &&
-                          !isKnownEffort(cellEffort);
-
-                        return (
-                          <td
-                            key={tool}
-                            data-testid={`cell-${role}-${tool}`}
-                            onClick={() => {
-                              setEditingCell({ role, tool });
-                              setCellSearchFilter("");
-                            }}
-                            className={`px-3.5 py-2.5 align-top transition-colors ${
-                              isCellDirty
-                                ? "bg-amber-500/10 dark:bg-amber-500/15"
-                                : ""
-                            }`}
-                          >
-                            <div className="flex flex-col gap-1.5">
-                              {/* 当前值摘要文本，确保 textContent 始终包含 model 与 effort */}
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                {cellData?.model ? (
-                                  <span className="font-mono font-medium text-foreground">
-                                    {cellData.model}
-                                  </span>
-                                ) : (
-                                  <span className="text-xs text-muted-foreground">
-                                    {t("aiWorkflow.notSet", "未设置")}
-                                  </span>
-                                )}
-
-                                {cellData?.reasoning_effort ? (
-                                  <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                                    {cellData.reasoning_effort}
-                                  </span>
-                                ) : null}
-                              </div>
-
-                              {/* 展开编辑区：支持模型输入过滤与候选列表模糊检索 */}
-                              {isCellEditing ? (
-                                <div
-                                  className="mt-1 space-y-2 rounded-lg border bg-background p-2.5 shadow-sm"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <div className="flex items-center justify-between border-b pb-1 text-[11px] font-medium text-muted-foreground">
-                                    <span className="inline-flex items-center gap-1.5">
-                                      <span
-                                        className={`h-1.5 w-1.5 rounded-full ${getRoleStyle(role).dot}`}
-                                      />
-                                      {role} · {tool}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      data-testid={`cell-close-${role}-${tool}`}
-                                      onClick={() => setEditingCell(null)}
-                                      className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                                      title={t("aiWorkflow.cancel", "取消")}
-                                    >
-                                      <X className="h-3 w-3" />
-                                    </button>
-                                  </div>
-
-                                  <div>
-                                    <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
-                                      Model
-                                    </label>
-                                    <input
-                                      type="text"
-                                      data-testid={`manual-model-input-${role}-${tool}`}
-                                      value={cellData?.model || ""}
-                                      onChange={(e) => {
-                                        handleModelChange(
-                                          role,
-                                          tool,
-                                          e.target.value,
-                                        );
-                                        setCellSearchFilter(e.target.value);
-                                      }}
-                                      placeholder={t(
-                                        "aiWorkflow.modelPlaceholder",
-                                        "输入或选择模型...",
-                                      )}
-                                      className="h-8 w-full rounded border bg-background px-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-                                    />
-                                  </div>
-
-                                  <div>
-                                    <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
-                                      {t(
-                                        "aiWorkflow.reasoningEffort",
-                                        "推理强度",
-                                      )}
-                                    </label>
-
-                                    {capability ? (
-                                      <select
-                                        data-testid={`effort-select-${role}-${tool}`}
-                                        disabled={writableEfforts.length === 0}
-                                        value={
-                                          writableEfforts.includes(
-                                            cellEffort as ValidEffort,
-                                          )
-                                            ? cellEffort
-                                            : ""
-                                        }
-                                        onChange={(e) =>
-                                          handleEffortChange(
-                                            role,
-                                            tool,
-                                            e.target.value,
-                                          )
-                                        }
-                                        className="h-8 w-full rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
-                                      >
-                                        {writableEfforts.map((eff) => (
-                                          <option key={eff} value={eff}>
-                                            {eff}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    ) : (
-                                      <input
-                                        type="text"
-                                        data-testid={`effort-manual-input-${role}-${tool}`}
-                                        value={cellEffort}
-                                        onChange={(e) =>
-                                          handleEffortChange(
-                                            role,
-                                            tool,
-                                            e.target.value,
-                                          )
-                                        }
-                                        placeholder="low | medium | high | xhigh | max | ultra"
-                                        className="h-8 w-full rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-                                      />
-                                    )}
-
-                                    {excludedEfforts.length > 0 ? (
-                                      <p
-                                        data-testid={`effort-schema-exclusion-${role}-${tool}`}
-                                        className="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
-                                      >
-                                        {t("aiWorkflow.effortSchemaExcluded", {
-                                          values: excludedEfforts.join(", "),
-                                          defaultValue:
-                                            "Profile schema excludes: {{values}}",
-                                        })}
-                                      </p>
-                                    ) : null}
-
-                                    {knownIncompatible ? (
-                                      <p
-                                        data-testid={`effort-incompatibility-${role}-${tool}`}
-                                        className="mt-1 text-[11px] text-destructive"
-                                      >
-                                        {t(
-                                          "aiWorkflow.effortIncompatibility",
-                                          "This model has no inference effort supported by the profile schema.",
-                                        )}
-                                      </p>
-                                    ) : null}
-
-                                    {!capability ? (
-                                      <p
-                                        data-testid={`effort-unknown-hint-${role}-${tool}`}
-                                        className="mt-1 text-[11px] text-muted-foreground"
-                                      >
-                                        {t("aiWorkflow.effortUnknownHint", {
-                                          defaultValue:
-                                            "Model capability unknown. Enter a schema effort: low, medium, high, xhigh, max, ultra.",
-                                        })}
-                                      </p>
-                                    ) : null}
-
-                                    {knownInvalid || unknownInvalid ? (
-                                      <p
-                                        data-testid={`effort-invalid-${role}-${tool}`}
-                                        className="mt-1 text-[11px] text-destructive"
-                                      >
-                                        {t(
-                                          "aiWorkflow.effortInvalid",
-                                          "Unsupported inference effort for the selected model.",
-                                        )}
-                                      </p>
-                                    ) : null}
-                                  </div>
-
-                                  {/* 候选模型列表：支持输入模糊过滤高亮 */}
-                                  {candidateModels.length > 0 ? (
-                                    <div>
-                                      <div className="mb-1 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
-                                        <span>Candidates</span>
-                                        {cellSearchFilter.trim() ? (
-                                          <span className="text-[11px] text-primary">
-                                            过滤中
-                                          </span>
-                                        ) : null}
-                                      </div>
-                                      <div
-                                        data-testid={`model-options-${tool}`}
-                                        className="max-h-28 space-y-1 overflow-y-auto rounded border bg-muted/30 p-1"
-                                      >
-                                        {candidateModels
-                                          .filter((m) => {
-                                            if (!cellSearchFilter.trim())
-                                              return true;
-                                            return m
-                                              .toLowerCase()
-                                              .includes(
-                                                cellSearchFilter
-                                                  .trim()
-                                                  .toLowerCase(),
-                                              );
-                                          })
-                                          .map((m) => (
-                                            <button
-                                              key={m}
-                                              type="button"
-                                              onClick={() => {
-                                                handleModelChange(role, tool, m);
-                                                setCellSearchFilter(m);
-                                              }}
-                                              className={`block w-full truncate rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
-                                                cellData?.model === m
-                                                  ? "bg-primary text-primary-foreground font-medium"
-                                                  : "hover:bg-muted"
-                                              }`}
-                                            >
-                                              {m}
-                                            </button>
-                                          ))}
-                                        {candidateModels.filter((m) =>
-                                          m
-                                            .toLowerCase()
-                                            .includes(
-                                              cellSearchFilter
-                                                .trim()
-                                                .toLowerCase(),
-                                            ),
-                                        ).length === 0 ? (
-                                          <div className="py-2 text-center text-[11px] text-muted-foreground">
-                                            {t(
-                                              "aiWorkflow.noMatchingModels",
-                                              "无匹配候选（支持自定义输入）",
-                                            )}
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  ) : null}
-
-                                  <div className="flex items-center justify-end gap-1.5 pt-1">
-                                    <button
-                                      type="button"
-                                      data-testid={`cell-cancel-${role}-${tool}`}
-                                      onClick={() => setEditingCell(null)}
-                                      className="shrink-0 rounded border border-input bg-background px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                                    >
-                                      {t("aiWorkflow.cancel", "取消")}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      data-testid={`cell-done-${role}-${tool}`}
-                                      onClick={() => setEditingCell(null)}
-                                      className="shrink-0 rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                                    >
-                                      {t("aiWorkflow.close", "完成")}
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : null}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : isLoading ? (
-        <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-          Loading...
-        </div>
-      ) : null}
+      <ModelMatrix
+        t={t}
+        matrix={matrix}
+        originalMatrix={originalMatrix}
+        modelSources={modelSources}
+        isLoading={isLoading}
+        batchColumnTool={batchColumnTool}
+        setBatchColumnTool={setBatchColumnTool}
+        batchColumnValue={batchColumnValue}
+        setBatchColumnValue={setBatchColumnValue}
+        handleApplyColumnBatch={handleApplyColumnBatch}
+        batchRowRole={batchRowRole}
+        setBatchRowRole={setBatchRowRole}
+        batchRowValue={batchRowValue}
+        setBatchRowValue={setBatchRowValue}
+        handleApplyRowBatch={handleApplyRowBatch}
+        allCandidateModels={allCandidateModels}
+        editingCell={editingCell}
+        setEditingCell={setEditingCell}
+        cellSearchFilter={cellSearchFilter}
+        setCellSearchFilter={setCellSearchFilter}
+        handleModelChange={handleModelChange}
+        handleEffortChange={handleEffortChange}
+      />
 
       {/* 新建配置方案 Dialog */}
-      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>
-              {t("aiWorkflow.createProfileTitle", "新建配置方案")}
-            </DialogTitle>
-            <DialogDescription>
-              {t(
-                "aiWorkflow.createProfileDesc",
-                "为 AI Workflow subagent 矩阵创建一套新的模型与推理强度配置方案。",
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2 text-sm">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                {t("aiWorkflow.profileName", "方案名称")}
-              </label>
-              <input
-                type="text"
-                data-testid="create-profile-name-input"
-                value={newProfileName}
-                onChange={(e) => {
-                  setNewProfileName(e.target.value);
-                  setCreateError(null);
-                }}
-                placeholder={t(
-                  "aiWorkflow.profileNamePlaceholder",
-                  "例如 my-new-profile",
-                )}
-                className="h-8 w-full rounded border bg-background px-2.5 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {t("aiWorkflow.profileNameHelp", "仅支持字母、数字、短横线与点")}
-              </p>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                {t("aiWorkflow.initialConfigFrom", "初始配置来源")}
-              </label>
-              <div className="space-y-2">
-                <label className="flex cursor-pointer items-center gap-2 text-xs">
-                  <input
-                    type="radio"
-                    name="cloneSource"
-                    data-testid="create-profile-radio-clone"
-                    checked={createSourceMode === "clone"}
-                    onChange={() => setCreateSourceMode("clone")}
-                  />
-                  <span>
-                    {t("aiWorkflow.cloneCurrent", {
-                      name: selectedProfile || "当前方案",
-                      defaultValue: `从当前方案复制 (${selectedProfile || "当前方案"})`,
-                    })}
-                  </span>
-                </label>
-                <label className="flex cursor-pointer items-center gap-2 text-xs">
-                  <input
-                    type="radio"
-                    name="cloneSource"
-                    data-testid="create-profile-radio-blank"
-                    checked={createSourceMode === "blank"}
-                    onChange={() => setCreateSourceMode("blank")}
-                  />
-                  <span>{t("aiWorkflow.blankProfile", "创建空白方案")}</span>
-                </label>
-              </div>
-            </div>
-            {createError && (
-              <div
-                role="alert"
-                className="rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive"
-              >
-                {createError}
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <button
-              type="button"
-              onClick={() => setIsCreateDialogOpen(false)}
-              className="rounded border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
-            >
-              {t("aiWorkflow.cancel", "取消")}
-            </button>
-            <button
-              type="button"
-              data-testid="create-profile-submit"
-              onClick={() => void handleCreateProfileSubmit()}
-              className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              {t("aiWorkflow.create", "创建")}
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <CreateProfileDialog
+        t={t}
+        isCreateDialogOpen={isCreateDialogOpen}
+        setIsCreateDialogOpen={setIsCreateDialogOpen}
+        newProfileName={newProfileName}
+        setNewProfileName={setNewProfileName}
+        setCreateError={setCreateError}
+        createSourceMode={createSourceMode}
+        setCreateSourceMode={setCreateSourceMode}
+        selectedProfile={selectedProfile}
+        createError={createError}
+        handleCreateProfileSubmit={handleCreateProfileSubmit}
+      />
 
       {/* 编辑配置方案名称 Dialog */}
-      <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>
-              {t("aiWorkflow.editProfileTitle", "编辑方案名称")}
-            </DialogTitle>
-            <DialogDescription>
-              {t(
-                "aiWorkflow.editProfileDesc",
-                "修改配置方案的名称。",
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2 text-sm">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                {t("aiWorkflow.profileName", "方案名称")}
-              </label>
-              <input
-                type="text"
-                data-testid="edit-profile-name-input"
-                value={editProfileName}
-                onChange={(e) => {
-                  setEditProfileName(e.target.value);
-                  setEditError(null);
-                }}
-                placeholder={t(
-                  "aiWorkflow.profileNamePlaceholder",
-                  "例如 my-new-profile",
-                )}
-                className="h-8 w-full rounded border bg-background px-2.5 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {t("aiWorkflow.profileNameHelp", "仅支持字母、数字、短横线与点")}
-              </p>
-            </div>
-            {editError && (
-              <div
-                role="alert"
-                className="rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive"
-              >
-                {editError}
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <button
-              type="button"
-              onClick={() => setIsEditDialogOpen(false)}
-              className="rounded border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
-            >
-              {t("aiWorkflow.cancel", "取消")}
-            </button>
-            <button
-              type="button"
-              data-testid="edit-profile-submit"
-              onClick={() => void handleEditProfileSubmit()}
-              className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              {t("save", "保存")}
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <EditProfileDialog
+        t={t}
+        isEditDialogOpen={isEditDialogOpen}
+        setIsEditDialogOpen={setIsEditDialogOpen}
+        editProfileName={editProfileName}
+        setEditProfileName={setEditProfileName}
+        setEditError={setEditError}
+        editError={editError}
+        handleEditProfileSubmit={handleEditProfileSubmit}
+      />
     </div>
   );
 };
