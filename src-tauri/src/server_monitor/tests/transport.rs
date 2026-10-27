@@ -297,3 +297,95 @@ fn concurrent_collect_keepalive_no_overlap() {
     let st = state.lock().unwrap();
     assert!(st.max_active <= 1);
 }
+
+static SMOKE_HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+#[ignore = "requires MONITOR_SMOKE_* and a controlled Linux SSH target"]
+fn real_ssh_persistent_and_oneshot_sessions_smoke() {
+    let host = match std::env::var("MONITOR_SMOKE_HOST") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            println!("skipping real_ssh_persistent_and_oneshot_sessions_smoke: MONITOR_SMOKE_HOST missing");
+            return;
+        }
+    };
+    let port: u16 = match std::env::var("MONITOR_SMOKE_PORT") {
+        Ok(v) => v.parse().unwrap_or(0),
+        _ => {
+            println!("skipping: MONITOR_SMOKE_PORT missing");
+            return;
+        }
+    };
+    if port == 0 {
+        println!("skipping: MONITOR_SMOKE_PORT invalid/missing");
+        return;
+    }
+    let user = match std::env::var("MONITOR_SMOKE_USER") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            println!("skipping: MONITOR_SMOKE_USER missing");
+            return;
+        }
+    };
+    let password = match std::env::var("MONITOR_SMOKE_PASSWORD") {
+        Ok(v) => v,
+        _ => {
+            println!("skipping: MONITOR_SMOKE_PASSWORD missing");
+            return;
+        }
+    };
+
+    let _guard = SMOKE_HOME_MUTEX.lock().unwrap();
+    let original_home = std::env::var("HOME").ok();
+    let tmp_home = std::env::temp_dir().join(format!("onespace-smoke-home-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp_home).unwrap();
+    std::env::set_var("HOME", &tmp_home);
+
+    let request = MonitorConnectRequest {
+        target_id: "smoke".into(),
+        source: MonitorSource::Custom {
+            host: host.clone(),
+            port,
+            user: user.clone(),
+            auth: crate::server_monitor::types::MonitorAuth::Password,
+        },
+        password: Some(password.clone()),
+    };
+
+    let connector: Arc<dyn MonitorConnector> =
+        Arc::new(crate::ssh_tunnels::monitor_transport::SshMonitorConnector::new());
+
+    // Persistent session: three collects, first already has network rates.
+    let session = MonitorSession::new(connector.clone(), request.clone(), SessionLifetime::Persistent);
+    for i in 0..3 {
+        let outcome = session.collect(None, 1_000).expect("collect failed");
+        match outcome {
+            CollectionOutcome::Success(s) | CollectionOutcome::Partial(s) => {
+                assert!(s.cpu.is_some(), "cpu missing");
+                assert!(s.memory.is_some(), "memory missing");
+                if i == 0 {
+                    assert!(
+                        s.network.is_some() || !s.networks.is_empty(),
+                        "network rates missing on first collect"
+                    );
+                }
+            }
+            CollectionOutcome::Failed(_) => panic!("collection failed"),
+        }
+    }
+    session.close();
+
+    // Two separate one-shot sessions.
+    for _ in 0..2 {
+        let session = MonitorSession::new(connector.clone(), request.clone(), SessionLifetime::OneShot);
+        let outcome = session.collect(None, 1_000).expect("oneshot collect failed");
+        assert!(matches!(outcome, CollectionOutcome::Success(_) | CollectionOutcome::Partial(_)));
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_home);
+    match original_home {
+        Some(h) => std::env::set_var("HOME", h),
+        None => std::env::remove_var("HOME"),
+    }
+}

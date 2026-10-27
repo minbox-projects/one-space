@@ -158,6 +158,7 @@ use std::sync::atomic::AtomicUsize;
 
 use std::sync::{Mutex, Condvar};
 use std::sync::atomic::AtomicBool;
+use std::collections::HashSet;
 
 struct EnhancedConn {
     output: String,
@@ -208,6 +209,7 @@ struct EnhancedConnector {
     block: Arc<AtomicBool>,
     release: Arc<(Mutex<usize>, Condvar)>,
     fail_auth_remaining: Arc<AtomicUsize>,
+    fail_auth_targets: Arc<Mutex<HashSet<String>>>,
 }
 
 impl EnhancedConnector {
@@ -221,6 +223,7 @@ impl EnhancedConnector {
             block: Arc::new(AtomicBool::new(false)),
             release: Arc::new((Mutex::new(0), Condvar::new())),
             fail_auth_remaining: Arc::new(AtomicUsize::new(0)),
+            fail_auth_targets: Arc::new(Mutex::new(HashSet::new())),
         }
     }
     fn release_one(&self) {
@@ -235,9 +238,23 @@ impl EnhancedConnector {
 impl MonitorConnector for EnhancedConnector {
     fn connect(
         &self,
-        _request: &MonitorConnectRequest,
+        request: &MonitorConnectRequest,
     ) -> Result<Box<dyn MonitorConnection>, MonitorTransportError> {
         self.connect_count.fetch_add(1, Ordering::SeqCst);
+        let target_fail = {
+            let mut set = self.fail_auth_targets.lock().unwrap();
+            if set.remove(&request.target_id) {
+                true
+            } else {
+                false
+            }
+        };
+        if target_fail {
+            return Err(MonitorTransportError {
+                kind: crate::server_monitor::types::MonitorTransportErrorKind::Auth,
+                message: "auth failed".to_string(),
+            });
+        }
         if self.fail_auth_remaining.load(Ordering::SeqCst) > 0 {
             self.fail_auth_remaining.fetch_sub(1, Ordering::SeqCst);
             return Err(MonitorTransportError {
@@ -936,7 +953,7 @@ fn snapshot_reports_per_target_last_success_and_collecting() {
         let mut config = ServerMonitorConfig::default();
         store.save_config(&config).unwrap();
         let connector = Arc::new(EnhancedConnector::new(framed_output()));
-        connector.fail_auth_remaining.store(1, Ordering::SeqCst);
+        connector.fail_auth_targets.lock().unwrap().insert("a".to_string());
         let events: Arc<dyn ServerMonitorEventSink> = Arc::new(NoopEventSink);
         let clock = Arc::new(AtomicClock { value: AtomicI64::new(0) });
         let runtime = ServerMonitorRuntime::new_with_clock(store.clone(), connector.clone() as Arc<dyn MonitorConnector>, events, clock.clone());
@@ -1195,4 +1212,244 @@ fn upsert_validation_boundaries_do_not_persist_invalid_targets() {
 
     runtime.shutdown();
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn daily_spring_forward_gap_skips_configured_nonexistent_time() {
+    std::env::set_var("TZ", "America/New_York");
+    let root = std::env::temp_dir().join(format!("onespace-sm-dst-spring-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(ServerMonitorStore::new(root.clone()));
+    let mut config = ServerMonitorConfig::default();
+    config.settings.schedule_mode = ServerMonitorScheduleMode::Daily;
+    config.settings.daily_times = vec!["02:30".to_string()];
+    store.save_config(&config).unwrap();
+
+    let connector = Arc::new(EnhancedConnector::new(framed_output()));
+    let events: Arc<dyn ServerMonitorEventSink> = Arc::new(NoopEventSink);
+    let clock = Arc::new(AtomicClock { value: AtomicI64::new(local_ms(2026, 3, 8, 1, 59, 0)) });
+    let runtime = ServerMonitorRuntime::new_with_clock(store.clone(), connector.clone() as Arc<dyn MonitorConnector>, events, clock.clone());
+    runtime.upsert_target(make_target_draft("a")).unwrap();
+    runtime.start();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(connector.connect_count.load(Ordering::SeqCst), 0);
+
+    clock.value.store(local_ms(2026, 3, 8, 1, 59, 30), Ordering::SeqCst);
+    runtime.tick(local_ms(2026, 3, 8, 1, 59, 30)).unwrap();
+    runtime.wait_for_idle();
+    assert_eq!(connector.connect_count.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.history("a", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len(), 0);
+    assert!(!store.has_claim("a", "2026-03-08", "02:30").unwrap());
+
+    clock.value.store(local_ms(2026, 3, 8, 3, 0, 5), Ordering::SeqCst);
+    runtime.tick(local_ms(2026, 3, 8, 3, 0, 5)).unwrap();
+    runtime.wait_for_idle();
+    assert_eq!(connector.connect_count.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.history("a", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len(), 0);
+    assert!(!store.has_claim("a", "2026-03-08", "02:30").unwrap());
+
+    clock.value.store(local_ms(2026, 3, 9, 2, 30, 5), Ordering::SeqCst);
+    runtime.tick(local_ms(2026, 3, 9, 2, 30, 5)).unwrap();
+    assert!(wait_until(|| connector.connect_count.load(Ordering::SeqCst) == 1, 5000));
+    runtime.wait_for_idle();
+    assert_eq!(connector.connect_count.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.history("a", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len(), 1);
+
+    runtime.shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn daily_fall_back_repeated_local_time_runs_once() {
+    std::env::set_var("TZ", "America/New_York");
+    let root = std::env::temp_dir().join(format!("onespace-sm-dst-fall-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(ServerMonitorStore::new(root.clone()));
+    let mut config = ServerMonitorConfig::default();
+    config.settings.schedule_mode = ServerMonitorScheduleMode::Daily;
+    config.settings.daily_times = vec!["01:30".to_string()];
+    store.save_config(&config).unwrap();
+
+    let connector = Arc::new(EnhancedConnector::new(framed_output()));
+    let events: Arc<dyn ServerMonitorEventSink> = Arc::new(NoopEventSink);
+    let clock = Arc::new(AtomicClock { value: AtomicI64::new(local_ms(2026, 11, 1, 0, 30, 0)) });
+    let runtime = ServerMonitorRuntime::new_with_clock(store.clone(), connector.clone() as Arc<dyn MonitorConnector>, events, clock.clone());
+    runtime.upsert_target(make_target_draft("a")).unwrap();
+    runtime.start();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(connector.connect_count.load(Ordering::SeqCst), 0);
+
+    let t1 = chrono::TimeZone::with_ymd_and_hms(&chrono::Local, 2026, 11, 1, 1, 30, 5).earliest().unwrap().timestamp_millis();
+    clock.value.store(t1, Ordering::SeqCst);
+    runtime.tick(t1).unwrap();
+    assert!(wait_until(|| connector.connect_count.load(Ordering::SeqCst) == 1, 5000));
+    runtime.wait_for_idle();
+    assert_eq!(connector.connect_count.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.history("a", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len(), 1);
+    assert!(store.has_claim("a", "2026-11-01", "01:30").unwrap());
+
+    let t2 = chrono::TimeZone::with_ymd_and_hms(&chrono::Local, 2026, 11, 1, 1, 30, 0).earliest().unwrap().timestamp_millis();
+    clock.value.store(t2, Ordering::SeqCst);
+    runtime.tick(t2).unwrap();
+    runtime.wait_for_idle();
+    assert_eq!(connector.connect_count.load(Ordering::SeqCst), 1);
+    assert_eq!(store.history("a", 0, t1 + 60_000).unwrap().len(), 1);
+    assert!(store.has_claim("a", "2026-11-01", "01:30").unwrap());
+
+    clock.value.store(local_ms(2026, 11, 2, 1, 30, 5), Ordering::SeqCst);
+    runtime.tick(local_ms(2026, 11, 2, 1, 30, 5)).unwrap();
+    assert!(wait_until(|| connector.connect_count.load(Ordering::SeqCst) == 2, 5000));
+    runtime.wait_for_idle();
+    assert_eq!(connector.connect_count.load(Ordering::SeqCst), 2);
+    assert_eq!(runtime.history("a", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len(), 2);
+
+    runtime.shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+#[ignore = "requires MONITOR_SMOKE_* and a controlled Linux SSH target"]
+fn real_ssh_runtime_interval_daily_and_pause_smoke() {
+    let host = match std::env::var("MONITOR_SMOKE_HOST") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            println!("skipping: MONITOR_SMOKE_HOST missing");
+            return;
+        }
+    };
+    let port: u16 = match std::env::var("MONITOR_SMOKE_PORT") {
+        Ok(v) => match v.parse() {
+            Ok(p) => p,
+            _ => {
+                println!("skipping: MONITOR_SMOKE_PORT invalid");
+                return;
+            }
+        },
+        _ => {
+            println!("skipping: MONITOR_SMOKE_PORT missing");
+            return;
+        }
+    };
+    let user = match std::env::var("MONITOR_SMOKE_USER") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            println!("skipping: MONITOR_SMOKE_USER missing");
+            return;
+        }
+    };
+    let password = match std::env::var("MONITOR_SMOKE_PASSWORD") {
+        Ok(v) => v,
+        _ => {
+            println!("skipping: MONITOR_SMOKE_PASSWORD missing");
+            return;
+        }
+    };
+
+    fn established(port: u16) -> usize {
+        let out = std::process::Command::new("lsof")
+            .args(["-nP", &format!("-iTCP:{}", port), "-sTCP:ESTABLISHED"])
+            .output()
+            .expect("lsof unavailable");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with("COMMAND"))
+            .count()
+    }
+
+    let original_home = std::env::var("HOME").ok();
+    let tmp_home = std::env::temp_dir().join(format!("onespace-smoke-rt-home-{}", uuid::Uuid::new_v4()));
+    let tmp_root = std::env::temp_dir().join(format!("onespace-smoke-rt-root-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp_home).unwrap();
+    std::fs::create_dir_all(&tmp_root).unwrap();
+    std::env::set_var("HOME", &tmp_home);
+
+    let store = Arc::new(ServerMonitorStore::new(tmp_root.clone()));
+    let mut config = ServerMonitorConfig::default();
+    store.save_config(&config).unwrap();
+
+    let connector: Arc<dyn MonitorConnector> =
+        Arc::new(crate::ssh_tunnels::monitor_transport::SshMonitorConnector::new());
+    let events: Arc<dyn ServerMonitorEventSink> = Arc::new(NoopEventSink);
+    let clock = Arc::new(AtomicClock {
+        value: AtomicI64::new(0),
+    });
+    let runtime = ServerMonitorRuntime::new_with_clock(
+        store.clone(),
+        connector.clone(),
+        events,
+        clock.clone(),
+    );
+
+    let draft = ServerMonitorTargetDraft {
+        id: Some("smoke".to_string()),
+        name: "smoke".to_string(),
+        enabled: true,
+        source_kind: crate::server_monitor::types::ServerMonitorSourceKind::Custom,
+        saved_host_name: None,
+        custom: Some(crate::server_monitor::types::ServerMonitorCustomDraft {
+            host: host.clone(),
+            port,
+            user: user.clone(),
+            auth_kind: crate::server_monitor::types::ServerMonitorAuthKind::Password,
+            key_path: None,
+            password: Some(password.clone()),
+        }),
+    };
+    runtime.upsert_target(draft).unwrap();
+    runtime.start();
+    runtime.tick(0).unwrap();
+    assert!(wait_until(|| !runtime.history("smoke", ServerMonitorHistoryRange::TwentyFourHours).unwrap().is_empty(), 15000));
+    runtime.wait_for_idle();
+    let snap = runtime.snapshot();
+    let t = snap.targets.iter().find(|x| x.id == "smoke").unwrap();
+    assert!(t.last_success_at_ms.is_some(), "no last success");
+    let sample = &runtime.history("smoke", ServerMonitorHistoryRange::TwentyFourHours).unwrap()[0];
+    assert!(sample.cpu.is_some() || sample.memory.is_some(), "no cpu/memory in sample");
+
+    assert!(established(port) >= 1, "no persistent connection");
+
+    // pause
+    let before_samples = runtime.history("smoke", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len();
+    runtime.set_target_enabled("smoke", false).unwrap();
+    assert!(wait_until(|| established(port) == 0, 15000));
+    clock.value.store(300_000, Ordering::SeqCst);
+    runtime.tick(300_000).unwrap();
+    runtime.wait_for_idle();
+    let after_samples = runtime.history("smoke", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len();
+    assert_eq!(after_samples, before_samples, "new sample while paused");
+
+    // daily mode
+    let mut settings = runtime.get_settings().unwrap();
+    settings.schedule_mode = ServerMonitorScheduleMode::Daily;
+    settings.daily_times = vec!["09:00".to_string()];
+    runtime.save_settings(settings).unwrap();
+    assert_eq!(established(port), 0);
+    clock.value.store(120_000, Ordering::SeqCst);
+    runtime.tick(120_000).unwrap();
+    runtime.wait_for_idle();
+    let samples_daily = runtime.history("smoke", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len();
+    assert_eq!(samples_daily, after_samples, "new sample in daily outside slot");
+
+    // re-enable target after pause
+    assert!(runtime.set_target_enabled("smoke", true).is_ok());
+
+    // back to interval
+    let mut settings = runtime.get_settings().unwrap();
+    settings.schedule_mode = ServerMonitorScheduleMode::Interval;
+    settings.auto_collect_enabled = true;
+    clock.value.store(0, Ordering::SeqCst);
+    runtime.save_settings(settings).unwrap();
+    runtime.tick(0).unwrap();
+    assert!(wait_until(|| !runtime.history("smoke", ServerMonitorHistoryRange::TwentyFourHours).unwrap().is_empty() && runtime.history("smoke", ServerMonitorHistoryRange::TwentyFourHours).unwrap().len() > samples_daily, 15000));
+    runtime.wait_for_idle();
+    assert!(established(port) >= 1, "no connection after re-enable");
+
+    runtime.shutdown();
+    assert!(wait_until(|| established(port) == 0, 15000));
+
+    let _ = std::fs::remove_dir_all(&tmp_home);
+    let _ = std::fs::remove_dir_all(&tmp_root);
+    match original_home {
+        Some(h) => std::env::set_var("HOME", h),
+        None => std::env::remove_var("HOME"),
+    }
 }
