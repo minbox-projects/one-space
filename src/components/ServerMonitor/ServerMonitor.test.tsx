@@ -189,7 +189,7 @@ describe("ServerMonitorTool", () => {
     expect(await screen.findByText(/12.3%/)).toBeInTheDocument();
     expect(screen.getByText(/—/)).toBeInTheDocument();
     expect(screen.getByText(/partial/i)).toBeInTheDocument();
-    expect(screen.getByText(/eth0/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/eth0/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/alpha/i)).toBeInTheDocument();
   });
 
@@ -223,12 +223,72 @@ describe("ServerMonitorTool", () => {
     await act(async () => {
       renderWithProviders(<ServerMonitorTool />);
     });
-    const netBtn = await screen.findByRole("button", { name: /网络|Network/i });
-    await user.click(netBtn);
-    const select = await screen.findByRole("combobox", { name: /网络接口|Network interface/i });
-    await user.selectOptions(select, "eth1");
+    // Metric card has NIC CustomSelect
+    const metricNicSelect = await screen.findByTestId("metric-nic-select");
+    await user.selectOptions(metricNicSelect, "eth1");
     expect(screen.getAllByText(/eth1/i).length).toBeGreaterThan(0);
     expect(invokeMock).not.toHaveBeenCalledWith("server_monitor_refresh", expect.anything());
+
+    // Switch in history chart also reflects and keeps sync
+    const netBtn = await screen.findByRole("button", { name: /网络|Network/i });
+    await user.click(netBtn);
+    const historyNicSelect = await screen.findByTestId("history-nic-select");
+    expect(historyNicSelect).toHaveValue("eth1");
+    await user.selectOptions(historyNicSelect, "eth0");
+    expect(metricNicSelect).toHaveValue("eth0");
+  });
+
+  it("disk switching in metric card updates metric details and synchronizes with history", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return statePopulated;
+      if (command === "server_monitor_history") return [
+        {
+          id: 1,
+          targetId: "t1",
+          collectedAtMs: 1000,
+          outcome: { success: sampleSnapshot },
+          samplingWindowSeconds: 1,
+          sourceMode: "interval",
+          expectedIntervalSeconds: 300,
+          cpu: sampleSnapshot.cpu,
+          memory: sampleSnapshot.memory,
+          disks: sampleSnapshot.disks,
+          networks: sampleSnapshot.networks,
+          networkInterface: "eth0",
+          errorKind: null,
+          error: null,
+        },
+      ];
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+
+    // Default busiest disk is "/" with 80.0%
+    expect(screen.getAllByText("80.0%").length).toBeGreaterThan(0);
+    expect(screen.getByText(/\/ \(ext4\)/)).toBeInTheDocument();
+
+    // Select "/data" (10.0%) from metric card dropdown
+    const diskSelect = await screen.findByTestId("metric-disk-select");
+    await user.selectOptions(diskSelect, "/data");
+
+    // Metric card should now display "/data" info
+    expect(screen.getByText(/\/data \(ext4\)/)).toBeInTheDocument();
+    expect(screen.getAllByText("10.0%").length).toBeGreaterThanOrEqual(2);
+
+    // In history chart, switch to disk tab and verify synchronization
+    const diskTabBtn = await screen.findByRole("button", { name: /磁盘|Disk/i });
+    await user.click(diskTabBtn);
+    const historyDiskSelect = await screen.findByTestId("history-disk-select");
+    expect(historyDiskSelect).toHaveValue("/data");
+
+    // Clicking disk row in All Disks list selects that disk
+    const rootRow = screen.getByTestId("disk-row-/");
+    await user.click(rootRow);
+    expect(diskSelect).toHaveValue("/");
+    expect(screen.getByText(/\/ \(ext4\)/)).toBeInTheDocument();
   });
 
   it("history 7 days calls command and renders", async () => {

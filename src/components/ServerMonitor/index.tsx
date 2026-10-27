@@ -154,6 +154,7 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
   const [samples, setSamples] = useState<ServerMonitorSample[]>([]);
   const [range, setRange] = useState<ServerMonitorHistoryRange>("twentyFourHours");
   const [selectedInterface, setSelectedInterface] = useState<string | null>(null);
+  const [selectedMountPoint, setSelectedMountPoint] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
@@ -202,28 +203,30 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
 
   useEffect(() => {
     setSelectedInterface(null);
+    setSelectedMountPoint(null);
   }, [selectedId, range]);
 
   useEffect(() => {
     setSamples([]);
   }, [selectedId]);
 
-  useEffect(() => {
-    if (!available || !isVisible || !selectedId) return;
-    let cancelled = false;
-    void (async () => {
+  const loadHistory = useCallback(
+    async (targetId: string, currentRange: ServerMonitorHistoryRange) => {
+      if (!available || !isVisible || !targetId) return;
       try {
-        const list = await serverMonitorHistory(selectedId, range);
-        if (cancelled) return;
+        const list = await serverMonitorHistory(targetId, currentRange);
         setSamples(Array.isArray(list) ? list : []);
       } catch {
-        if (!cancelled) setSamples([]);
+        setSamples([]);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [available, isVisible, selectedId, range, historyRefreshToken]);
+    },
+    [available, isVisible],
+  );
+
+  useEffect(() => {
+    if (!available || !isVisible || !selectedId) return;
+    void loadHistory(selectedId, range);
+  }, [available, isVisible, selectedId, range, historyRefreshToken, loadHistory]);
 
   const handleEvent = useCallback(
     (payload: unknown) => {
@@ -307,10 +310,84 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
     }
     return metrics?.network ? [metrics.network] : [];
   }, [metrics]);
+
+  const availableMountPoints = useMemo(() => {
+    const set = new Set<string>();
+    if (Array.isArray(metrics?.disks)) {
+      for (const disk of metrics.disks) {
+        if (disk.mountPoint) set.add(disk.mountPoint);
+      }
+    }
+    for (const sample of samples) {
+      const sampleM = sampleMetrics(sample);
+      if (Array.isArray(sampleM?.disks)) {
+        for (const disk of sampleM.disks) {
+          if (disk.mountPoint) set.add(disk.mountPoint);
+        }
+      }
+    }
+    return Array.from(set);
+  }, [metrics?.disks, samples]);
+
+  const availableInterfaces = useMemo(() => {
+    const set = new Set<string>();
+    for (const net of networks) {
+      if (net.interface) set.add(net.interface);
+    }
+    for (const sample of samples) {
+      const sampleM = sampleMetrics(sample);
+      const nets = Array.isArray(sampleM?.networks) && sampleM.networks.length > 0
+        ? sampleM.networks
+        : Array.isArray(sample.networks)
+          ? sample.networks
+          : [];
+      for (const net of nets) {
+        if (net.interface) set.add(net.interface);
+      }
+      if (sampleM?.network?.interface) {
+        set.add(sampleM.network.interface);
+      } else if (sample.networkInterface) {
+        set.add(sample.networkInterface);
+      }
+    }
+    return Array.from(set);
+  }, [networks, samples]);
+
+  const effectiveMountPoint = useMemo(() => {
+    if (selectedMountPoint && availableMountPoints.includes(selectedMountPoint)) {
+      return selectedMountPoint;
+    }
+    const disks = Array.isArray(metrics?.disks) ? metrics.disks : [];
+    if (disks.length > 0) {
+      const busiest = disks.reduce((max, d) => (d.usedPercent > max.usedPercent ? d : max));
+      return busiest.mountPoint;
+    }
+    return availableMountPoints[0] ?? null;
+  }, [selectedMountPoint, availableMountPoints, metrics?.disks]);
+
+  const effectiveInterface = useMemo(() => {
+    if (selectedInterface && availableInterfaces.includes(selectedInterface)) {
+      return selectedInterface;
+    }
+    if (latestSample?.networkInterface && availableInterfaces.includes(latestSample.networkInterface)) {
+      return latestSample.networkInterface;
+    }
+    return availableInterfaces[0] ?? null;
+  }, [selectedInterface, availableInterfaces, latestSample?.networkInterface]);
+
   const selectedNetwork = useMemo(
-    () => selectNetworkInterface(latestSample, selectedInterface),
-    [latestSample, selectedInterface],
+    () => selectNetworkInterface(latestSample, effectiveInterface),
+    [latestSample, effectiveInterface],
   );
+
+  const selectedDisk = useMemo(() => {
+    const disks = Array.isArray(metrics?.disks) ? metrics.disks : [];
+    if (effectiveMountPoint) {
+      const match = disks.find((d) => d.mountPoint === effectiveMountPoint);
+      if (match) return match;
+    }
+    return disks[0] ?? null;
+  }, [metrics?.disks, effectiveMountPoint]);
   const partial = useMemo(() => {
     if (!metrics) return false;
     return (
@@ -989,7 +1066,12 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                   <MetricCards
                     metrics={metrics}
                     networks={networks}
-                    selectedInterface={selectedInterface}
+                    availableMountPoints={availableMountPoints}
+                    selectedMountPoint={effectiveMountPoint}
+                    selectedDisk={selectedDisk}
+                    onSelectMountPoint={setSelectedMountPoint}
+                    availableInterfaces={availableInterfaces}
+                    selectedInterface={effectiveInterface}
                     selectedNetwork={selectedNetwork}
                     onSelectInterface={setSelectedInterface}
                   />
@@ -1028,7 +1110,11 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                       samples={samples}
                       range={range}
                       expectedIntervalSeconds={latestSample?.expectedIntervalSeconds ?? null}
-                      selectedInterface={selectedInterface}
+                      availableMountPoints={availableMountPoints}
+                      selectedMountPoint={effectiveMountPoint}
+                      onSelectMountPoint={setSelectedMountPoint}
+                      availableInterfaces={availableInterfaces}
+                      selectedInterface={effectiveInterface}
                       onSelectInterface={setSelectedInterface}
                     />
                   </div>

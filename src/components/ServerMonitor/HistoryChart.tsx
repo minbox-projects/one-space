@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { CustomSelect } from "@/components/common/CustomSelect";
 import {
   formatBytes,
   formatMonitorTimestamp,
@@ -130,6 +131,10 @@ export interface HistoryChartProps {
   samples: ServerMonitorSample[];
   range: ServerMonitorHistoryRange;
   expectedIntervalSeconds?: number | null;
+  availableMountPoints?: string[];
+  selectedMountPoint?: string | null;
+  onSelectMountPoint?: (mountPoint: string) => void;
+  availableInterfaces?: string[];
   selectedInterface?: string | null;
   onSelectInterface?: (iface: string) => void;
   className?: string;
@@ -144,6 +149,10 @@ export function HistoryChart({
   samples,
   range,
   expectedIntervalSeconds,
+  availableMountPoints: propMountPoints,
+  selectedMountPoint,
+  onSelectMountPoint,
+  availableInterfaces: propInterfaces,
   selectedInterface,
   onSelectInterface,
   className,
@@ -154,11 +163,11 @@ export function HistoryChart({
 
   const [activeMetric, setActiveMetric] = useState<HistoryMetricType>("cpu");
   const [internalInterface, setInternalInterface] = useState<string | null>(null);
-  const [selectedMountPoint, setSelectedMountPoint] = useState<string | null>(null);
+  const [internalMountPoint, setInternalMountPoint] = useState<string | null>(null);
   const [hoveredItem, setHoveredItem] = useState<ValidChartItem | null>(null);
 
   // Extract all available mount points across samples
-  const availableMountPoints = useMemo(() => {
+  const sampledMountPoints = useMemo(() => {
     const set = new Set<string>();
     for (const sample of samples) {
       const metrics = sampleMetrics(sample);
@@ -171,8 +180,13 @@ export function HistoryChart({
     return Array.from(set);
   }, [samples]);
 
+  const resolvedMountPoints = useMemo(() => {
+    if (propMountPoints && propMountPoints.length > 0) return propMountPoints;
+    return sampledMountPoints;
+  }, [propMountPoints, sampledMountPoints]);
+
   // Extract all available network interfaces across samples
-  const availableInterfaces = useMemo(() => {
+  const sampledInterfaces = useMemo(() => {
     const set = new Set<string>();
     for (const sample of samples) {
       const metrics = sampleMetrics(sample);
@@ -193,8 +207,13 @@ export function HistoryChart({
     return Array.from(set);
   }, [samples]);
 
+  const resolvedInterfaces = useMemo(() => {
+    if (propInterfaces && propInterfaces.length > 0) return propInterfaces;
+    return sampledInterfaces;
+  }, [propInterfaces, sampledInterfaces]);
+
   const effectiveInterface =
-    selectedInterface ?? internalInterface ?? availableInterfaces[0] ?? null;
+    selectedInterface ?? internalInterface ?? resolvedInterfaces[0] ?? null;
 
   const handleInterfaceChange = (iface: string) => {
     setInternalInterface(iface);
@@ -202,9 +221,16 @@ export function HistoryChart({
     onSelectInterface?.(iface);
   };
 
+  const handleMountPointChange = (mountPoint: string) => {
+    setInternalMountPoint(mountPoint);
+    setHoveredItem(null);
+    onSelectMountPoint?.(mountPoint);
+  };
+
   const effectiveMountPoint = useMemo(() => {
-    if (selectedMountPoint && availableMountPoints.includes(selectedMountPoint)) {
-      return selectedMountPoint;
+    const current = selectedMountPoint ?? internalMountPoint;
+    if (current && resolvedMountPoints.includes(current)) {
+      return current;
     }
     const goodSample = latestGoodSample(samples);
     const goodMetrics = sampleMetrics(goodSample);
@@ -214,8 +240,8 @@ export function HistoryChart({
       );
       return busiest.mountPoint;
     }
-    return availableMountPoints[0] ?? null;
-  }, [selectedMountPoint, availableMountPoints, samples]);
+    return resolvedMountPoints[0] ?? null;
+  }, [selectedMountPoint, internalMountPoint, resolvedMountPoints, samples]);
 
   // Chart computation for active metric
   const chartData = useMemo(() => {
@@ -469,46 +495,41 @@ export function HistoryChart({
         </div>
 
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
-          {activeMetric === "disk" && availableMountPoints.length > 1 ? (
+          {activeMetric === "disk" && resolvedMountPoints.length > 0 ? (
             <div className="flex items-center gap-1.5">
               <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
                 {t("serverMonitorMountPoint")}:
               </span>
-              <select
-                aria-label={t("serverMonitorMountPoint")}
-                value={effectiveMountPoint ?? ""}
-                onChange={(e) => {
-                  setSelectedMountPoint(e.target.value);
-                  setHoveredItem(null);
-                }}
-                className="h-6 rounded-md border border-slate-200 bg-slate-50/50 px-2 text-[11px] font-mono font-medium text-slate-800 transition-all hover:border-slate-300 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              >
-                {availableMountPoints.map((mp) => (
-                  <option key={mp} value={mp} label={mp}>
-                    {mp}
-                  </option>
-                ))}
-              </select>
+              <CustomSelect
+                size="sm"
+                value={effectiveMountPoint ?? resolvedMountPoints[0] ?? ""}
+                onChange={handleMountPointChange}
+                options={resolvedMountPoints.map((mp) => ({ value: mp, label: mp }))}
+                ariaLabel={t("serverMonitorMountPoint")}
+                selectTestId="history-disk-select"
+                triggerTestId="history-disk-select-trigger"
+                triggerClassName="h-7 text-xs font-mono min-w-[90px] max-w-[140px] px-2 py-0 bg-slate-50/80 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700"
+                menuClassName="min-w-full w-max max-w-[240px] shadow-xl"
+              />
             </div>
           ) : null}
 
-          {activeMetric === "network" && availableInterfaces.length > 1 ? (
+          {activeMetric === "network" && resolvedInterfaces.length > 0 ? (
             <div className="flex items-center gap-1.5">
               <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
                 {t("serverMonitorNetworkInterface")}:
               </span>
-              <select
-                aria-label={t("serverMonitorNetworkInterface")}
-                value={effectiveInterface ?? ""}
-                onChange={(e) => handleInterfaceChange(e.target.value)}
-                className="h-6 rounded-md border border-slate-200 bg-slate-50/50 px-2 text-[11px] font-mono font-medium text-slate-800 transition-all hover:border-slate-300 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              >
-                {availableInterfaces.map((iface) => (
-                  <option key={iface} value={iface} label={iface}>
-                    {iface}
-                  </option>
-                ))}
-              </select>
+              <CustomSelect
+                size="sm"
+                value={effectiveInterface ?? resolvedInterfaces[0] ?? ""}
+                onChange={handleInterfaceChange}
+                options={resolvedInterfaces.map((iface) => ({ value: iface, label: iface }))}
+                ariaLabel={t("serverMonitorNetworkInterface")}
+                selectTestId="history-nic-select"
+                triggerTestId="history-nic-select-trigger"
+                triggerClassName="h-7 text-xs font-mono min-w-[90px] max-w-[140px] px-2 py-0 bg-slate-50/80 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700"
+                menuClassName="min-w-full w-max max-w-[240px] shadow-xl"
+              />
             </div>
           ) : null}
 
