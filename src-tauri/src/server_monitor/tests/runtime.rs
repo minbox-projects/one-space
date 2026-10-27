@@ -1216,7 +1216,6 @@ fn upsert_validation_boundaries_do_not_persist_invalid_targets() {
 
 #[test]
 fn daily_spring_forward_gap_skips_configured_nonexistent_time() {
-    std::env::set_var("TZ", "America/New_York");
     let root = std::env::temp_dir().join(format!("onespace-sm-dst-spring-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -1260,7 +1259,6 @@ fn daily_spring_forward_gap_skips_configured_nonexistent_time() {
 
 #[test]
 fn daily_fall_back_repeated_local_time_runs_once() {
-    std::env::set_var("TZ", "America/New_York");
     let root = std::env::temp_dir().join(format!("onespace-sm-dst-fall-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();

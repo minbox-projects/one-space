@@ -43,5 +43,5 @@ OneSpace 此前无法观察用户已经通过 SSH 访问的 Linux 主机的 CPU�
 - 每日调度只面向未来且持久：目标/日期/时间认领在网络操作之前写入，可跨重启与时钟回拨保持，受一分钟窗口限制，错过时绝不补采。修剪保留当天与未来认领，因此缩短保留期不会重跑时段。
 - 指标保持自包含：CPU、内存、磁盘与按网卡网络值只来自一次采集中的两次样本，不可用字段保持不可用，部分结果会被标注，最后成功快照保留其时间戳与错误，每日模式报告等待而不是把已关闭会话当作离线。
 - 目标、凭据与设置加密保存在配置档本地的 `server_monitor.enc.json`；样本与认领保存在本地 `server_monitor.db`。安全状态与事件不含密码，两个文件都不同步，无法读取的配置绝不会被默认值替换。
-- 回滚是增量且本地的：退出应用会释放自有会话，回退该功能会保留两个文件供以后重装，旧版本二进制会忽略它们，且没有安装任何远端服务或配置。受控真实 SSH/Linux 冒烟与打包应用原生视觉检查未执行；行为测试、fixtures 与 jsdom 不能替代这些未验证的人工缺口。
+- 回滚是增量且本地的：退出应用会释放自有会话，回退该功能会保留两个文件供以后重装，旧版本二进制会忽略它们，且没有安装任何远端服务或配置。受控真实 SSH/Linux 冒烟已在本地 Docker Debian 目标 `127.0.0.1:2222`（用户 `monitor`）上执行，两个 ignored 冒烟测试均通过：持久采集在同一次认证上完成三次采集，一次性会话在每次采集时认证并断开，周期采集建立了持久连接，暂停与切换每日模式使已建立连接归零，重新启用与恢复周期模式又建立连接并产生新样本，关闭应用会关闭连接；容器日志记录 5 次 accepted-password 认证与 5 次断开。打包应用在 800×600 与 1440×900、中英文、明暗主题下的原生视觉检查未验证，用户已将其作为有界记录缺口接受，而不是通过。
 - 取代关系评估：[Toolbox Plugin Registry Replaces Hand-Maintained Tool Lists](../architecture/2026-09-25-toolbox-plugin-registry.md) 与 [SSH Tunnel Reconnect Resilience Uses a Persistent Supervisor, a Round-Trip Probe, a Desired-Running Watchdog and a Wake/Window Retry Poke](../bug-fix/2026-09-30-ssh-tunnel-reconnect-resilience.md) 均未被取代。注册表决策仍是工具表面的来源，隧道监管决策仍是隧道意图与监管的来源；监控新增自己的适配器与记录，不改变任一契约。
