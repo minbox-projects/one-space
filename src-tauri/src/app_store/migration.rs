@@ -831,6 +831,7 @@ pub(in crate::app_store) fn run_migration_impl() -> Result<MigrationState, Strin
     }
 }
 
+#[cfg(test)]
 pub(in crate::app_store) fn rollback_from_backup(backup_id: &str) -> Result<(), String> {
     let backup_dir = StorageEngine::backup_root()?.join(backup_id);
     if !backup_dir.exists() {

@@ -1400,6 +1400,7 @@ async fn attempt_candidate(
 /// Every completed attempt is appended to `attempts` in completion order
 /// (REQ-001); the caller owns the buffer so an attempt still in flight when the
 /// request ends is dropped without losing the completed entries.
+#[cfg(test)]
 pub(in crate::ai_gateway) async fn attempt_non_streaming(
     ordered: &[GatewayUpstreamProvider],
     path: &str,
@@ -2345,6 +2346,7 @@ fn is_sse_response_chunk(content_type: &str, first_chunk: &[u8]) -> bool {
 /// Every completed attempt is appended to `attempts` in completion order
 /// (REQ-001). An attempt whose bytes are still being forwarded when the request
 /// ends is in flight and appends nothing.
+#[cfg(test)]
 pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     writer: &mut W,
     ordered: &[GatewayUpstreamProvider],

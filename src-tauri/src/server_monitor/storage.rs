@@ -285,6 +285,7 @@ impl ServerMonitorStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn has_claim(
         &self,
         target_id: &str,

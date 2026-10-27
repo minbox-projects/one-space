@@ -363,6 +363,7 @@ pub(crate) struct ClaudeProfileSummary {
     pub tilde_config_dir: String,
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_claude_profile_sp(
     state: &ServiceProvidersState,
     query: &str,

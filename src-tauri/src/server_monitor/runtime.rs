@@ -33,8 +33,10 @@ pub(crate) trait ServerMonitorEventSink: Send + Sync {
     fn publish(&self, state: &ServerMonitorState);
 }
 
+#[cfg(test)]
 pub(crate) struct NoopEventSink;
 
+#[cfg(test)]
 impl ServerMonitorEventSink for NoopEventSink {
     fn publish(&self, _state: &ServerMonitorState) {}
 }
@@ -1338,6 +1340,7 @@ impl ServerMonitorRuntime {
     }
 
     /// Returns after in-flight work has drained or the bounded wait elapses.
+    #[cfg(test)]
     pub(crate) fn wait_for_idle(&self) {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -1666,7 +1669,6 @@ fn transport_failure_kind(kind: MonitorTransportErrorKind) -> CollectionFailureK
         MonitorTransportErrorKind::HostKey => CollectionFailureKind::HostKey,
         MonitorTransportErrorKind::Config => CollectionFailureKind::Config,
         MonitorTransportErrorKind::Timeout => CollectionFailureKind::Timeout,
-        MonitorTransportErrorKind::Script => CollectionFailureKind::Script,
     }
 }
 

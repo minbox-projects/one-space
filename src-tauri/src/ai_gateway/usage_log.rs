@@ -1686,6 +1686,7 @@ impl UsageLogStore {
     /// Opens and migrates a fresh connection. Public reads reuse the
     /// path-scoped query connection instead; this remains the explicit fixture
     /// and inspection opener.
+    #[cfg(test)]
     pub(in crate::ai_gateway) fn open(&self) -> Result<Connection, String> {
         initialize_connection(&self.path)
     }
