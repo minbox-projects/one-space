@@ -1,4 +1,4 @@
-import { act, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -281,20 +281,6 @@ describe("ServerMonitorTool", () => {
     expect(screen.getByText(/paused/i)).toBeInTheDocument();
   });
 
-  it("guidance mentions required phrases", async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "server_monitor_snapshot") return stateEmpty;
-      return undefined;
-    });
-    await act(async () => {
-      renderWithProviders(<ServerMonitorTool />);
-    });
-    const text = document.body.textContent || "";
-    for (const phrase of ["/proc", "df", "one-second", "host", "container"]) {
-      expect(text.toLowerCase()).toContain(phrase.toLowerCase());
-    }
-  });
-
   it("settings action calls window hooks", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "server_monitor_snapshot") return stateEmpty;
@@ -510,6 +496,111 @@ describe("HistoryChart", () => {
     ];
     const { container } = renderWithProviders(<HistoryChart samples={samples} range="sevenDays" />);
     expect(container).toBeTruthy();
+  });
+
+  it("renders metric tabs and switches between CPU, Memory, Disk and Network", () => {
+    const samples = [
+      { collectedAtMs: 0, outcome: { success: sampleSnapshot }, sourceMode: "interval" } as unknown as ServerMonitorSample,
+      { collectedAtMs: 2000, outcome: { success: sampleSnapshot }, sourceMode: "interval" } as unknown as ServerMonitorSample,
+    ];
+    const { container } = renderWithProviders(
+      <HistoryChart samples={samples} range="twentyFourHours" expectedIntervalSeconds={2} />,
+    );
+
+    // Initial CPU tab
+    expect(screen.getByRole("button", { name: "CPU" })).toBeInTheDocument();
+    expect(screen.getByRole("img")).toHaveAttribute("aria-label", expect.stringContaining("CPU"));
+
+    // Switch to Memory tab
+    const memoryBtn = screen.getByRole("button", { name: /内存|Memory/i });
+    fireEvent.click(memoryBtn);
+    expect(screen.getByRole("img")).toHaveAttribute("aria-label", expect.stringMatching(/内存|Memory/i));
+    expect(container.querySelectorAll("circle").length).toBe(2);
+
+    // Switch to Disk tab
+    const diskBtn = screen.getByRole("button", { name: /磁盘|Disk/i });
+    fireEvent.click(diskBtn);
+    expect(screen.getByRole("img")).toHaveAttribute("aria-label", expect.stringMatching(/磁盘|Disk/i));
+    // Verify mount point selector is available when multiple mount points exist
+    const mountSelect = screen.getByRole("combobox", { name: /挂载点|Mount point/i });
+    expect(mountSelect).toBeInTheDocument();
+    fireEvent.change(mountSelect, { target: { value: "/data" } });
+    expect(container.querySelectorAll("circle").length).toBe(2);
+
+    // Switch to Network tab
+    const netBtn = screen.getByRole("button", { name: /网络|Network/i });
+    fireEvent.click(netBtn);
+    expect(screen.getByRole("img")).toHaveAttribute("aria-label", expect.stringMatching(/网络|Network/i));
+    // Verify Rx and Tx elements are rendered
+    expect(container.querySelectorAll(".stroke-emerald-500").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".stroke-sky-500").length).toBeGreaterThan(0);
+    expect(screen.getByText(/接收|Receive/i)).toBeInTheDocument();
+    expect(screen.getByText(/发送|Transmit/i)).toBeInTheDocument();
+
+    // Verify network interface selector is available when multiple interfaces exist
+    const ifaceSelect = screen.getByRole("combobox", { name: /网络接口|Network interface/i });
+    expect(ifaceSelect).toBeInTheDocument();
+    fireEvent.change(ifaceSelect, { target: { value: "eth1" } });
+  });
+
+  it("renders empty state when there are no valid data points", () => {
+    const emptySamples: ServerMonitorSample[] = [];
+    renderWithProviders(<HistoryChart samples={emptySamples} range="twentyFourHours" />);
+    expect(screen.getAllByText(/此时间范围内没有样本|No samples in this range/i).length).toBeGreaterThan(0);
+  });
+
+  it("shows detailed tooltip on pointer move and hides on pointer leave", () => {
+    const samples = [
+      { collectedAtMs: 1000, outcome: { success: sampleSnapshot }, sourceMode: "interval" } as unknown as ServerMonitorSample,
+    ];
+    const { container } = renderWithProviders(
+      <HistoryChart samples={samples} range="twentyFourHours" expectedIntervalSeconds={2} />,
+    );
+
+    const svg = container.querySelector("svg");
+    expect(svg).toBeInTheDocument();
+    svg!.getBoundingClientRect = vi.fn().mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 640,
+      height: 180,
+      right: 640,
+      bottom: 180,
+    });
+
+    // Initially no tooltip
+    expect(screen.queryByTestId("history-chart-tooltip")).not.toBeInTheDocument();
+
+    // Trigger pointer move on CPU chart
+    fireEvent.pointerMove(svg!, { clientX: 200 });
+    const tooltip = screen.getByTestId("history-chart-tooltip");
+    expect(tooltip).toBeInTheDocument();
+    expect(tooltip).toHaveTextContent("12.3%");
+
+    // Trigger pointer leave
+    fireEvent.pointerLeave(svg!);
+    expect(screen.queryByTestId("history-chart-tooltip")).not.toBeInTheDocument();
+
+    // Switch to Memory tab and trigger pointer move
+    const memoryBtn = screen.getByRole("button", { name: /内存|Memory/i });
+    fireEvent.click(memoryBtn);
+    fireEvent.pointerMove(svg!, { clientX: 200 });
+    expect(screen.getByTestId("history-chart-tooltip")).toHaveTextContent("50.0%");
+    expect(screen.getByTestId("history-chart-tooltip")).toHaveTextContent("4.0 GiB");
+
+    // Switch to Disk tab and trigger pointer move
+    const diskBtn = screen.getByRole("button", { name: /磁盘|Disk/i });
+    fireEvent.click(diskBtn);
+    fireEvent.pointerMove(svg!, { clientX: 200 });
+    expect(screen.getByTestId("history-chart-tooltip")).toHaveTextContent("80.0%");
+    expect(screen.getByTestId("history-chart-tooltip")).toHaveTextContent("80.0 GiB");
+
+    // Switch to Network tab and trigger pointer move
+    const netBtn = screen.getByRole("button", { name: /网络|Network/i });
+    fireEvent.click(netBtn);
+    fireEvent.pointerMove(svg!, { clientX: 200 });
+    expect(screen.getByTestId("history-chart-tooltip")).toHaveTextContent(/1.0 KiB\/s|1 KiB\/s/);
+    expect(screen.getByTestId("history-chart-tooltip")).toHaveTextContent(/2.0 KiB\/s|2 KiB\/s/);
   });
 });
 

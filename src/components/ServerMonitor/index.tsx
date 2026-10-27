@@ -1,14 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
-  ChevronDown,
-  ChevronUp,
-  Info,
   Pencil,
   Plus,
-  RefreshCw,
   Search,
-  Server,
   Settings2,
   Trash2,
 } from "lucide-react";
@@ -163,7 +158,6 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
   const [editingTarget, setEditingTarget] = useState<ServerMonitorTargetView | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "error" | "paused">("all");
-  const [guidanceOpen, setGuidanceOpen] = useState(false);
 
   const applyState = useCallback((next: ServerMonitorState) => {
     setState(next);
@@ -902,6 +896,8 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                       samples={samples}
                       range={range}
                       expectedIntervalSeconds={latestSample?.expectedIntervalSeconds ?? null}
+                      selectedInterface={selectedInterface}
+                      onSelectInterface={setSelectedInterface}
                     />
                   </div>
                 </>
@@ -912,64 +908,6 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
           </div>
         </div>
       ) : null}
-
-      <div className="rounded-xl border border-slate-200/70 bg-slate-50/50 p-2.5 text-xs dark:border-slate-800/70 dark:bg-slate-900/30">
-        <button
-          type="button"
-          onClick={() => setGuidanceOpen(!guidanceOpen)}
-          className="group flex w-full items-center justify-between text-left"
-        >
-          <div className="flex items-center gap-2">
-            <Info className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            <h3 className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              <BiText translationKey="serverMonitorGuidanceTitle" />
-            </h3>
-            <span className="hidden text-[11px] text-slate-400 sm:inline dark:text-slate-500">
-              (只读采集 · 无需 sudo / agent)
-            </span>
-          </div>
-          <span className="flex items-center gap-1 text-[11px] font-medium text-slate-400 transition group-hover:text-slate-600 dark:text-slate-500 dark:group-hover:text-slate-300">
-            <BiText
-              translationKey={
-                guidanceOpen
-                  ? "serverMonitorGuidanceHide"
-                  : "serverMonitorGuidanceShow"
-              }
-            />
-            {guidanceOpen ? (
-              <ChevronUp className="h-3 w-3" />
-            ) : (
-              <ChevronDown className="h-3 w-3" />
-            )}
-          </span>
-        </button>
-
-        <div className={`mt-2 border-t border-slate-200/60 pt-2 dark:border-slate-800/60 ${guidanceOpen ? "block" : "hidden"}`}>
-          <ul className="list-disc space-y-1 pl-5 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-            <li>
-              <BiText translationKey="serverMonitorGuidanceCommands" />
-            </li>
-            <li>
-              <BiText translationKey="serverMonitorGuidanceAccess" />
-            </li>
-            <li>
-              <BiText translationKey="serverMonitorGuidanceNoAgent" />
-            </li>
-            <li>
-              <BiText translationKey="serverMonitorGuidanceLifetime" />
-            </li>
-            <li>
-              <BiText translationKey="serverMonitorGuidanceTime" />
-            </li>
-            <li>
-              <BiText translationKey="serverMonitorGuidanceSampling" />
-            </li>
-            <li>
-              <BiText translationKey="serverMonitorGuidanceHost" />
-            </li>
-          </ul>
-        </div>
-      </div>
 
       <ServerFormDialog
         isOpen={dialogOpen}
