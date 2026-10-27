@@ -33,6 +33,7 @@ const CANCELLED_MESSAGE: &str = "Collection was cancelled";
 pub(crate) trait ServerMonitorEventSink: Send + Sync {
     fn publish(&self, state: &ServerMonitorState);
     fn notify_failure(&self, target_id: &str, target_name: &str, error_message: &str);
+    fn notify_alert(&self, target_id: &str, target_name: &str, alert_reasons: &[String]);
 }
 
 #[cfg(test)]
@@ -42,6 +43,7 @@ pub(crate) struct NoopEventSink;
 impl ServerMonitorEventSink for NoopEventSink {
     fn publish(&self, _state: &ServerMonitorState) {}
     fn notify_failure(&self, _target_id: &str, _target_name: &str, _error_message: &str) {}
+    fn notify_alert(&self, _target_id: &str, _target_name: &str, _alert_reasons: &[String]) {}
 }
 
 struct TauriEventSink {
@@ -75,6 +77,39 @@ impl ServerMonitorEventSink for TauriEventSink {
         };
         crate::messages::record_message_silent(&self.app, input);
     }
+
+    fn notify_alert(&self, target_id: &str, target_name: &str, alert_reasons: &[String]) {
+        let summary_text = alert_reasons.join(", ");
+        let detail_text = format!(
+            "服务器 [{}] 检测到以下资源使用率超过告警阈值:\n{}",
+            target_name,
+            alert_reasons
+                .iter()
+                .map(|r| format!("- {}", r))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let input = crate::messages::MessageCreateInput {
+            source: "server_monitor".to_string(),
+            category: "resource_alert".to_string(),
+            severity: "warning".to_string(),
+            title: format!("服务器监控告警 - {}", target_name),
+            summary: Some(format!("服务器 [{}] 出现资源告警: {}", target_name, summary_text)),
+            detail: Some(detail_text),
+            dedupe_key: Some(format!("server_monitor_alert:{}", target_id)),
+            target: Some(crate::messages::MessageTarget {
+                tab: "more-tools".to_string(),
+                section: Some("server-monitor".to_string()),
+                entity_id: Some(target_id.to_string()),
+            }),
+            metadata: Some(serde_json::json!({
+                "target_id": target_id,
+                "target_name": target_name,
+                "reasons": alert_reasons,
+            })),
+        };
+        crate::messages::record_message_silent(&self.app, input);
+    }
 }
 
 pub(crate) trait ServerMonitorClock: Send + Sync {
@@ -87,6 +122,44 @@ impl ServerMonitorClock for SystemClock {
     fn now_ms(&self) -> i64 {
         Local::now().timestamp_millis()
     }
+}
+
+pub(crate) fn evaluate_alert(
+    snapshot: &MetricSnapshot,
+    settings: &ServerMonitorSettings,
+) -> (bool, Vec<String>) {
+    if !settings.alert_enabled {
+        return (false, Vec::new());
+    }
+    let mut reasons = Vec::new();
+    if let Some(ref cpu) = snapshot.cpu {
+        if cpu.usage_percent >= settings.cpu_threshold_percent as f64 {
+            reasons.push(format!(
+                "CPU 使用率 {:.1}% (阈值 {}%)",
+                cpu.usage_percent, settings.cpu_threshold_percent
+            ));
+        }
+    }
+    if let Some(ref memory) = snapshot.memory {
+        if memory.used_percent >= settings.memory_threshold_percent as f64 {
+            reasons.push(format!(
+                "内存使用率 {:.1}% (阈值 {}%)",
+                memory.used_percent, settings.memory_threshold_percent
+            ));
+        }
+    }
+    if let Some(ref disks) = snapshot.disks {
+        for disk in disks {
+            if disk.used_percent >= settings.disk_threshold_percent as f64 {
+                reasons.push(format!(
+                    "磁盘 [{}] 使用率 {:.1}% (阈值 {}%)",
+                    disk.mount_point, disk.used_percent, settings.disk_threshold_percent
+                ));
+            }
+        }
+    }
+    let has_alert = !reasons.is_empty();
+    (has_alert, reasons)
 }
 
 struct Inner {
@@ -240,13 +313,27 @@ impl ServerMonitorRuntime {
         events: Arc<dyn ServerMonitorEventSink>,
         clock: Arc<dyn ServerMonitorClock>,
     ) -> Arc<Self> {
-        let (config, config_broken) = match store.load_config() {
+        let (mut config, config_broken) = match store.load_config() {
             Ok(config) => (config, false),
             Err(error) => {
                 log::error!("Server monitor configuration could not be loaded: {error}");
                 (ServerMonitorConfig::default(), true)
             }
         };
+        let mut alert_state_changed = false;
+        for target in &mut config.targets {
+            if let Ok(Some(snapshot)) = store.latest_snapshot(&target.id) {
+                let (has_alert, reasons) = evaluate_alert(&snapshot, &config.settings);
+                if target.has_alert != has_alert || target.alert_reasons != reasons {
+                    target.has_alert = has_alert;
+                    target.alert_reasons = reasons;
+                    alert_state_changed = true;
+                }
+            }
+        }
+        if alert_state_changed && !config_broken {
+            let _ = store.save_config(&config);
+        }
         Arc::new(Self {
             store,
             connector,
@@ -755,6 +842,7 @@ impl ServerMonitorRuntime {
         let now = self.clock.now_ms();
         let mut prune: Option<(u32, i64, String)> = None;
         let mut failure_notification: Option<(String, String, String)> = None;
+        let mut alert_notification: Option<(String, String, Vec<String>)> = None;
 
         if let Ok(mut inner) = self.inner.lock() {
             inner.active = inner.active.saturating_sub(1);
@@ -799,6 +887,30 @@ impl ServerMonitorRuntime {
                         target.last_error_kind = None;
                         target.last_error = None;
                         target.last_success_at_ms = Some(report.collected_at_ms);
+
+                        if let Some(ref snapshot) = report.snapshot {
+                            let (has_alert, reasons) = evaluate_alert(snapshot, &inner.config.settings);
+                            if has_alert {
+                                target.has_alert = true;
+                                target.alert_reasons = reasons.clone();
+
+                                let cooldown_ms = inner.config.settings.alert_cooldown_minutes as i64 * 60_000;
+                                let should_notify = match target.last_alert_at_ms {
+                                    Some(last_at) => now.saturating_sub(last_at) >= cooldown_ms,
+                                    None => true,
+                                };
+                                if should_notify {
+                                    target.last_alert_at_ms = Some(now);
+                                    alert_notification = Some((target.id.clone(), target.name.clone(), reasons));
+                                }
+                            } else {
+                                target.has_alert = false;
+                                target.alert_reasons.clear();
+                            }
+                        } else {
+                            target.has_alert = false;
+                            target.alert_reasons.clear();
+                        }
                     }
                     target.updated_at_ms = now;
                 }
@@ -842,6 +954,9 @@ impl ServerMonitorRuntime {
         }
         if let Some((target_id, target_name, error_msg)) = failure_notification {
             self.events.notify_failure(&target_id, &target_name, &error_msg);
+        }
+        if let Some((target_id, target_name, reasons)) = alert_notification {
+            self.events.notify_alert(&target_id, &target_name, &reasons);
         }
         handle.complete(report);
         if let Some((retention, now_ms, today)) = prune {
@@ -975,6 +1090,17 @@ impl ServerMonitorRuntime {
             last_success_at_ms: existing
                 .as_ref()
                 .and_then(|record| record.last_success_at_ms),
+            has_alert: existing
+                .as_ref()
+                .map(|record| record.has_alert)
+                .unwrap_or(false),
+            alert_reasons: existing
+                .as_ref()
+                .map(|record| record.alert_reasons.clone())
+                .unwrap_or_default(),
+            last_alert_at_ms: existing
+                .as_ref()
+                .and_then(|record| record.last_alert_at_ms),
         };
         validate_target(&record)?;
         if config
@@ -1306,6 +1432,13 @@ impl ServerMonitorRuntime {
         let mut config = inner.config.clone();
         let previous = config.settings.clone();
         config.settings = settings.clone();
+        for target in &mut config.targets {
+            if let Ok(Some(snapshot)) = self.store.latest_snapshot(&target.id) {
+                let (has_alert, reasons) = evaluate_alert(&snapshot, &settings);
+                target.has_alert = has_alert;
+                target.alert_reasons = reasons;
+            }
+        }
         self.store.save_config(&config)?;
         inner.config = config;
         inner.error = None;
@@ -1626,6 +1759,11 @@ fn draft_record(
         last_error_kind: None,
         last_error: None,
         last_success_at_ms: existing.and_then(|record| record.last_success_at_ms),
+        has_alert: existing.map(|record| record.has_alert).unwrap_or(false),
+        alert_reasons: existing
+            .map(|record| record.alert_reasons.clone())
+            .unwrap_or_default(),
+        last_alert_at_ms: existing.and_then(|record| record.last_alert_at_ms),
     })
 }
 

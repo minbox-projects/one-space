@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "@/test/mocks/render";
@@ -121,5 +121,40 @@ describe("ServerMonitorSettingsView", () => {
       />,
     );
     expect(screen.getByText(/permanently removes older history/i)).toBeTruthy();
+  });
+
+  it("renders resource alert thresholds and handles changes", async () => {
+    const user = userEvent.setup();
+    const onSettingsChange = vi.fn();
+    const settings = { ...DEFAULT_SERVER_MONITOR_SETTINGS, alertEnabled: true };
+    const { container } = renderWithProviders(
+      <ServerMonitorSettingsView
+        settings={settings}
+        onSettingsChange={onSettingsChange}
+        intervalInput="5"
+        onIntervalInputChange={vi.fn()}
+        retentionInput="7"
+        onRetentionInputChange={vi.fn()}
+        newTimeInput=""
+        onNewTimeInputChange={vi.fn()}
+      />,
+    );
+    const cpuInput = container.querySelector("#server-monitor-cpu-threshold") as HTMLInputElement;
+    const memInput = container.querySelector("#server-monitor-memory-threshold") as HTMLInputElement;
+    const diskInput = container.querySelector("#server-monitor-disk-threshold") as HTMLInputElement;
+    expect(cpuInput).toBeTruthy();
+    expect(memInput).toBeTruthy();
+    expect(diskInput).toBeTruthy();
+
+    fireEvent.change(cpuInput, { target: { value: "90" } });
+    expect(onSettingsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ cpuThresholdPercent: 90 }),
+    );
+
+    const switchBtn = screen.getByRole("switch", { name: /启用资源告警|Enable resource alerts/i });
+    await user.click(switchBtn);
+    expect(onSettingsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ alertEnabled: false }),
+    );
   });
 });

@@ -23,7 +23,56 @@ fn settings_defaults_and_validation_boundaries() {
     assert_eq!(settings.interval_minutes, 5);
     assert_eq!(settings.daily_times, vec!["09:00".to_string()]);
     assert_eq!(settings.retention_days, 7);
+    assert!(settings.alert_enabled);
+    assert_eq!(settings.cpu_threshold_percent, 80);
+    assert_eq!(settings.memory_threshold_percent, 85);
+    assert_eq!(settings.disk_threshold_percent, 85);
+    assert_eq!(settings.alert_cooldown_minutes, 60);
     assert!(settings.validate().is_ok());
+
+    for cpu in [1u32, 100] {
+        let mut s = ServerMonitorSettings::default();
+        s.cpu_threshold_percent = cpu;
+        assert!(s.validate().is_ok());
+    }
+    for cpu in [0u32, 101] {
+        let mut s = ServerMonitorSettings::default();
+        s.cpu_threshold_percent = cpu;
+        assert!(s.validate().is_err());
+    }
+
+    for mem in [1u32, 100] {
+        let mut s = ServerMonitorSettings::default();
+        s.memory_threshold_percent = mem;
+        assert!(s.validate().is_ok());
+    }
+    for mem in [0u32, 101] {
+        let mut s = ServerMonitorSettings::default();
+        s.memory_threshold_percent = mem;
+        assert!(s.validate().is_err());
+    }
+
+    for disk in [1u32, 100] {
+        let mut s = ServerMonitorSettings::default();
+        s.disk_threshold_percent = disk;
+        assert!(s.validate().is_ok());
+    }
+    for disk in [0u32, 101] {
+        let mut s = ServerMonitorSettings::default();
+        s.disk_threshold_percent = disk;
+        assert!(s.validate().is_err());
+    }
+
+    for cooldown in [1u32, 1440] {
+        let mut s = ServerMonitorSettings::default();
+        s.alert_cooldown_minutes = cooldown;
+        assert!(s.validate().is_ok());
+    }
+    for cooldown in [0u32, 1441] {
+        let mut s = ServerMonitorSettings::default();
+        s.alert_cooldown_minutes = cooldown;
+        assert!(s.validate().is_err());
+    }
 
     let mut interval_min = ServerMonitorSettings::default();
     interval_min.interval_minutes = 1;
@@ -91,6 +140,9 @@ fn encrypted_config_round_trips_and_hides_credentials() {
         last_error_kind: None,
         last_error: None,
         last_success_at_ms: None,
+        has_alert: false,
+        alert_reasons: Vec::new(),
+        last_alert_at_ms: None,
     };
     let config = ServerMonitorConfig {
         version: 1,

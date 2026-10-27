@@ -64,6 +64,8 @@ const targetA = {
   lastErrorKind: null,
   lastError: null,
   lastSuccessAtMs: 1000,
+  hasAlert: false,
+  alertReasons: [],
   collecting: false,
   nextCollectionAtMs: 2000,
 };
@@ -84,6 +86,8 @@ const targetB = {
   lastErrorKind: null,
   lastError: null,
   lastSuccessAtMs: 1000,
+  hasAlert: false,
+  alertReasons: [],
   collecting: false,
   nextCollectionAtMs: 2000,
 };
@@ -219,9 +223,11 @@ describe("ServerMonitorTool", () => {
     await act(async () => {
       renderWithProviders(<ServerMonitorTool />);
     });
-    const select = await screen.findByRole("combobox", { name: /interface/i });
+    const netBtn = await screen.findByRole("button", { name: /网络|Network/i });
+    await user.click(netBtn);
+    const select = await screen.findByRole("combobox", { name: /网络接口|Network interface/i });
     await user.selectOptions(select, "eth1");
-    expect(screen.getByText(/eth1/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/eth1/i).length).toBeGreaterThan(0);
     expect(invokeMock).not.toHaveBeenCalledWith("server_monitor_refresh", expect.anything());
   });
 
@@ -372,6 +378,128 @@ describe("ServerMonitorTool", () => {
     });
     const badges = await screen.findAllByText(/SSH 隧道|SSH Tunnel/i);
     expect(badges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders all disks usage overview rows", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return statePopulated;
+      if (command === "server_monitor_history") {
+        return [
+          {
+            collectedAtMs: 1000,
+            outcome: { success: sampleSnapshot },
+            samplingWindowSeconds: 1,
+            sourceMode: "interval",
+            cpu: sampleSnapshot.cpu,
+            memory: sampleSnapshot.memory,
+            disks: sampleSnapshot.disks,
+            networks: sampleSnapshot.networks,
+            networkInterface: "eth0",
+          },
+        ];
+      }
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const rootDiskRow = await screen.findByTestId("disk-row-/");
+    const dataDiskRow = await screen.findByTestId("disk-row-/data");
+    expect(rootDiskRow).toBeTruthy();
+    expect(dataDiskRow).toBeTruthy();
+    expect(screen.getByText("全部硬盘使用情况")).toBeTruthy();
+  });
+
+  it("renders alert badges on server card and banner in detail when hasAlert is true", async () => {
+    const alertTarget = {
+      ...targetA,
+      hasAlert: true,
+      alertReasons: ["CPU 使用率 92.5% (阈值 80%)", "磁盘 [/] 使用率 88.0% (阈值 85%)"],
+    };
+    const alertState = {
+      ...statePopulated,
+      targets: [alertTarget, targetB],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return alertState;
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const cardAlertBadge = await screen.findByTestId("alert-badge-t1");
+    expect(cardAlertBadge).toBeTruthy();
+    const detailAlertPill = await screen.findByTestId("selected-target-alert-pill");
+    expect(detailAlertPill).toBeTruthy();
+    const alertBanner = await screen.findByTestId("selected-target-alert-banner");
+    expect(alertBanner).toBeTruthy();
+    expect(alertBanner.textContent).toContain("CPU 使用率 92.5%");
+    expect(alertBanner.textContent).toContain("磁盘 [/] 使用率 88.0%");
+  });
+
+  it("dynamically shows alert badges when target hasAlert is false but current metrics have disk exceeding threshold", async () => {
+    // target 本身 hasAlert 为 false（例如历史旧数据未重新采集）
+    const initialTarget = {
+      ...targetA,
+      hasAlert: false,
+      alertReasons: [],
+    };
+    const stateWithNoAlertTarget = {
+      ...statePopulated,
+      targets: [initialTarget],
+    };
+    // 但其最近的采集样本中硬盘使用率达 99.9%（已飘红）
+    const highDiskSnapshot = {
+      ...sampleSnapshot,
+      disks: [
+        {
+          filesystem: "/dev/vda3",
+          mountPoint: "/",
+          totalBytes: 100_000_000,
+          usedBytes: 99_900_000,
+          availableBytes: 100_000,
+          usedPercent: 99.9,
+        },
+      ],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return stateWithNoAlertTarget;
+      if (command === "server_monitor_history") {
+        return [
+          {
+            id: 1,
+            targetId: "t1",
+            collectedAtMs: 1000,
+            outcome: { success: highDiskSnapshot },
+            samplingWindowSeconds: 1,
+            sourceMode: "interval",
+            expectedIntervalSeconds: 300,
+            cpu: sampleSnapshot.cpu,
+            memory: sampleSnapshot.memory,
+            disks: highDiskSnapshot.disks,
+            networks: sampleSnapshot.networks,
+            networkInterface: "eth0",
+            errorKind: null,
+            error: null,
+          },
+        ];
+      }
+      return undefined;
+    });
+
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+
+    // 验证：即使后端 target.hasAlert 为 false，左侧卡片与详情顶部仍然动态展现告警标注与横幅
+    const cardAlertBadge = await screen.findByTestId("alert-badge-t1");
+    expect(cardAlertBadge).toBeTruthy();
+    const detailAlertPill = await screen.findByTestId("selected-target-alert-pill");
+    expect(detailAlertPill).toBeTruthy();
+    const alertBanner = await screen.findByTestId("selected-target-alert-banner");
+    expect(alertBanner).toBeTruthy();
+    expect(alertBanner.textContent).toContain("磁盘 [/] 使用率 99.9%");
   });
 
   it("error state shows banner and clears on empty reload", async () => {

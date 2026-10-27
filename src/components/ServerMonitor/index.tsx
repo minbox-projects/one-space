@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   Loader2,
   Pencil,
   Plus,
@@ -321,6 +322,35 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
       networks.length === 0
     );
   }, [metrics, latestSample, networks.length]);
+
+  const currentMetricsAlert = useMemo(() => {
+    if (!metrics) return null;
+    if (!settings.alertEnabled) return { hasAlert: false, alertReasons: [] };
+    const reasons: string[] = [];
+    if (metrics.cpu && metrics.cpu.usagePercent >= settings.cpuThresholdPercent) {
+      reasons.push(
+        `CPU 使用率 ${metrics.cpu.usagePercent.toFixed(1)}% (阈值 ${settings.cpuThresholdPercent}%)`,
+      );
+    }
+    if (metrics.memory && metrics.memory.usedPercent >= settings.memoryThresholdPercent) {
+      reasons.push(
+        `内存使用率 ${metrics.memory.usedPercent.toFixed(1)}% (阈值 ${settings.memoryThresholdPercent}%)`,
+      );
+    }
+    if (Array.isArray(metrics.disks)) {
+      for (const disk of metrics.disks) {
+        if (disk.usedPercent >= settings.diskThresholdPercent) {
+          reasons.push(
+            `磁盘 [${disk.mountPoint}] 使用率 ${disk.usedPercent.toFixed(1)}% (阈值 ${settings.diskThresholdPercent}%)`,
+          );
+        }
+      }
+    }
+    return {
+      hasAlert: reasons.length > 0,
+      alertReasons: reasons,
+    };
+  }, [metrics, settings]);
 
   const nextCollectionAt =
     selectedTarget?.nextCollectionAtMs ?? state?.nextCollectionAtMs ?? null;
@@ -677,6 +707,11 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                 {filteredTargets.length > 0 ? (
                   filteredTargets.map((target) => {
                     const active = selectedTarget?.id === target.id;
+                    const hasAlert = target.hasAlert || (active && Boolean(currentMetricsAlert?.hasAlert));
+                    const alertReasons =
+                      active && currentMetricsAlert?.hasAlert && currentMetricsAlert.alertReasons.length > 0
+                        ? currentMetricsAlert.alertReasons
+                        : target.alertReasons;
                     const listKey = target.blocked
                       ? "serverMonitorStatusError"
                       : !target.enabled
@@ -705,11 +740,27 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="block truncate text-sm font-semibold text-slate-900 dark:text-white">
-                            {target.name}
-                          </span>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="truncate text-sm font-semibold text-slate-900 dark:text-white">
+                              {target.name}
+                            </span>
+                            {hasAlert ? (
+                              <span
+                                title={alertReasons && alertReasons.length > 0 ? alertReasons.join(" · ") : t("serverMonitorAlertBadge")}
+                                className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-600 dark:border-rose-500/40 dark:bg-rose-500/20 dark:text-rose-400 shrink-0"
+                                data-testid={`alert-badge-${target.id}`}
+                              >
+                                <AlertTriangle className="h-2.5 w-2.5 text-rose-500 shrink-0" />
+                                <BiText translationKey="serverMonitorAlertBadge" />
+                              </span>
+                            ) : null}
+                          </div>
                           <span
-                            className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${STATUS_RING_CLASSES[tone]}`}
+                            className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
+                              hasAlert && tone === "success"
+                                ? STATUS_RING_CLASSES.error
+                                : STATUS_RING_CLASSES[tone]
+                            }`}
                           />
                         </div>
                         <span className="mt-1 block truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
@@ -768,6 +819,20 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                           ) : null}
                           {partial ? (
                             <StatusPill translationKey="serverMonitorPartial" tone="warning" />
+                          ) : null}
+                          {selectedTarget.hasAlert || Boolean(currentMetricsAlert?.hasAlert) ? (
+                            <span
+                              title={
+                                currentMetricsAlert?.hasAlert && currentMetricsAlert.alertReasons.length > 0
+                                  ? currentMetricsAlert.alertReasons.join(" · ")
+                                  : selectedTarget.alertReasons?.join(" · ")
+                              }
+                              className="inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-rose-600 dark:border-rose-500/40 dark:bg-rose-500/20 dark:text-rose-400"
+                              data-testid="selected-target-alert-pill"
+                            >
+                              <AlertTriangle className="h-3 w-3 text-rose-500" />
+                              <BiText translationKey="serverMonitorAlertBadge" />
+                            </span>
                           ) : null}
                           {selectedTarget.tunnel?.enabled ? (
                             <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
@@ -849,6 +914,28 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                         </Button>
                       </div>
                     </div>
+
+                    {(selectedTarget.hasAlert || Boolean(currentMetricsAlert?.hasAlert)) &&
+                    ((currentMetricsAlert?.hasAlert && currentMetricsAlert.alertReasons.length > 0) ||
+                      (selectedTarget.alertReasons && selectedTarget.alertReasons.length > 0)) ? (
+                      <div
+                        data-testid="selected-target-alert-banner"
+                        className="mt-4 flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:border-rose-500/40 dark:bg-rose-500/20 dark:text-rose-300"
+                      >
+                        <AlertTriangle className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />
+                        <div className="space-y-0.5 min-w-0">
+                          <p className="font-semibold">
+                            <BiText translationKey="serverMonitorAlertTitle" />
+                          </p>
+                          <p className="font-mono text-[11px] opacity-90 break-words">
+                            {(currentMetricsAlert?.hasAlert && currentMetricsAlert.alertReasons.length > 0
+                              ? currentMetricsAlert.alertReasons
+                              : selectedTarget.alertReasons
+                            ).join(" · ")}
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

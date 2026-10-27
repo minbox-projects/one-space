@@ -93,6 +93,11 @@ export interface ServerMonitorSettings {
   intervalMinutes: number;
   dailyTimes: string[];
   retentionDays: number;
+  alertEnabled: boolean;
+  cpuThresholdPercent: number;
+  memoryThresholdPercent: number;
+  diskThresholdPercent: number;
+  alertCooldownMinutes: number;
 }
 
 export const DEFAULT_SERVER_MONITOR_SETTINGS: ServerMonitorSettings = {
@@ -101,6 +106,11 @@ export const DEFAULT_SERVER_MONITOR_SETTINGS: ServerMonitorSettings = {
   intervalMinutes: 5,
   dailyTimes: ["09:00"],
   retentionDays: 7,
+  alertEnabled: true,
+  cpuThresholdPercent: 80,
+  memoryThresholdPercent: 85,
+  diskThresholdPercent: 85,
+  alertCooldownMinutes: 60,
 };
 
 export interface ServerMonitorTunnelView {
@@ -132,6 +142,8 @@ export interface ServerMonitorTargetView {
   lastErrorKind: ServerMonitorFailureKind | null;
   lastError: string | null;
   lastSuccessAtMs: number | null;
+  hasAlert: boolean;
+  alertReasons: string[];
   collecting: boolean;
   nextCollectionAtMs: number | null;
 }
@@ -387,6 +399,10 @@ export function validateServerMonitorSettings(
 ): boolean {
   if (!isIntegerInRange(settings.intervalMinutes, 1, 1440)) return false;
   if (!isIntegerInRange(settings.retentionDays, 1, 30)) return false;
+  if (!isIntegerInRange(settings.cpuThresholdPercent, 1, 100)) return false;
+  if (!isIntegerInRange(settings.memoryThresholdPercent, 1, 100)) return false;
+  if (!isIntegerInRange(settings.diskThresholdPercent, 1, 100)) return false;
+  if (!isIntegerInRange(settings.alertCooldownMinutes, 1, 1440)) return false;
   if (!Array.isArray(settings.dailyTimes) || settings.dailyTimes.length === 0) {
     return false;
   }
@@ -493,6 +509,22 @@ export function normalizeServerMonitorSettings(
     retentionDays: isIntegerInRange(input?.retentionDays, 1, 30)
       ? (input?.retentionDays as number)
       : DEFAULT_SERVER_MONITOR_SETTINGS.retentionDays,
+    alertEnabled:
+      typeof input?.alertEnabled === "boolean"
+        ? input.alertEnabled
+        : DEFAULT_SERVER_MONITOR_SETTINGS.alertEnabled,
+    cpuThresholdPercent: isIntegerInRange(input?.cpuThresholdPercent, 1, 100)
+      ? (input?.cpuThresholdPercent as number)
+      : DEFAULT_SERVER_MONITOR_SETTINGS.cpuThresholdPercent,
+    memoryThresholdPercent: isIntegerInRange(input?.memoryThresholdPercent, 1, 100)
+      ? (input?.memoryThresholdPercent as number)
+      : DEFAULT_SERVER_MONITOR_SETTINGS.memoryThresholdPercent,
+    diskThresholdPercent: isIntegerInRange(input?.diskThresholdPercent, 1, 100)
+      ? (input?.diskThresholdPercent as number)
+      : DEFAULT_SERVER_MONITOR_SETTINGS.diskThresholdPercent,
+    alertCooldownMinutes: isIntegerInRange(input?.alertCooldownMinutes, 1, 1440)
+      ? (input?.alertCooldownMinutes as number)
+      : DEFAULT_SERVER_MONITOR_SETTINGS.alertCooldownMinutes,
   };
 }
 

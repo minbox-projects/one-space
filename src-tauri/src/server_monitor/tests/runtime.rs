@@ -39,10 +39,10 @@ fn runtime_public_methods_are_callable_boundary() {
 
 use crate::server_monitor::transport::{MonitorConnector, MonitorConnection};
 use crate::server_monitor::types::{
-    MonitorConnectRequest, MonitorSource, MonitorTransportError, ServerMonitorAuthKind,
-    ServerMonitorScheduleMode, ServerMonitorSettings, ServerMonitorSourceKind, ServerMonitorState,
-    ServerMonitorTargetDraft, ServerMonitorTargetRecord, ServerMonitorTunnelDraft,
-    ServerMonitorTunnelRecord,
+    CollectorOutput, MonitorConnectRequest, MonitorSource, MonitorTransportError,
+    ServerMonitorAuthKind, ServerMonitorScheduleMode, ServerMonitorSettings,
+    ServerMonitorSourceKind, ServerMonitorState, ServerMonitorTargetDraft,
+    ServerMonitorTargetRecord, ServerMonitorTunnelDraft, ServerMonitorTunnelRecord,
 };
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -177,11 +177,10 @@ impl MonitorConnection for EnhancedConn {
         &mut self,
         _script: &str,
         _deadline: std::time::Duration,
-    ) -> Result<crate::server_monitor::types::CollectorOutput, MonitorTransportError> {
+    ) -> Result<CollectorOutput, MonitorTransportError> {
         self.exec_count.fetch_add(1, Ordering::SeqCst);
         if self.block.load(Ordering::SeqCst) {
             let mutex: &Mutex<usize> = &self.release.0;
-            let cvar: &Condvar = &self.release.1;
             let cvar: &Condvar = &self.release.1;
             let mut avail = mutex.lock().unwrap();
             while *avail == 0 {
@@ -189,7 +188,7 @@ impl MonitorConnection for EnhancedConn {
             }
             *avail -= 1;
         }
-        Ok(crate::server_monitor::types::CollectorOutput {
+        Ok(CollectorOutput {
             stdout: self.output.clone(),
             exit_code: Some(0),
         })
@@ -1460,6 +1459,7 @@ fn real_ssh_runtime_interval_daily_and_pause_smoke() {
 
 struct RecordingEventSink {
     failures: std::sync::Mutex<Vec<(String, String, String)>>,
+    alerts: std::sync::Mutex<Vec<(String, String, Vec<String>)>>,
 }
 
 impl ServerMonitorEventSink for RecordingEventSink {
@@ -1470,6 +1470,15 @@ impl ServerMonitorEventSink for RecordingEventSink {
                 target_id.to_string(),
                 target_name.to_string(),
                 error_message.to_string(),
+            ));
+        }
+    }
+    fn notify_alert(&self, target_id: &str, target_name: &str, alert_reasons: &[String]) {
+        if let Ok(mut lock) = self.alerts.lock() {
+            lock.push((
+                target_id.to_string(),
+                target_name.to_string(),
+                alert_reasons.to_vec(),
             ));
         }
     }
@@ -1486,6 +1495,7 @@ fn collection_failure_notifies_event_sink() {
     connector.fail_auth_remaining.store(1, Ordering::SeqCst);
     let sink = Arc::new(RecordingEventSink {
         failures: std::sync::Mutex::new(Vec::new()),
+        alerts: std::sync::Mutex::new(Vec::new()),
     });
     let events: Arc<dyn ServerMonitorEventSink> = sink.clone();
     let clock = Arc::new(AtomicClock {
@@ -1637,6 +1647,147 @@ fn real_ssh_tunnel_node3_via_node2_smoke() {
 
     let res = runtime.test_connection(draft);
     assert!(matches!(res, Ok(ref r) if r.succeeded));
+    runtime.shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn framed_output_high_resource() -> String {
+    let frame = |name: &str, body: &str| format!("@@ONESPACE:{}@@\n{}", name, body);
+    format!(
+        "{}{}{}{}{}{}{}{}{}{}",
+        frame("boot_id_1", "b1\n"),
+        frame("boot_id_2", "b1\n"),
+        frame("uptime_1", "10.0\n"),
+        frame("uptime_2", "11.0\n"),
+        frame("stat_1", "cpu  1 0 1 1 0 0 0 0 0 0\n"),
+        frame("stat_2", "cpu  10 0 1 1 0 0 0 0 0 0\n"),
+        frame("net_1", "eth0: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"),
+        frame("net_2", "eth0: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"),
+        frame("meminfo", "MemTotal: 1000000 kB\nMemAvailable: 50000 kB\n"),
+        frame("df", "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/sda1 1000 950 50 95% /\n/dev/sdb1 1000 920 80 92% /data\n"),
+    )
+}
+
+fn framed_output_low_resource() -> String {
+    let frame = |name: &str, body: &str| format!("@@ONESPACE:{}@@\n{}", name, body);
+    format!(
+        "{}{}{}{}{}{}{}{}{}{}",
+        frame("boot_id_1", "b1\n"),
+        frame("boot_id_2", "b1\n"),
+        frame("uptime_1", "10.0\n"),
+        frame("uptime_2", "11.0\n"),
+        frame("stat_1", "cpu  1 0 1 100 0 0 0 0 0 0\n"),
+        frame("stat_2", "cpu  2 0 1 200 0 0 0 0 0 0\n"),
+        frame("net_1", "eth0: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"),
+        frame("net_2", "eth0: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"),
+        frame("meminfo", "MemTotal: 1000000 kB\nMemAvailable: 800000 kB\n"),
+        frame("df", "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/sda1 1000 200 800 20% /\n"),
+    )
+}
+
+struct DynamicConnection {
+    output: Arc<Mutex<String>>,
+}
+
+impl MonitorConnection for DynamicConnection {
+    fn run_collector(
+        &mut self,
+        _script: &str,
+        _deadline: std::time::Duration,
+    ) -> Result<CollectorOutput, MonitorTransportError> {
+        Ok(CollectorOutput {
+            stdout: self.output.lock().unwrap().clone(),
+            exit_code: Some(0),
+        })
+    }
+    fn keepalive(&mut self) -> Result<(), MonitorTransportError> {
+        Ok(())
+    }
+    fn close(&mut self) {}
+}
+
+struct DynamicConnector {
+    output: Arc<Mutex<String>>,
+}
+
+impl MonitorConnector for DynamicConnector {
+    fn connect(
+        &self,
+        _request: &MonitorConnectRequest,
+    ) -> Result<Box<dyn MonitorConnection>, MonitorTransportError> {
+        Ok(Box::new(DynamicConnection {
+            output: self.output.clone(),
+        }))
+    }
+}
+
+#[test]
+fn resource_alert_and_cooldown_behavior() {
+    let root = std::env::temp_dir().join(format!("onespace-sm-alert-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(ServerMonitorStore::new(root.clone()));
+    let mut config = ServerMonitorConfig::default();
+    config.settings.alert_enabled = true;
+    config.settings.cpu_threshold_percent = 80;
+    config.settings.memory_threshold_percent = 85;
+    config.settings.disk_threshold_percent = 85;
+    config.settings.alert_cooldown_minutes = 60;
+    store.save_config(&config).unwrap();
+
+    let output_holder = Arc::new(Mutex::new(framed_output_high_resource()));
+    let connector = Arc::new(DynamicConnector {
+        output: output_holder.clone(),
+    });
+    let sink = Arc::new(RecordingEventSink {
+        failures: std::sync::Mutex::new(Vec::new()),
+        alerts: std::sync::Mutex::new(Vec::new()),
+    });
+    let events: Arc<dyn ServerMonitorEventSink> = sink.clone();
+    let clock = Arc::new(AtomicClock {
+        value: AtomicI64::new(100_000),
+    });
+    let runtime = ServerMonitorRuntime::new_with_clock(
+        store.clone(),
+        connector.clone() as Arc<dyn MonitorConnector>,
+        events,
+        clock.clone(),
+    );
+
+    let draft = make_target_draft("alert-server");
+    let state = runtime.upsert_target(draft).unwrap();
+    let target_id = state.targets[0].id.clone();
+
+    // 第一次高负载采集，应触发告警并通知
+    let _ = runtime.refresh_target(&target_id).unwrap();
+    let snap = runtime.snapshot();
+    let target = snap.targets.iter().find(|t| t.id == target_id).unwrap();
+    assert!(target.has_alert);
+    assert!(!target.alert_reasons.is_empty());
+    assert_eq!(sink.alerts.lock().unwrap().len(), 1);
+
+    // 10 分钟后（仍在 60 分钟冷却期内），再次采集高负载
+    clock.value.fetch_add(10 * 60 * 1000, Ordering::SeqCst);
+    let _ = runtime.refresh_target(&target_id).unwrap();
+    let snap = runtime.snapshot();
+    let target = snap.targets.iter().find(|t| t.id == target_id).unwrap();
+    assert!(target.has_alert);
+    // 冷却期内不应增加通知
+    assert_eq!(sink.alerts.lock().unwrap().len(), 1);
+
+    // 再过 60 分钟（超过冷却时间），再次高负载采集，应再次通知
+    clock.value.fetch_add(60 * 60 * 1000, Ordering::SeqCst);
+    let _ = runtime.refresh_target(&target_id).unwrap();
+    assert_eq!(sink.alerts.lock().unwrap().len(), 2);
+
+    // 恢复为正常低负载采集
+    *output_holder.lock().unwrap() = framed_output_low_resource();
+    let _ = runtime.refresh_target(&target_id).unwrap();
+    let snap = runtime.snapshot();
+    let target = snap.targets.iter().find(|t| t.id == target_id).unwrap();
+    assert!(!target.has_alert);
+    assert!(target.alert_reasons.is_empty());
+    // 告警总数仍为 2
+    assert_eq!(sink.alerts.lock().unwrap().len(), 2);
+
     runtime.shutdown();
     let _ = std::fs::remove_dir_all(root);
 }

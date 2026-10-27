@@ -260,6 +260,52 @@ impl ServerMonitorStore {
             .map_err(|error| format!("Failed to decode server monitor history: {error}"))
     }
 
+    pub(crate) fn latest_snapshot(&self, target_id: &str) -> Result<Option<MetricSnapshot>, String> {
+        let _guard = DB_LOCK.lock().map_err(|error| error.to_string())?;
+        let connection = self.open_db()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT collected_at_ms, sampling_window_seconds, cpu_json, memory_json,
+                        disks_json, networks_json, network_interface
+                 FROM server_monitor_samples
+                 WHERE target_id = ?1 AND outcome IN ('success', 'partial')
+                 ORDER BY collected_at_ms DESC, id DESC
+                 LIMIT 1",
+            )
+            .map_err(|error| format!("Failed to query latest snapshot: {error}"))?;
+        let mut rows = statement
+            .query_map(params![target_id], |row| {
+                let networks_json: Option<String> = row.get(5)?;
+                let networks: Vec<NetworkMetric> = networks_json
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str(value).ok())
+                    .unwrap_or_default();
+                let network_interface: Option<String> = row.get(6)?;
+                let network = network_interface.as_ref().and_then(|interface| {
+                    networks
+                        .iter()
+                        .find(|metric| &metric.interface == interface)
+                        .cloned()
+                });
+                Ok(MetricSnapshot {
+                    collected_at_ms: row.get(0).unwrap_or(0),
+                    sampling_window_seconds: row.get(1).unwrap_or(0.0),
+                    cpu: parse_json_column::<CpuMetric>(row.get(2).ok().flatten()),
+                    memory: parse_json_column::<MemoryMetric>(row.get(3).ok().flatten()),
+                    disks: parse_json_column::<Vec<DiskMetric>>(row.get(4).ok().flatten()),
+                    network,
+                    networks,
+                    network_interface,
+                })
+            })
+            .map_err(|error| format!("Failed to read latest snapshot: {error}"))?;
+        match rows.next() {
+            Some(Ok(snapshot)) => Ok(Some(snapshot)),
+            Some(Err(err)) => Err(err.to_string()),
+            None => Ok(None),
+        }
+    }
+
     /// Claims one target's local-date/time slot. The first claim wins.
     pub(crate) fn claim_slot(
         &self,

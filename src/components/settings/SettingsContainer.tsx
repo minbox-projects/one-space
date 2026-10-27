@@ -640,8 +640,20 @@ export function SettingsContainer({
             savedServerMonitorSettings.scheduleMode ||
           JSON.stringify(serverMonitorSettings.dailyTimes) !==
             JSON.stringify(savedServerMonitorSettings.dailyTimes);
+        const alertDirty =
+          serverMonitorSettings.alertEnabled !==
+            savedServerMonitorSettings.alertEnabled ||
+          serverMonitorSettings.cpuThresholdPercent !==
+            savedServerMonitorSettings.cpuThresholdPercent ||
+          serverMonitorSettings.memoryThresholdPercent !==
+            savedServerMonitorSettings.memoryThresholdPercent ||
+          serverMonitorSettings.diskThresholdPercent !==
+            savedServerMonitorSettings.diskThresholdPercent ||
+          serverMonitorSettings.alertCooldownMinutes !==
+            savedServerMonitorSettings.alertCooldownMinutes;
         next[tab] =
           scheduleDirty ||
+          alertDirty ||
           serverMonitorIntervalInput.trim() !==
             String(savedServerMonitorSettings.intervalMinutes) ||
           serverMonitorRetentionInput.trim() !==

@@ -42,6 +42,7 @@ Defaults are automatic collection enabled, interval mode, a 5-minute interval, d
 - Interval must be an integer from 1 to 1440 minutes.
 - Retention must be an integer from 1 to 30 days.
 - Daily times must be a nonempty list of exact 24-hour `HH:mm` values, without duplicates. `00:00` and `23:59` are valid; `9:00` and `24:00` are not. Valid saved times are sorted.
+- Resource alert thresholds can be configured for CPU, memory, and disks (1 to 100%), with an alert cooldown period (1 to 1440 minutes) preventing continuous alert message writes.
 
 The frontend and backend both validate the submitted values and never silently correct an invalid submission. Only the active mode controls scheduling, while the inactive mode's values are retained. Save, reset and dirty state are local to this settings section and do not change other sections. Reset discards the draft and reloads the saved values. Shortening retention permanently removes history outside the new window; the section warns about this.
 
@@ -51,7 +52,7 @@ CPU comes from two `/proc/stat` samples taken inside one collection. Total time 
 
 Memory uses `/proc/meminfo`: used is `MemTotal − MemAvailable`, converted from kernel kB to 1024-byte units. A missing `MemAvailable` makes memory unavailable rather than falling back to `MemFree`.
 
-Disk data comes from `LC_ALL=C df -l -P -k -T`. Each local persistent mount shows total, used and available space and `used / total`. Mount paths containing spaces are supported. `proc`, `sysfs`, `tmpfs`, `devtmpfs`, `overlay` and `squashfs` are excluded; mounts are never summed. A negative available count means zero usable space while the reported used and total values are preserved, and an invalid or zero total is unavailable. The disk card names the mount with the highest usage.
+Disk data comes from `LC_ALL=C df -l -P -k -T`. Each local persistent mount shows total, used and available space and `used / total`. Mount paths containing spaces are supported. `proc`, `sysfs`, `tmpfs`, `devtmpfs`, `overlay` and `squashfs` are excluded; mounts are never summed. A negative available count means zero usable space while the reported used and total values are preserved, and an invalid or zero total is unavailable. The disk card names the mount with the highest usage, while an overview of all disk mounts and their usage is displayed below. When any metric exceeds its configured alert threshold, the server card in the list is highlighted with an alert badge, and an alert is recorded into the message center according to the cooldown setting.
 
 Network rates are computed per interface from counter deltas divided by the actual positive uptime difference within the same collection. `lo` is excluded and interfaces are never summed. The default is the first valid interface in name order, and the interface selector changes both the label and values. A changed boot identity, a missing or changed interface or decreasing counters makes the affected rates unavailable. CPU and network values cover the approximately one-second sampling window; memory and disk are snapshots.
 
