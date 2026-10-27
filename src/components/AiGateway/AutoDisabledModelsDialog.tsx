@@ -284,6 +284,9 @@ function AutoDisabledModelsDialogContent({
   const [expandedReasons, setExpandedReasons] = useState<Set<string>>(
     () => new Set(),
   );
+  const [expandedModels, setExpandedModels] = useState<Set<string>>(
+    () => new Set(),
+  );
   const recoveryGuardRef = useRef(false);
 
   // The full snapshot is only grouped while the dialog is open.
@@ -364,6 +367,45 @@ function AutoDisabledModelsDialogContent({
     });
   };
 
+  const toggleModel = (localModel: string) => {
+    setExpandedModels((previous) => {
+      const next = new Set(previous);
+      if (next.has(localModel)) {
+        next.delete(localModel);
+      } else {
+        next.add(localModel);
+      }
+      return next;
+    });
+  };
+
+  const handleQueryChange = (nextQuery: string) => {
+    setQuery(nextQuery);
+    const trimmed = nextQuery.trim();
+    if (trimmed) {
+      const matching = filterGroups(groups, nextQuery);
+      setExpandedModels(
+        new Set(matching.map(({ group }) => group.localModel)),
+      );
+    } else {
+      setExpandedModels(new Set());
+    }
+  };
+
+  const allExpanded =
+    filteredGroups.length > 0 &&
+    filteredGroups.every(({ group }) => expandedModels.has(group.localModel));
+
+  const toggleAll = () => {
+    if (allExpanded) {
+      setExpandedModels(new Set());
+    } else {
+      setExpandedModels(
+        new Set(filteredGroups.map(({ group }) => group.localModel)),
+      );
+    }
+  };
+
   return (
     <DialogContent
       data-testid="ai-gateway-auto-disabled-models-dialog"
@@ -399,25 +441,54 @@ function AutoDisabledModelsDialogContent({
               "Search model, provider, or upstream ID",
             )}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => handleQueryChange(event.target.value)}
             className="h-8 w-full rounded-lg border border-border/70 bg-background pl-8 pr-3 text-xs text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/40"
           />
         </div>
-        <p
-          aria-live="polite"
-          className="text-[11px] text-muted-foreground"
-        >
-          {t(
-            "aiGatewayAutoDisabledSummary",
-            "Showing {{shownModels}} of {{totalModels}} models · {{shownSources}} of {{totalSources}} sources",
-            {
-              shownModels: filteredGroups.length,
-              totalModels: groups.length,
-              shownSources,
-              totalSources,
-            },
-          )}
-        </p>
+        <div className="flex items-center justify-between gap-2">
+          <p
+            aria-live="polite"
+            className="text-[11px] text-muted-foreground"
+          >
+            {t(
+              "aiGatewayAutoDisabledSummary",
+              "Showing {{shownModels}} of {{totalModels}} models · {{shownSources}} of {{totalSources}} sources",
+              {
+                shownModels: filteredGroups.length,
+                totalModels: groups.length,
+                shownSources,
+                totalSources,
+              },
+            )}
+          </p>
+          {filteredGroups.length > 0 ? (
+            <button
+              type="button"
+              data-testid="ai-gateway-auto-disabled-toggle-all"
+              onClick={toggleAll}
+              className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-primary hover:underline transition"
+            >
+              {allExpanded ? (
+                <>
+                  <ChevronUp className="h-3 w-3" />
+                  <span>
+                    {t(
+                      "aiGatewayAutoDisabledCollapseAll",
+                      "Collapse all",
+                    )}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="h-3 w-3" />
+                  <span>
+                    {t("aiGatewayAutoDisabledExpandAll", "Expand all")}
+                  </span>
+                </>
+              )}
+            </button>
+          ) : null}
+        </div>
         {hasManualDisable ? (
           <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] leading-4 text-amber-700 dark:text-amber-400">
             {t(
@@ -450,46 +521,88 @@ function AutoDisabledModelsDialogContent({
             </p>
             <button
               type="button"
-              onClick={() => setQuery("")}
+              onClick={() => handleQueryChange("")}
               className="mt-3 inline-flex h-7 items-center rounded-md border bg-background px-2.5 text-[11px] font-medium transition hover:bg-muted"
             >
               {t("aiGatewayAutoDisabledClearSearch", "Clear search")}
             </button>
           </div>
         ) : (
-          <div className="space-y-4">
-            {filteredGroups.map(({ group, providers: visibleProviders }) => (
-              <section
-                key={group.localModel}
-                aria-labelledby={`ai-gateway-auto-disabled-model-${group.localModel}`}
-                className="rounded-lg border border-border/60 bg-card/40"
-              >
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/40 px-3 py-2">
-                  <h3
-                    id={`ai-gateway-auto-disabled-model-${group.localModel}`}
-                    className="min-w-0 break-all font-mono text-xs font-semibold text-foreground"
-                    title={group.localModel}
-                  >
-                    {group.localModel}
-                  </h3>
-                  <span className="inline-flex shrink-0 items-center rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                    {t(
-                      "aiGatewayAutoDisabledProviderCount",
-                      "{{count}} provider(s)",
-                      { count: group.providerCount },
-                    )}
-                  </span>
-                  <span className="inline-flex shrink-0 items-center rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                    {t(
-                      "aiGatewayAutoDisabledSourceCount",
-                      "{{count}} source(s)",
-                      { count: group.sourceCount },
-                    )}
-                  </span>
-                </div>
+          <div className="space-y-3">
+            {filteredGroups.map(({ group, providers: visibleProviders }) => {
+              const isExpanded = expandedModels.has(group.localModel);
+              const contentId = `ai-gateway-auto-disabled-model-content-${group.localModel}`;
+              const headingId = `ai-gateway-auto-disabled-model-${group.localModel}`;
 
-                <ul className="space-y-2 p-2.5">
-                  {visibleProviders.map((provider) => (
+              return (
+                <section
+                  key={group.localModel}
+                  aria-labelledby={headingId}
+                  className="rounded-lg border border-border/60 bg-card/40 transition-colors"
+                >
+                  <button
+                    type="button"
+                    data-testid={`ai-gateway-auto-disabled-model-toggle-${group.localModel}`}
+                    aria-expanded={isExpanded}
+                    aria-controls={contentId}
+                    aria-label={t(
+                      "aiGatewayAutoDisabledToggleModelAria",
+                      "Toggle provider list for {{model}}",
+                      { model: group.localModel },
+                    )}
+                    onClick={() => toggleModel(group.localModel)}
+                    className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                      isExpanded
+                        ? "border-b border-border/40 rounded-t-lg"
+                        : "rounded-lg"
+                    }`}
+                  >
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                      <ChevronDown
+                        className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ${
+                          isExpanded ? "" : "-rotate-90"
+                        }`}
+                      />
+                      <h3
+                        id={headingId}
+                        className="min-w-0 break-all font-mono text-xs font-semibold text-foreground"
+                        title={group.localModel}
+                      >
+                        {group.localModel}
+                      </h3>
+                      <span className="inline-flex shrink-0 items-center rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {t(
+                          "aiGatewayAutoDisabledProviderCount",
+                          "{{count}} provider(s)",
+                          { count: group.providerCount },
+                        )}
+                      </span>
+                      <span className="inline-flex shrink-0 items-center rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {t(
+                          "aiGatewayAutoDisabledSourceCount",
+                          "{{count}} source(s)",
+                          { count: group.sourceCount },
+                        )}
+                      </span>
+                    </div>
+
+                    <span className="shrink-0 text-[11px] font-medium text-muted-foreground/80 hover:text-foreground">
+                      {isExpanded
+                        ? t(
+                            "aiGatewayAutoDisabledCollapseModel",
+                            "Collapse providers",
+                          )
+                        : t(
+                            "aiGatewayAutoDisabledExpandModel",
+                            "Expand providers",
+                          )}
+                    </span>
+                  </button>
+
+                  {isExpanded ? (
+                    <div id={contentId} className="p-2.5">
+                      <ul className="space-y-2">
+                        {visibleProviders.map((provider) => (
                     <li
                       key={provider.providerId}
                       className="rounded-lg border border-border/50 bg-background/70"
@@ -721,8 +834,11 @@ function AutoDisabledModelsDialogContent({
                     </li>
                   ))}
                 </ul>
-              </section>
-            ))}
+              </div>
+            ) : null}
+                </section>
+              );
+            })}
           </div>
         )}
       </div>
