@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -3083,7 +3083,12 @@ describe("UsageLogsPanel 服务商/日期聚焦", () => {
     let setHostActive: (active: boolean) => void = () => {};
     function TabHost() {
       const [active, setActive] = useState(true);
-      setHostActive = setActive;
+      useEffect(() => {
+        setHostActive = setActive;
+        return () => {
+          setHostActive = () => {};
+        };
+      }, []);
       return (
         <UsageLogsPanel
           isActive={active}
