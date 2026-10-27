@@ -14112,6 +14112,8 @@
         "src/i18n.ts",
         "src/toolbox/registry.ts",
         "src/toolbox/types.ts",
+        "docs/server-monitor.md",
+        "docs/server-monitor.zh.md",
         "en_keys.txt",
         "zh_keys.txt"
       ],
@@ -14169,6 +14171,8 @@
       "owner_role": "backend",
       "responsibility": "Persisted monitor targets and interval/daily backend scheduling over owned SSH sessions with encrypted local configuration, SQLite samples and slot claims, honest partial metrics and safe state publication, plus the existing-style monitoring interface, gap-aware history and independently saved scheduling settings",
       "read_scope": [
+        "docs/server-monitor.md",
+        "docs/server-monitor.zh.md",
         "en_keys.txt",
         "src-tauri/src/app_runtime/run_app.rs",
         "src-tauri/src/app_runtime/shortcuts_tray.rs",
