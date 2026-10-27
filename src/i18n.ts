@@ -4925,9 +4925,9 @@ const resources = {
       aiGatewayDisabled: "已禁用",
       aiGatewayProviderAutoDisabledModelsHint: "{{count}} 个映射已被自动禁用",
       aiGatewayProviderAutoDisabledModelsTooltip: "已自动禁用的映射：{{models}}",
-      aiGatewayAutoDisabledEntryLabel: "自动禁用模型",
+      aiGatewayAutoDisabledEntryLabel: "自动禁用的模型",
       aiGatewayAutoDisabledOpenAria:
-        "打开自动禁用模型（{{count}} 个受影响模型）",
+        "打开自动禁用的模型（{{count}} 个受影响模型）",
       aiGatewayAutoDisabledDialogTitle: "自动禁用模型来源",
       aiGatewayAutoDisabledDialogDescription:
         "查看网关在连续失败后自动禁用的映射。清除自动禁用不会改动服务商或模型的手动开关。",

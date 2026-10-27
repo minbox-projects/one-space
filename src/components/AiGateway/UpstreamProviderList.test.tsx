@@ -2519,7 +2519,7 @@ describe("UpstreamProviderList anthropic_messages 徽标", () => {
       );
 
       expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("上游服务商");
-      expect(screen.getByTestId("ai-gateway-auto-disabled-models")).toHaveTextContent("自动禁用");
+      expect(screen.getByTestId("ai-gateway-auto-disabled-models")).toHaveTextContent("自动禁用的模型");
       expect(screen.getByTestId("ai-gateway-manage-templates")).toHaveTextContent("服务商模板");
       expect(screen.getByTestId("ai-gateway-add-provider")).toHaveTextContent("新增服务商");
 
