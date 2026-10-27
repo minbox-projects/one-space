@@ -1,8 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
-import { open, save } from '@tauri-apps/plugin-dialog';
-import { v4 as uuidv4 } from 'uuid';
+import { useState, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Pencil, Plus, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { useConfirmDialog } from '../ConfirmDialogProvider';
@@ -10,327 +6,51 @@ import { CliVersionCards } from './CliVersionCards';
 import { ToolSectionHeader } from './ToolSectionHeader';
 import { SyncedDevices } from './SyncedDevices';
 import { ServiceProviderDetail } from './ServiceProviderDetail';
-import { ServiceProviderList, type ServiceProviderListItem } from './ServiceProviderList';
+import { ServiceProviderList } from './ServiceProviderList';
 import { ServiceProviderAvatar } from './ServiceProviderAvatar';
 import { IconPicker } from './IconPicker';
 import { ModelMappingTable } from './ModelMappingTable';
 import { TerminalPermissionConfirmDialog } from '../TerminalPermissionConfirmDialog';
 import { useToast } from '../ToastProvider';
-import { notifyMessage, safeRecordMessage } from '@/lib/messages';
-import { openLocalPath } from '@/lib/externalActions';
-import { runUserAction } from '@/lib/userActions';
+import { safeRecordMessage } from '@/lib/messages';
 import {
-  claudeProfileList,
   claudeProfileMaterialize,
   getActiveProviderIds,
-  getClaudeConfigDir,
   projectionApply,
   serviceProviderFetchModels,
-  serviceProviderReadOpenCodeConfig,
-  serviceProvidersAutoImportFromSystem,
-  serviceProvidersDelete,
-  serviceProvidersExport,
-  serviceProvidersImportApply,
-  serviceProvidersImportPreview,
-  serviceProvidersList,
-  serviceProvidersListSyncedOtherDevices,
   serviceProvidersSetActive,
-  serviceProvidersSetFavorite,
-  serviceProvidersUpsert,
   type AiProvider,
   type AiProvidersState,
-  type ApiResp,
-  type AutoImportResult,
   type ClaudeProfileSummary,
   type CliTool,
-  type HistoryEntry,
-  type OpenCodeProviderConfig,
-  type ProviderImportDecision,
-  type ProvidersImportPreview,
-  type SyncedDeviceProvider,
   type SyncedDeviceProvidersView,
 } from '@/lib/serviceProviders';
-import { getAiSessionStorageConfig, sessionsCreate } from '@/lib/aiSessions';
-import type { TerminalPermissionMode } from '@/lib/terminalPermissions';
 import {
-  applyProviderPresetToDraft,
-  createProviderCopyDraft,
-  normalizeClaudePresetTemplate,
-  type ClaudePresetModelMapping,
-  type ServiceProviderPresetRecord,
-  type ServiceProviderPresetsState,
-} from './providerPresets';
-import {
-  mergeOpenCodeModelConfig,
   parseOpenCodeModelConfig,
   stringifyOpenCodeModelConfig,
   type JsonObject,
-  type OpenCodeModelConfigError,
-  type OpenCodeModelsFormValue,
 } from './opencodeModelConfig';
+import {
+  DEFAULT_STATE,
+  errorToDisplayMessage,
+  getManagedStateForTool as getManagedStateForToolFromState,
+  isManagedTool,
+} from './helpers/providerUtils';
+import { buildPresetClaudeMappings } from './helpers/claudeProvider';
+import { useOpenCodeEditorState } from './hooks/useOpenCodeEditorState';
+import { useOpenCodeEditor } from './hooks/useOpenCodeEditor';
+import { useCliState } from './hooks/useCliState';
+import { useProviderImportExportState } from './hooks/useProviderImportExportState';
+import { useProviderPresets } from './hooks/useProviderPresets';
+import { useAiEnvironmentData } from './hooks/useAiEnvironmentData';
+import { useCliActions } from './hooks/useCliActions';
+import { useProviderActions } from './hooks/useProviderActions';
+import { useClaudeProfileActions } from './hooks/useClaudeProfileActions';
+import { useProviderImportExportActions } from './hooks/useProviderImportExportActions';
+import { useProviderListItems } from './hooks/useProviderListItems';
 
 export type { AiProvider, AiProvidersState, ClaudeProfileSummary, HistoryEntry } from '@/lib/serviceProviders';
-
-const TOOLS = ['claude', 'codex', 'antigravity', 'opencode'] as const;
-const MANAGED_TOOLS = ['claude', 'codex', 'antigravity'] as const;
-type EnvManagedState = 'enabled' | 'disabled' | 'unsupported';
-type CliVersionState = { version: string; isInstalled: boolean };
-type DetectCliVersionResult = { version: string; is_installed: boolean };
-type CliInstallCommand = { label: string; command: string };
-type CliInstallGuide = { docs_url: string; commands: CliInstallCommand[] };
-type CliEnvProbeResult = {
-  tool: string;
-  installed: boolean;
-  version: string;
-  configured: boolean;
-  importable: boolean;
-  install_guide: CliInstallGuide;
-};
-type CliUpdateInfo = {
-  tool: string;
-  installed: boolean;
-  current_version: string;
-  current_version_normalized?: string;
-  latest_version?: string;
-  latest_source: string;
-  latest_url: string;
-  update_available: boolean;
-  compare_status: string;
-  update_command: string;
-  error?: string;
-};
-type CliUpdateApplyResult = {
-  tool: string;
-  success: boolean;
-  terminal_launched: boolean;
-  error?: string;
-};
-type PresetDialogDraft = {
-  id: string;
-  name: string;
-  description: string;
-  icon: string;
-  openai_base_url: string;
-  anthropic_base_url: string;
-  claude_default_model: string;
-  claude_reasoning_effort: string;
-  claude_model_mappings: ClaudePresetModelMapping[];
-};
-
-function errorToDisplayMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message || error.stack || String(error);
-  }
-  if (typeof error === 'string') {
-    return error;
-  }
-  if (error && typeof error === 'object') {
-    const maybe = error as { code?: unknown; message?: unknown; error?: unknown; details?: unknown };
-    const code = typeof maybe.code === 'string' ? maybe.code : '';
-    const message =
-      typeof maybe.message === 'string'
-        ? maybe.message
-        : typeof maybe.error === 'string'
-          ? maybe.error
-          : '';
-    if (code && message) {
-      return `${code}: ${message}`;
-    }
-    if (message) {
-      return message;
-    }
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return String(error);
-    }
-  }
-  return String(error);
-}
-
-function getInvokeErrorCode(error: unknown): string | null {
-  if (error && typeof error === 'object') {
-    const maybe = error as { code?: unknown };
-    if (typeof maybe.code === 'string') return maybe.code;
-  }
-  return null;
-}
-
-function unwrapApiResp<T>(response: ApiResp<T>, fallbackMessage = 'Request failed'): T {
-  if (response?.ok && response.data !== undefined) {
-    return response.data;
-  }
-  throw new Error(errorToDisplayMessage(response) || fallbackMessage);
-}
-
-export function buildSyncedProviderActivationPayload(
-  deviceId: string,
-  provider: SyncedDeviceProvider,
-  targetId: string = uuidv4(),
-  now: () => number = Date.now,
-): { targetId: string; targetTool: CliTool; payload: AiProvider } | null {
-  const deviceSlug = String(deviceId || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  const targetTool = String(provider.tool || '').toLowerCase();
-  if (!TOOLS.includes(targetTool as CliTool)) {
-    return null;
-  }
-
-  const payload: AiProvider = {
-    id: targetId,
-    name: `${provider.name} (${deviceId})`,
-    tool: targetTool,
-    api_key: String(provider.api_key || '').trim(),
-    base_url: provider.base_url || '',
-    model: provider.model || '',
-    is_enabled: targetTool === 'opencode' ? provider.is_enabled ?? true : true,
-    env_managed: targetTool !== 'opencode' ? true : undefined,
-  };
-  if (targetTool === 'opencode') {
-    payload.provider_key =
-      provider.provider_key ||
-      `synced_${deviceSlug || 'device'}_${now()}`.replace(/[^a-zA-Z]/g, '');
-  }
-
-  return { targetId, targetTool: targetTool as CliTool, payload };
-}
-
-type ClaudeModelMappingDraft = {
-  family: string;
-  display_name: string;
-  upstream_model: string;
-  supports_1m?: boolean;
-  supported_capabilities?: string[];
-};
-
-type ClaudeRoutingFieldSource = {
-  claude_api_format?: string;
-  claude_connection_mode?: string;
-  tool_config?: Record<string, any>;
-};
-
-const getClaudeApiFormat = (source: ClaudeRoutingFieldSource) =>
-  source.claude_api_format || source.tool_config?.claude_api_format || 'anthropic_messages';
-
-const getClaudeConnectionMode = (source: ClaudeRoutingFieldSource) => {
-  const explicitMode = source.claude_connection_mode || source.tool_config?.claude_connection_mode;
-  if (explicitMode) return explicitMode;
-  const apiFormat = getClaudeApiFormat(source);
-  return apiFormat === 'open_ai_chat' || apiFormat === 'open_ai_responses'
-    ? 'protocol_router'
-    : 'native_anthropic';
-};
-
-const normalizeClaudeModelMappingDraft = (mapping: Partial<ClaudeModelMappingDraft>): ClaudeModelMappingDraft => ({
-  family: String(mapping.family || '').trim(),
-  display_name: String(mapping.display_name || '').trim(),
-  upstream_model: String(mapping.upstream_model || ''),
-  supports_1m: !!mapping.supports_1m,
-  supported_capabilities: Array.isArray(mapping.supported_capabilities)
-    ? mapping.supported_capabilities
-        .map((value) => String(value ?? '').trim())
-        .filter((value) => value.length > 0)
-    : undefined,
-});
-
-const normalizeClaudeDefaultModel = (value?: string) => {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-};
-
-const PRESET_CLAUDE_FAMILIES: Array<Pick<ClaudePresetModelMapping, 'family' | 'display_name'>> = [
-  { family: 'haiku', display_name: 'Haiku' },
-  { family: 'sonnet', display_name: 'Sonnet' },
-  { family: 'opus', display_name: 'Opus' },
-];
-
-const buildPresetClaudeMappings = (
-  source?: Array<Partial<ClaudePresetModelMapping>> | null,
-): ClaudePresetModelMapping[] =>
-  PRESET_CLAUDE_FAMILIES.map(({ family, display_name }) => {
-    const mapping = source?.find((item) => String(item?.family || '').trim() === family);
-    return {
-      family,
-      display_name: String(mapping?.display_name || display_name).trim() || display_name,
-      upstream_model: String(mapping?.upstream_model || ''),
-      supports_1m: !!mapping?.supports_1m,
-      supported_capabilities: Array.isArray(mapping?.supported_capabilities)
-        ? mapping.supported_capabilities
-            .map((value) => String(value ?? '').trim())
-            .filter((value) => value.length > 0)
-        : undefined,
-    };
-  });
-
-type FavoriteSortableItem = {
-  isActiveForSort: boolean;
-  isFavorite: boolean;
-  favoriteAt?: number | null;
-};
-
-const sortServiceProviderListItems = <T extends FavoriteSortableItem>(items: T[]) =>
-  items
-    .map((item, index) => ({ item, index }))
-    .sort((a, b) => {
-      if (a.item.isActiveForSort !== b.item.isActiveForSort) {
-        return a.item.isActiveForSort ? -1 : 1;
-      }
-      if (a.item.isActiveForSort && b.item.isActiveForSort) {
-        return a.index - b.index;
-      }
-      if (a.item.isFavorite !== b.item.isFavorite) {
-        return a.item.isFavorite ? -1 : 1;
-      }
-      if (a.item.isFavorite && b.item.isFavorite) {
-        const aTs = a.item.favoriteAt ?? 0;
-        const bTs = b.item.favoriteAt ?? 0;
-        if (aTs !== bTs) {
-          return bTs - aTs;
-        }
-      }
-      return a.index - b.index;
-    })
-    .map(({ item }) => item);
-
-type SavePresetResult = {
-  ok: boolean;
-  providerId?: string;
-  provider?: AiProvider;
-};
-
-type RequiredProviderField = 'api_key' | 'base_url' | 'provider_key' | 'code';
-
-export function getMissingRequiredProviderFields(provider: Partial<AiProvider>): RequiredProviderField[] {
-  const missing: RequiredProviderField[] = [];
-  if (!String(provider.api_key || '').trim()) {
-    missing.push('api_key');
-  }
-  if (!String(provider.base_url || '').trim()) {
-    missing.push('base_url');
-  }
-
-  if (String(provider.tool || '').toLowerCase() === 'opencode') {
-    if (!String(provider.provider_key || '').trim()) {
-      missing.push('provider_key');
-    }
-  } else if (!String(provider.code || '').trim()) {
-    missing.push('code');
-  }
-
-  return missing;
-}
-
-const DEFAULT_STATE: AiProvidersState = {
-  active_claude: null,
-  active_codex: null,
-  active_antigravity: null,
-  active_opencode: [],
-  providers: [],
-  is_encrypted: false
-};
+export { buildSyncedProviderActivationPayload, getMissingRequiredProviderFields } from './helpers/providerUtils';
 
 import { ToolIcon } from "./ToolIcon";
 
@@ -343,26 +63,43 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [state, setState] = useState<AiProvidersState>(DEFAULT_STATE);
   const [activeTool, setActiveTool] = useState('claude');
   const [currentProviderId, setCurrentProviderId] = useState<string | null>(null);
-  
-  const [rawJson, setRawJson] = useState('');
-  const [originalJson, setOriginalJson] = useState('');
-  const [jsonError, setJsonError] = useState<string | null>(null);
-  const [openCodeModelForm, setOpenCodeModelForm] = useState<OpenCodeModelsFormValue>({ models: [] });
-  const [openCodeModelErrors, setOpenCodeModelErrors] = useState<OpenCodeModelConfigError[]>([]);
-  const [lastValidOpenCodeSnapshot, setLastValidOpenCodeSnapshot] = useState<JsonObject | null>(null);
+  const {
+    rawJson,
+    setRawJson,
+    originalJson,
+    setOriginalJson,
+    jsonError,
+    setJsonError,
+    openCodeModelForm,
+    setOpenCodeModelForm,
+    openCodeModelErrors,
+    setOpenCodeModelErrors,
+    lastValidOpenCodeSnapshot,
+    setLastValidOpenCodeSnapshot,
+  } = useOpenCodeEditorState();
+
   const [applyingGlobal, setApplyingGlobal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
   const [savingDetail, setSavingDetail] = useState(false);
   const [isRollbackMode, setIsRollbackMode] = useState(false);
-  const [cliVersions, setCliVersions] = useState<Partial<Record<CliTool, CliVersionState>>>({});
-  const [checkingVersions, setCheckingVersions] = useState<Partial<Record<CliTool, boolean>>>({});
-  const [checkingAllVersions, setCheckingAllVersions] = useState(false);
-  const [cliUpdates, setCliUpdates] = useState<Partial<Record<CliTool, CliUpdateInfo>>>({});
-  const [checkingUpdates, setCheckingUpdates] = useState<Partial<Record<CliTool, boolean>>>({});
-  const [updatingTool, setUpdatingTool] = useState<Partial<Record<CliTool, boolean>>>({});
-  const [probingTool, setProbingTool] = useState<Partial<Record<CliTool, boolean>>>({});
-  const [, setAutoImportInactiveNotice] = useState<Partial<Record<CliTool, string>>>({});
+  const {
+    cliVersions,
+    setCliVersions,
+    checkingVersions,
+    setCheckingVersions,
+    checkingAllVersions,
+    setCheckingAllVersions,
+    cliUpdates,
+    setCliUpdates,
+    checkingUpdates,
+    setCheckingUpdates,
+    updatingTool,
+    setUpdatingTool,
+    probingTool,
+    setProbingTool,
+    setAutoImportInactiveNotice,
+  } = useCliState();
   const [unsavedNewProviderIds, setUnsavedNewProviderIds] = useState<Set<string>>(new Set());
   const [favoritePendingIds, setFavoritePendingIds] = useState<Set<string>>(new Set());
   const [syncedOtherDeviceProviders, setSyncedOtherDeviceProviders] = useState<SyncedDeviceProvidersView[]>([]);
@@ -374,27 +111,34 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const [permissionDialogClaudeProfileId, setPermissionDialogClaudeProfileId] = useState<string | null>(null);
   const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
   const [applyingClaudeProfileId, setApplyingClaudeProfileId] = useState<string | null>(null);
-  const [exportingProviders, setExportingProviders] = useState(false);
-  const [previewingImport, setPreviewingImport] = useState(false);
-  const [applyingImport, setApplyingImport] = useState(false);
-  const [importPreview, setImportPreview] = useState<ProvidersImportPreview | null>(null);
-  const [importPath, setImportPath] = useState<string | null>(null);
-  const [importDecisions, setImportDecisions] = useState<Record<string, 'overwrite' | 'new'>>({});
-  const [providerPresets, setProviderPresets] = useState<ServiceProviderPresetRecord[]>([]);
-  const [presetPickerOpen, setPresetPickerOpen] = useState(false);
-  const [presetManagerOpen, setPresetManagerOpen] = useState(false);
-  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
-  const [presetDraft, setPresetDraft] = useState<PresetDialogDraft>({
-    id: '',
-    name: '',
-    description: '',
-    icon: '',
-    openai_base_url: '',
-    anthropic_base_url: '',
-    claude_default_model: '',
-    claude_reasoning_effort: '',
-    claude_model_mappings: buildPresetClaudeMappings(),
-  });
+  const {
+    exportingProviders,
+    setExportingProviders,
+    previewingImport,
+    setPreviewingImport,
+    applyingImport,
+    setApplyingImport,
+    importPreview,
+    setImportPreview,
+    importPath,
+    setImportPath,
+    importDecisions,
+    setImportDecisions,
+  } = useProviderImportExportState();
+  const {
+    providerPresets,
+    setProviderPresets,
+    presetPickerOpen,
+    setPresetPickerOpen,
+    presetManagerOpen,
+    setPresetManagerOpen,
+    editingPresetId,
+    presetDraft,
+    setPresetDraft,
+    openPresetEditor,
+    savePresetDraft,
+    deleteProviderPreset,
+  } = useProviderPresets({ t, setMessage });
 
   // Accordion state
   const [searchQuery, setSearchQuery] = useState('');
@@ -425,1910 +169,156 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
   const openCodeDetailTargetRef = useRef<{ id: string; providerKey: string } | null>(null);
 
   const isTauri = '__TAURI_INTERNALS__' in window;
-  const isManagedTool = (tool: string): tool is (typeof MANAGED_TOOLS)[number] =>
-    (MANAGED_TOOLS as readonly string[]).includes(tool);
-  const getManagedStateForTool = (tool: CliTool): EnvManagedState => {
-    if (!isManagedTool(tool)) return 'unsupported';
-    const [toolActiveProviderId] = getActiveProviderIds(state, tool);
-    if (!toolActiveProviderId) return 'disabled';
-    const toolActiveProvider =
-      state.providers.find(p => p.id === toolActiveProviderId && p.tool === tool) || null;
-    if (!toolActiveProvider) return 'disabled';
-    return toolActiveProvider.env_managed !== false ? 'enabled' : 'disabled';
-  };
 
-  const getIsGlobalForTool = (tool: string, id: string) => {
-    return getActiveProviderIds(state, tool).includes(id);
-  };
-
-  const uniqueProviderCode = (toolName: string, presetName?: string) => {
-    const base = `${presetName || toolName}-provider`
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 32) || `${toolName}-provider`;
-    const used = new Set(
-      state.providers
-        .filter((provider) => provider.tool === toolName)
-        .map((provider) => String(provider.code || '').trim().toLowerCase())
-        .filter(Boolean),
-    );
-    let candidate = base;
-    let index = 2;
-    while (used.has(candidate.toLowerCase())) {
-      candidate = `${base}-${index}`;
-      index += 1;
-    }
-    return candidate;
-  };
-
-  const uniqueOpenCodeProviderKey = (presetName?: string) => {
-    const base = `${presetName || 'provider'}`
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, '_')
-      .replace(/^_+|_+$/g, '')
-      .slice(0, 32) || 'provider';
-    const used = new Set(
-      state.providers
-        .filter((provider) => provider.tool === 'opencode')
-        .map((provider) => String(provider.provider_key || '').trim().toLowerCase())
-        .filter(Boolean),
-    );
-    let candidate = base;
-    let index = 2;
-    while (used.has(candidate.toLowerCase())) {
-      candidate = `${base}_${index}`;
-      index += 1;
-    }
-    return candidate;
-  };
-
-  const buildClaudeModelMappings = (source: Record<string, any>): ClaudeModelMappingDraft[] => {
-    const explicitMappings = source.claude_model_mappings || source.tool_config?.claude_model_mappings;
-    if (Array.isArray(explicitMappings) && explicitMappings.length > 0) {
-      return explicitMappings.map((mapping: Partial<ClaudeModelMappingDraft>) =>
-        normalizeClaudeModelMappingDraft(mapping),
-      );
-    }
-
-    const fromLegacyFields = [
-      {
-        family: 'haiku',
-        display_name: 'Haiku',
-        upstream_model: String(
-          source.claude_haiku_model ||
-          source.tool_config?.claude_haiku_model ||
-          '',
-        ),
-        supports_1m: false,
-        supported_capabilities: undefined,
-      },
-      {
-        family: 'sonnet',
-        display_name: 'Sonnet',
-        upstream_model: String(
-          source.claude_sonnet_model ||
-          source.tool_config?.claude_sonnet_model ||
-          '',
-        ),
-        supports_1m: false,
-        supported_capabilities: undefined,
-      },
-      {
-        family: 'opus',
-        display_name: 'Opus',
-        upstream_model: String(
-          source.claude_opus_model ||
-          source.tool_config?.claude_opus_model ||
-          '',
-        ),
-        supports_1m: false,
-        supported_capabilities: undefined,
-      },
-    ].filter((mapping) => mapping.upstream_model.trim().length > 0);
-
-    return fromLegacyFields;
-  };
-
-  const buildClaudeProviderFromProfile = (profile: ClaudeProfileSummary): Partial<AiProvider> => {
-    const defaultModel = normalizeClaudeDefaultModel(
-      profile.tool_config?.claude_default_model || profile.model || undefined,
-    );
-    return ({
-    id: profile.id,
-    tool: 'claude',
-    name: profile.name,
-    icon: profile.icon || undefined,
-    code: profile.code || undefined,
-    api_key: profile.raw_api_key || '',
-    base_url: profile.raw_base_url || '',
-    model: defaultModel,
-    claude_api_format: getClaudeApiFormat(profile),
-    claude_connection_mode: getClaudeConnectionMode(profile),
-    claude_auth_env_key: profile.tool_config?.claude_auth_env_key || 'ANTHROPIC_API_KEY',
-    claude_model_mappings: buildClaudeModelMappings(profile),
-    claude_enable_tool_search:
-      profile.tool_config?.claude_enable_tool_search ?? profile.tool_config?.enable_tool_search ?? false,
-    claude_enable_attribution:
-      profile.tool_config?.claude_enable_attribution ?? profile.tool_config?.enable_attribution ?? false,
-    claude_auto_memory_enabled: profile.tool_config?.claude_auto_memory_enabled ?? false,
-    claude_always_thinking_enabled: profile.tool_config?.claude_always_thinking_enabled ?? false,
-    claude_away_summary_enabled: profile.tool_config?.claude_away_summary_enabled ?? false,
-    claude_include_git_instructions: profile.tool_config?.claude_include_git_instructions ?? false,
-    remark: profile.tool_config?.remark || '',
-    claude_default_model: defaultModel,
-    claude_reasoning_effort: profile.tool_config?.claude_reasoning_effort,
-    dangerously_skip_permissions: profile.tool_config?.dangerously_skip_permissions || false,
-    enable_all_memory_features: profile.tool_config?.enable_all_memory_features || false,
-    enable_mcp: profile.tool_config?.enable_mcp || false,
-    allowed_tools: profile.tool_config?.allowed_tools || [],
-    blocked_tools: profile.tool_config?.blocked_tools || [],
-    max_session_turns: profile.tool_config?.max_session_turns,
-    env_managed: true,
-    is_enabled: true,
-  })};
-
-  const buildClaudeProviderFromState = (provider: AiProvider): Partial<AiProvider> => {
-    const defaultModel = normalizeClaudeDefaultModel(
-      provider.claude_default_model || provider.model || provider.tool_config?.claude_default_model,
-    );
-    return ({
-    ...provider,
-    tool: 'claude',
-    model: defaultModel,
-    claude_default_model: defaultModel,
-    remark: provider.tool_config?.remark || '',
-    claude_api_format: getClaudeApiFormat(provider),
-    claude_connection_mode: getClaudeConnectionMode(provider),
-    claude_model_mappings: buildClaudeModelMappings(provider),
-  })};
-
-  const normalizeProviderForSave = (provider: AiProvider): AiProvider => {
-    const next = { ...provider };
-    const nextToolConfig = { ...(provider.tool_config || {}) };
-    const remark = typeof provider.remark === 'string' ? provider.remark : '';
-
-    if (remark.trim()) {
-      nextToolConfig.remark = remark;
-    } else {
-      delete nextToolConfig.remark;
-    }
-
-    if (provider.tool === 'claude') {
-      const defaultModel = normalizeClaudeDefaultModel(provider.claude_default_model || provider.model);
-      if (Array.isArray(provider.claude_model_mappings)) {
-        next.claude_model_mappings = provider.claude_model_mappings.map((mapping) =>
-          normalizeClaudeModelMappingDraft(mapping),
-        );
-      }
-      if (defaultModel) {
-        next.model = defaultModel;
-        next.claude_default_model = defaultModel;
-        nextToolConfig.claude_default_model = defaultModel;
-      } else {
-        delete next.model;
-        delete next.claude_default_model;
-        delete nextToolConfig.claude_default_model;
-      }
-      if (typeof provider.claude_reasoning_effort === 'string') {
-        nextToolConfig.claude_reasoning_effort = provider.claude_reasoning_effort;
-      } else {
-        delete nextToolConfig.claude_reasoning_effort;
-      }
-    }
-
-    next.tool_config = nextToolConfig;
-    return next;
-  };
-
-  const getOpenCodeJson = (provider: Partial<AiProvider>) => {
-    const internalFields = [
-      'id', 'tool', 'is_enabled', 'provider_key', 'api_key', 'base_url', 'model',
-      'claude_default_model', 'dangerously_skip_permissions', 'history',
-      'enable_all_memory_features', 'enable_mcp', 'allowed_tools', 'blocked_tools',
-      'max_session_turns', 'disable_response_storage', 'personality', 'wire_api',
-      'antigravity_auth_type', 'opencode_default_model', 'opencode_default_agent',
-      'opencode_sessions_dir', 'model_reasoning_effort', 'model_reasoning_summary',
-      'approval_policy', 'sandbox_mode', 'theme', 'vim_mode', 'default_approval_mode',
-      'small_model', 'timeout', 'share_mode', 'env_managed', 'claude_reasoning_effort',
-      'tool_config', 'extra', 'favorite_at', 'fetched_models', 'icon', 'code'
-    ];
-    
-    const filtered: any = {};
-    Object.keys(provider).forEach(key => {
-      if (!internalFields.includes(key)) {
-        filtered[key] = provider[key];
-      }
-    });
-
-    return JSON.stringify(filtered, null, 2);
-  };
-
-  const openCodeErrorMessage = (errors: OpenCodeModelConfigError[]) =>
-    errors[0]?.message || t('invalidJson', 'Invalid OpenCode JSON');
-
-  const syncDetailFromOpenCodeSnapshot = (snapshot: JsonObject) => {
-    const options = snapshot.options && typeof snapshot.options === 'object' && !Array.isArray(snapshot.options)
-      ? snapshot.options as Record<string, unknown>
-      : {};
-    setDetailProvider((previous: AiProvider | null) => previous ? {
-      ...previous,
-      name: typeof snapshot.name === 'string' ? snapshot.name : previous.name,
-      api_key: typeof options.apiKey === 'string' ? options.apiKey : '',
-      base_url: typeof options.baseURL === 'string' ? options.baseURL : '',
-    } : previous);
-  };
-
-  const initializeOpenCodeEditor = (json: string, updateOriginal = false) => {
-    setRawJson(json);
-    if (updateOriginal) setOriginalJson(json);
-    const parsed = parseOpenCodeModelConfig(json);
-    if (!parsed.ok) {
-      setLastValidOpenCodeSnapshot(null);
-      setOpenCodeModelForm({ models: [] });
-      setOpenCodeModelErrors([]);
-      setJsonError(openCodeErrorMessage(parsed.errors));
-      return false;
-    }
-    setLastValidOpenCodeSnapshot(parsed.snapshot);
-    setOpenCodeModelForm(parsed.form);
-    setOpenCodeModelErrors([]);
-    setJsonError(null);
-    return true;
-  };
-
-  const handleOpenCodeJsonChange = (value: string) => {
-    openCodeDetailRequestIdRef.current += 1;
-    setRawJson(value);
-    if (isRollbackMode) setIsRollbackMode(false);
-    const parsed = parseOpenCodeModelConfig(value);
-    if (!parsed.ok) {
-      setJsonError(openCodeErrorMessage(parsed.errors));
-      return;
-    }
-    setLastValidOpenCodeSnapshot(parsed.snapshot);
-    setOpenCodeModelForm(parsed.form);
-    setOpenCodeModelErrors([]);
-    setJsonError(null);
-    syncDetailFromOpenCodeSnapshot(parsed.snapshot);
-  };
-
-  const handleOpenCodeModelFormChange = (form: OpenCodeModelsFormValue) => {
-    openCodeDetailRequestIdRef.current += 1;
-    setOpenCodeModelForm(form);
-    if (!lastValidOpenCodeSnapshot) return;
-    const merged = mergeOpenCodeModelConfig(lastValidOpenCodeSnapshot, form);
-    if (!merged.ok) {
-      setOpenCodeModelErrors(merged.errors);
-      return;
-    }
-    const reparsed = parseOpenCodeModelConfig(merged.json);
-    if (!reparsed.ok) {
-      setOpenCodeModelErrors(reparsed.errors);
-      return;
-    }
-    setRawJson(merged.json);
-    setLastValidOpenCodeSnapshot(merged.snapshot);
-    setOpenCodeModelForm(reparsed.form);
-    setOpenCodeModelErrors([]);
-    setJsonError(null);
-  };
-
-  const loadProviders = async (silent = false) => {
-    if (!isTauri) return;
-    if (!silent) setLoading(true);
-    try {
-      const res = await serviceProvidersList();
-      if (silent && !isVisibleRef.current) return;
-
-      if (res.data.providers && res.data.providers.length > 0) {
-        setState(res.data);
-      } else {
-        // Only set default if it was truly empty and we didn't have existing state
-        // This prevents wiping state if backend temporarily returns empty
-        setState(prev => prev.providers.length > 0 ? prev : DEFAULT_STATE);
-      }
-      try {
-        const presetsRes = await invoke<ApiResp<ServiceProviderPresetsState>>('service_provider_presets_list');
-        if (silent && !isVisibleRef.current) return;
-        setProviderPresets(presetsRes.data.presets || []);
-      } catch (presetErr) {
-        console.warn('Failed to load service provider presets:', presetErr);
-      }
-      setUnsavedNewProviderIds(new Set());
-      try {
-        const syncedRes = await serviceProvidersListSyncedOtherDevices();
-        if (silent && !isVisibleRef.current) return;
-        setSyncedOtherDeviceProviders(syncedRes.data || []);
-      } catch (syncErr) {
-        console.warn('Failed to load synced other-device providers:', syncErr);
-        if (!silent) {
-          setSyncedOtherDeviceProviders([]);
-        }
-      }
-    } catch (e: any) {
-      console.error('Failed to load AI providers:', e);
-      setMessage({ type: 'error', text: `Failed to load providers: ${e.toString()}` });
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  };
-
-  const loadProviderPresets = async () => {
-    const res = await invoke<ApiResp<ServiceProviderPresetsState>>('service_provider_presets_list');
-    setProviderPresets(res.data.presets || []);
-  };
-
-  const openPresetEditor = (preset?: ServiceProviderPresetRecord) => {
-    const claudeTemplate = normalizeClaudePresetTemplate(preset?.template);
-    setEditingPresetId(preset?.id || null);
-    setPresetDraft({
-      id: preset?.id || '',
-      name: preset?.name || '',
-      description: preset?.description || '',
-      icon: preset?.icon || '',
-      openai_base_url: preset?.endpoints?.openai_base_url || '',
-      anthropic_base_url: preset?.endpoints?.anthropic_base_url || '',
-      claude_default_model: claudeTemplate.claude_default_model || '',
-      claude_reasoning_effort: claudeTemplate.claude_reasoning_effort || '',
-      claude_model_mappings: buildPresetClaudeMappings(claudeTemplate.claude_model_mappings),
-    });
-    setPresetManagerOpen(true);
-  };
-
-  const savePresetDraft = async () => {
-    const now = Math.floor(Date.now() / 1000);
-    const template = normalizeClaudePresetTemplate({
-      claude_default_model: presetDraft.claude_default_model,
-      claude_reasoning_effort: presetDraft.claude_reasoning_effort,
-      claude_model_mappings: presetDraft.claude_model_mappings,
-    });
-    const payload: ServiceProviderPresetRecord = {
-      id: presetDraft.id || `preset-${uuidv4()}`,
-      name: presetDraft.name.trim(),
-      description: presetDraft.description.trim() || undefined,
-      icon: presetDraft.icon.trim() || undefined,
-      endpoints: {
-        openai_base_url: presetDraft.openai_base_url.trim() || undefined,
-        anthropic_base_url: presetDraft.anthropic_base_url.trim() || undefined,
-      },
-      template,
-      created_at: now,
-      updated_at: now,
-    };
-    if (!payload.name) {
-      setMessage({ type: 'error', text: t('providerPresetNameRequired', 'Preset name is required') });
-      return;
-    }
-    try {
-      await invoke<ApiResp<ServiceProviderPresetRecord>>('service_provider_presets_upsert', { preset: payload });
-      await loadProviderPresets();
-      setPresetManagerOpen(false);
-      setEditingPresetId(null);
-    } catch (error) {
-      setMessage({ type: 'error', text: errorToDisplayMessage(error) });
-    }
-  };
-
-  const deleteProviderPreset = async (presetId: string) => {
-    try {
-      await invoke<ApiResp<{ deleted: boolean }>>('service_provider_presets_delete', { presetId });
-      await loadProviderPresets();
-    } catch (error) {
-      setMessage({ type: 'error', text: errorToDisplayMessage(error) });
-    }
-  };
-
-  const loadClaudeProfiles = async () => {
-    if (!isTauri) return;
-    try {
-      const res = await claudeProfileList();
-      if (res.data) {
-        setClaudeProfiles(res.data);
-      }
-    } catch (e: any) {
-      console.error('Failed to load Claude profiles:', e);
-    }
-  };
-
-  useEffect(() => {
-    if (activeTool === 'claude') {
-      void loadClaudeProfiles();
-    }
-  }, [activeTool, state.providers]);
-
-  useEffect(() => {
-    if (!isTauri) return;
-    (async () => {
-      try {
-        const cfg = await getAiSessionStorageConfig();
-        if (cfg.ai_model_launch_commands?.claude) {
-          setClaudeLaunchCommand(cfg.ai_model_launch_commands.claude);
-        }
-      } catch (e) {
-        console.error('Failed to load Claude launch command:', e);
-      }
-    })();
-  }, [isTauri]);
-
-  useEffect(() => {
-    isVisibleRef.current = isVisible;
-  }, [isVisible]);
-
-  async function detectAllVersions(runId: number = ++versionCheckRunIdRef.current) {
-    if (!isTauri) return;
-    const initialCheckingState = TOOLS.reduce((acc, tool) => {
-      acc[tool] = true;
-      return acc;
-    }, {} as Partial<Record<CliTool, boolean>>);
-    setCheckingAllVersions(true);
-    setCheckingVersions(initialCheckingState);
-    setCheckingUpdates(initialCheckingState);
-    try {
-      const results = await Promise.all(
-        TOOLS.map(async tool => {
-          try {
-            const result = await invoke<DetectCliVersionResult>('detect_cli_version', { tool });
-            return { tool, state: { version: result.version, isInstalled: result.is_installed } };
-          } catch (e) {
-            console.error(`Failed to detect ${tool} version:`, e);
-            return { tool, state: { version: '', isInstalled: false } };
-          }
-        })
-      );
-      if (versionCheckRunIdRef.current !== runId) return;
-      const nextVersions = results.reduce((acc, item) => {
-        acc[item.tool] = item.state;
-        return acc;
-      }, {} as Partial<Record<CliTool, CliVersionState>>);
-      setCliVersions(prev => ({
-        ...prev,
-        ...nextVersions
-      }));
-      setCheckingVersions({});
-
-      // Fetch update info for all tools
-      const updateResults = await Promise.all(
-        TOOLS.map(async tool => {
-          try {
-            const updateInfo = await invoke<CliUpdateInfo>('check_cli_update', { tool });
-            return { tool, info: updateInfo };
-          } catch (e) {
-            console.error(`Failed to check ${tool} update:`, e);
-            return { tool, info: undefined };
-          }
-        })
-      );
-      if (versionCheckRunIdRef.current !== runId) return;
-      const nextUpdates = updateResults.reduce((acc, item) => {
-        if (item.info) {
-          acc[item.tool] = item.info;
-        } else {
-          delete acc[item.tool];
-        }
-        return acc;
-      }, {} as Partial<Record<CliTool, CliUpdateInfo>>);
-      setCliUpdates(prev => ({ ...prev, ...nextUpdates }));
-    } finally {
-      if (versionCheckRunIdRef.current === runId) {
-        setCheckingUpdates({});
-        setCheckingAllVersions(false);
-      }
-    }
-  }
-
-  async function preloadCliMetaAndAutoImport(runId: number = ++probeRunIdRef.current) {
-    if (!isTauri) return;
-
-    if (!cliProbeInitializedRef.current) {
-      const initialProbingState = TOOLS.reduce((acc, tool) => {
-        acc[tool] = true;
-        return acc;
-      }, {} as Partial<Record<CliTool, boolean>>);
-      setProbingTool(initialProbingState);
-      const results = await Promise.all(
-        TOOLS.map(async tool => {
-          try {
-            const res = await invoke<ApiResp<CliEnvProbeResult>>('cli_env_probe', { tool });
-            return { tool, data: res.data };
-          } catch (e) {
-            console.error(`Failed to probe ${tool} cli env:`, e);
-            return { tool, data: undefined };
-          }
-        })
-      );
-      if (probeRunIdRef.current !== runId) return;
-      const nextProbe = results.reduce((acc, item) => {
-        if (item.data) {
-          acc[item.tool] = item.data;
-        }
-        return acc;
-      }, {} as Partial<Record<CliTool, CliEnvProbeResult>>);
-      if (Object.keys(nextProbe).length > 0) {
-        // Probing results are tracked via cliProbeInitializedRef only; individual results
-        // are passed through CliVersionCards props, so no local state update is needed here.
-      }
-      setProbingTool({});
-      cliProbeInitializedRef.current = true;
-    }
-    if (probeRunIdRef.current !== runId) return;
-
-    if (!autoImportInitializedRef.current) {
-      const autoImportResults = await Promise.all(
-        MANAGED_TOOLS.map(async tool => {
-          try {
-            const res = await serviceProvidersAutoImportFromSystem(tool);
-            return { tool, data: res.data };
-          } catch (e) {
-            console.error(`Auto import failed for ${tool}:`, e);
-            return { tool, data: null as AutoImportResult | null };
-          }
-        })
-      );
-      if (probeRunIdRef.current !== runId) return;
-      const importedAny = autoImportResults.some(item => !!item.data?.imported);
-      setAutoImportInactiveNotice(prev => {
-        const next = { ...prev };
-        for (const item of autoImportResults) {
-          if (!item.data?.imported) continue;
-          if (item.data.activated === false) {
-            const missingFieldLabels = (item.data.missing_fields || []).map(field => {
-              if (field === 'api_key') return t('apiKey', 'API Key');
-              if (field === 'base_url') return t('baseUrl', 'Base URL');
-              return field;
-            });
-            const missingText = missingFieldLabels.join(' + ');
-            next[item.tool] = missingText
-              ? t(
-                  'autoImportedButInactiveMissingFields',
-                  { fields: missingText }
-                )
-              : t('autoImportedButInactive');
-          } else {
-            delete next[item.tool];
-          }
-        }
-        return next;
-      });
-      autoImportInitializedRef.current = true;
-      if (importedAny) {
-        await loadProviders(true);
-        if (probeRunIdRef.current !== runId) return;
-        setMessage({ type: 'success', text: t('systemConfigImported') });
-        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      }
-    }
-  }
-
-  useEffect(() => {
-    if (!isVisible || !isTauri) return;
-    void loadProviders(true);
-    const versionRunId = ++versionCheckRunIdRef.current;
-    const probeRunId = ++probeRunIdRef.current;
-    const runCheck = () => {
-      void detectAllVersions(versionRunId);
-      void preloadCliMetaAndAutoImport(probeRunId);
-    };
-    const idleCallback = (window as Window & {
-      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
-      cancelIdleCallback?: (id: number) => void;
-    }).requestIdleCallback;
-    const cancelIdleCallback = (window as Window & {
-      cancelIdleCallback?: (id: number) => void;
-    }).cancelIdleCallback;
-    if (idleCallback) {
-      const id = idleCallback(runCheck, { timeout: 2500 });
-      return () => {
-        versionCheckRunIdRef.current += 1;
-        probeRunIdRef.current += 1;
-        if (cancelIdleCallback) cancelIdleCallback(id);
-      };
-    }
-    const timer = window.setTimeout(runCheck, 600);
-    return () => {
-      versionCheckRunIdRef.current += 1;
-      probeRunIdRef.current += 1;
-      window.clearTimeout(timer);
-    };
-  }, [isVisible]);
-
-  useEffect(() => {
-    const current = state.providers.find(p => p.id === currentProviderId);
-    if (!current || current.tool !== activeTool) {
-      setCurrentProviderId(null);
-    }
-  }, [activeTool]);
-
-  const activateProvider = async (tool: string, providerId: string) => {
-    try {
-      setLoading(true);
-      setMessage({ type: '', text: '' });
-      const result = await runUserAction(
-        actionContext,
-        {
-          source: 'ai_environments',
-          category: 'activate',
-          action: 'activate-provider',
-          target: { tab: 'ai-environments', entity_id: providerId },
-          dedupeKey: `ai-environments:activate:${tool}:${providerId}`,
-          metadata: { tool, provider_id: providerId },
-          confirm: {
-            message: t(
-              'confirmActivateProvider',
-              'Activate this Service Provider and apply it to the current environment?',
-            ),
-            title: t('confirmActivateProviderTitle', 'Activate Service Provider'),
-            okLabel: t('activate', 'Activate'),
-            cancelLabel: t('cancel', 'Cancel'),
-            kind: 'warning',
-          },
-          success: {
-            title: t('aiEnvironmentActivatedMessageTitle', 'Service Provider activated'),
-            summary: t('appliedSuccess', 'Service Provider activated successfully!'),
-          },
-          error: {
-            title: t('activationFailed', 'Activation failed'),
-          },
-        },
-        async () => {
-          await serviceProvidersSetActive(tool, providerId);
-          await loadProviders(true);
-          await projectionApply(tool, providerId);
-          return true;
-        },
-      );
-      if (result === null) return false;
-      setMessage({ type: 'success', text: t('appliedSuccess', 'Service Provider activated successfully!') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      return true;
-    } catch (e: any) {
-      setMessage({ type: 'error', text: e.toString() });
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const buildProviderForSave = (provider: Partial<AiProvider>): AiProvider => {
-    const newId = provider.id || uuidv4();
-    let baseProvider: Record<string, any> = { ...provider };
-
-    if (provider.tool === 'opencode') {
-      const config = parseOpenCodeModelConfig(rawJson || '{}');
-      if (!config.ok) throw new Error(openCodeErrorMessage(config.errors));
-      const parsed = config.snapshot as Record<string, any>;
-
-      baseProvider = {
-        ...parsed,
-        id: provider.id,
-        tool: 'opencode',
-        icon: provider.icon,
-        is_enabled: true,
-        provider_key: provider.provider_key,
-        history: provider.history || [],
-      };
-
-      const options = parsed.options && typeof parsed.options === 'object' ? parsed.options : {};
-      baseProvider.api_key = typeof options.apiKey === 'string' ? options.apiKey : '';
-      baseProvider.base_url = typeof options.baseURL === 'string' ? options.baseURL : '';
-
-    }
-
-    return {
-      ...baseProvider,
-      id: newId,
-      name: String(baseProvider.name || 'Unnamed'),
-      tool: String(provider.tool || activeTool),
-      api_key: String(baseProvider.api_key || ''),
-      provider_key: baseProvider.provider_key,
-      is_enabled: provider.tool === 'opencode' ? true : (baseProvider.is_enabled ?? true),
-      env_managed: provider.tool !== 'opencode' ? (baseProvider.env_managed ?? true) : undefined,
-      history: Array.isArray(provider.history) ? provider.history : [],
-    } as AiProvider;
-  };
-
-  const saveDetailProvider = async (
-    provider: Partial<AiProvider>,
-    options: { showSavedMessage?: boolean } = {},
-  ): Promise<SavePresetResult> => {
-    const { showSavedMessage = true } = options;
-    if (!provider.name) {
-      setMessage({ type: 'error', text: t('providePresetName', 'Please provide a preset name') });
-      return { ok: false };
-    }
-
-    const newId = provider.id || uuidv4();
-
-    try {
-      const finalProvider = buildProviderForSave(provider);
-      const missingRequiredFields = getMissingRequiredProviderFields(finalProvider);
-      if (missingRequiredFields.length > 0) {
-        const labelByField: Record<RequiredProviderField, string> = {
-          api_key: t('apiKey', 'API Key'),
-          base_url: t('baseUrl', 'Base URL'),
-          provider_key: t('providerIdentifier', 'Service Provider Identifier'),
-          code: t('providerIdentifier', 'Service Provider Identifier'),
-        };
-        const fields = missingRequiredFields.map((field) => labelByField[field]).join(' + ');
-        const text = t('requiredProviderFieldsMissing', 'Please fill required fields: {{fields}}', { fields });
-        setMessage({ type: 'error', text });
-        pushToast({ title: t('saveFailed', 'Save failed'), description: text, kind: 'error' });
-        return { ok: false };
-      }
-      const savedData = unwrapApiResp(
-        await serviceProvidersUpsert(normalizeProviderForSave(finalProvider)),
-        t('saveFailed', 'Save failed'),
-      );
-      const savedProvider = { ...finalProvider, ...savedData } as AiProvider;
-      await loadProviders(true);
-      if (savedProvider.tool === 'claude') {
-        await loadClaudeProfiles();
-      }
-      setUnsavedNewProviderIds(prev => {
-        const next = new Set(prev);
-        next.delete(newId);
-        return next;
-      });
-      setCurrentProviderId(savedProvider.id);
-      emit('refresh-counts');
-      setDetailProvider(savedProvider);
-      setIsRollbackMode(false);
-      rollbackDraftBeforeRef.current = null;
-      setJsonError(null);
-      if (savedProvider.tool === 'opencode') {
-        setOriginalJson(rawJson);
-        if (state.active_opencode.includes(savedProvider.id)) {
-          try {
-            await projectionApply('opencode', savedProvider.id);
-          } catch (e) {
-            console.error('Failed to sync opencode.json after save:', e);
-          }
-        }
-      }
-
-      if (showSavedMessage) {
-        await notifyMessage.success({
-          source: 'ai_environments',
-          category: 'save',
-          title: t('aiEnvironmentSavedMessageTitle', 'Service Provider saved'),
-          summary: t('providerSaved', 'Service Provider saved'),
-          dedupeKey: `ai-environments:save:${savedProvider.tool}:${savedProvider.id}`,
-          target: { tab: 'ai-environments', entity_id: savedProvider.id },
-          metadata: { tool: savedProvider.tool, provider_id: savedProvider.id },
-        });
-        setMessage({ type: 'success', text: t('providerSaved', 'Service Provider saved') });
-        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-        pushToast({ title: t('providerSaved', 'Service Provider saved'), kind: 'success' });
-      }
-
-      return {
-        ok: true,
-        providerId: savedProvider.id,
-        provider: savedProvider,
-      };
-    } catch (e: any) {
-      const errorMessage = errorToDisplayMessage(e);
-      await notifyMessage.error({
-        source: 'ai_environments',
-        category: 'save',
-        title: t('saveFailed', 'Save failed'),
-        summary: errorMessage,
-        error: e,
-        dedupeKey: `ai-environments:save:${provider.tool || activeTool}:${newId}`,
-        target: { tab: 'ai-environments', entity_id: newId },
-        metadata: { tool: provider.tool || activeTool, provider_id: newId },
-      });
-      pushToast({ title: t('saveFailed', 'Save failed'), description: errorMessage, kind: 'error' });
-      setMessage({ type: 'error', text: errorMessage });
-      return { ok: false };
-    }
-  };
-
-  const returnToProviderList = (options: { preserveScroll?: boolean } = {}) => {
-    openCodeDetailRequestIdRef.current += 1;
-    openCodeDetailTargetRef.current = null;
-    if (options.preserveScroll) {
-      pendingRestoreListScrollTopRef.current = savedListScrollTopRef.current;
-    }
-    setViewMode('list');
-    setDetailProvider(null);
-  };
-
-  const handleSaveDetailAndReturnToList = async (provider: Partial<AiProvider>) => {
-    if (savingDetail) return;
-    setSavingDetail(true);
-    try {
-      const result = await saveDetailProvider(provider);
-      if (!result.ok) return;
-      returnToProviderList({ preserveScroll: true });
-    } finally {
-      setSavingDetail(false);
-    }
-  };
-
-  const handleRollback = (entry: HistoryEntry) => {
-    if (entry.snapshot && typeof entry.snapshot === 'object') {
-      if (!isRollbackMode) {
-        rollbackDraftBeforeRef.current = {
-          provider: detailProvider ? { ...detailProvider } : null,
-          rawJson,
-        };
-      }
-      const draft = {
-        ...entry.snapshot,
-        history: detailProvider?.history || entry.snapshot.history || [],
-      } as AiProvider;
-      setDetailProvider(draft);
-      if (draft.tool === 'opencode') {
-        initializeOpenCodeEditor(getOpenCodeJson(draft));
-      } else {
-        setJsonError(null);
-      }
-      setIsRollbackMode(true);
-      setMessage({ type: 'success', text: t('rollbackModeTitle', 'History version loaded.') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      return;
-    }
-
-    if (entry.content) {
-      try {
-        const parsed = parseOpenCodeModelConfig(entry.content);
-        if (!parsed.ok) throw new Error(openCodeErrorMessage(parsed.errors));
-        if (!isRollbackMode) {
-          rollbackDraftBeforeRef.current = {
-            provider: detailProvider ? { ...detailProvider } : null,
-            rawJson,
-          };
-        }
-        initializeOpenCodeEditor(entry.content);
-        setIsRollbackMode(true);
-        setJsonError(null);
-        setMessage({ type: 'success', text: t('rollbackModeTitle', 'History version loaded.') });
-        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      } catch {
-        setMessage({ type: 'error', text: t('parseHistoryFailed') });
-      }
-      return;
-    }
-
-    setMessage({ type: 'error', text: t('parseHistoryFailed') });
-  };
-
-  const handleAddCustom = (toolName: string, preset?: ServiceProviderPresetRecord) => {
-    const newId = uuidv4();
-    const baseProvider: AiProvider = {
-      id: newId,
-      name: preset?.name || `${t('newPreset', 'New Service Provider')} (${toolName})`,
-      tool: toolName,
-      api_key: '',
-      base_url: '',
-      model: '',
-      icon: preset?.icon,
-      code: toolName !== 'opencode' ? uniqueProviderCode(toolName, preset?.name) : undefined,
-      env_managed: toolName !== 'opencode' ? true : undefined,
-      provider_key: toolName === 'opencode' ? uniqueOpenCodeProviderKey(preset?.name) : undefined,
-      is_enabled: true,
-      ...(toolName === 'claude' ? {
-        claude_api_format: 'anthropic_messages',
-        claude_auth_env_key: 'ANTHROPIC_API_KEY',
-        claude_model_mappings: [
-          { family: 'haiku', display_name: 'Haiku', upstream_model: '', supports_1m: false },
-          { family: 'sonnet', display_name: 'Sonnet', upstream_model: '', supports_1m: false },
-          { family: 'opus', display_name: 'Opus', upstream_model: '', supports_1m: false },
-        ],
-        claude_enable_tool_search: false,
-        claude_enable_attribution: false,
-        claude_auto_memory_enabled: false,
-        claude_always_thinking_enabled: false,
-        claude_away_summary_enabled: false,
-        claude_include_git_instructions: false,
-      } : {}),
-      ...(toolName === 'opencode' ? {
-        npm: '@ai-sdk/openai-compatible',
-        options: { apiKey: '', baseURL: '' },
-        models: {}
-      } : {})
-    };
-    const newProvider = preset
-      ? (applyProviderPresetToDraft(baseProvider, preset, toolName) as AiProvider)
-      : baseProvider;
-
-    // Switch tool first (if different) — this may trigger the active-provider auto-expand effect
-    if (toolName !== activeTool) {
-      setActiveTool(toolName);
-    }
-
-    const newState = {
-      ...state,
-      providers: [...state.providers, newProvider]
-    };
-
-    setState(newState);
-    setCurrentProviderId(newId);
-      setUnsavedNewProviderIds(prev => {
-        const next = new Set(prev);
-        next.add(newId);
-        return next;
-      });
-    if (toolName === 'opencode') {
-      initializeOpenCodeEditor(getOpenCodeJson(newProvider), true);
-    } else {
-      setRawJson(JSON.stringify(newProvider, null, 2));
-      setOriginalJson(JSON.stringify(newProvider, null, 2));
-      setJsonError(null);
-    }
-    setIsRollbackMode(false);
-    rollbackDraftBeforeRef.current = null;
-    setDetailProvider(newProvider);
-    setViewMode('detail');
-    setPresetPickerOpen(false);
-  };
-
-  const handleDuplicateProvider = (providerId: string) => {
-    const source = state.providers.find((provider) => provider.id === providerId);
-    if (!source || source.tool !== activeTool || unsavedNewProviderIds.has(providerId)) {
-      setMessage({
-        type: 'error',
-        text: t('duplicateProviderUnavailable', 'The saved Service Provider is no longer available to duplicate.'),
-      });
-      return;
-    }
-
-    const draft = {
-      ...createProviderCopyDraft(source),
-      api_key: '',
-      history: [],
-    } as AiProvider;
-    setCurrentProviderId(draft.id);
-    setUnsavedNewProviderIds((previous) => new Set(previous).add(draft.id));
-    setDetailProvider(draft);
-    if (draft.tool === 'opencode') {
-      initializeOpenCodeEditor(getOpenCodeJson(draft), true);
-    } else {
-      const json = JSON.stringify(draft, null, 2);
-      setRawJson(json);
-      setOriginalJson(json);
-      setJsonError(null);
-    }
-    setIsRollbackMode(false);
-    rollbackDraftBeforeRef.current = null;
-    setMessage({ type: '', text: '' });
-    setViewMode('detail');
-  };
-
-  const handleDelete = async (providerId?: string, toolName?: string) => {
-    const targetId = providerId || currentProviderId;
-    if (!targetId) return;
-    const targetTool = toolName || detailProvider?.tool || activeTool;
-    const isUnsavedNewProvider = unsavedNewProviderIds.has(targetId);
-    const providerToDelete = isUnsavedNewProvider && detailProvider?.id === targetId
-      ? detailProvider
-      :
-      targetTool === 'claude'
-        ? claudeProfiles.find((p) => p.id === targetId)
-        : state.providers.find((p) => p.id === targetId && p.tool === targetTool);
-    if (!providerToDelete) return;
-    const isProviderActive = getActiveProviderIds(state, targetTool).includes(providerToDelete.id);
-    const isDefaultImportedForTool =
-      isManagedTool(targetTool) && providerToDelete.code === `default-${targetTool}`;
-    const isDeletingActiveDefaultImported =
-      isDefaultImportedForTool && isProviderActive;
-    const isDeletingInactiveDefaultImported =
-      isDefaultImportedForTool && !isProviderActive;
-    if (isDeletingActiveDefaultImported) return;
-    if (
-      !isUnsavedNewProvider &&
-      !isDeletingInactiveDefaultImported &&
-      targetTool !== 'claude' &&
-      state.providers.filter(p => p.tool === targetTool).length <= 1
-    ) {
-      return;
-    }
-
-    if (isUnsavedNewProvider) {
-      const confirmed = await confirmDialog(t('confirmDelete', { name: providerToDelete.name }), {
-        title: t('confirmDeleteTitle', 'Delete Service Provider'),
-        okLabel: t('delete', 'Delete'),
-        cancelLabel: t('cancel', 'Cancel'),
-        kind: 'error',
-      });
-      if (!confirmed) return;
-      setState(prev => ({
-        ...prev,
-        providers: prev.providers.filter(p => p.id !== targetId)
-      }));
-      if (currentProviderId === targetId) {
-        setCurrentProviderId(null);
-      }
-      if (detailProvider?.id === targetId) {
-        setDetailProvider(null);
-        setViewMode('list');
-      }
-      setUnsavedNewProviderIds(prev => {
-        const next = new Set(prev);
-        next.delete(targetId);
-        return next;
-      });
-      await notifyMessage.success({
-        source: 'ai_environments',
-        category: 'delete',
-        title: t('aiEnvironmentDeletedMessageTitle', 'Service Provider deleted'),
-        summary: t('deleteSuccess', 'Preset deleted successfully'),
-        dedupeKey: `ai-environments:delete:${targetTool}:${targetId}`,
-        target: { tab: 'ai-environments', entity_id: targetId },
-        metadata: { tool: targetTool, provider_id: targetId, unsaved: true },
-      });
-      pushToast({ title: t('deleteSuccess', 'Preset deleted successfully'), kind: 'success' });
-      setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      return;
-    }
-
-    try {
-      const result = await runUserAction(
-        actionContext,
-        {
-          source: 'ai_environments',
-          category: 'delete',
-          action: 'delete-provider',
-          target: { tab: 'ai-environments', entity_id: targetId },
-          dedupeKey: `ai-environments:delete:${targetTool}:${targetId}`,
-          metadata: { tool: targetTool, provider_id: targetId },
-          confirm: {
-            message: t('confirmDelete', { name: providerToDelete.name }),
-            title: t('confirmDeleteTitle', 'Delete Service Provider'),
-            okLabel: t('delete', 'Delete'),
-            cancelLabel: t('cancel', 'Cancel'),
-            kind: 'error',
-          },
-          success: {
-            title: t('aiEnvironmentDeletedMessageTitle', 'Service Provider deleted'),
-            summary: t('deleteSuccess', 'Preset deleted successfully'),
-          },
-          error: {
-            title: t('deleteFailed', 'Delete failed'),
-          },
-        },
-        () => serviceProvidersDelete(targetId),
-      );
-      if (result === null) return;
-      await loadProviders(true);
-      if (currentProviderId === targetId) {
-        setCurrentProviderId(null);
-      }
-      if (detailProvider?.id === targetId) {
-        setDetailProvider(null);
-        setViewMode('list');
-      }
-      emit('refresh-counts');
-      setMessage({ type: 'success', text: t('deleteSuccess', 'Preset deleted successfully') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: e.toString() });
-    }
-  };
-
-  const handleApplyCliUpdate = async (tool: CliTool) => {
-    const updateInfo = cliUpdates[tool];
-    if (!updateInfo) return;
-
-    const toolLabel = tool.charAt(0).toUpperCase() + tool.slice(1);
-    const confirmMsg = t('confirmCliUpdateMessage', {
-      tool: toolLabel,
-      command: updateInfo.update_command,
-    });
-
-    setUpdatingTool(prev => ({ ...prev, [tool]: true }));
-    try {
-      const result = await runUserAction(
-        actionContext,
-        {
-          source: 'ai_environments',
-          category: 'cli_update',
-          action: 'apply-cli-update',
-          target: { tab: 'ai-environments', entity_id: tool },
-          dedupeKey: `ai-environments:cli-update:${tool}`,
-          metadata: { tool, command: updateInfo.update_command },
-          confirm: {
-            message: confirmMsg,
-            title: t('confirmCliUpdateTitle') + `: ${toolLabel}`,
-            okLabel: t('cliUpdate'),
-            cancelLabel: t('cancel'),
-            kind: 'warning',
-          },
-          success: {
-            title: t('cliUpdateTerminalLaunched', 'Update command opened in terminal'),
-            summary: t('cliUpdateTerminalLaunched', 'Update command opened in terminal'),
-          },
-          error: {
-            title: t('cliUpdateFailedTitle', 'CLI update failed'),
-          },
-        },
-        () => invoke<CliUpdateApplyResult>('apply_cli_update', { tool }),
-      );
-      if (result === null) return;
-      if (result.success && result.terminal_launched) {
-        setMessage({ type: 'success', text: t('cliUpdateTerminalLaunched') });
-        setTimeout(() => setMessage({ type: '', text: '' }), 5000);
-      } else {
-        await notifyMessage.error({
-          source: 'ai_environments',
-          category: 'cli_update',
-          title: t('cliUpdateFailedTitle', 'CLI update failed'),
-          summary: t('cliUpdateFailed', { error: result.error || 'Unknown error' }),
-          error: result.error || 'Unknown error',
-          dedupeKey: `ai-environments:cli-update:${tool}`,
-          target: { tab: 'ai-environments', entity_id: tool },
-          metadata: result,
-        });
-        pushToast({
-          title: t('cliUpdateFailedTitle', 'CLI update failed'),
-          description: result.error || 'Unknown error',
-          kind: 'error',
-        });
-        setMessage({ type: 'error', text: t('cliUpdateFailed', { error: result.error || 'Unknown error' }) });
-        setTimeout(() => setMessage({ type: '', text: '' }), 5000);
-      }
-    } catch (e: any) {
-      setMessage({ type: 'error', text: t('cliUpdateFailed', { error: e.toString() }) });
-      setTimeout(() => setMessage({ type: '', text: '' }), 5000);
-    } finally {
-      setUpdatingTool(prev => ({ ...prev, [tool]: false }));
-    }
-  };
-
-  const handleClaudeCopyCommand = async (profileId: string, configDir: string) => {
-    const cmd = `CLAUDE_CONFIG_DIR='${configDir}' ${claudeLaunchCommand.replace('{session_id}', 'new')}`;
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(cmd);
-      } else {
-        const input = document.createElement('textarea');
-        input.value = cmd;
-        input.setAttribute('readonly', 'true');
-        input.style.position = 'fixed';
-        input.style.left = '-9999px';
-        document.body.appendChild(input);
-        input.select();
-        const copied = document.execCommand('copy');
-        document.body.removeChild(input);
-        if (!copied) throw new Error('copy_failed');
-      }
-      setCopiedClaudeProfileId(profileId);
-      window.setTimeout(() => setCopiedClaudeProfileId(null), 2000);
-      setMessage({ type: 'success', text: t('claudeProfileCopySuccess', 'Command copied to clipboard') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: t('claudeProfileCopyFailed', 'Failed to copy command') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    }
-  };
-
-  const handleClaudeOpenDir = async (profileId: string) => {
-    if (!isTauri) return;
-    try {
-      const configDir = await getClaudeConfigDir(profileId);
-      if (!configDir) throw new Error(t('configDirNotFound', 'Config directory not found'));
-      await openLocalPath(configDir);
-    } catch (e: any) {
-      console.error('handleClaudeOpenDir error:', e);
-      setMessage({ type: 'error', text: e.toString() });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    }
-  };
-
-  const handleClaudeApplyGlobal = async (profileId: string) => {
-    if (!isTauri) return;
-    try {
-      setApplyingGlobal(true);
-      setApplyingClaudeProfileId(profileId);
-      const result = await runUserAction(
-        actionContext,
-        {
-          source: 'ai_environments',
-          category: 'activate',
-          action: 'apply-claude-profile',
-          target: { tab: 'ai-environments', entity_id: profileId },
-          dedupeKey: `ai-environments:activate:claude:${profileId}`,
-          metadata: { tool: 'claude', provider_id: profileId },
-          confirm: {
-            message: t(
-              'confirmActivateProvider',
-              'Activate this Service Provider and apply it to the current environment?',
-            ),
-            title: t('confirmActivateProviderTitle', 'Activate Service Provider'),
-            okLabel: t('activate', 'Activate'),
-            cancelLabel: t('cancel', 'Cancel'),
-            kind: 'warning',
-          },
-          success: {
-            title: t('aiEnvironmentActivatedMessageTitle', 'Service Provider activated'),
-            summary: t('appliedSuccess', 'Environment activated successfully!'),
-          },
-          error: {
-            title: t('activationFailed', 'Activation failed'),
-          },
-        },
-        async () => {
-          await serviceProvidersSetActive('claude', profileId);
-          await projectionApply('claude', profileId);
-        },
-      );
-      if (result === null) return;
-      await loadProviders(true);
-      emit('refresh-counts');
-      setMessage({ type: 'success', text: t('appliedSuccess', 'Environment activated successfully!') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: e.toString() });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setApplyingGlobal(false);
-      setApplyingClaudeProfileId(null);
-    }
-  };
-
-  const createClaudeProviderSession = async (
-    profileId: string,
-    permissionMode?: TerminalPermissionMode,
-  ) => {
-    const response = await sessionsCreate({
-      name: '',
-      working_dir: '',
-      tool: 'claude',
-      provider_id: profileId,
-      status: 'active',
-      ...(permissionMode ? { permission_mode: permissionMode } : {}),
-    });
-
-    if (response.ok) {
-      setCurrentProviderId(response.data.provider_id || profileId);
-      await emit('session-created');
-      await emit('refresh-counts');
-    }
-  };
-
-  const handleClaudeLaunch = async (profileId: string) => {
-    if (!isTauri) return;
-    try {
-      setLaunchingClaudeProfileId(profileId);
-      await createClaudeProviderSession(profileId);
-      setMessage({ type: 'success', text: t('sessionCreated', 'Session created') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: unknown) {
-      const code = getInvokeErrorCode(e);
-      if (code === 'PERMISSION_CONFIRMATION_REQUIRED') {
-        setPermissionDialogClaudeProfileId(profileId);
-        setPermissionDialogOpen(true);
-        return;
-      }
-      console.error('handleClaudeLaunch error:', e);
-      setMessage({ type: 'error', text: errorToDisplayMessage(e) });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setLaunchingClaudeProfileId(null);
-    }
-  };
-
-  const handleClaudePermissionConfirm = async (mode: TerminalPermissionMode) => {
-    if (!permissionDialogClaudeProfileId) return;
-    const profileId = permissionDialogClaudeProfileId;
-    setPermissionDialogOpen(false);
-    setPermissionDialogClaudeProfileId(null);
-    try {
-      setLaunchingClaudeProfileId(profileId);
-      await createClaudeProviderSession(profileId, mode);
-      setMessage({ type: 'success', text: t('sessionCreated', 'Session created') });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: unknown) {
-      console.error('handleClaudePermissionConfirm error:', e);
-      setMessage({ type: 'error', text: errorToDisplayMessage(e) });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setLaunchingClaudeProfileId(null);
-    }
-  };
-
-  const handleClaudePermissionCancel = () => {
-    setPermissionDialogOpen(false);
-    setPermissionDialogClaudeProfileId(null);
-  };
-
-  const handleToggleFavorite = async (providerId: string, favorite: boolean) => {
-    if (!isTauri) return;
-    setFavoritePendingIds(prev => new Set(prev).add(providerId));
-    try {
-      await serviceProvidersSetFavorite(providerId, favorite);
-      await loadProviders(true);
-      if (activeTool === 'claude') {
-        await loadClaudeProfiles();
-      }
-    } catch (e: any) {
-      const text = String(e?.message || e);
-      setMessage({ type: 'error', text });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      pushToast({ title: t('saveFailed', 'Save failed'), description: text, kind: 'error' });
-    } finally {
-      setFavoritePendingIds(prev => {
-        const next = new Set(prev);
-        next.delete(providerId);
-        return next;
-      });
-    }
-  };
-
-  const handleActivateSyncedProvider = async (deviceId: string, provider: SyncedDeviceProvider) => {
-    const apiKey = String(provider.api_key || '').trim();
-    if (!apiKey) {
-      setMessage({
-        type: 'error',
-        text: t(
-          'syncedProviderMissingApiKey',
-          'This Service Provider is missing a decryptable API Key and cannot be activated directly.'
-        ),
-      });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-      return;
-    }
-
-    const activation = buildSyncedProviderActivationPayload(deviceId, provider);
-    if (!activation) {
-      return;
-    }
-    const { targetId, targetTool, payload } = activation;
-
-    const actionKey = `${deviceId}:${provider.tool}:${provider.id}`;
-    try {
-      setLoading(true);
-      setActivatingSyncedKey(actionKey);
-      const savedData = unwrapApiResp(
-        await serviceProvidersUpsert(payload),
-        t('saveFailed', 'Save failed'),
-      );
-      const savedProviderId = String(savedData?.id || targetId);
-      await runUserAction(
-        actionContext,
-        {
-          source: 'ai_environments',
-          category: 'activate',
-          action: 'activate-synced-provider',
-          target: { tab: 'ai-environments', entity_id: savedProviderId },
-          dedupeKey: `ai-environments:activate:${targetTool}:${savedProviderId}`,
-          metadata: { tool: targetTool, provider_id: savedProviderId, device_id: deviceId },
-          confirm: {
-            message: t(
-              'confirmActivateSyncedProvider',
-              'Import this synced Service Provider and apply it on this device now?',
-            ),
-            title: t('confirmActivateProviderTitle', 'Activate Service Provider'),
-            okLabel: t('activate', 'Activate'),
-            cancelLabel: t('cancel', 'Cancel'),
-            kind: 'warning',
-          },
-          success: {
-            title: t('syncedProviderActivated', 'Imported and activated this synced Service Provider.'),
-            summary: t('syncedProviderActivated', 'Imported and activated this synced Service Provider.'),
-          },
-          error: {
-            title: t('activationFailed', 'Activation failed'),
-          },
-        },
-        async () => {
-          await serviceProvidersSetActive(targetTool, savedProviderId);
-          await projectionApply(targetTool, savedProviderId);
-          return true;
-        },
-      );
-      await loadProviders(true);
-      setActiveTool(targetTool);
-      setCurrentProviderId(savedProviderId);
-      emit('refresh-counts');
-      setMessage({
-        type: 'success',
-        text: t('syncedProviderActivated', 'Imported and activated this synced Service Provider.'),
-      });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      setMessage({ type: 'error', text: errorToDisplayMessage(e) });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setLoading(false);
-      setActivatingSyncedKey(null);
-    }
-  };
-
-  const closeImportModal = () => {
-    setImportPreview(null);
-    setImportPath(null);
-    setImportDecisions({});
-  };
-
-  const handleExportProviders = async () => {
-    if (!isTauri) return;
-    try {
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const outputPath = await save({
-        defaultPath: `onespace-service-providers-${stamp}.json`,
-        filters: [{ name: 'JSON', extensions: ['json'] }],
-      });
-      if (!outputPath || Array.isArray(outputPath)) return;
-
-      setExportingProviders(true);
-      const res = await runUserAction(
-        actionContext,
-        {
-          source: 'ai_environments',
-          category: 'export',
-          action: 'export-providers',
-          target: { tab: 'ai-environments' },
-          dedupeKey: 'ai-environments:export',
-          metadata: { output_path: outputPath },
-          confirm: {
-            message: t('providersExportConfirm', 'Export all Service Providers to the selected JSON file?'),
-            title: t('providersExportConfirmTitle', 'Export Service Providers'),
-            okLabel: t('export', 'Export'),
-            cancelLabel: t('cancel', 'Cancel'),
-            kind: 'warning',
-          },
-          success: {
-            title: t('providersExportSuccessTitle', 'Service Providers exported'),
-          },
-          error: {
-            title: t('providersExportFailedTitle', 'Failed to export Service Providers'),
-          },
-        },
-        () => serviceProvidersExport(outputPath),
-      );
-      if (res === null) return;
-      const successText = t('providersExportSuccess', {
-        count: res.data?.count ?? 0,
-        path: res.data?.path || outputPath,
-        defaultValue: 'Exported {{count}} Service Provider(s) to {{path}}',
-      });
-      setMessage({ type: 'success', text: successText });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      const errorText = t('providersExportFailed', {
-        error: String(e),
-        defaultValue: 'Failed to export Service Providers: {{error}}',
-      });
-      setMessage({ type: 'error', text: errorText });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setExportingProviders(false);
-    }
-  };
-
-  const handleImportProviders = async () => {
-    if (!isTauri) return;
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: 'JSON', extensions: ['json'] }],
-      });
-      if (!selected || Array.isArray(selected)) return;
-
-      setPreviewingImport(true);
-      const selectedPath = selected as string;
-      const res = await serviceProvidersImportPreview(selectedPath);
-      if (!res.data?.items?.length) {
-        const emptyText = t('providersImportEmpty', 'No Service Providers found in the selected file.');
-        await notifyMessage.warn({
-          source: 'ai_environments',
-          category: 'import',
-          title: t('providersImportEmptyTitle', 'Import file is empty'),
-          summary: emptyText,
-          dedupeKey: 'ai-environments:import-preview-empty',
-          target: { tab: 'ai-environments' },
-          metadata: { import_path: selectedPath },
-        });
-        pushToast({
-          title: t('providersImportEmptyTitle', 'Import file is empty'),
-          description: emptyText,
-          kind: 'warning',
-        });
-        setMessage({ type: 'error', text: emptyText });
-        setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-        return;
-      }
-
-      const defaults = (res.data.items || []).reduce((acc, item) => {
-        if (item.conflict) {
-          acc[item.import_key] = 'overwrite';
-        }
-        return acc;
-      }, {} as Record<string, 'overwrite' | 'new'>);
-      setImportDecisions(defaults);
-      setImportPath(selectedPath);
-      setImportPreview(res.data);
-    } catch (e: any) {
-      const errorText = t('providersImportPreviewFailed', {
-        error: String(e),
-        defaultValue: 'Failed to read import file: {{error}}',
-      });
-      await notifyMessage.error({
-        source: 'ai_environments',
-        category: 'import',
-        title: t('providersImportPreviewFailedTitle', 'Failed to preview import'),
-        summary: errorText,
-        error: e,
-        dedupeKey: 'ai-environments:import-preview-failed',
-        target: { tab: 'ai-environments' },
-      });
-      pushToast({
-        title: t('providersImportPreviewFailedTitle', 'Failed to preview import'),
-        description: String(e),
-        kind: 'error',
-      });
-      setMessage({ type: 'error', text: errorText });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setPreviewingImport(false);
-    }
-  };
-
-  const handleSetAllImportConflictActions = (action: 'overwrite' | 'new') => {
-    if (!importPreview) return;
-    const next = { ...importDecisions };
-    for (const item of importPreview.items) {
-      if (item.conflict) {
-        next[item.import_key] = action;
-      }
-    }
-    setImportDecisions(next);
-  };
-
-  const handleApplyImport = async () => {
-    if (!importPreview || !importPath) return;
-    try {
-      setApplyingImport(true);
-      const decisions: ProviderImportDecision[] = importPreview.items
-        .filter(item => item.conflict)
-        .map(item => ({
-          import_key: item.import_key,
-          action: importDecisions[item.import_key] || 'overwrite',
-        }));
-
-      const res = await runUserAction(
-        actionContext,
-        {
-          source: 'ai_environments',
-          category: 'import',
-          action: 'apply-provider-import',
-          target: { tab: 'ai-environments' },
-          dedupeKey: 'ai-environments:import-apply',
-          metadata: { import_path: importPath, decisions },
-          confirm: {
-            message: t(
-              'providersImportConfirm',
-              'Apply the selected import actions and update existing Service Providers where required?',
-            ),
-            title: t('providersImportConfirmTitle', 'Import Service Providers'),
-            okLabel: t('import', 'Import'),
-            cancelLabel: t('cancel', 'Cancel'),
-            kind: 'warning',
-          },
-          success: {
-            title: t('providersImportAppliedTitle', 'Service Providers imported'),
-          },
-          error: {
-            title: t('providersImportApplyFailedTitle', 'Failed to import Service Providers'),
-          },
-        },
-        () => serviceProvidersImportApply(importPath, decisions),
-      );
-      if (res === null) return;
-
-      await loadProviders(true);
-      emit('refresh-counts');
-      closeImportModal();
-
-      const successText = t('providersImportApplied', {
-        imported: res.data?.imported ?? 0,
-        overwritten: res.data?.overwritten ?? 0,
-        created: res.data?.created ?? 0,
-        activeRestored: res.data?.active_restored ?? 0,
-        defaultValue:
-          'Imported {{imported}} Service Provider(s): {{overwritten}} overwritten, {{created}} created, {{activeRestored}} active binding(s) restored.',
-      });
-      setMessage({ type: 'success', text: successText });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } catch (e: any) {
-      const errorText = t('providersImportApplyFailed', {
-        error: String(e),
-        defaultValue: 'Failed to import Service Providers: {{error}}',
-      });
-      setMessage({ type: 'error', text: errorText });
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-    } finally {
-      setApplyingImport(false);
-    }
-  };
-
-  const importConflictItems = importPreview?.items.filter(item => item.conflict) || [];
-  const importNewItems = importPreview?.items.filter(item => !item.conflict) || [];
-
-  const getClaudeMappingTags = (profile: ClaudeProfileSummary) => {
-    const explicitMappings = Array.isArray(profile.claude_model_mappings)
-      ? profile.claude_model_mappings
-      : Array.isArray(profile.tool_config?.claude_model_mappings)
-        ? profile.tool_config.claude_model_mappings
-        : [];
-
-    const explicitTags = explicitMappings
-      .map((mapping: any) => {
-        const family = String(mapping?.family || '').trim();
-        const upstream = String(mapping?.upstream_model || '').trim();
-        if (!upstream) return null;
-        return family ? `${family}: ${upstream}` : upstream;
-      })
-      .filter((value: string | null): value is string => Boolean(value));
-
-    if (explicitTags.length > 0) {
-      return explicitTags;
-    }
-
-    return [
-      ['default', profile.tool_config?.claude_default_model || profile.model],
-    ]
-      .map(([family, value]) => {
-        const upstream = String(value || '').trim();
-        return upstream ? `${family}: ${upstream}` : null;
-      })
-      .filter((value): value is string => Boolean(value));
-  };
-
-  const currentToolListItems = useMemo<ServiceProviderListItem[]>(() => {
-    if (activeTool === 'claude') {
-      const items = claudeProfiles.map((profile) => {
-        const upstreamTags = getClaudeMappingTags(profile);
-
-        const modelTags = [
-          (profile.tool_config?.claude_default_model || profile.model || '').trim(),
-        ].filter((value): value is string => Boolean(value));
-
-        const description =
-          profile.tilde_config_dir || profile.config_dir || profile.code || '';
-        const apiFormatKey = getClaudeApiFormat(profile);
-        const apiFormatTag =
-          apiFormatKey === 'open_ai_chat'
-            ? t('openAiChatFormat', 'OpenAI Chat')
-            : apiFormatKey === 'open_ai_responses'
-              ? t('openAiResponsesFormat', 'OpenAI Responses')
-              : t('anthropicMessagesFormat', 'Anthropic Messages');
-        const isActiveForSort = !!profile.is_default;
-
-        return {
-          id: profile.id,
-          name: profile.name,
-          tool: 'claude',
-          icon: profile.icon || undefined,
-          description,
-          remark: profile.tool_config?.remark || '',
-          modelTags,
-          claudeUpstreamModelTags: upstreamTags,
-          apiFormatTag,
-          isGlobal: getIsGlobalForTool('claude', profile.id),
-          isFavorite: !!profile.favorite_at,
-          favoriteAt: profile.favorite_at ?? null,
-          canFavorite: !unsavedNewProviderIds.has(profile.id),
-          favoritePending: favoritePendingIds.has(profile.id),
-          isActiveForSort,
-          canLaunch: true,
-          canDelete: true,
-          launchBusy: launchingClaudeProfileId === profile.id,
-          applyBusy: applyingClaudeProfileId === profile.id,
-          deleteBusy: false,
-          copiedCommand: copiedClaudeProfileId === profile.id,
-          canDuplicate: state.providers.some((provider) => provider.id === profile.id && provider.tool === 'claude')
-            && !unsavedNewProviderIds.has(profile.id),
-        } satisfies ServiceProviderListItem;
-      });
-
-      return sortServiceProviderListItems(items);
-    }
-
-    const items = state.providers
-      .filter((provider) => provider.tool === activeTool)
-      .map((provider) => {
-        const description = [
-          provider.base_url?.trim(),
-          activeTool === 'opencode' ? provider.provider_key?.trim() : '',
-        ].find((value) => Boolean(value)) || '';
-
-        const footerTags = [
-          activeTool === 'opencode' ? '' : provider.model?.trim(),
-          activeTool === 'codex' && provider.personality ? `personality: ${provider.personality}` : '',
-          activeTool === 'codex' && provider.wire_api ? `wire: ${provider.wire_api}` : '',
-          activeTool === 'codex' && provider.approval_policy ? `approval: ${provider.approval_policy}` : '',
-          activeTool === 'codex' && provider.sandbox_mode ? `sandbox: ${provider.sandbox_mode}` : '',
-          activeTool === 'antigravity' && provider.theme ? `theme: ${provider.theme}` : '',
-          activeTool === 'antigravity' && provider.default_approval_mode
-            ? `approval: ${provider.default_approval_mode}`
-            : '',
-        ].filter((value): value is string => Boolean(value));
-
-        const authLabel =
-          activeTool === 'antigravity' && provider.antigravity_auth_type
-            ? provider.antigravity_auth_type
-            : provider.api_key
-              ? t('apiKey', 'API Key')
-              : undefined;
-
-        return {
-          id: provider.id,
-          name: provider.name,
-          tool: provider.tool,
-          icon: provider.icon,
-          description,
-          remark: provider.tool_config?.remark || provider.remark || '',
-          authLabel,
-          modelTags: footerTags,
-          claudeUpstreamModelTags: [],
-          apiFormatTag: null,
-          isGlobal: getIsGlobalForTool(activeTool, provider.id),
-          isFavorite: !!provider.favorite_at,
-          favoriteAt: provider.favorite_at ?? null,
-          canFavorite: !unsavedNewProviderIds.has(provider.id),
-          favoritePending: favoritePendingIds.has(provider.id),
-          isActiveForSort: getIsGlobalForTool(activeTool, provider.id),
-          canLaunch: false,
-          canDelete: true,
-          launchBusy: false,
-          applyBusy: loading,
-          deleteBusy: false,
-          copiedCommand: false,
-          canDuplicate: !unsavedNewProviderIds.has(provider.id),
-        } satisfies ServiceProviderListItem;
-      });
-
-    return sortServiceProviderListItems(items);
-  }, [
+  const data = useAiEnvironmentData({
+    t,
+    isTauri,
+    isVisible,
     activeTool,
-    applyingGlobal,
+    currentProviderId,
+    state,
+    setState,
+    setCurrentProviderId,
+    setMessage,
+    setLoading,
+    setProviderPresets,
+    setSyncedOtherDeviceProviders,
+    setUnsavedNewProviderIds,
+    setClaudeProfiles,
+    setClaudeLaunchCommand,
+    setAutoImportInactiveNotice,
+    setCliVersions,
+    setCheckingVersions,
+    setCheckingAllVersions,
+    setCliUpdates,
+    setCheckingUpdates,
+    setProbingTool,
+    versionCheckRunIdRef,
+    probeRunIdRef,
+    isVisibleRef,
+    cliProbeInitializedRef,
+    autoImportInitializedRef,
+  });
+
+  const cliActions = useCliActions({
+    t,
+    actionContext,
+    cliUpdates,
+    setUpdatingTool,
+    setMessage,
+    pushToast,
+  });
+
+  const editor = useOpenCodeEditor({
+    t,
+    setRawJson,
+    setOriginalJson,
+    setJsonError,
+    setOpenCodeModelForm,
+    setOpenCodeModelErrors,
+    lastValidOpenCodeSnapshot,
+    setLastValidOpenCodeSnapshot,
+    isRollbackMode,
+    setIsRollbackMode,
+    setDetailProvider,
+    openCodeDetailRequestIdRef,
+  });
+
+  const actions = useProviderActions({
+    t,
+    actionContext,
+    pushToast,
+    confirmDialog,
+    isTauri,
+    activeTool,
+    setActiveTool,
+    state,
+    setState,
+    currentProviderId,
+    setCurrentProviderId,
+    detailProvider,
+    setDetailProvider,
+    rawJson,
+    setRawJson,
+    setOriginalJson,
+    setJsonError,
+    setMessage,
+    setLoading,
+    savingDetail,
+    setSavingDetail,
+    isRollbackMode,
+    setIsRollbackMode,
+    unsavedNewProviderIds,
+    setUnsavedNewProviderIds,
+    setFavoritePendingIds,
+    setActivatingSyncedKey,
     claudeProfiles,
-    copiedClaudeProfileId,
+    setViewMode,
+    setPresetPickerOpen,
+    loadProviders: data.loadProviders,
+    loadClaudeProfiles: data.loadClaudeProfiles,
+    editor,
+    rollbackDraftBeforeRef,
+    openCodeDetailRequestIdRef,
+    openCodeDetailTargetRef,
+    pendingRestoreListScrollTopRef,
+    savedListScrollTopRef,
+  });
+
+  const claudeActions = useClaudeProfileActions({
+    t,
+    actionContext,
+    isTauri,
+    claudeLaunchCommand,
+    permissionDialogClaudeProfileId,
+    setCopiedClaudeProfileId,
+    setMessage,
+    setApplyingGlobal,
+    setApplyingClaudeProfileId,
+    setLaunchingClaudeProfileId,
+    setPermissionDialogClaudeProfileId,
+    setPermissionDialogOpen,
+    setCurrentProviderId,
+    loadProviders: data.loadProviders,
+  });
+
+  const importExport = useProviderImportExportActions({
+    t,
+    actionContext,
+    isTauri,
+    pushToast,
+    setMessage,
+    setExportingProviders,
+    setPreviewingImport,
+    setApplyingImport,
+    importPreview,
+    setImportPreview,
+    importPath,
+    setImportPath,
+    importDecisions,
+    setImportDecisions,
+    loadProviders: data.loadProviders,
+  });
+
+  const { currentToolListItems, providerCountsByTool } = useProviderListItems({
+    t,
+    activeTool,
+    state,
+    claudeProfiles,
+    unsavedNewProviderIds,
     favoritePendingIds,
     launchingClaudeProfileId,
     applyingClaudeProfileId,
+    copiedClaudeProfileId,
     loading,
-    getClaudeMappingTags,
-    state,
-    unsavedNewProviderIds,
-  ]);
+    applyingGlobal,
+    viewMode,
+    syncedOtherDeviceProviders,
+    listScrollContainerRef,
+    pendingRestoreListScrollTopRef,
+  });
 
-  const providerCountsByTool = useMemo<Record<CliTool, number>>(
-    () => ({
-      claude: claudeProfiles.length,
-      codex: state.providers.filter((provider) => provider.tool === 'codex').length,
-      antigravity: state.providers.filter((provider) => provider.tool === 'antigravity').length,
-      opencode: state.providers.filter((provider) => provider.tool === 'opencode').length,
-    }),
-    [claudeProfiles.length, state.providers],
-  );
-
-  useLayoutEffect(() => {
-    if (viewMode !== 'list') return;
-    const pendingScrollTop = pendingRestoreListScrollTopRef.current;
-    if (pendingScrollTop === null) return;
-    const container = listScrollContainerRef.current;
-    if (!container) return;
-    container.scrollTop = pendingScrollTop;
-    pendingRestoreListScrollTopRef.current = null;
-  }, [viewMode, currentToolListItems, syncedOtherDeviceProviders]);
-
-  const openServiceProviderDetail = async (id: string) => {
-    rollbackDraftBeforeRef.current = null;
-    const requestId = ++openCodeDetailRequestIdRef.current;
-    openCodeDetailTargetRef.current = null;
-    if (activeTool === 'claude') {
-      const storedProvider = state.providers.find((item) => item.id === id && item.tool === 'claude');
-      if (storedProvider) {
-        const adapted = buildClaudeProviderFromState(storedProvider);
-        setCurrentProviderId(id);
-        setDetailProvider(adapted);
-        setRawJson(JSON.stringify(adapted, null, 2));
-        setOriginalJson(JSON.stringify(adapted, null, 2));
-        setJsonError(null);
-        setIsRollbackMode(false);
-        setViewMode('detail');
-        return;
-      }
-
-      const profile = claudeProfiles.find((item) => item.id === id);
-      if (!profile) return;
-      const adapted = buildClaudeProviderFromProfile(profile);
-      setCurrentProviderId(id);
-      setDetailProvider(adapted);
-      setRawJson(JSON.stringify(adapted, null, 2));
-      setOriginalJson(JSON.stringify(adapted, null, 2));
-      setJsonError(null);
-      setIsRollbackMode(false);
-      setViewMode('detail');
-      return;
-    }
-    const provider = state.providers.find(p => p.id === id && p.tool === activeTool);
-    if (!provider) return;
-    const adaptedProvider = {
-      ...provider,
-      api_key: activeTool === 'opencode' ? '' : provider.api_key,
-      remark: provider.tool_config?.remark || '',
-    };
-    let json = activeTool === 'opencode' ? getOpenCodeJson(adaptedProvider) : JSON.stringify(adaptedProvider, null, 2);
-    if (activeTool === 'opencode') {
-      const providerKey = provider.provider_key || '';
-      const cachedConfig = JSON.parse(json) as JsonObject;
-      const cachedOptions = cachedConfig.options && typeof cachedConfig.options === 'object' && !Array.isArray(cachedConfig.options)
-        ? cachedConfig.options as JsonObject
-        : {};
-      cachedConfig.options = { ...cachedOptions, apiKey: '' };
-      json = stringifyOpenCodeModelConfig(cachedConfig);
-      openCodeDetailTargetRef.current = { id, providerKey };
-
-      setCurrentProviderId(id);
-      setDetailProvider(adaptedProvider);
-      initializeOpenCodeEditor(json, true);
-      setIsRollbackMode(false);
-      setViewMode('detail');
-
-      try {
-        const response = await serviceProviderReadOpenCodeConfig(providerKey);
-        const runtimeProvider = unwrapApiResp<OpenCodeProviderConfig>(
-          response,
-          'Failed to read OpenCode provider config',
-        );
-        const target = openCodeDetailTargetRef.current;
-        if (
-          openCodeDetailRequestIdRef.current !== requestId
-          || target?.id !== id
-          || target.providerKey !== providerKey
-        ) return;
-        const runtimeOptions = runtimeProvider.options
-          && typeof runtimeProvider.options === 'object'
-          && !Array.isArray(runtimeProvider.options)
-          ? runtimeProvider.options as Record<string, unknown>
-          : null;
-        const runtimeApiKey = runtimeOptions?.apiKey;
-        json = JSON.stringify(runtimeProvider, null, 2);
-        initializeOpenCodeEditor(json, true);
-        if (typeof runtimeApiKey !== 'string' || runtimeApiKey.length === 0) {
-          setMessage({
-            type: 'error',
-            text: 'Failed to read OpenCode provider config: options.apiKey is missing',
-          });
-          return;
-        }
-        setDetailProvider((current: AiProvider | null) => {
-          if (!current || current.id !== id || current.provider_key !== providerKey) return current;
-          return { ...current, api_key: runtimeApiKey };
-        });
-        setMessage({ type: '', text: '' });
-      } catch (error) {
-        const target = openCodeDetailTargetRef.current;
-        if (
-          openCodeDetailRequestIdRef.current !== requestId
-          || target?.id !== id
-          || target.providerKey !== providerKey
-        ) return;
-        setMessage({
-          type: 'error',
-          text: `Failed to read OpenCode provider config: ${errorToDisplayMessage(error)}`,
-        });
-      }
-      return;
-    }
-    setCurrentProviderId(id);
-    setDetailProvider(adaptedProvider);
-    if (activeTool === 'opencode') {
-      initializeOpenCodeEditor(json, true);
-    } else {
-      setRawJson(json);
-      setOriginalJson(json);
-      setJsonError(null);
-    }
-    setIsRollbackMode(false);
-    setViewMode('detail');
-  };
+  const getManagedStateForTool = (tool: CliTool) => getManagedStateForToolFromState(state, tool);
 
   const renderServiceProviderDetail = () => {
     if (viewMode !== 'detail' || !detailProvider) return null;
@@ -2390,7 +380,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           onSave={async () => {
             if (!isTauri || !detailProvider || savingDetail) return;
             try {
-              await handleSaveDetailAndReturnToList(detailProvider);
+              await actions.handleSaveDetailAndReturnToList(detailProvider);
             } catch (e: any) {
               const errorMessage = errorToDisplayMessage(e);
               setMessage({ type: 'error', text: errorMessage || t('saveFailed', 'Save failed') });
@@ -2407,7 +397,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               await projectionApply(detailProvider.tool, detailProvider.id);
               setMessage({ type: 'success', text: t('activated', 'Activated') });
               pushToast({ title: t('activated', 'Activated'), kind: 'success' });
-              await loadProviders(true);
+              await data.loadProviders(true);
             } catch (e: any) {
               const errorMessage = errorToDisplayMessage(e);
               setMessage({ type: 'error', text: errorMessage || t('activationFailed', 'Activation failed') });
@@ -2417,13 +407,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           onDelete={async () => {
             if (!isTauri || !detailProvider || savingDetail) return;
             try {
-              await handleDelete(detailProvider.id, detailProvider.tool);
+              await actions.handleDelete(detailProvider.id, detailProvider.tool);
             } catch (e: any) {
               setMessage({ type: 'error', text: e?.message || t('deleteFailed', 'Delete failed') });
               pushToast({ title: t('deleteFailed', 'Delete failed'), description: String(e?.message || e), kind: 'error' });
             }
           }}
-          onBack={() => { returnToProviderList({ preserveScroll: true }); }}
+          onBack={() => { actions.returnToProviderList({ preserveScroll: true }); }}
           isActive={isDetailActive}
           t={(key: string, fallback: string, options?: Record<string, any>) => String(t(key, fallback, options))}
           onFetchModels={async (provider: Partial<AiProvider>) => {
@@ -2447,11 +437,11 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           openCodeModelForm={openCodeModelForm}
           openCodeModelErrors={openCodeModelErrors}
           openCodeModelFrozen={!!jsonError}
-          onOpenCodeModelFormChange={handleOpenCodeModelFormChange}
+          onOpenCodeModelFormChange={editor.handleOpenCodeModelFormChange}
           isRollbackMode={isRollbackMode}
           onJsonChange={(value) => {
             if (detailProvider.tool === 'opencode') {
-              handleOpenCodeJsonChange(value);
+              editor.handleOpenCodeJsonChange(value);
               return;
             }
 
@@ -2464,12 +454,12 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             }
           }}
           onJsonError={setJsonError}
-          onRollback={handleRollback}
+          onRollback={actions.handleRollback}
           onFormatJson={() => {
             const parsed = parseOpenCodeModelConfig(rawJson);
             if (!parsed.ok) {
-              setJsonError(openCodeErrorMessage(parsed.errors));
-              setMessage({ type: 'error', text: openCodeErrorMessage(parsed.errors) });
+              setJsonError(editor.openCodeErrorMessage(parsed.errors));
+              setMessage({ type: 'error', text: editor.openCodeErrorMessage(parsed.errors) });
               return;
             }
             const formatted = stringifyOpenCodeModelConfig(parsed.snapshot);
@@ -2484,13 +474,13 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             if (rollbackDraft?.provider) {
               setDetailProvider(rollbackDraft.provider);
               if (rollbackDraft.provider.tool === 'opencode') {
-                initializeOpenCodeEditor(rollbackDraft.rawJson);
+                editor.initializeOpenCodeEditor(rollbackDraft.rawJson);
               } else {
                 setRawJson(rollbackDraft.rawJson);
                 setJsonError(null);
               }
             } else if (detailProvider.tool === 'opencode') {
-              initializeOpenCodeEditor(originalJson);
+              editor.initializeOpenCodeEditor(originalJson);
             } else {
               setRawJson(originalJson);
               setJsonError(null);
@@ -2556,9 +546,9 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         unsavedNewProviderIds={unsavedNewProviderIds}
         setActiveTool={setActiveTool}
         setCurrentProviderId={setCurrentProviderId}
-        detectAllVersions={detectAllVersions}
-        preloadCliMetaAndAutoImport={preloadCliMetaAndAutoImport}
-        handleApplyCliUpdate={handleApplyCliUpdate}
+        detectAllVersions={data.detectAllVersions}
+        preloadCliMetaAndAutoImport={data.preloadCliMetaAndAutoImport}
+        handleApplyCliUpdate={cliActions.handleApplyCliUpdate}
         getManagedStateForTool={getManagedStateForTool}
         t={t}
         versionCheckRunIdRef={versionCheckRunIdRef}
@@ -2573,8 +563,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           <ToolSectionHeader
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            onImport={() => { void handleImportProviders(); }}
-            onExport={() => { void handleExportProviders(); }}
+            onImport={() => { void importExport.handleImportProviders(); }}
+            onExport={() => { void importExport.handleExportProviders(); }}
             loading={loading}
             previewingImport={previewingImport}
             applyingImport={applyingImport}
@@ -2592,34 +582,34 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         >
           <ServiceProviderList
             providers={currentToolListItems}
-            onProviderClick={openServiceProviderDetail}
-            onEdit={openServiceProviderDetail}
-            onDuplicate={handleDuplicateProvider}
+            onProviderClick={actions.openServiceProviderDetail}
+            onEdit={actions.openServiceProviderDetail}
+            onDuplicate={actions.handleDuplicateProvider}
             onToggleFavorite={(id, favorite) => {
-              void handleToggleFavorite(id, favorite);
+              void actions.handleToggleFavorite(id, favorite);
             }}
             onApplyGlobal={(id) => {
               if (activeTool === 'claude') {
-                void handleClaudeApplyGlobal(id);
+                void claudeActions.handleClaudeApplyGlobal(id);
                 return;
               }
-              void activateProvider(activeTool, id);
+              void actions.activateProvider(activeTool, id);
             }}
-            onDelete={(id) => { void handleDelete(id); }}
+            onDelete={(id) => { void actions.handleDelete(id); }}
             onLaunch={(id) => {
               if (activeTool === 'claude') {
-                void handleClaudeLaunch(id);
+                void claudeActions.handleClaudeLaunch(id);
               }
             }}
             onCopyLaunchCommand={(id) => {
               const profile = claudeProfiles.find((item) => item.id === id);
               if (profile) {
-                void handleClaudeCopyCommand(profile.id, profile.config_dir);
+                void claudeActions.handleClaudeCopyCommand(profile.id, profile.config_dir);
               }
             }}
             onOpenDirectory={(id) => {
               if (activeTool === 'claude') {
-                void handleClaudeOpenDir(id);
+                void claudeActions.handleClaudeOpenDir(id);
               }
             }}
             onAdd={() => { setPresetPickerOpen(true); }}
@@ -2633,7 +623,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           <SyncedDevices
             syncedOtherDeviceProviders={syncedOtherDeviceProviders}
             activeTool={activeTool}
-            onActivate={handleActivateSyncedProvider}
+            onActivate={actions.handleActivateSyncedProvider}
             loading={loading}
             activatingSyncedKey={activatingSyncedKey}
             t={t}
@@ -2663,7 +653,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
               <button
                 type="button"
-                onClick={() => { handleAddCustom(activeTool); }}
+                onClick={() => { actions.handleAddCustom(activeTool); }}
                 className="w-full rounded-lg border border-dashed border-primary/40 bg-primary/5 p-4 text-left transition-colors hover:border-primary/60 hover:bg-primary/10"
               >
                 <div className="flex items-start gap-3">
@@ -2683,7 +673,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   <div className="flex items-start justify-between gap-3">
                     <button
                       type="button"
-                      onClick={() => { handleAddCustom(activeTool, preset); }}
+                      onClick={() => { actions.handleAddCustom(activeTool, preset); }}
                       className="min-w-0 flex flex-1 items-start gap-3 text-left"
                     >
                       <ServiceProviderAvatar
@@ -2923,7 +913,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             </div>
             <button
               type="button"
-              onClick={closeImportModal}
+              onClick={importExport.closeImportModal}
               disabled={applyingImport}
               className="p-2 hover:bg-muted rounded-md transition-colors disabled:opacity-50"
             >
@@ -2947,7 +937,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               </span>
               <span className="badge-pill bg-green-500/10 text-green-700">
                 {t('providersImportNewBadge', {
-                  count: importNewItems.length,
+                  count: importExport.importNewItems.length,
                   defaultValue: '{{count}} new',
                 })}
               </span>
@@ -2959,7 +949,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               </span>
             </div>
 
-            {importConflictItems.length > 0 && (
+            {importExport.importConflictItems.length > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-4 space-y-3">
                 <div>
                   <div className="font-medium text-amber-900">
@@ -2975,7 +965,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={() => handleSetAllImportConflictActions('overwrite')}
+                    onClick={() => importExport.handleSetAllImportConflictActions('overwrite')}
                     disabled={applyingImport}
                     className="px-3 py-1.5 rounded-md border border-amber-300 bg-background hover:bg-amber-100 text-sm transition-colors disabled:opacity-50"
                   >
@@ -2983,7 +973,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleSetAllImportConflictActions('new')}
+                    onClick={() => importExport.handleSetAllImportConflictActions('new')}
                     disabled={applyingImport}
                     className="px-3 py-1.5 rounded-md border border-amber-300 bg-background hover:bg-amber-100 text-sm transition-colors disabled:opacity-50"
                   >
@@ -3093,7 +1083,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
           <div className="p-4 border-t bg-muted/10 flex items-center justify-between gap-4">
             <div className="text-xs text-muted-foreground">
               {t('providersImportFooterHint', {
-                count: importConflictItems.length,
+                count: importExport.importConflictItems.length,
                 defaultValue:
                   '{{count}} conflict(s) require a choice. Non-conflicting Service Providers will be imported directly.',
               })}
@@ -3101,7 +1091,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={closeImportModal}
+                onClick={importExport.closeImportModal}
                 disabled={applyingImport}
                 className="px-4 py-2 text-sm border bg-background hover:bg-muted rounded-md transition-colors disabled:opacity-50"
               >
@@ -3110,7 +1100,7 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
               <button
                 type="button"
                 onClick={() => {
-                  void handleApplyImport();
+                  void importExport.handleApplyImport();
                 }}
                 disabled={applyingImport}
                 className="px-4 py-2 text-sm bg-primary text-primary-foreground hover:bg-primary/90 rounded-md flex items-center gap-2 transition-colors disabled:opacity-50"
@@ -3128,8 +1118,8 @@ export function AiEnvironments({ isVisible = false }: { isVisible?: boolean }) {
         open={permissionDialogOpen}
         toolId="claude"
         toolLabel="Claude Code"
-        onConfirm={handleClaudePermissionConfirm}
-        onCancel={handleClaudePermissionCancel}
+        onConfirm={claudeActions.handleClaudePermissionConfirm}
+        onCancel={claudeActions.handleClaudePermissionCancel}
       />
     )}
   </div>
