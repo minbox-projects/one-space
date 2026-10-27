@@ -554,13 +554,13 @@ export interface UsageLogsQuery {
   provider?: string | null;
   page?: number;
   /**
-   * Optional exact provider-ID focus (Step 2). It is only sent when it holds a
+   * Optional exact provider-ID focus. It is only sent when it holds a
    * non-null value, so callers that omit it keep the exact existing six-key
    * invoke payload.
    */
   providerId?: string | null;
   /**
-   * Optional strict `YYYY-MM-DD` UTC+8 day focus (Step 2). Like `providerId`,
+   * Optional strict `YYYY-MM-DD` UTC+8 day focus. Like `providerId`,
    * the key is only added when set.
    */
   day?: string | null;

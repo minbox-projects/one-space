@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-10-27-source-module-split.md
-2026-10-27-source-module-split.md: 6e9960d998ac8f8d8b7b923bfd835845c3bef3c9
-2026-10-27-source-module-split.zh.md: a550f1febd50c72811cbb82f2667102907e71549
+2026-10-27-source-module-split.md: d21d2b7e0f4de2463659d030c7af98d3107b94df
+2026-10-27-source-module-split.zh.md: 2ff1d86b26fdbb8ba891dc168655ea11106719e8

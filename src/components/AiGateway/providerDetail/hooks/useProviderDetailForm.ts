@@ -564,7 +564,7 @@ export function useProviderDetailForm({
     };
     // Persist through the existing provider upsert wrapper; only claim success
     // and close once it resolves without an explicit failure. A rejected or
-    // `false` save keeps the local draft and the dialog unchanged (AC-025).
+    // `false` save keeps the local draft and the dialog unchanged.
     try {
       const result = await onSave(draft, submittedPrices);
       if (result === false) return;

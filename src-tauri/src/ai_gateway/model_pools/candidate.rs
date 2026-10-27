@@ -32,7 +32,7 @@ pub(in crate::ai_gateway) struct ResolvedCandidate {
 ///
 /// The ordinary selection boundary (`can_convert_from`) only accepts the same
 /// protocol or a native Anthropic target; a pool additionally admits the two
-/// OpenAI endpoints in either direction because Step 2 translates between them
+/// OpenAI endpoints in either direction because the pool translates between them
 /// per attempt. Native Messages ingress never reaches here: a Messages request
 /// for a pool alias is fenced before candidate resolution.
 fn pool_ingress_supported(candidate: UpstreamProtocol, ingress: UpstreamProtocol) -> bool {
@@ -50,7 +50,7 @@ fn pool_ingress_supported(candidate: UpstreamProtocol, ingress: UpstreamProtocol
 /// Resolve one pool candidate against the latest configuration.
 ///
 /// `ingress` is the inbound protocol; a candidate whose stored effective
-/// protocol cannot serve it is reported unavailable (Step 1's same-protocol
+/// protocol cannot serve it is reported unavailable (the same-protocol
 /// transport baseline). `None` is used by the UI status path, which reports the
 /// reference's own readiness independently of any one request.
 pub(super) fn resolve_candidate(

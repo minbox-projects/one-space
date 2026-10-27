@@ -1,13 +1,13 @@
 //! Extraction, redaction and bounding of upstream error text.
 
-/// Maximum stored length of one sanitized upstream error message (REQ-004).
+/// Maximum stored length of one sanitized upstream error message.
 const MAX_ERROR_MESSAGE_CHARS: usize = 4096;
 /// Marker appended when an error message had to be truncated.
 const ERROR_TRUNCATION_MARKER: char = '…';
 /// Credential-shaped runs shorter than this are left readable.
 const MIN_MASKED_CREDENTIAL_CHARS: usize = 8;
 
-/// Extract the upstream's own error information from a failure body (REQ-003).
+/// Extract the upstream's own error information from a failure body.
 ///
 /// A standard JSON envelope yields its non-empty `error.message`; any other body
 /// yields a readable summary (lossy decode, markup removed, consecutive
@@ -55,7 +55,7 @@ fn strip_html_markup(text: &str) -> String {
     result
 }
 
-/// Redact, bound and normalize one extracted upstream error message (REQ-004).
+/// Redact, bound and normalize one extracted upstream error message.
 ///
 /// The provider key is replaced verbatim with `[redacted]`, `Bearer` and `sk-`
 /// credential shapes are masked, and text longer than

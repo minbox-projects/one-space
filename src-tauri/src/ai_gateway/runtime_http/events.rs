@@ -2,7 +2,7 @@ use super::*;
 
 /// Application handle captured when the gateway server starts, so a settlement
 /// can broadcast a runtime-state transition without any frontend action. `None`
-/// means no handle was available and emission is skipped (REQ-005).
+/// means no handle was available and emission is skipped.
 static APP_HANDLE: OnceLock<std::sync::Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
 
 fn app_handle_slot() -> &'static std::sync::Mutex<Option<tauri::AppHandle>> {
@@ -60,8 +60,7 @@ pub(in crate::ai_gateway) fn emit_config_updated() {
 /// provider-scoped `dedupe_key` makes repeated transitions inside the store's
 /// dedupe window merge into one entry with an incremented occurrence count, and
 /// the targeted AI Gateway tab carries the provider as its entity id. Neither
-/// the title, summary, dedupe key, target nor metadata ever carries a key value
-/// (REQ-005).
+/// the title, summary, dedupe key, target nor metadata ever carries a key value.
 fn key_auth_failed_message_input(
     payload: &super::GatewayKeyAuthFailedPayload,
 ) -> crate::messages::MessageCreateInput {
@@ -101,7 +100,7 @@ fn key_auth_failed_message_input(
 /// payload on the test seams, emit the notification event and persist exactly
 /// one message input through the captured handle. A missing handle skips both
 /// production emissions but still records the seam values so the transition is
-/// observable in tests (REQ-005/AC-007, AC-010).
+/// observable in tests.
 pub(in crate::ai_gateway) fn emit_key_auth_failed(transition: &KeyAuthFailedTransition) {
     let payload = super::GatewayKeyAuthFailedPayload {
         provider_id: transition.provider_id.clone(),
@@ -132,7 +131,7 @@ pub(in crate::ai_gateway) fn emit_key_auth_failed(transition: &KeyAuthFailedTran
 /// The provider-scoped `dedupe_key` makes repeated transitions inside the
 /// store's dedupe window merge into one entry with an incremented occurrence
 /// count while refreshing the full set; the targeted AI Gateway tab carries the
-/// provider as its entity id. Only provider and model names appear (REQ-005).
+/// provider as its entity id. Only provider and model names appear.
 fn mapping_auto_disabled_message_input(
     transition: &MappingAutoDisabledTransition,
 ) -> crate::messages::MessageCreateInput {
@@ -171,7 +170,7 @@ fn mapping_auto_disabled_message_input(
 /// Record one auto-disable transition: push the literal input onto the test
 /// seam and persist exactly one message input through the captured handle. A
 /// missing handle skips the production write but still records the seam value so
-/// the transition is observable in tests (REQ-005/AC-005).
+/// the transition is observable in tests.
 pub(in crate::ai_gateway) fn emit_mapping_auto_disabled(
     transition: &MappingAutoDisabledTransition,
 ) {

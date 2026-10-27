@@ -67,7 +67,7 @@ pub struct UsageCostBreakdown {
     pub cache_write_cost: f64,
 }
 
-/// Pool-only native reasoning evidence recorded for one attempt (REQ-006).
+/// Pool-only native reasoning evidence recorded for one attempt.
 ///
 /// `protocol` is the attempt's actual upstream protocol, `mode` is one of
 /// `enum | budget | disable | provider_default`, and `parameters` carries only
@@ -102,11 +102,11 @@ pub struct UsageLogRecord {
     pub cost_breakdown: Option<UsageCostBreakdown>,
     pub duration_ms: u64,
     /// Sanitized, bounded and redacted upstream error text; `None` for a
-    /// success or a failure without readable error information (REQ-003/REQ-004).
+    /// success or a failure without readable error information.
     #[serde(default)]
     pub error_message: Option<String>,
     /// Whether this row is the request's single terminal row; non-terminal rows
-    /// are the completed attempts that a later row superseded (REQ-001).
+    /// are the completed attempts that a later row superseded.
     #[serde(default = "default_true")]
     pub terminal: bool,
     /// Reasoning effort level (e.g. "low", "medium", "high") requested by client;
@@ -114,13 +114,13 @@ pub struct UsageLogRecord {
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     /// Measured first meaningful upstream output latency in milliseconds,
-    /// unrounded (20261014-gateway-request-latency: REQ-002/AC-002). `None` for
+    /// unrounded. `None` for
     /// non-streaming, synthetic no-upstream, no-output and historical rows; a
     /// measured zero offset stays `Some(0.0)`.
     #[serde(default)]
     pub first_token_ms: Option<f64>,
-    /// Average output tokens per second over the unrounded whole-attempt window
-    /// (REQ-002/REQ-003). The stored column is an availability marker only: a
+    /// Average output tokens per second over the unrounded whole-attempt window.
+    /// The stored column is an availability marker only: a
     /// measured read reprojects it from the row's own `output_tokens` and
     /// positive `duration_ms` (`record_from_row`). `None` when unavailable; an
     /// explicit valid zero count over a positive attempt is `Some(0.0)`.
@@ -130,7 +130,7 @@ pub struct UsageLogRecord {
     /// `None` for ordinary, historical and synthetic rows without a pool policy.
     #[serde(default)]
     pub resolved_reasoning_effort: Option<String>,
-    /// Pool-only native-control snapshot actually sent upstream (REQ-006);
+    /// Pool-only native-control snapshot actually sent upstream;
     /// `None` for ordinary/historical rows and for a synthetic no-attempt row.
     #[serde(default)]
     pub native_reasoning: Option<NativeReasoningSnapshot>,
@@ -157,7 +157,7 @@ pub(in crate::ai_gateway) fn normalize_retention_days(days: u32) -> u32 {
     }
 }
 
-/// Persisted usage classification of one new request-log row (REQ-004).
+/// Persisted usage classification of one new request-log row.
 ///
 /// `present` means the upstream response carried a `usage` object at all;
 /// `valid` means its decomposition into the four exclusive tiers succeeded.
@@ -190,7 +190,7 @@ pub struct UsageMetrics {
     pub total_tokens: u64,
     pub amount: f64,
     pub unpriced_count: u32,
-    /// Sum of `cache_read_tokens` over cache-eligible rows (REQ-002).
+    /// Sum of `cache_read_tokens` over cache-eligible rows.
     pub cache_hit_tokens: u64,
     /// Sum of `ordinary + cache_read + cache_write` over cache-eligible rows.
     pub cache_eligible_tokens: u64,
@@ -302,7 +302,7 @@ pub(in crate::ai_gateway) struct LogFilter {
 }
 
 /// One persistable row: its request-log record plus the real usage
-/// classification captured while parsing the upstream response (REQ-004).
+/// classification captured while parsing the upstream response.
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::ai_gateway) struct UsageLogEntry {
     pub record: UsageLogRecord,

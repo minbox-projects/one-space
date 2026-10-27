@@ -83,7 +83,7 @@ pub(super) fn fallback_stage_key(stage: &PoolFallbackStage) -> Option<AttemptedS
 }
 
 /// One completed upstream attempt of an inbound request, buffered by the
-/// connection handler until the request ends (REQ-001).
+/// connection handler until the request ends.
 ///
 /// A `status` of 0 means the attempt never received an upstream HTTP status
 /// (network or stream failure); `result` is `Success` or `Failure` only, because
@@ -105,16 +105,16 @@ pub(in crate::ai_gateway) struct AttemptLog {
     pub(in crate::ai_gateway) usage_valid: bool,
     pub(in crate::ai_gateway) duration_ms: u64,
     /// Measured first meaningful upstream output latency in milliseconds,
-    /// unrounded; `None` when unavailable (REQ-002).
+    /// unrounded; `None` when unavailable.
     pub(in crate::ai_gateway) first_token_ms: Option<f64>,
     /// Average output tokens per second over the unrounded whole-attempt window;
-    /// `None` when unavailable (REQ-002/REQ-003).
+    /// `None` when unavailable.
     pub(in crate::ai_gateway) avg_tps: Option<f64>,
     /// Pool-only resolved preference (`low|medium|high|xhigh|none|auto`); `None`
-    /// for an ordinary attempt (REQ-006).
+    /// for an ordinary attempt.
     pub(in crate::ai_gateway) resolved_reasoning_effort: Option<String>,
     /// Pool-only allowlisted native-control snapshot actually sent upstream;
-    /// `None` for an ordinary attempt (REQ-006).
+    /// `None` for an ordinary attempt.
     pub(in crate::ai_gateway) native_reasoning: Option<NativeReasoningSnapshot>,
 }
 
@@ -137,7 +137,7 @@ pub(super) fn build_attempt_log(
     avg_tps: Option<f64>,
 ) -> AttemptLog {
     // Pool-only attempt evidence derived from the same resolved control that
-    // shaped the upstream body; an ordinary attempt records none (REQ-006).
+    // shaped the upstream body; an ordinary attempt records none.
     let (resolved_reasoning_effort, native_reasoning) = match provider
         .pool_candidate
         .as_ref()
@@ -236,7 +236,7 @@ pub(super) async fn attempt_candidate(
             // A served 2xx is a success; every other body is a failed attempt
             // whose error text must be extracted while the raw bytes are still
             // available, because the retryable path below keeps only a status
-            // reason (REQ-003).
+            // reason.
             let served = response.status < 400 && response.parsed;
             let error_message = if served {
                 None
@@ -338,7 +338,7 @@ pub(super) async fn attempt_candidate(
             if class == FailureClass::ReturnToClient {
                 // A standard upstream error body stays byte-for-byte; a
                 // non-standard one keeps the status but is wrapped so clients
-                // can read `error.message` (REQ-004/AC-006/AC-007).
+                // can read `error.message`.
                 let standard = is_standard_error_body(&response.body);
                 let body = if is_messages_path(path) || standard {
                     response.body

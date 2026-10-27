@@ -15,8 +15,8 @@ use serde_json::Value;
 pub(in crate::ai_gateway) struct CanonicalUsage {
     pub tokens: UsageTokens,
     pub valid: bool,
-    /// Independently validated explicitly reported cumulative output count
-    /// (20261014-gateway-request-latency: REQ-003/AC-003). `Some` only for a
+    /// Independently validated explicitly reported cumulative output count.
+    /// `Some` only for a
     /// non-negative integer `output_tokens` (falling back to `completion_tokens`)
     /// or its supported numeric-string form; missing, null, negative,
     /// fractional or malformed values stay `None`. This is derived directly from
@@ -37,7 +37,7 @@ fn token_number(value: Option<&Value>) -> u64 {
     }
 }
 
-/// Independently validated explicitly reported output count (REQ-003/AC-003).
+/// Independently validated explicitly reported output count.
 ///
 /// Only a non-negative integer, or its supported numeric-string form, of the
 /// selected raw `output_tokens` (falling back to `completion_tokens`) is
@@ -70,7 +70,7 @@ fn nested_token(usage: &Value, object: &str, key: &str) -> Option<u64> {
         .map(|value| token_number(Some(value)))
 }
 
-/// Strictly read one native DeepSeek cache count (REQ-001).
+/// Strictly read one native DeepSeek cache count.
 ///
 /// `Some(None)` means the key is absent or `null`; `Some(Some(n))` means a
 /// present non-negative integer or its supported numeric-string form; `None`
@@ -109,7 +109,7 @@ fn invalid_canonical_usage(
     }
 }
 
-/// Map an upstream `usage` object to the four exclusive token tiers (REQ-001).
+/// Map an upstream `usage` object to the four exclusive token tiers.
 ///
 /// Missing fields become 0; the caller decides whether usage was present at all.
 ///
@@ -143,7 +143,7 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
         .or_else(|| usage.get("completion_tokens"))
         .map(|value| token_number(Some(value)))
         .unwrap_or(0);
-    // Independently validated reported output count (REQ-003): the selected raw
+    // Independently validated reported output count: the selected raw
     // field (output_tokens before completion_tokens) must be a non-negative
     // integer or its numeric-string form; any other shape stays unknown.
     let reported_output_tokens = reported_output_count(usage);
@@ -156,7 +156,7 @@ pub(in crate::ai_gateway) fn canonical_usage_from_value(usage: &Value) -> Canoni
     let top_read = token_number(usage.get("cache_read_input_tokens"));
     let top_creation = token_number(usage.get("cache_creation_input_tokens"));
 
-    // Native DeepSeek cache fields (REQ-001). A present value must be a
+    // Native DeepSeek cache fields. A present value must be a
     // non-negative integer or its supported numeric-string form; `null` is
     // absent. A present but malformed value is an invalid decomposition.
     let (native_hit, native_miss) = match (

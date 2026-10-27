@@ -17,7 +17,7 @@ pub struct ModelPoolCandidateStatus {
     pub cooling_until: Option<u64>,
 }
 
-/// One canonical row of a pool's static reasoning coverage (REQ-005). The count
+/// One canonical row of a pool's static reasoning coverage. The count
 /// is configuration-derived and never reflects cooldown, key availability,
 /// health or source enable state.
 #[derive(Debug, Clone, Serialize)]

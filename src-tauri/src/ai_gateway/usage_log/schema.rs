@@ -51,7 +51,7 @@ INSERT INTO usage_logs (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
-/// Semantics marker persisted for every newly written row (REQ-004).
+/// Semantics marker persisted for every newly written row.
 pub(in crate::ai_gateway) const CANONICAL_USAGE_SEMANTICS: &str = "canonical_v1";
 
 /// Column list of every record-producing `SELECT`, in [`record_from_row`] order.
@@ -71,8 +71,8 @@ fn add_usage_log_column(connection: &Connection, sql: &str) -> Result<(), String
     }
 }
 
-/// Add the attempt/terminal columns to a database written before this change
-/// (REQ-005). The `PRAGMA table_info` inspection makes the migration idempotent:
+/// Add the attempt/terminal columns to a database written before this change.
+/// The `PRAGMA table_info` inspection makes the migration idempotent:
 /// present columns are left alone, existing rows default to terminal with no
 /// message. A concurrent opener may still win the race between the inspection
 /// and an `ALTER TABLE`, so a `duplicate column name` failure from any additive
@@ -108,7 +108,7 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
     if !has_column("cost_breakdown") {
         add_usage_log_column(connection, "ALTER TABLE usage_logs ADD COLUMN cost_breakdown TEXT")?;
     }
-    // Additive usage-accounting columns (REQ-004). Pre-existing rows default to
+    // Additive usage-accounting columns. Pre-existing rows default to
     // legacy semantics with no present/valid usage and stay excluded from the
     // new cache numerator/denominator; original tokens, totals, amounts and log
     // fields are never rewritten.
@@ -130,7 +130,7 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
             "ALTER TABLE usage_logs ADD COLUMN cache_accounting_valid INTEGER NOT NULL DEFAULT 0",
         )?;
     }
-    // Nullable stream-timing measurements (REQ-002/REQ-003). Added additively and
+    // Nullable stream-timing measurements. Added additively and
     // never backfilled: pre-existing rows stay unknown (null) and are never
     // treated as an observed zero.
     if !has_column("first_token_ms") {
@@ -139,7 +139,7 @@ fn migrate_usage_logs(connection: &Connection) -> Result<(), String> {
     if !has_column("avg_tps") {
         add_usage_log_column(connection, "ALTER TABLE usage_logs ADD COLUMN avg_tps REAL")?;
     }
-    // Nullable pool-only evidence columns (REQ-006). Added additively and never
+    // Nullable pool-only evidence columns. Added additively and never
     // backfilled: historical rows stay null and are never inferred.
     if !has_column("resolved_reasoning_effort") {
         add_usage_log_column(
@@ -206,7 +206,7 @@ pub(super) fn insert_record(
     Ok(())
 }
 
-/// Permanently delete rows older than the retention window (REQ-009).
+/// Permanently delete rows older than the retention window.
 pub(super) fn apply_retention(connection: &Connection, retention_days: u32) {
     let cutoff = now_millis() - normalize_retention_days(retention_days) as i64 * DAY_MS;
     let _ = connection.execute("DELETE FROM usage_logs WHERE timestamp_ms < ?", [cutoff]);

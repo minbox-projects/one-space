@@ -66,8 +66,7 @@ pub(in crate::ai_gateway) fn is_authorized(request: &HttpRequest, config: &Gatew
 ///
 /// An enabled pool advertises its alias exactly once, independent of transient
 /// candidate readiness/cooldown, key availability or a disabled source; a
-/// disabled pool and a reserved-but-unowned retired alias are never advertised
-/// (REQ-008/AC-011).
+/// disabled pool and a reserved-but-unowned retired alias are never advertised.
 pub(in crate::ai_gateway) fn local_model_names(config: &GatewayConfig) -> Vec<String> {
     let mut names: Vec<String> = config
         .providers
@@ -111,8 +110,7 @@ pub(in crate::ai_gateway) fn models_payload(config: &GatewayConfig) -> Value {
     json!({ "object": "list", "data": data })
 }
 
-/// The `/v1/models` row for one enabled configured pool (REQ-008/AC-011,
-/// REQ-005/AC-009).
+/// The `/v1/models` row for one enabled configured pool.
 ///
 /// It advertises the pool's own public id and display name, the two OpenAI
 /// ingress protocols it supports and its real selected source identities. It
@@ -187,7 +185,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
 
     // Evaluate the post-resume grace exactly once, when the request starts:
     // every transport failure settled by this request is suppressed while the
-    // window is open (REQ-004/AC-006).
+    // window is open.
     let suppress_transport_failures =
         crate::app_runtime::system_resume_grace_active(SystemTime::now());
 
@@ -196,7 +194,7 @@ pub(in crate::ai_gateway) async fn handle_connection(mut stream: TcpStream) -> R
         Err(error) => {
             // The route is known from the request line even when the
             // configuration cannot be read, so a native Messages early failure
-            // still answers with the Anthropic error envelope (REQ-002).
+            // still answers with the Anthropic error envelope.
             let response = json_response(
                 500,
                 local_error_payload(
@@ -351,7 +349,7 @@ connection: close\r\n\r\n";
         .unwrap_or(false);
 
     let protocol = protocol_for_path(path);
-    // Model-pool boundary (REQ-007): resolve an exact current or retired pool
+    // Model-pool boundary: resolve an exact current or retired pool
     // alias before any ordinary candidate or provider default can serve it. A
     // disabled pool, a retired alias or a native Messages request for a pool
     // alias fails closed with no ordinary attempt.
@@ -364,7 +362,7 @@ connection: close\r\n\r\n";
     let pool_cap = pool_output_cap(path, &body_value);
     let mut pool_requested_pref: Option<PoolReasoningEffort> = None;
     let mut pool_resolved: Option<String> = None;
-    // REQ-001/AC-001: recognize a current pool alias first, then parse its
+    // Recognize a current pool alias first, then parse its
     // reasoning intent and validate the cleaned portable contract before any
     // selection, SWRR mutation, key/probe or health change. A native Messages
     // alias stays on its fenced 502 path below.
@@ -437,7 +435,7 @@ connection: close\r\n\r\n";
     let pool_plan = pool_alias.and_then(|alias| {
         plan_pool_request(&config, alias, protocol, &pool_reasoning_request, now_ts())
     });
-    // The ordered runtime classification (REQ-003/AC-004/AC-005): an unsupported
+    // The ordered runtime classification: an unsupported
     // preference, a declared-but-unavailable preference and an output-cap
     // incompatibility are each answered before any attempt. A 400 is a request
     // validation error like every other local 400; the 502 unavailability shares
@@ -489,7 +487,7 @@ connection: close\r\n\r\n";
             .write_all(&http_response_bytes(response))
             .await
             .map_err(|e| e.to_string())?;
-        // The alias is a real stored model boundary (REQ-009): record the same
+        // The alias is a real stored model boundary: record the same
         // nonempty source/model reason the caller received, with no upstream
         // attempt and no ordinary default.
         record_usage_log(
@@ -560,7 +558,7 @@ connection: close\r\n\r\n";
             .collect()
     };
     // The half-open probe is computed against the healthy candidate provider
-    // ids so an already-serving provider is never also probed (REQ-002). A pool
+    // ids so an already-serving provider is never also probed. A pool
     // request probes only its own resolved candidate rows.
     let healthy_provider_ids: Vec<String> = candidates
         .iter()
@@ -581,8 +579,8 @@ connection: close\r\n\r\n";
     };
     // Conversion validation runs before any Anthropic attempt, including a
     // half-open probe: a probe-only Anthropic candidate must not bypass the
-    // field-specific 400 and settle no probe/key health (REQ-003/AC-007). A
-    // model pool's Step 1 baseline is same-protocol only, so it is excluded.
+    // field-specific 400 and settle no probe/key health. A
+    // model pool's candidate baseline is same-protocol only, so it is excluded.
     if !is_pool
         && !is_messages_path(path)
         && (candidates.iter().any(|provider| {
@@ -616,10 +614,10 @@ connection: close\r\n\r\n";
             .await
             .map_err(|e| e.to_string())?;
         // A request that entered the normalized flow but had no serving
-        // upstream is a failure (REQ-007/REQ-008), never a silent no-log; it
+        // upstream is a failure, never a silent no-log; it
         // keeps the existing single synthetic terminal row and writes it
         // through the single-row store call. The row records the same
-        // no-candidate explanation the caller received (REQ-003).
+        // no-candidate explanation the caller received.
         record_usage_log(
             &config,
             &synthetic_terminal_row(
@@ -638,9 +636,9 @@ connection: close\r\n\r\n";
     }
 
     // A probe-only request neither reads nor writes a session-affinity binding
-    // and uses no session id (REQ-002). A model-pool request never uses session
-    // affinity: identical session headers must not pin which candidate serves
-    // (REQ-003), and its candidates are already in SWRR order.
+    // and uses no session id. A model-pool request never uses session
+    // affinity: identical session headers must not pin which candidate serves,
+    // and its candidates are already in SWRR order.
     let session_id = if probe_only || is_pool {
         None
     } else {
@@ -683,7 +681,7 @@ connection: close\r\n\r\n";
     };
     // One entry per completed upstream attempt, owned by the connection handler
     // and borrowed by the forwarding future: dropping an in-flight attempt keeps
-    // every entry that already completed (REQ-001).
+    // every entry that already completed.
     let mut attempts: Vec<AttemptLog> = Vec::new();
     let forward = async {
         if wants_stream {
@@ -819,9 +817,9 @@ connection: close\r\n\r\n";
             }
             if attempts.is_empty() {
                 // No upstream attempt completed, so the request's only row is
-                // the gateway's own terminal row, like a no-candidate request
-                // (REQ-001). It records the same all-unavailable diagnostic the
-                // caller received instead of an empty error (REQ-003).
+                // the gateway's own terminal row, like a no-candidate request.
+                // It records the same all-unavailable diagnostic the
+                // caller received instead of an empty error.
                 let record = synthetic_terminal_row(
                     &config,
                     requested.as_deref().unwrap_or_default(),
@@ -882,7 +880,7 @@ fn extract_reasoning_effort(body: &Value) -> Option<String> {
 }
 
 /// The effective output cap of one pool request, used only to filter Anthropic
-/// manual-budget mappings (REQ-003/AC-006). Chat applies `max_completion_tokens`
+/// manual-budget mappings. Chat applies `max_completion_tokens`
 /// precedence over `max_tokens`; Responses uses `max_output_tokens`; an omitted
 /// cap keeps the Anthropic adapter's 4096 default. The field name travels with
 /// the value so an incompatibility error can name the relevant field.

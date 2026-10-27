@@ -134,8 +134,8 @@ impl UsageLogStore {
 
     /// Insert every entry of one request through one explicit transaction on the
     /// path-scoped write connection, in slice order, committing only after every
-    /// insert succeeded, then apply the same retention cleanup as [`Self::append`]
-    /// (REQ-005). A failed insert rolls the whole batch back, leaving no partial
+    /// insert succeeded, then apply the same retention cleanup as [`Self::append`].
+    /// A failed insert rolls the whole batch back, leaving no partial
     /// request. An empty slice writes nothing.
     pub(in crate::ai_gateway) fn append_batch_with_accounting(
         &self,

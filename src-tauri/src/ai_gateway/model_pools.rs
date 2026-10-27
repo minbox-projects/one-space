@@ -1,4 +1,4 @@
-//! Operator-defined model pools (Step 1 of 20261013-free-model-pool).
+//! Operator-defined model pools.
 //!
 //! A model pool is a virtual provider that exposes one public model id (`model`)
 //! while routing each request, through the existing gateway attempt pipeline, to

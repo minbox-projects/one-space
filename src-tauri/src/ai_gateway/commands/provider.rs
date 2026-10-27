@@ -152,7 +152,7 @@ fn save_provider_persist(
         }
         let provider_id = provider.id.clone();
         // An ordinary provider mapping must not acquire a current or retired
-        // model-pool alias (REQ-001/REQ-007). Retaining an already-stored row is
+        // model-pool alias. Retaining an already-stored row is
         // allowed so resubmitting an unchanged provider never fails.
         let pool_aliases = reserved_aliases(config);
         if !pool_aliases.is_empty() {

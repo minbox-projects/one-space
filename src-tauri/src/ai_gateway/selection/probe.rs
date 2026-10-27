@@ -67,7 +67,7 @@ pub(in crate::ai_gateway) struct ProbeCandidate {
     /// The effective protocol of the probed row. The probe attempt forwards
     /// under this protocol even though the auto-disabled row is invisible to
     /// the normal served-row resolution, so a converted probe still reaches the
-    /// Anthropic Messages endpoint (REQ-005/AC-010).
+    /// Anthropic Messages endpoint.
     pub(in crate::ai_gateway) protocol: UpstreamProtocol,
 }
 

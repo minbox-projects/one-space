@@ -50,7 +50,7 @@ pub(in crate::ai_gateway) async fn start_server(
     app: Option<tauri::AppHandle>,
 ) -> Result<GatewayStatus, String> {
     // Store the handle before the early-return path so a restart always
-    // refreshes (or clears) the process-wide slot (REQ-005).
+    // refreshes (or clears) the process-wide slot.
     capture_app_handle(app);
     let config = read_config_shared()?;
     let mut guard = state_lock().lock().await;

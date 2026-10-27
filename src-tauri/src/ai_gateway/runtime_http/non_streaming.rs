@@ -55,7 +55,7 @@ async fn attempt_non_streaming_inner(
     let mut failures: Vec<(String, String)> = Vec::new();
     // Whether any candidate provider still has an enabled key. When none does,
     // a provider with no usable key reports the request-wide `no enabled key`
-    // reason rather than per-key user-disabled counts (AC-006).
+    // reason rather than per-key user-disabled counts.
     let request_has_enabled_key = ordered
         .iter()
         .any(|provider| provider.keys.iter().any(|key| key.enabled));
@@ -70,7 +70,7 @@ async fn attempt_non_streaming_inner(
     // Last attempted provider/model, reported when every candidate is unavailable.
     let mut last_capture: Option<ForwardCapture> = None;
 
-    // Initial pass (REQ-001): every candidate is tried once, in order, without
+    // Initial pass: every candidate is tried once, in order, without
     // waiting for any backoff, so a healthy later candidate answers before a
     // retry delay is paid. Within one provider slot, a persistent key-scoped
     // failure marks the attempted key and immediately continues on the next
@@ -161,7 +161,7 @@ async fn attempt_non_streaming_inner(
                         upstream_model: model.clone(),
                         ..Default::default()
                     });
-                    // Model-pool scope (REQ-006): a model-scoped or
+                    // Model-pool scope: a model-scoped or
                     // unknown-scope quota-like failure cools only this
                     // candidate and immediately falls through to the next
                     // selected candidate without marking the shared key,
@@ -251,7 +251,7 @@ async fn attempt_non_streaming_inner(
         }
     }
 
-    // Bounded retries (REQ-002): serial, earliest deadline first, ties keep the
+    // Bounded retries: serial, earliest deadline first, ties keep the
     // initial candidate order. A 404 never enters this queue and 401/403 stop the
     // provider; only retryable classes are rescheduled. Each retry is a fresh
     // pass that restarts key selection from the first usable key.
@@ -422,7 +422,7 @@ async fn attempt_non_streaming_inner(
         }
     }
 
-    // Half-open probe (REQ-001): only after every healthy candidate and its
+    // Half-open probe: only after every healthy candidate and its
     // bounded retries have failed, try the single eligible auto-disabled row
     // once. The single-flight guard makes concurrent requests skip a probe that
     // is already in flight, and a probe is never queued for retry or backoff.
@@ -471,8 +471,7 @@ async fn attempt_non_streaming_inner(
                 }
                 // The probed row is auto-disabled, so the normal served-row
                 // resolution skips it; forward under the row's own effective
-                // protocol so a converted probe reaches `/v1/messages`
-                // (REQ-005/AC-010).
+                // protocol so a converted probe reaches `/v1/messages`.
                 let upstream_protocol = candidate.protocol;
                 let (outcome, log) = attempt_candidate(
                     &provider,

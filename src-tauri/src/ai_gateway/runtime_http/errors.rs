@@ -1,6 +1,6 @@
 use super::*;
 
-/// The one gateway-generated error envelope (REQ-006/AC-010): `error.message`,
+/// The one gateway-generated error envelope: `error.message`,
 /// `error.type` and `error.code` are always present and non-empty, and
 /// `error.param` always exists as `null`.
 pub(super) fn error_envelope(message: impl Into<String>, error_type: &str, code: &str) -> Value {
@@ -29,7 +29,7 @@ pub(super) fn local_error_payload(
 
 /// Whether an upstream error body already uses the OpenAI standard shape: valid
 /// JSON containing an `error` object. Such a body is passed through unchanged;
-/// anything else is wrapped by the gateway (REQ-004/AC-007).
+/// anything else is wrapped by the gateway.
 pub(super) fn is_standard_error_body(body: &[u8]) -> bool {
     serde_json::from_slice::<Value>(body)
         .ok()
@@ -54,7 +54,7 @@ pub(super) fn extract_upstream_error_type(body: &[u8]) -> Option<String> {
         })
 }
 
-/// The standard envelope for a non-standard upstream 4xx body (REQ-004/AC-006).
+/// The standard envelope for a non-standard upstream 4xx body.
 /// The message names the upstream status and carries only the readable body
 /// text, never credentials or request headers.
 pub(super) fn upstream_error_payload(status: u16, body: &[u8]) -> Value {

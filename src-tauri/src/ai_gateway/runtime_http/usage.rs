@@ -142,8 +142,8 @@ fn build_usage_log_row(
 }
 
 /// Write one request row through a single store call on the blocking executor;
-/// a storage failure is reported only as a swallowed log-write warning
-/// (REQ-005). A synthetic gateway row carries no upstream usage object.
+/// a storage failure is reported only as a swallowed log-write warning.
+/// A synthetic gateway row carries no upstream usage object.
 pub(super) async fn record_usage_log(config: &GatewayConfig, record: &UsageLogRecord) {
     let retention = normalize_retention_days(config.usage_retention_days);
     let record = record.clone();
@@ -165,7 +165,7 @@ pub(super) async fn record_usage_log(config: &GatewayConfig, record: &UsageLogRe
 
 /// Write every entry of one request through a single store and batch on the
 /// blocking executor; a storage failure is reported only as a swallowed
-/// log-write warning (REQ-005).
+/// log-write warning.
 pub(super) async fn write_usage_log_entries(config: &GatewayConfig, entries: Vec<UsageLogEntry>) {
     let retention = normalize_retention_days(config.usage_retention_days);
     let write = tokio::task::spawn_blocking(move || {

@@ -4,7 +4,7 @@ use crate::ai_gateway::model_pools::{
 use crate::ai_gateway::storage::{modify_config, read_config};
 use crate::ai_gateway::{GatewayConfig, ModelPool};
 
-/// Create or edit one model pool (REQ-001).
+/// Create or edit one model pool.
 ///
 /// The submitted pool is validated against the latest configuration and written
 /// through the same serialized atomic primitive as every other gateway write, so
@@ -67,7 +67,7 @@ pub fn ai_gateway_delete_model_pool(pool_id: String) -> Result<GatewayConfig, St
 }
 
 /// Toggle a pool's `enabled` intent without touching its candidates, so
-/// readiness and user intent stay separate (REQ-001/REQ-008). An unknown id is an
+/// readiness and user intent stay separate. An unknown id is an
 /// actionable error that writes nothing.
 #[tauri::command]
 pub fn ai_gateway_set_model_pool_enabled(
@@ -86,8 +86,7 @@ pub fn ai_gateway_set_model_pool_enabled(
     read_config()
 }
 
-/// Nonsecret readiness of every stored pool and candidate (REQ-004 of the
-/// frozen plan): source identity, availability code and cooldown deadline only.
+/// Nonsecret readiness of every stored pool and candidate: source identity, availability code and cooldown deadline only.
 /// No network/quota probe runs and nothing is persisted.
 #[tauri::command]
 pub fn ai_gateway_model_pools_status() -> Result<Vec<ModelPoolStatus>, String> {

@@ -26,7 +26,7 @@ pub struct PoolCandidateIdentity {
 
 /// The concrete native action a pool candidate resolves to for one request.
 ///
-/// Bounded to the shapes REQ-002 permits; the target protocol is carried on the
+/// Bounded to the permitted shapes; the target protocol is carried on the
 /// enclosing [`PoolNativeReasoning`] and shapes the wire control.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::ai_gateway) enum PoolNativeAction {
@@ -228,7 +228,7 @@ impl<'de> Deserialize<'de> for PoolDefaultReasoningEffort {
     }
 }
 
-/// The deliberately bounded pool candidate native control profile (REQ-002). An
+/// The deliberately bounded pool candidate native control profile. An
 /// unknown profile is retained for a tolerant read and rejected on a new save.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PoolReasoningProfile {

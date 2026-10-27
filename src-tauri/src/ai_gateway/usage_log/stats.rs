@@ -14,7 +14,7 @@ use std::collections::HashMap;
 /// Fixed page size for the ungrouped request-log list.
 pub const USAGE_LOG_PAGE_SIZE: u32 = 50;
 
-/// SQL predicate selecting a cache-eligible row (REQ-002/REQ-004): an in-range
+/// SQL predicate selecting a cache-eligible row: an in-range
 /// successful terminal row with a present, valid canonical decomposition and a
 /// positive cache denominator. Totals, buckets, models, providers and the
 /// one-shot migration backfill all reuse this one predicate so no level can
@@ -110,7 +110,7 @@ fn derive_cache_rate(metrics: &mut UsageMetrics) {
 }
 
 /// Reproject the whole-attempt average TPS from the persisted output count and
-/// total duration (REQ-003), without rewriting the database.
+/// total duration, without rewriting the database.
 ///
 /// The stored `avg_tps` column is an availability marker only: a row measured by
 /// an attempt observation (stored value present) is recomputed as

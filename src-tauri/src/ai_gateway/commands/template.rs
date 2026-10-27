@@ -67,7 +67,7 @@ pub fn ai_gateway_provider_templates() -> Result<Vec<ProviderTemplateView>, Stri
 /// inside the store's dedupe window merge into one entry while refreshing the
 /// latest removed models, and the targeted AI Gateway tab carries the provider
 /// as its entity id. Neither the title, summary, detail, dedupe key, target nor
-/// metadata ever carries a key value (REQ-006).
+/// metadata ever carries a key value.
 fn template_mappings_retired_message_input(
     notice: &ProviderRetirementNotice,
 ) -> crate::messages::MessageCreateInput {
@@ -104,7 +104,7 @@ fn template_mappings_retired_message_input(
 /// Record one template-retirement transition per notice, in order: push the
 /// literal input onto the test seam and persist exactly one message input through
 /// the supplied handle. A missing handle skips the production write but still
-/// records the seam value so the transition is observable in tests (REQ-006).
+/// records the seam value so the transition is observable in tests.
 pub(in crate::ai_gateway) fn record_template_mappings_retired_messages(
     app: Option<&tauri::AppHandle>,
     notices: &[ProviderRetirementNotice],
@@ -122,7 +122,7 @@ pub(in crate::ai_gateway) fn record_template_mappings_retired_messages(
 /// model mappings. The title names the template, the summary carries the
 /// affected-provider and added-model counts, and the detail lists each
 /// provider's added models. Only provider and model names appear; no key value
-/// is ever carried (REQ-002/AC-002).
+/// is ever carried.
 fn template_sync_message_input(
     view: &ProviderTemplateView,
     additions: &[TemplateAdditionNotice],
@@ -177,8 +177,7 @@ fn template_sync_message_input(
 /// Record one additions-only `template_sync` info message when the sync added at
 /// least one model mapping. A sync without additions records nothing. The write
 /// is best-effort and never fails the sync: the literal input is pushed onto the
-/// test seam and persisted through the supplied handle if one is present
-/// (REQ-002/AC-002).
+/// test seam and persisted through the supplied handle if one is present.
 pub(in crate::ai_gateway) fn record_template_sync_addition_message(
     app: Option<&tauri::AppHandle>,
     view: &ProviderTemplateView,

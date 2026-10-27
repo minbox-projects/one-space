@@ -61,7 +61,7 @@ pub(in crate::ai_gateway) fn register_mapping_failure_with_threshold(
     for mapping in provider.mappings.iter_mut().filter(|mapping| {
         mapping_matches_key(mapping, &target.local_model, &target.upstream_model)
     }) {
-        // Frozen Step 2 rule: an immediate auth disable records reason/at/
+        // Frozen rule: an immediate auth disable records reason/at/
         // last_error_at but must not advance the transient-failure counter, so
         // the counter keeps meaning consecutive Retryable failures and a 401/403
         // row can never reach the probe threshold through the counter.

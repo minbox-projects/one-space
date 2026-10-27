@@ -38,4 +38,4 @@ The no-behavior-change rule is part of the architecture: no business logic, cond
 - No test file was added, deleted or modified, and the existing frontend and Rust suites remain the behavior gate for the split.
 - Each structural step can be reverted independently because consumers depend on facades rather than on another step's new internal modules.
 - Verification: `ai-workflow context validate` and `ai-workflow notes validate` pass for this documentation state, and the documented paths and symbols match the delivered tree.
-- No active note is fully or partially superseded. Existing notes about feature behavior, gateway routing, persistence and performance remain current because this record changes only module boundaries and preserves their recorded contracts.
+- No active note is fully or partially superseded: this record changes only module boundaries and preserves every recorded contract. Pre-existing notes that still cite the retired monolithic `src/i18n.ts` or `src/lib/aiGateway.ts` paths remain historical records of their own decisions and are intentionally left unrewritten by this structural change.

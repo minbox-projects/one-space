@@ -38,7 +38,7 @@ function normalizeTemplateErrorStrategy(): GatewayTemplateErrorStrategy {
  * Resolve the template a provider is bound to, strictly from its `template_id`.
  *
  * An unbound provider, an unknown or deleted id and an empty template list all
- * resolve to `null`; URL, name and icon are never consulted (AC-005 / AC-006).
+ * resolve to `null`; URL, name and icon are never consulted.
  */
 export function resolveProviderTemplate(
   templates: GatewayProviderTemplateView[] | null | undefined,
