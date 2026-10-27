@@ -119,6 +119,21 @@ describe("MoreToolsHub", () => {
     expect(onBack).toHaveBeenCalledOnce();
   });
 
+  it("工具详情页滚动容器具有右内边距防止滚动条被组件遮挡", async () => {
+    const { container } = renderWithProviders(
+      <MoreToolsHub
+        activeTool="bookmarks"
+        onSelectTool={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Bookmarks detail")).toBeInTheDocument();
+    const scrollContainer = container.querySelector(".overflow-y-auto");
+    expect(scrollContainer).toBeInTheDocument();
+    expect(scrollContainer).toHaveClass("pr-3", "sm:pr-4");
+  });
+
   it("从启动台进入详情时显示返回启动台", () => {
     renderWithProviders(
       <MoreToolsHub

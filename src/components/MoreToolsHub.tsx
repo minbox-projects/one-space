@@ -253,7 +253,7 @@ export function MoreToolsHub({
           ) : null}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">{toolContent}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-3 sm:pr-4">{toolContent}</div>
       </div>
     );
   }

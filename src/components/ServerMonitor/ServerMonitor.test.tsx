@@ -417,6 +417,21 @@ describe("ServerMonitorTool", () => {
     expect(screen.queryByText(/alpha/i)).not.toBeInTheDocument();
     expect(screen.getByText(/beta/i)).toBeInTheDocument();
   });
+
+  it("main container does not use overflow-x-hidden so vertical scroll matches AI gateway", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return statePopulated;
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const mainContainer = await screen.findByTestId("server-monitor-main");
+    expect(mainContainer).toBeInTheDocument();
+    expect(mainContainer).not.toHaveClass("overflow-x-hidden");
+    expect(mainContainer).toHaveClass("w-full", "max-w-full", "min-w-0", "space-y-4", "pr-1", "sm:pr-2");
+  });
 });
 
 describe("ServerFormDialog", () => {

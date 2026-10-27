@@ -548,7 +548,7 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
       ) : null}
 
       {targets.length > 0 ? (
-        <div className="w-full max-w-full min-w-0 space-y-4 overflow-x-hidden">
+        <div data-testid="server-monitor-main" className="w-full max-w-full min-w-0 space-y-4 pr-1 sm:pr-2">
           {/* 顶部统计卡片仪表板 */}
           <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm transition hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
