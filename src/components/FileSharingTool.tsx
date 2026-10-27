@@ -324,7 +324,7 @@ export function FileSharingTool({ isVisible = true }: { isVisible?: boolean }) {
         </div>
         <div>
           <h2 className="text-lg font-semibold">{t("fileSharing", "File Sharing")}</h2>
-          <p className="text-sm text-muted-foreground">{t("fileSharingDesc", "Share selected files over a trusted local network.")}</p>
+          <p className="text-sm text-muted-foreground">{t("fileSharingDesc", "Share files over local network or ephemeral public tunnels with optional password protection and QR download.")}</p>
         </div>
       </div>
       <ToolErrorBanner message={error} />

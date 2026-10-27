@@ -46,6 +46,11 @@ describe("FileSharingTool", () => {
 
     expect(iconContainer).toHaveClass(...iconClassName.split(" "));
     expect(iconContainer?.querySelector("svg")).toHaveClass("lucide-share-2");
+    expect(
+      screen.getByText(
+        /Share files over local network or ephemeral public tunnels|通过局域网或临时公网隧道共享文件/,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("keeps selected files when start fails", async () => {

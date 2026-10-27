@@ -3889,8 +3889,10 @@ const resources = {
       shortLinkError_storage_error:
         "Unable to access the encrypted TinyURL credential on this device.",
       fileSharing: "File Sharing",
-      fileSharingDesc: "Share selected files over a trusted local network.",
-      fileSharingLauncherDesc: "Share selected files on a trusted local network.",
+      fileSharingDesc:
+        "Share files over local network or ephemeral public tunnels with optional password protection and QR download.",
+      fileSharingLauncherDesc:
+        "Fast file sharing over LAN or public internet with zero-config tunnel, password protection, and QR download.",
       fileSharingDesktopRequired: "File sharing requires the OneSpace desktop app.",
       fileSharingChooseFiles: "Choose files",
       fileSharingClearFiles: "Clear",
@@ -7795,8 +7797,8 @@ const resources = {
       shortLinkError_storage_error:
         "无法访问当前设备中加密保存的 TinyURL 凭据。",
       fileSharing: "文件共享",
-      fileSharingDesc: "通过可信局域网共享选定文件。",
-      fileSharingLauncherDesc: "在可信局域网上共享选定文件。",
+      fileSharingDesc: "通过局域网或临时公网隧道共享文件，支持可选密码保护与扫码直接下载。",
+      fileSharingLauncherDesc: "局域网与公网文件快传，支持免配置穿透、密码保护与扫码下载。",
       fileSharingDesktopRequired: "文件共享需要在 OneSpace 桌面端中使用。",
       fileSharingChooseFiles: "选择文件",
       fileSharingClearFiles: "清空",

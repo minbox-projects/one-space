@@ -20,6 +20,26 @@ describe("文件共享国际化", () => {
     await i18n.changeLanguage(language);
     for (const key of FILE_SHARING_KEYS) expect(i18n.t(key)).not.toBe(key);
   });
+
+  it.each([
+    [
+      "en",
+      "Share files over local network or ephemeral public tunnels with optional password protection and QR download.",
+      "Fast file sharing over LAN or public internet with zero-config tunnel, password protection, and QR download.",
+    ],
+    [
+      "zh",
+      "通过局域网或临时公网隧道共享文件，支持可选密码保护与扫码直接下载。",
+      "局域网与公网文件快传，支持免配置穿透、密码保护与扫码下载。",
+    ],
+  ] as const)(
+    "为 %s 提供与实际公网穿透及密码功能匹配的副标题与描述",
+    async (language, expectedDesc, expectedLauncherDesc) => {
+      await i18n.changeLanguage(language);
+      expect(i18n.t("fileSharingDesc")).toBe(expectedDesc);
+      expect(i18n.t("fileSharingLauncherDesc")).toBe(expectedLauncherDesc);
+    },
+  );
 });
 
 describe("OpenCode 模型列表国际化", () => {
