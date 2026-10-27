@@ -37,6 +37,14 @@ import {
 } from "@/lib/aiGateway";
 import { sslGetConfig, sslSaveConfig, type SslConfig } from "@/lib/sslCertificate";
 import {
+  DEFAULT_SERVER_MONITOR_SETTINGS,
+  normalizeServerMonitorSettings,
+  serverMonitorGetSettings,
+  serverMonitorSaveSettings,
+  validateServerMonitorSettings,
+  type ServerMonitorSettings,
+} from "@/lib/serverMonitor";
+import {
   type MainSettingsTab,
   type LegacySettingsSection,
   type StorageConfig,
@@ -85,11 +93,26 @@ const ALL_LEGACY_SECTIONS: LegacySettingsSection[] = [
   "protocol-router",
   "ai-gateway",
   "ssl-certificate",
+  "server-monitor",
   "shortcuts",
   "ai",
   "appearance",
   "security",
 ];
+
+function parseBoundedInteger(
+  value: string,
+  minimum: number,
+  maximum: number,
+): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    return null;
+  }
+  return parsed;
+}
 
 export interface SettingsContainerProps {
   initialTab?: string;
@@ -197,6 +220,15 @@ export function SettingsContainer({
   const [newCheckTimeInput, setNewCheckTimeInput] = useState("09:00");
   const [sslAlertDaysInput, setSslAlertDaysInput] = useState("30");
 
+  // Server Monitor States
+  const [serverMonitorSettings, setServerMonitorSettings] =
+    useState<ServerMonitorSettings>(DEFAULT_SERVER_MONITOR_SETTINGS);
+  const [savedServerMonitorSettings, setSavedServerMonitorSettings] =
+    useState<ServerMonitorSettings>(DEFAULT_SERVER_MONITOR_SETTINGS);
+  const [serverMonitorIntervalInput, setServerMonitorIntervalInput] = useState("5");
+  const [serverMonitorRetentionInput, setServerMonitorRetentionInput] = useState("7");
+  const [serverMonitorNewTimeInput, setServerMonitorNewTimeInput] = useState("");
+
   // Skills & Subagents States
   const [skillsSyncState, setSkillsSyncState] = useState<SkillsSyncState | null>(null);
   const [skillsSyncNowLoading, setSkillsSyncNowLoading] = useState(false);
@@ -285,6 +317,7 @@ export function SettingsContainer({
     void loadProtocolRouter();
     void loadAiGateway();
     void loadSslConfig();
+    void loadServerMonitorSettings();
   }, []);
 
   useEffect(() => {
@@ -384,6 +417,24 @@ export function SettingsContainer({
       setSslAlertDaysInput(String(cfg.alertDaysThreshold));
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const loadServerMonitorSettings = async () => {
+    try {
+      const cfg = await serverMonitorGetSettings();
+      const normalized = normalizeServerMonitorSettings(cfg);
+      setServerMonitorSettings(normalized);
+      setSavedServerMonitorSettings(normalized);
+      setServerMonitorIntervalInput(String(normalized.intervalMinutes));
+      setServerMonitorRetentionInput(String(normalized.retentionDays));
+      setServerMonitorNewTimeInput("");
+    } catch (e) {
+      console.error(e);
+      setServerMonitorSettings(DEFAULT_SERVER_MONITOR_SETTINGS);
+      setSavedServerMonitorSettings(DEFAULT_SERVER_MONITOR_SETTINGS);
+      setServerMonitorIntervalInput(String(DEFAULT_SERVER_MONITOR_SETTINGS.intervalMinutes));
+      setServerMonitorRetentionInput(String(DEFAULT_SERVER_MONITOR_SETTINGS.retentionDays));
     }
   };
 
@@ -581,6 +632,22 @@ export function SettingsContainer({
         next[tab] = thresholdDirty || configDirty;
         return;
       }
+      if (tab === "server-monitor") {
+        const scheduleDirty =
+          serverMonitorSettings.autoCollectEnabled !==
+            savedServerMonitorSettings.autoCollectEnabled ||
+          serverMonitorSettings.scheduleMode !==
+            savedServerMonitorSettings.scheduleMode ||
+          JSON.stringify(serverMonitorSettings.dailyTimes) !==
+            JSON.stringify(savedServerMonitorSettings.dailyTimes);
+        next[tab] =
+          scheduleDirty ||
+          serverMonitorIntervalInput.trim() !==
+            String(savedServerMonitorSettings.intervalMinutes) ||
+          serverMonitorRetentionInput.trim() !==
+            String(savedServerMonitorSettings.retentionDays);
+        return;
+      }
       if (tab === "news") {
         const current = getTabSnapshot(tab, config, proxyConfig);
         const saved = getTabSnapshot(tab, savedConfig, savedProxyConfig);
@@ -621,6 +688,10 @@ export function SettingsContainer({
     sslConfig,
     savedSslConfig,
     sslAlertDaysInput,
+    serverMonitorSettings,
+    savedServerMonitorSettings,
+    serverMonitorIntervalInput,
+    serverMonitorRetentionInput,
   ]);
 
   const currentTabDirty = tabDirtyMap[activeSubTab];
@@ -1035,6 +1106,98 @@ export function SettingsContainer({
         return;
       }
 
+      if (activeSubTab === "server-monitor") {
+        const intervalMinutes = parseBoundedInteger(
+          serverMonitorIntervalInput,
+          1,
+          1440,
+        );
+        if (intervalMinutes === null) {
+          setMessage({
+            type: "error",
+            text: t(
+              "serverMonitorIntervalInvalid",
+              "Interval must be an integer from 1 to 1440 minutes.",
+            ),
+          });
+          return;
+        }
+        const retentionDays = parseBoundedInteger(
+          serverMonitorRetentionInput,
+          1,
+          30,
+        );
+        if (retentionDays === null) {
+          setMessage({
+            type: "error",
+            text: t(
+              "serverMonitorRetentionInvalid",
+              "Retention must be an integer from 1 to 30 days.",
+            ),
+          });
+          return;
+        }
+        const candidate: ServerMonitorSettings = {
+          ...serverMonitorSettings,
+          intervalMinutes,
+          retentionDays,
+        };
+        if (!validateServerMonitorSettings(candidate)) {
+          setMessage({
+            type: "error",
+            text: t(
+              "serverMonitorInvalidSettings",
+              "Check the interval, retention, and daily collection times.",
+            ),
+          });
+          return;
+        }
+        const payloadToSave: ServerMonitorSettings = {
+          ...candidate,
+          dailyTimes: [...candidate.dailyTimes].sort(),
+        };
+        const saved = await runUserAction(
+          actionContext,
+          {
+            source: "settings",
+            category: "server-monitor",
+            action: "save-server-monitor-settings",
+            target: { tab: "settings", section: "server-monitor" },
+            dedupeKey: "settings:server-monitor:save",
+            confirm: {
+              message: t(
+                "confirmSaveServerMonitor",
+                "Save Server Monitor scheduling settings?",
+              ),
+              title: t("serverMonitorScheduleTitle", "Collection schedule"),
+              okLabel: t("save", "Save"),
+              cancelLabel: t("cancel", "Cancel"),
+              kind: "warning",
+            },
+            success: {
+              title: t("settingsSectionSavedTitle", "Settings saved"),
+              summary: t("currentSectionSavedSuccess", "Current section saved."),
+            },
+            error: {
+              title: t("settingsSaveFailedTitle", "Failed to save settings"),
+            },
+          },
+          async () => serverMonitorSaveSettings(payloadToSave),
+        );
+        if (saved === null) return;
+        const normalized = normalizeServerMonitorSettings(saved.settings ?? payloadToSave);
+        setServerMonitorSettings(normalized);
+        setSavedServerMonitorSettings(normalized);
+        setServerMonitorIntervalInput(String(normalized.intervalMinutes));
+        setServerMonitorRetentionInput(String(normalized.retentionDays));
+        setMessage({
+          type: "success",
+          text: t("currentSectionSavedSuccess", "Current section saved."),
+        });
+        setTimeout(() => setMessage({ type: "", text: "" }), 3000);
+        return;
+      }
+
       const otherTabsDirtyBeforeSave = ALL_LEGACY_SECTIONS.some(
         (tab) => tab !== activeSubTab && tabDirtyMap[tab],
       );
@@ -1257,6 +1420,29 @@ export function SettingsContainer({
         if (!confirmed) return;
         await loadSslConfig();
         setSslAlertDaysInput(String(savedSslConfig.alertDaysThreshold));
+        setMessage({
+          type: "success",
+          text: t("currentSectionResetSuccess", "Current section has been reset."),
+        });
+        setTimeout(() => setMessage({ type: "", text: "" }), 3000);
+        return;
+      }
+
+      if (activeSubTab === "server-monitor") {
+        const confirmed = await confirmDialog(
+          t(
+            "confirmResetSettingsSection",
+            "Discard unsaved changes in this settings section and reload the saved values?",
+          ),
+          {
+            title: t("confirmResetSettingsSectionTitle", "Reset settings"),
+            okLabel: t("reset", "Reset"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+        );
+        if (!confirmed) return;
+        await loadServerMonitorSettings();
         setMessage({
           type: "success",
           text: t("currentSectionResetSuccess", "Current section has been reset."),
@@ -1509,6 +1695,14 @@ export function SettingsContainer({
                   setNewCheckTimeInput={setNewCheckTimeInput}
                   sslAlertDaysInput={sslAlertDaysInput}
                   setSslAlertDaysInput={setSslAlertDaysInput}
+                  serverMonitorSettings={serverMonitorSettings}
+                  setServerMonitorSettings={setServerMonitorSettings}
+                  serverMonitorIntervalInput={serverMonitorIntervalInput}
+                  setServerMonitorIntervalInput={setServerMonitorIntervalInput}
+                  serverMonitorRetentionInput={serverMonitorRetentionInput}
+                  setServerMonitorRetentionInput={setServerMonitorRetentionInput}
+                  serverMonitorNewTimeInput={serverMonitorNewTimeInput}
+                  setServerMonitorNewTimeInput={setServerMonitorNewTimeInput}
                   onShowToast={(type, text) => {
                     setMessage({ type, text });
                     setTimeout(() => setMessage({ type: "", text: "" }), 3000);

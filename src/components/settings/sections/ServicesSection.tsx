@@ -4,6 +4,7 @@ import {
   Route,
   Network,
   ShieldCheck,
+  Server,
   CheckCircle2,
   AlertCircle,
   Copy,
@@ -17,6 +18,11 @@ import { Switch } from "@/components/ui/switch";
 import { SettingCard } from "../common/SettingCard";
 import { SettingSelect } from "../common/SettingSelect";
 import { SubTabNavigation, type SubTabItem } from "../common/SubTabNavigation";
+import { ServerMonitorSettingsView } from "./ServerMonitorSettings";
+import {
+  DEFAULT_SERVER_MONITOR_SETTINGS,
+  type ServerMonitorSettings,
+} from "@/lib/serverMonitor";
 import type {
   ProxyConfig,
   ProxyStatus,
@@ -62,6 +68,14 @@ export interface ServicesSectionProps {
   setNewCheckTimeInput: (val: string) => void;
   sslAlertDaysInput: string;
   setSslAlertDaysInput: (val: string) => void;
+  serverMonitorSettings?: ServerMonitorSettings;
+  setServerMonitorSettings?: React.Dispatch<React.SetStateAction<ServerMonitorSettings>>;
+  serverMonitorIntervalInput?: string;
+  setServerMonitorIntervalInput?: (val: string) => void;
+  serverMonitorRetentionInput?: string;
+  setServerMonitorRetentionInput?: (val: string) => void;
+  serverMonitorNewTimeInput?: string;
+  setServerMonitorNewTimeInput?: (val: string) => void;
   onShowToast?: (type: "success" | "error", text: string) => void;
   subTabDirtyMap?: Record<string, boolean>;
 }
@@ -95,6 +109,14 @@ export function ServicesSection({
   setNewCheckTimeInput,
   sslAlertDaysInput,
   setSslAlertDaysInput,
+  serverMonitorSettings = DEFAULT_SERVER_MONITOR_SETTINGS,
+  setServerMonitorSettings,
+  serverMonitorIntervalInput = "5",
+  setServerMonitorIntervalInput,
+  serverMonitorRetentionInput = "7",
+  setServerMonitorRetentionInput,
+  serverMonitorNewTimeInput = "",
+  setServerMonitorNewTimeInput,
   onShowToast,
   subTabDirtyMap = {},
 }: ServicesSectionProps) {
@@ -129,6 +151,13 @@ export function ServicesSection({
       fallbackTitle: "SSL 证书",
       icon: ShieldCheck,
       dirty: subTabDirtyMap["ssl-certificate"],
+    },
+    {
+      id: "server-monitor",
+      titleKey: "serverMonitor",
+      fallbackTitle: "服务器监控",
+      icon: Server,
+      dirty: subTabDirtyMap["server-monitor"],
     },
   ];
 
@@ -1252,6 +1281,21 @@ export function ServicesSection({
             </div>
           </SettingCard>
         </div>
+      )}
+
+      {/* 5. Server Monitor */}
+      {subTab === "server-monitor" && (
+        <ServerMonitorSettingsView
+          settings={serverMonitorSettings}
+          onSettingsChange={(next) => setServerMonitorSettings?.(next)}
+          intervalInput={serverMonitorIntervalInput}
+          onIntervalInputChange={(value) => setServerMonitorIntervalInput?.(value)}
+          retentionInput={serverMonitorRetentionInput}
+          onRetentionInputChange={(value) => setServerMonitorRetentionInput?.(value)}
+          newTimeInput={serverMonitorNewTimeInput}
+          onNewTimeInputChange={(value) => setServerMonitorNewTimeInput?.(value)}
+          onShowToast={onShowToast}
+        />
       )}
     </div>
   );
