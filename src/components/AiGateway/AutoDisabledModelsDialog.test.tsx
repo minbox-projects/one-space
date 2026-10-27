@@ -102,6 +102,10 @@ describe("Auto-disabled models dialog entry", () => {
     const dialog = await screen.findByTestId("ai-gateway-auto-disabled-models-dialog");
     expect(within(dialog).getByText("m1")).toBeInTheDocument();
     expect(within(dialog).getByText("m2")).toBeInTheDocument();
+    // Default is collapsed: re-enable button is not displayed yet
+    expect(within(dialog).queryByRole("button", { name: /re-?enable/i })).not.toBeInTheDocument();
+    // Expanding m1 reveals its sources and action
+    await userEvent.click(within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-m1"));
     expect(within(dialog).getByRole("button", { name: /re-?enable/i })).toBeInTheDocument();
   });
 
@@ -148,6 +152,7 @@ describe("Auto-disabled models dialog entry", () => {
     );
     await userEvent.click(screen.getByTestId("ai-gateway-auto-disabled-models"));
     const dialog = await screen.findByTestId("ai-gateway-auto-disabled-models-dialog");
+    await userEvent.click(within(dialog).getByTestId("ai-gateway-auto-disabled-toggle-all"));
     expect(within(dialog).getAllByText(/Same Name/).length).toBeGreaterThanOrEqual(2);
   });
 
@@ -191,6 +196,7 @@ describe("Auto-disabled models dialog entry", () => {
     );
     await userEvent.click(screen.getByTestId("ai-gateway-auto-disabled-models"));
     const dialog = await screen.findByTestId("ai-gateway-auto-disabled-models-dialog");
+    await userEvent.click(within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-m1"));
     const action = within(dialog).getByRole("button", { name: /re-?enable/i });
     await userEvent.click(action);
     await userEvent.click(action);
@@ -289,6 +295,9 @@ describe("Auto-disabled dialog identities and metadata", () => {
     renderListWith([provider], vi.fn());
 
     const dialog = await openDialog();
+    await userEvent.click(
+      within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-gpt-4o"),
+    );
 
     // Duplicate rows share exactly one recovery action.
     expect(
@@ -347,6 +356,9 @@ describe("Auto-disabled dialog identities and metadata", () => {
     renderListWith([pA, pB], vi.fn());
 
     const dialog = await openDialog();
+    await userEvent.click(
+      within(dialog).getByTestId("ai-gateway-auto-disabled-toggle-all"),
+    );
 
     // Trimmed case-sensitive identities stay distinct: uppercase trimmed " M "
     // and lowercase "m" never merge.
@@ -398,6 +410,9 @@ describe("Auto-disabled dialog identities and metadata", () => {
     renderListWith([provider], vi.fn());
 
     const dialog = await openDialog();
+    await userEvent.click(
+      within(dialog).getByTestId("ai-gateway-auto-disabled-toggle-all"),
+    );
 
     // Missing reason is marked unavailable and missing time degrades to an em
     // dash; neither value is invented.
@@ -496,6 +511,9 @@ describe("Auto-disabled dialog zh descriptors and keyboard flows", () => {
     const dialog = await screen.findByTestId(
       "ai-gateway-auto-disabled-models-dialog",
     );
+    await userEvent.click(
+      within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-模型甲"),
+    );
 
     // Chinese manual-disable indicators and pending state copy come from i18n.
     expect(
@@ -559,5 +577,138 @@ describe("Auto-disabled dialog zh descriptors and keyboard flows", () => {
     expect(
       within(dialog).getByText(i18n.t("aiGatewayAutoDisabledEmpty")),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Auto-disabled models dialog expand and collapse", () => {
+  const p1 = makeProvider({
+    id: "p1",
+    name: "Provider One",
+    mappings: [
+      autoMapping({
+        local_model: "gpt-4o",
+        upstream_model: "gpt-4o-up",
+      }),
+    ],
+  });
+  const p2 = makeProvider({
+    id: "p2",
+    name: "Provider Two",
+    mappings: [
+      autoMapping({
+        local_model: "claude-3-5-sonnet",
+        upstream_model: "claude-3-5-sonnet-up",
+      }),
+    ],
+  });
+
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("defaults to all model groups collapsed on open and does not render provider details", async () => {
+    renderListWith([p1, p2], vi.fn());
+    const dialog = await openDialog();
+
+    // Model group headers are present
+    expect(within(dialog).getByText("gpt-4o")).toBeInTheDocument();
+    expect(within(dialog).getByText("claude-3-5-sonnet")).toBeInTheDocument();
+
+    // Both toggles have aria-expanded="false"
+    const toggle1 = within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-gpt-4o");
+    const toggle2 = within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-claude-3-5-sonnet");
+    expect(toggle1).toHaveAttribute("aria-expanded", "false");
+    expect(toggle2).toHaveAttribute("aria-expanded", "false");
+
+    // Provider details are not rendered
+    expect(within(dialog).queryByText("Provider One")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Provider Two")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("gpt-4o-up")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("claude-3-5-sonnet-up")).not.toBeInTheDocument();
+  });
+
+  it("expands a model group on click to show provider list and collapses on click again", async () => {
+    renderListWith([p1, p2], vi.fn());
+    const dialog = await openDialog();
+
+    const toggle1 = within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-gpt-4o");
+    const toggle2 = within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-claude-3-5-sonnet");
+
+    // Click to expand gpt-4o
+    await userEvent.click(toggle1);
+    expect(toggle1).toHaveAttribute("aria-expanded", "true");
+    expect(toggle2).toHaveAttribute("aria-expanded", "false");
+
+    // gpt-4o provider and source details are visible; claude-3-5-sonnet remains hidden
+    expect(within(dialog).getByText("Provider One")).toBeInTheDocument();
+    expect(within(dialog).getByText("gpt-4o-up")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Provider Two")).not.toBeInTheDocument();
+
+    // Click again to collapse gpt-4o
+    await userEvent.click(toggle1);
+    expect(toggle1).toHaveAttribute("aria-expanded", "false");
+    expect(within(dialog).queryByText("Provider One")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("gpt-4o-up")).not.toBeInTheDocument();
+  });
+
+  it("supports keyboard navigation to toggle expansion using Enter and Space", async () => {
+    renderListWith([p1], vi.fn());
+    const dialog = await openDialog();
+
+    const toggle = within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-gpt-4o");
+    toggle.focus();
+
+    // Enter to expand
+    await userEvent.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(dialog).getByText("Provider One")).toBeInTheDocument();
+
+    // Space to collapse
+    await userEvent.keyboard(" ");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(dialog).queryByText("Provider One")).not.toBeInTheDocument();
+  });
+
+  it("supports expanding all and collapsing all via toggle-all button", async () => {
+    renderListWith([p1, p2], vi.fn());
+    const dialog = await openDialog();
+
+    const toggleAllBtn = within(dialog).getByTestId("ai-gateway-auto-disabled-toggle-all");
+    expect(toggleAllBtn).toHaveTextContent(/expand all/i);
+
+    // Click Expand all
+    await userEvent.click(toggleAllBtn);
+    expect(within(dialog).getByText("Provider One")).toBeInTheDocument();
+    expect(within(dialog).getByText("Provider Two")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-gpt-4o")).toHaveAttribute("aria-expanded", "true");
+    expect(within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-claude-3-5-sonnet")).toHaveAttribute("aria-expanded", "true");
+    expect(toggleAllBtn).toHaveTextContent(/collapse all/i);
+
+    // Click Collapse all
+    await userEvent.click(toggleAllBtn);
+    expect(within(dialog).queryByText("Provider One")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Provider Two")).not.toBeInTheDocument();
+    expect(within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-gpt-4o")).toHaveAttribute("aria-expanded", "false");
+    expect(within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-claude-3-5-sonnet")).toHaveAttribute("aria-expanded", "false");
+    expect(toggleAllBtn).toHaveTextContent(/expand all/i);
+  });
+
+  it("auto-expands matching model groups when searching and resets to collapsed on clearing search", async () => {
+    renderListWith([p1, p2], vi.fn());
+    const dialog = await openDialog();
+    const input = within(dialog).getByRole("searchbox");
+
+    // Initially collapsed
+    expect(within(dialog).queryByText("Provider One")).not.toBeInTheDocument();
+
+    // Search for "gpt"
+    await userEvent.type(input, "gpt");
+    expect(within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-gpt-4o")).toHaveAttribute("aria-expanded", "true");
+    expect(within(dialog).getByText("Provider One")).toBeInTheDocument();
+
+    // Clear search
+    await userEvent.clear(input);
+    expect(within(dialog).getByTestId("ai-gateway-auto-disabled-model-toggle-gpt-4o")).toHaveAttribute("aria-expanded", "false");
+    expect(within(dialog).queryByText("Provider One")).not.toBeInTheDocument();
   });
 });

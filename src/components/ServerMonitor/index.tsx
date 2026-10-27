@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
+  Loader2,
   Pencil,
   Plus,
   Search,
@@ -148,9 +150,11 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
   const available = isServerMonitorAvailable();
   const [state, setState] = useState<ServerMonitorState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [collectingId, setCollectingId] = useState<string | null>(null);
   const [samples, setSamples] = useState<ServerMonitorSample[]>([]);
   const [range, setRange] = useState<ServerMonitorHistoryRange>("twentyFourHours");
   const [selectedInterface, setSelectedInterface] = useState<string | null>(null);
+  const [selectedMountPoint, setSelectedMountPoint] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
@@ -199,28 +203,30 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
 
   useEffect(() => {
     setSelectedInterface(null);
+    setSelectedMountPoint(null);
   }, [selectedId, range]);
 
   useEffect(() => {
     setSamples([]);
   }, [selectedId]);
 
-  useEffect(() => {
-    if (!available || !isVisible || !selectedId) return;
-    let cancelled = false;
-    void (async () => {
+  const loadHistory = useCallback(
+    async (targetId: string, currentRange: ServerMonitorHistoryRange) => {
+      if (!available || !isVisible || !targetId) return;
       try {
-        const list = await serverMonitorHistory(selectedId, range);
-        if (cancelled) return;
+        const list = await serverMonitorHistory(targetId, currentRange);
         setSamples(Array.isArray(list) ? list : []);
       } catch {
-        if (!cancelled) setSamples([]);
+        setSamples([]);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [available, isVisible, selectedId, range, historyRefreshToken]);
+    },
+    [available, isVisible],
+  );
+
+  useEffect(() => {
+    if (!available || !isVisible || !selectedId) return;
+    void loadHistory(selectedId, range);
+  }, [available, isVisible, selectedId, range, historyRefreshToken, loadHistory]);
 
   const handleEvent = useCallback(
     (payload: unknown) => {
@@ -304,10 +310,84 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
     }
     return metrics?.network ? [metrics.network] : [];
   }, [metrics]);
+
+  const availableMountPoints = useMemo(() => {
+    const set = new Set<string>();
+    if (Array.isArray(metrics?.disks)) {
+      for (const disk of metrics.disks) {
+        if (disk.mountPoint) set.add(disk.mountPoint);
+      }
+    }
+    for (const sample of samples) {
+      const sampleM = sampleMetrics(sample);
+      if (Array.isArray(sampleM?.disks)) {
+        for (const disk of sampleM.disks) {
+          if (disk.mountPoint) set.add(disk.mountPoint);
+        }
+      }
+    }
+    return Array.from(set);
+  }, [metrics?.disks, samples]);
+
+  const availableInterfaces = useMemo(() => {
+    const set = new Set<string>();
+    for (const net of networks) {
+      if (net.interface) set.add(net.interface);
+    }
+    for (const sample of samples) {
+      const sampleM = sampleMetrics(sample);
+      const nets = Array.isArray(sampleM?.networks) && sampleM.networks.length > 0
+        ? sampleM.networks
+        : Array.isArray(sample.networks)
+          ? sample.networks
+          : [];
+      for (const net of nets) {
+        if (net.interface) set.add(net.interface);
+      }
+      if (sampleM?.network?.interface) {
+        set.add(sampleM.network.interface);
+      } else if (sample.networkInterface) {
+        set.add(sample.networkInterface);
+      }
+    }
+    return Array.from(set);
+  }, [networks, samples]);
+
+  const effectiveMountPoint = useMemo(() => {
+    if (selectedMountPoint && availableMountPoints.includes(selectedMountPoint)) {
+      return selectedMountPoint;
+    }
+    const disks = Array.isArray(metrics?.disks) ? metrics.disks : [];
+    if (disks.length > 0) {
+      const busiest = disks.reduce((max, d) => (d.usedPercent > max.usedPercent ? d : max));
+      return busiest.mountPoint;
+    }
+    return availableMountPoints[0] ?? null;
+  }, [selectedMountPoint, availableMountPoints, metrics?.disks]);
+
+  const effectiveInterface = useMemo(() => {
+    if (selectedInterface && availableInterfaces.includes(selectedInterface)) {
+      return selectedInterface;
+    }
+    if (latestSample?.networkInterface && availableInterfaces.includes(latestSample.networkInterface)) {
+      return latestSample.networkInterface;
+    }
+    return availableInterfaces[0] ?? null;
+  }, [selectedInterface, availableInterfaces, latestSample?.networkInterface]);
+
   const selectedNetwork = useMemo(
-    () => selectNetworkInterface(latestSample, selectedInterface),
-    [latestSample, selectedInterface],
+    () => selectNetworkInterface(latestSample, effectiveInterface),
+    [latestSample, effectiveInterface],
   );
+
+  const selectedDisk = useMemo(() => {
+    const disks = Array.isArray(metrics?.disks) ? metrics.disks : [];
+    if (effectiveMountPoint) {
+      const match = disks.find((d) => d.mountPoint === effectiveMountPoint);
+      if (match) return match;
+    }
+    return disks[0] ?? null;
+  }, [metrics?.disks, effectiveMountPoint]);
   const partial = useMemo(() => {
     if (!metrics) return false;
     return (
@@ -319,6 +399,35 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
       networks.length === 0
     );
   }, [metrics, latestSample, networks.length]);
+
+  const currentMetricsAlert = useMemo(() => {
+    if (!metrics) return null;
+    if (!settings.alertEnabled) return { hasAlert: false, alertReasons: [] };
+    const reasons: string[] = [];
+    if (metrics.cpu && metrics.cpu.usagePercent >= settings.cpuThresholdPercent) {
+      reasons.push(
+        `CPU 使用率 ${metrics.cpu.usagePercent.toFixed(1)}% (阈值 ${settings.cpuThresholdPercent}%)`,
+      );
+    }
+    if (metrics.memory && metrics.memory.usedPercent >= settings.memoryThresholdPercent) {
+      reasons.push(
+        `内存使用率 ${metrics.memory.usedPercent.toFixed(1)}% (阈值 ${settings.memoryThresholdPercent}%)`,
+      );
+    }
+    if (Array.isArray(metrics.disks)) {
+      for (const disk of metrics.disks) {
+        if (disk.usedPercent >= settings.diskThresholdPercent) {
+          reasons.push(
+            `磁盘 [${disk.mountPoint}] 使用率 ${disk.usedPercent.toFixed(1)}% (阈值 ${settings.diskThresholdPercent}%)`,
+          );
+        }
+      }
+    }
+    return {
+      hasAlert: reasons.length > 0,
+      alertReasons: reasons,
+    };
+  }, [metrics, settings]);
 
   const nextCollectionAt =
     selectedTarget?.nextCollectionAtMs ?? state?.nextCollectionAtMs ?? null;
@@ -339,6 +448,7 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
   };
 
   const handleCollectNow = async (target: ServerMonitorTargetView) => {
+    setCollectingId(target.id);
     try {
       const next = await serverMonitorRefresh(target.id);
       if (next && Array.isArray(next.targets)) {
@@ -351,12 +461,15 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
         description: text("serverMonitorCollected"),
         kind: "success",
       });
+      await loadHistory(target.id, range);
     } catch (reason) {
       pushToast({
         title: t("serverMonitorCollectFailed"),
         description: reason instanceof Error ? reason.message : String(reason),
         kind: "error",
       });
+    } finally {
+      setCollectingId(null);
     }
   };
 
@@ -487,10 +600,16 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
               type="button"
               size="sm"
               variant="outline"
+              data-testid="toolbar-collect-now-btn"
+              disabled={selectedTarget.collecting || collectingId === selectedTarget.id}
               onClick={() => void handleCollectNow(selectedTarget)}
               className="rounded-xl border-slate-200 dark:border-slate-800"
             >
-              <Activity className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+              {selectedTarget.collecting || collectingId === selectedTarget.id ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <Activity className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+              )}
               <BiText translationKey="serverMonitorCollectNow" />
             </Button>
           ) : null}
@@ -665,6 +784,11 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                 {filteredTargets.length > 0 ? (
                   filteredTargets.map((target) => {
                     const active = selectedTarget?.id === target.id;
+                    const hasAlert = target.hasAlert || (active && Boolean(currentMetricsAlert?.hasAlert));
+                    const alertReasons =
+                      active && currentMetricsAlert?.hasAlert && currentMetricsAlert.alertReasons.length > 0
+                        ? currentMetricsAlert.alertReasons
+                        : target.alertReasons;
                     const listKey = target.blocked
                       ? "serverMonitorStatusError"
                       : !target.enabled
@@ -693,11 +817,27 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="block truncate text-sm font-semibold text-slate-900 dark:text-white">
-                            {target.name}
-                          </span>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="truncate text-sm font-semibold text-slate-900 dark:text-white">
+                              {target.name}
+                            </span>
+                            {hasAlert ? (
+                              <span
+                                title={alertReasons && alertReasons.length > 0 ? alertReasons.join(" · ") : t("serverMonitorAlertBadge")}
+                                className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-600 dark:border-rose-500/40 dark:bg-rose-500/20 dark:text-rose-400 shrink-0"
+                                data-testid={`alert-badge-${target.id}`}
+                              >
+                                <AlertTriangle className="h-2.5 w-2.5 text-rose-500 shrink-0" />
+                                <BiText translationKey="serverMonitorAlertBadge" />
+                              </span>
+                            ) : null}
+                          </div>
                           <span
-                            className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${STATUS_RING_CLASSES[tone]}`}
+                            className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
+                              hasAlert && tone === "success"
+                                ? STATUS_RING_CLASSES.error
+                                : STATUS_RING_CLASSES[tone]
+                            }`}
                           />
                         </div>
                         <span className="mt-1 block truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
@@ -708,11 +848,18 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                           <span className="font-medium text-slate-500 dark:text-slate-400">
                             <BiText translationKey={listKey} />
                           </span>
-                          {target.savedHostName ? (
-                            <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                              SSH
-                            </span>
-                          ) : null}
+                          <div className="flex items-center gap-1">
+                            {target.tunnel?.enabled ? (
+                              <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                                <BiText translationKey="serverMonitorTunnelBadge" />
+                              </span>
+                            ) : null}
+                            {target.savedHostName ? (
+                              <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                SSH
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       </button>
                     );
@@ -750,6 +897,30 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                           {partial ? (
                             <StatusPill translationKey="serverMonitorPartial" tone="warning" />
                           ) : null}
+                          {selectedTarget.hasAlert || Boolean(currentMetricsAlert?.hasAlert) ? (
+                            <span
+                              title={
+                                currentMetricsAlert?.hasAlert && currentMetricsAlert.alertReasons.length > 0
+                                  ? currentMetricsAlert.alertReasons.join(" · ")
+                                  : selectedTarget.alertReasons?.join(" · ")
+                              }
+                              className="inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-rose-600 dark:border-rose-500/40 dark:bg-rose-500/20 dark:text-rose-400"
+                              data-testid="selected-target-alert-pill"
+                            >
+                              <AlertTriangle className="h-3 w-3 text-rose-500" />
+                              <BiText translationKey="serverMonitorAlertBadge" />
+                            </span>
+                          ) : null}
+                          {selectedTarget.tunnel?.enabled ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                              <BiText translationKey="serverMonitorTunnelBadge" />
+                              <span className="font-mono text-[10px] opacity-80">
+                                ({selectedTarget.tunnel.sourceKind === "savedHost"
+                                  ? selectedTarget.tunnel.savedHostName
+                                  : `${selectedTarget.tunnel.host}:${selectedTarget.tunnel.port || 22}`})
+                              </span>
+                            </span>
+                          ) : null}
                         </div>
                         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                           {settings.scheduleMode === "daily" ? (
@@ -767,6 +938,22 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          data-testid="detail-collect-now-btn"
+                          disabled={selectedTarget.collecting || collectingId === selectedTarget.id}
+                          onClick={() => void handleCollectNow(selectedTarget)}
+                          className="rounded-xl border-emerald-200 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/20 dark:text-emerald-300 dark:hover:bg-emerald-950/40"
+                        >
+                          {selectedTarget.collecting || collectingId === selectedTarget.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Activity className="h-3.5 w-3.5" />
+                          )}
+                          <BiText translationKey="serverMonitorCollectNow" />
+                        </Button>
                         <Button
                           type="button"
                           size="sm"
@@ -804,6 +991,28 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                         </Button>
                       </div>
                     </div>
+
+                    {(selectedTarget.hasAlert || Boolean(currentMetricsAlert?.hasAlert)) &&
+                    ((currentMetricsAlert?.hasAlert && currentMetricsAlert.alertReasons.length > 0) ||
+                      (selectedTarget.alertReasons && selectedTarget.alertReasons.length > 0)) ? (
+                      <div
+                        data-testid="selected-target-alert-banner"
+                        className="mt-4 flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:border-rose-500/40 dark:bg-rose-500/20 dark:text-rose-300"
+                      >
+                        <AlertTriangle className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />
+                        <div className="space-y-0.5 min-w-0">
+                          <p className="font-semibold">
+                            <BiText translationKey="serverMonitorAlertTitle" />
+                          </p>
+                          <p className="font-mono text-[11px] opacity-90 break-words">
+                            {(currentMetricsAlert?.hasAlert && currentMetricsAlert.alertReasons.length > 0
+                              ? currentMetricsAlert.alertReasons
+                              : selectedTarget.alertReasons
+                            ).join(" · ")}
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -857,7 +1066,12 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                   <MetricCards
                     metrics={metrics}
                     networks={networks}
-                    selectedInterface={selectedInterface}
+                    availableMountPoints={availableMountPoints}
+                    selectedMountPoint={effectiveMountPoint}
+                    selectedDisk={selectedDisk}
+                    onSelectMountPoint={setSelectedMountPoint}
+                    availableInterfaces={availableInterfaces}
+                    selectedInterface={effectiveInterface}
                     selectedNetwork={selectedNetwork}
                     onSelectInterface={setSelectedInterface}
                   />
@@ -896,7 +1110,11 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
                       samples={samples}
                       range={range}
                       expectedIntervalSeconds={latestSample?.expectedIntervalSeconds ?? null}
-                      selectedInterface={selectedInterface}
+                      availableMountPoints={availableMountPoints}
+                      selectedMountPoint={effectiveMountPoint}
+                      onSelectMountPoint={setSelectedMountPoint}
+                      availableInterfaces={availableInterfaces}
+                      selectedInterface={effectiveInterface}
                       onSelectInterface={setSelectedInterface}
                     />
                   </div>

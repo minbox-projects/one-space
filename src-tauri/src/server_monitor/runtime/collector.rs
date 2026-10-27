@@ -1,8 +1,8 @@
 //! Collection orchestration: starting, running and finishing one collection.
 
 use super::state::{
-    daily_slot_eligible, local_slot_ms, report_sample, today_string, CollectionReport, InFlight,
-    ServerMonitorRuntime, CANCELLED_MESSAGE,
+    daily_slot_eligible, evaluate_alert, local_slot_ms, report_sample, today_string,
+    CollectionReport, InFlight, ServerMonitorRuntime, CANCELLED_MESSAGE,
 };
 use crate::server_monitor::transport::{CollectionError, MonitorSession};
 use crate::server_monitor::types::{
@@ -10,7 +10,8 @@ use crate::server_monitor::types::{
     MonitorTransportErrorKind, ServerMonitorCustomDraft, ServerMonitorCustomRecord,
     ServerMonitorOutcome, ServerMonitorScheduleMode, ServerMonitorSourceKind,
     ServerMonitorState, ServerMonitorTargetDraft, ServerMonitorTargetRecord,
-    ServerMonitorTestResult, SessionLifetime,
+    ServerMonitorTestResult, ServerMonitorTunnelDraft, ServerMonitorTunnelRecord,
+    SessionLifetime,
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -81,6 +82,8 @@ impl ServerMonitorRuntime {
             inner.inflight.insert(target.id.clone(), handle.clone());
             (handle, session, generation, self.clock.now_ms())
         };
+
+        self.publish();
 
         let runtime = self.clone();
         let worker_handle = handle.clone();
@@ -185,6 +188,7 @@ impl ServerMonitorRuntime {
         let now = self.clock.now_ms();
         let mut prune: Option<(u32, i64, String)> = None;
         let mut failure_notification: Option<(String, String, String)> = None;
+        let mut alert_notification: Option<(String, String, Vec<String>)> = None;
 
         if let Ok(mut inner) = self.inner.lock() {
             inner.active = inner.active.saturating_sub(1);
@@ -229,6 +233,30 @@ impl ServerMonitorRuntime {
                         target.last_error_kind = None;
                         target.last_error = None;
                         target.last_success_at_ms = Some(report.collected_at_ms);
+
+                        if let Some(ref snapshot) = report.snapshot {
+                            let (has_alert, reasons) = evaluate_alert(snapshot, &inner.config.settings);
+                            if has_alert {
+                                target.has_alert = true;
+                                target.alert_reasons = reasons.clone();
+
+                                let cooldown_ms = inner.config.settings.alert_cooldown_minutes as i64 * 60_000;
+                                let should_notify = match target.last_alert_at_ms {
+                                    Some(last_at) => now.saturating_sub(last_at) >= cooldown_ms,
+                                    None => true,
+                                };
+                                if should_notify {
+                                    target.last_alert_at_ms = Some(now);
+                                    alert_notification = Some((target.id.clone(), target.name.clone(), reasons));
+                                }
+                            } else {
+                                target.has_alert = false;
+                                target.alert_reasons.clear();
+                            }
+                        } else {
+                            target.has_alert = false;
+                            target.alert_reasons.clear();
+                        }
                     }
                     target.updated_at_ms = now;
                 }
@@ -272,6 +300,9 @@ impl ServerMonitorRuntime {
         }
         if let Some((target_id, target_name, error_msg)) = failure_notification {
             self.events.notify_failure(&target_id, &target_name, &error_msg);
+        }
+        if let Some((target_id, target_name, reasons)) = alert_notification {
+            self.events.notify_alert(&target_id, &target_name, &reasons);
         }
         handle.complete(report);
         if let Some((retention, now_ms, today)) = prune {
@@ -457,6 +488,52 @@ pub(super) fn build_custom_record(
     }
 }
 
+pub(super) fn build_tunnel_record(
+    draft: &ServerMonitorTunnelDraft,
+    existing: Option<&ServerMonitorTargetRecord>,
+) -> ServerMonitorTunnelRecord {
+    let preserved_password = existing
+        .and_then(|record| record.tunnel.as_ref())
+        .and_then(|tunnel| tunnel.password.clone())
+        .filter(|password| !password.is_empty());
+    let password = if draft.auth_kind == Some(crate::server_monitor::types::ServerMonitorAuthKind::Password) {
+        draft
+            .password
+            .clone()
+            .filter(|password| !password.is_empty())
+            .or(preserved_password)
+    } else {
+        None
+    };
+    ServerMonitorTunnelRecord {
+        enabled: draft.enabled,
+        source_kind: draft.source_kind,
+        saved_host_name: draft
+            .saved_host_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        host: draft
+            .host
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        port: draft.port,
+        user: draft
+            .user
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        auth_kind: draft.auth_kind,
+        key_path: draft
+            .key_path
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        password,
+    }
+}
+
 fn draft_record(
     draft: &ServerMonitorTargetDraft,
     existing: Option<&ServerMonitorTargetRecord>,
@@ -480,12 +557,21 @@ fn draft_record(
             .custom
             .as_ref()
             .map(|custom| build_custom_record(custom, existing)),
+        tunnel: draft
+            .tunnel
+            .as_ref()
+            .map(|tunnel| build_tunnel_record(tunnel, existing)),
         created_at_ms: now,
         updated_at_ms: now,
         blocked: false,
         last_error_kind: None,
         last_error: None,
         last_success_at_ms: existing.and_then(|record| record.last_success_at_ms),
+        has_alert: existing.map(|record| record.has_alert).unwrap_or(false),
+        alert_reasons: existing
+            .map(|record| record.alert_reasons.clone())
+            .unwrap_or_default(),
+        last_alert_at_ms: existing.and_then(|record| record.last_alert_at_ms),
     })
 }
 
@@ -552,6 +638,64 @@ pub(super) fn validate_target(record: &ServerMonitorTargetRecord) -> Result<(), 
             }
         }
     }
+    if let Some(tunnel) = &record.tunnel {
+        if tunnel.enabled {
+            match tunnel.source_kind {
+                ServerMonitorSourceKind::SavedHost => {
+                    if tunnel
+                        .saved_host_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .is_none()
+                    {
+                        return Err("Select an existing SSH host for the tunnel".to_string());
+                    }
+                }
+                ServerMonitorSourceKind::Custom => {
+                    if tunnel.host.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
+                        return Err("Tunnel SSH host is required".to_string());
+                    }
+                    if tunnel.user.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
+                        return Err("Tunnel SSH user is required".to_string());
+                    }
+                    if tunnel.port.unwrap_or(0) == 0 {
+                        return Err("Tunnel SSH port must be from 1 to 65535".to_string());
+                    }
+                    match tunnel.auth_kind {
+                        Some(crate::server_monitor::types::ServerMonitorAuthKind::Key) => {
+                            if tunnel
+                                .key_path
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .is_none()
+                            {
+                                return Err("Tunnel key authentication requires a key path".to_string());
+                            }
+                        }
+                        Some(crate::server_monitor::types::ServerMonitorAuthKind::Password) => {
+                            if tunnel
+                                .password
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .is_none()
+                            {
+                                return Err("Tunnel password authentication requires a password".to_string());
+                            }
+                        }
+                        Some(crate::server_monitor::types::ServerMonitorAuthKind::Agent) => {
+                            return Err("Tunnel agent authentication requires a saved SSH host".to_string());
+                        }
+                        None => {
+                            return Err("Tunnel authentication method is required".to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -560,6 +704,9 @@ pub(super) fn same_source(
     right: &ServerMonitorTargetRecord,
 ) -> bool {
     if left.source_kind != right.source_kind || left.saved_host_name != right.saved_host_name {
+        return false;
+    }
+    if left.tunnel != right.tunnel {
         return false;
     }
     match (&left.custom, &right.custom) {
@@ -614,6 +761,7 @@ fn connect_request(target: &ServerMonitorTargetRecord) -> Result<MonitorConnectR
             .custom
             .as_ref()
             .and_then(|custom| custom.password.clone()),
+        tunnel: target.tunnel.clone(),
     })
 }
 

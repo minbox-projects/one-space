@@ -5457,6 +5457,9 @@ describe("AiGateway 服务商页头自动禁用模型弹窗接线", () => {
     const dialog = await screen.findByTestId(
       "ai-gateway-auto-disabled-models-dialog",
     );
+    await userEvent.click(
+      within(dialog).getByTestId("ai-gateway-auto-disabled-toggle-all"),
+    );
 
     const action = within(dialog).getByRole("button", {
       name: i18n.t("aiGatewayAutoDisabledReenableAria", {
@@ -5583,6 +5586,9 @@ describe("AiGateway 服务商页头自动禁用模型弹窗接线", () => {
     const dialog = await screen.findByTestId(
       "ai-gateway-auto-disabled-models-dialog",
     );
+    await userEvent.click(
+      within(dialog).getByTestId("ai-gateway-auto-disabled-toggle-all"),
+    );
     const action = within(dialog).getByRole("button", {
       name: i18n.t("aiGatewayAutoDisabledReenableAria", {
         upstream: "u-m1",
@@ -5693,6 +5699,9 @@ describe("AiGateway 服务商页头自动禁用模型弹窗接线", () => {
     const dialog = await screen.findByTestId(
       "ai-gateway-auto-disabled-models-dialog",
     );
+    await userEvent.click(
+      within(dialog).getByTestId("ai-gateway-auto-disabled-toggle-all"),
+    );
     const action = within(dialog).getByRole("button", {
       name: i18n.t("aiGatewayAutoDisabledReenableAria", {
         upstream: "u-m1",
@@ -5800,6 +5809,9 @@ describe("AiGateway 服务商页头自动禁用模型弹窗接线", () => {
     await userEvent.click(screen.getByTestId("ai-gateway-auto-disabled-models"));
     const dialog = await screen.findByTestId(
       "ai-gateway-auto-disabled-models-dialog",
+    );
+    await userEvent.click(
+      within(dialog).getByTestId("ai-gateway-auto-disabled-toggle-all"),
     );
     const action = within(dialog).getByRole("button", {
       name: i18n.t("aiGatewayAutoDisabledReenableAria", {

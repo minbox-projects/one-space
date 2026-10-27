@@ -117,6 +117,7 @@ fn persistent_session_connects_once_for_three_collects() {
             auth: crate::server_monitor::types::MonitorAuth::Password,
         },
         password: None,
+        tunnel: None,
     };
     let session = MonitorSession::new(connector, request, SessionLifetime::Persistent);
     for _ in 0..3 {
@@ -151,6 +152,7 @@ fn oneshot_session_connects_per_collect() {
             auth: crate::server_monitor::types::MonitorAuth::Password,
         },
         password: None,
+        tunnel: None,
     };
     let session = MonitorSession::new(connector, request, SessionLifetime::OneShot);
     for _ in 0..3 {
@@ -185,6 +187,7 @@ fn keepalive_if_due_at_30s_boundary() {
             auth: crate::server_monitor::types::MonitorAuth::Password,
         },
         password: None,
+        tunnel: None,
     };
     let session = MonitorSession::new(connector, request, SessionLifetime::Persistent);
     let _ = session.collect(None, 1);
@@ -219,6 +222,7 @@ fn invalidate_during_collect_prevents_publication() {
             auth: crate::server_monitor::types::MonitorAuth::Password,
         },
         password: None,
+        tunnel: None,
     };
     let session = MonitorSession::new(connector, request, SessionLifetime::Persistent);
     session.invalidate();
@@ -250,6 +254,7 @@ fn transport_timeout_surfaces_transport_timeout() {
             auth: crate::server_monitor::types::MonitorAuth::Password,
         },
         password: None,
+        tunnel: None,
     };
     let session = MonitorSession::new(connector, request, SessionLifetime::Persistent);
     let res = session.collect(None, 1);
@@ -290,6 +295,7 @@ fn concurrent_collect_keepalive_no_overlap() {
             auth: crate::server_monitor::types::MonitorAuth::Password,
         },
         password: None,
+        tunnel: None,
     };
     let session = MonitorSession::new(connector, request, SessionLifetime::Persistent);
     let _ = session.collect(None, 1);
@@ -351,6 +357,7 @@ fn real_ssh_persistent_and_oneshot_sessions_smoke() {
             auth: crate::server_monitor::types::MonitorAuth::Password,
         },
         password: Some(password.clone()),
+        tunnel: None,
     };
 
     let connector: Arc<dyn MonitorConnector> =

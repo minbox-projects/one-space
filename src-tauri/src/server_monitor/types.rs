@@ -52,6 +52,7 @@ pub(crate) struct MonitorConnectRequest {
     pub target_id: String,
     pub source: MonitorSource,
     pub password: Option<String>,
+    pub tunnel: Option<ServerMonitorTunnelRecord>,
 }
 
 /// Classified SSH-side failure. Transport and timeout may be retried by a later
@@ -231,6 +232,26 @@ fn default_retention_days() -> u32 {
     7
 }
 
+fn default_alert_enabled() -> bool {
+    true
+}
+
+fn default_cpu_threshold_percent() -> u32 {
+    80
+}
+
+fn default_memory_threshold_percent() -> u32 {
+    85
+}
+
+fn default_disk_threshold_percent() -> u32 {
+    85
+}
+
+fn default_alert_cooldown_minutes() -> u32 {
+    60
+}
+
 /// Persisted scheduling settings, shared by the tool and Settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -245,6 +266,16 @@ pub(crate) struct ServerMonitorSettings {
     pub daily_times: Vec<String>,
     #[serde(default = "default_retention_days")]
     pub retention_days: u32,
+    #[serde(default = "default_alert_enabled")]
+    pub alert_enabled: bool,
+    #[serde(default = "default_cpu_threshold_percent")]
+    pub cpu_threshold_percent: u32,
+    #[serde(default = "default_memory_threshold_percent")]
+    pub memory_threshold_percent: u32,
+    #[serde(default = "default_disk_threshold_percent")]
+    pub disk_threshold_percent: u32,
+    #[serde(default = "default_alert_cooldown_minutes")]
+    pub alert_cooldown_minutes: u32,
 }
 
 impl Default for ServerMonitorSettings {
@@ -255,6 +286,11 @@ impl Default for ServerMonitorSettings {
             interval_minutes: default_interval_minutes(),
             daily_times: default_daily_times(),
             retention_days: default_retention_days(),
+            alert_enabled: default_alert_enabled(),
+            cpu_threshold_percent: default_cpu_threshold_percent(),
+            memory_threshold_percent: default_memory_threshold_percent(),
+            disk_threshold_percent: default_disk_threshold_percent(),
+            alert_cooldown_minutes: default_alert_cooldown_minutes(),
         }
     }
 }
@@ -285,6 +321,18 @@ impl ServerMonitorSettings {
         }
         if !(1..=30).contains(&self.retention_days) {
             return Err("Retention must be an integer from 1 to 30 days".to_string());
+        }
+        if !(1..=100).contains(&self.cpu_threshold_percent) {
+            return Err("CPU threshold must be an integer from 1 to 100".to_string());
+        }
+        if !(1..=100).contains(&self.memory_threshold_percent) {
+            return Err("Memory threshold must be an integer from 1 to 100".to_string());
+        }
+        if !(1..=100).contains(&self.disk_threshold_percent) {
+            return Err("Disk threshold must be an integer from 1 to 100".to_string());
+        }
+        if !(1..=1440).contains(&self.alert_cooldown_minutes) {
+            return Err("Alert cooldown must be an integer from 1 to 1440 minutes".to_string());
         }
         if self.daily_times.is_empty() {
             return Err("At least one daily collection time is required".to_string());
@@ -322,6 +370,63 @@ pub(crate) struct ServerMonitorCustomRecord {
     pub password: Option<String>,
 }
 
+/// Encrypted-record SSH tunnel / jump host configuration for targets without a public IP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerMonitorTunnelRecord {
+    pub enabled: bool,
+    pub source_kind: ServerMonitorSourceKind,
+    #[serde(default)]
+    pub saved_host_name: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub auth_kind: Option<ServerMonitorAuthKind>,
+    #[serde(default)]
+    pub key_path: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// Safe view of SSH tunnel / jump host settings for commands and events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerMonitorTunnelView {
+    pub enabled: bool,
+    pub source_kind: ServerMonitorSourceKind,
+    pub saved_host_name: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+    pub auth_kind: Option<ServerMonitorAuthKind>,
+    pub key_path: Option<String>,
+    pub has_password: bool,
+}
+
+impl ServerMonitorTunnelRecord {
+    pub(crate) fn view(&self) -> ServerMonitorTunnelView {
+        ServerMonitorTunnelView {
+            enabled: self.enabled,
+            source_kind: self.source_kind,
+            saved_host_name: self.saved_host_name.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            user: self.user.clone(),
+            auth_kind: self.auth_kind,
+            key_path: self.key_path.clone(),
+            has_password: self
+                .password
+                .as_ref()
+                .map(|password| !password.is_empty())
+                .unwrap_or(false),
+        }
+    }
+}
+
 /// Encrypted-record target. Passwords never leave the configuration store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -334,6 +439,8 @@ pub(crate) struct ServerMonitorTargetRecord {
     pub saved_host_name: Option<String>,
     #[serde(default)]
     pub custom: Option<ServerMonitorCustomRecord>,
+    #[serde(default)]
+    pub tunnel: Option<ServerMonitorTunnelRecord>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     #[serde(default)]
@@ -345,6 +452,12 @@ pub(crate) struct ServerMonitorTargetRecord {
     /// Completion time of this target's latest successful or partial result.
     #[serde(default)]
     pub last_success_at_ms: Option<i64>,
+    #[serde(default)]
+    pub has_alert: bool,
+    #[serde(default)]
+    pub alert_reasons: Vec<String>,
+    #[serde(default)]
+    pub last_alert_at_ms: Option<i64>,
 }
 
 /// Safe target representation for commands and events.
@@ -362,10 +475,13 @@ pub(crate) struct ServerMonitorTargetView {
     pub auth_kind: Option<ServerMonitorAuthKind>,
     pub key_path: Option<String>,
     pub has_password: bool,
+    pub tunnel: Option<ServerMonitorTunnelView>,
     pub blocked: bool,
     pub last_error_kind: Option<CollectionFailureKind>,
     pub last_error: Option<String>,
     pub last_success_at_ms: Option<i64>,
+    pub has_alert: bool,
+    pub alert_reasons: Vec<String>,
     pub collecting: bool,
     pub next_collection_at_ms: Option<i64>,
 }
@@ -392,10 +508,13 @@ impl ServerMonitorTargetRecord {
                 .and_then(|value| value.password.as_ref())
                 .map(|password| !password.is_empty())
                 .unwrap_or(false),
+            tunnel: self.tunnel.as_ref().map(|tunnel| tunnel.view()),
             blocked: self.blocked,
             last_error_kind: self.last_error_kind,
             last_error: self.last_error.clone(),
             last_success_at_ms: self.last_success_at_ms,
+            has_alert: self.has_alert,
+            alert_reasons: self.alert_reasons.clone(),
             collecting,
             next_collection_at_ms,
         }
@@ -475,6 +594,28 @@ pub(crate) struct ServerMonitorCustomDraft {
     pub password: Option<String>,
 }
 
+/// Draft submitted by the add/edit dialog for SSH tunnel / jump host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerMonitorTunnelDraft {
+    pub enabled: bool,
+    pub source_kind: ServerMonitorSourceKind,
+    #[serde(default)]
+    pub saved_host_name: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub auth_kind: Option<ServerMonitorAuthKind>,
+    #[serde(default)]
+    pub key_path: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
 /// Draft submitted by the add/edit dialog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,6 +630,8 @@ pub(crate) struct ServerMonitorTargetDraft {
     pub saved_host_name: Option<String>,
     #[serde(default)]
     pub custom: Option<ServerMonitorCustomDraft>,
+    #[serde(default)]
+    pub tunnel: Option<ServerMonitorTunnelDraft>,
 }
 
 /// Result of one temporary draft connection test.

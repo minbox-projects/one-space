@@ -34,6 +34,15 @@ type FormState = {
   authKind: ServerMonitorAuthKind;
   keyPath: string;
   password: string;
+  tunnelEnabled: boolean;
+  tunnelSourceKind: ServerMonitorSourceKind;
+  tunnelSavedHostName: string;
+  tunnelHost: string;
+  tunnelPort: string;
+  tunnelUser: string;
+  tunnelAuthKind: ServerMonitorAuthKind;
+  tunnelKeyPath: string;
+  tunnelPassword: string;
 };
 
 function initialState(target: ServerMonitorTargetView | null): FormState {
@@ -51,6 +60,18 @@ function initialState(target: ServerMonitorTargetView | null): FormState {
         : "password",
     keyPath: target?.keyPath ?? "",
     password: "",
+    tunnelEnabled: target?.tunnel?.enabled ?? false,
+    tunnelSourceKind: target?.tunnel?.sourceKind ?? "savedHost",
+    tunnelSavedHostName: target?.tunnel?.savedHostName ?? "",
+    tunnelHost: target?.tunnel?.host ?? "",
+    tunnelPort: target?.tunnel?.port ? String(target.tunnel.port) : "22",
+    tunnelUser: target?.tunnel?.user ?? "",
+    tunnelAuthKind:
+      target?.tunnel?.authKind === "key" || target?.tunnel?.authKind === "password"
+        ? target.tunnel.authKind
+        : "password",
+    tunnelKeyPath: target?.tunnel?.keyPath ?? "",
+    tunnelPassword: "",
   };
 }
 
@@ -66,6 +87,28 @@ function buildDraft(form: FormState, target: ServerMonitorTargetView | null): Se
           password: form.password ? form.password : null,
         }
       : null;
+  const tunnel = form.tunnelEnabled
+    ? {
+        enabled: true,
+        sourceKind: form.tunnelSourceKind,
+        savedHostName:
+          form.tunnelSourceKind === "savedHost" ? form.tunnelSavedHostName.trim() : null,
+        host: form.tunnelSourceKind === "custom" ? form.tunnelHost.trim() : null,
+        port: form.tunnelSourceKind === "custom" ? Number(form.tunnelPort) || 22 : null,
+        user: form.tunnelSourceKind === "custom" ? form.tunnelUser.trim() : null,
+        authKind: form.tunnelSourceKind === "custom" ? form.tunnelAuthKind : null,
+        keyPath:
+          form.tunnelSourceKind === "custom" && form.tunnelAuthKind === "key"
+            ? form.tunnelKeyPath.trim()
+            : null,
+        password:
+          form.tunnelSourceKind === "custom" &&
+          form.tunnelAuthKind === "password" &&
+          form.tunnelPassword
+            ? form.tunnelPassword
+            : null,
+      }
+    : null;
   return {
     id: target?.id ?? null,
     name: form.name.trim(),
@@ -73,6 +116,7 @@ function buildDraft(form: FormState, target: ServerMonitorTargetView | null): Se
     sourceKind: form.sourceKind,
     savedHostName: form.sourceKind === "savedHost" ? form.savedHostName.trim() : null,
     custom,
+    tunnel,
   };
 }
 
@@ -178,6 +222,30 @@ export function ServerFormDialog({
   const validationErrorKey = (): string => {
     const name = form.name.trim();
     if (name.length < 1 || name.length > 80) return "serverMonitorValidationName";
+
+    if (form.tunnelEnabled) {
+      if (form.tunnelSourceKind === "savedHost") {
+        if (!form.tunnelSavedHostName.trim()) return "serverMonitorValidationTunnelAlias";
+      } else {
+        if (!form.tunnelHost.trim()) return "serverMonitorValidationTunnelHost";
+        const tPort = Number(form.tunnelPort);
+        if (!Number.isInteger(tPort) || tPort < 1 || tPort > 65535) {
+          return "serverMonitorValidationTunnelPort";
+        }
+        if (!form.tunnelUser.trim()) return "serverMonitorValidationTunnelUser";
+        if (form.tunnelAuthKind === "key" && !form.tunnelKeyPath.trim()) {
+          return "serverMonitorValidationTunnelKey";
+        }
+        if (
+          form.tunnelAuthKind === "password" &&
+          !form.tunnelPassword &&
+          (!target?.tunnel?.hasPassword || !isEditing)
+        ) {
+          return "serverMonitorValidationTunnelPassword";
+        }
+      }
+    }
+
     if (form.sourceKind === "savedHost") {
       if (!form.savedHostName.trim()) return "serverMonitorValidationAlias";
       return "";
@@ -275,6 +343,7 @@ export function ServerFormDialog({
               {label("serverMonitorName")}
             </span>
             <input
+              data-testid="target-name-input"
               value={form.name}
               maxLength={80}
               onChange={(event) => update("name", event.target.value)}
@@ -535,6 +604,7 @@ export function ServerFormDialog({
                   </span>
                 </div>
                 <input
+                  data-testid="target-saved-host-input"
                   value={form.savedHostName}
                   placeholder="~/.ssh/config Host alias"
                   onChange={(event) => update("savedHostName", event.target.value)}
@@ -550,6 +620,7 @@ export function ServerFormDialog({
                     {label("serverMonitorHost")}
                   </span>
                   <input
+                    data-testid="target-host-input"
                     value={form.host}
                     onChange={(event) => update("host", event.target.value)}
                     className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-mono text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
@@ -560,6 +631,7 @@ export function ServerFormDialog({
                     {label("serverMonitorPort")}
                   </span>
                   <input
+                    data-testid="target-port-input"
                     type="number"
                     min={1}
                     max={65535}
@@ -574,6 +646,7 @@ export function ServerFormDialog({
                   {label("serverMonitorUser")}
                 </span>
                 <input
+                  data-testid="target-user-input"
                   value={form.user}
                   onChange={(event) => update("user", event.target.value)}
                   className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-mono text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
@@ -608,6 +681,7 @@ export function ServerFormDialog({
                     {label("serverMonitorPassword")}
                   </span>
                   <input
+                    data-testid="target-password-input"
                     type="password"
                     value={form.password}
                     onChange={(event) => update("password", event.target.value)}
@@ -622,6 +696,192 @@ export function ServerFormDialog({
               ) : null}
             </div>
           )}
+
+          {/* SSH 隧道 / 跳板机配置 (针对无公网 IP 服务器) */}
+          <div className="rounded-2xl border border-slate-200/80 bg-slate-50/50 p-4 space-y-3 dark:border-slate-800/80 dark:bg-slate-900/40">
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  {label("serverMonitorTunnelEnableTitle")}
+                </span>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {label("serverMonitorTunnelEnableDesc")}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={form.tunnelEnabled}
+                aria-label={`${t("serverMonitorTunnelEnableTitle")} ${alt("serverMonitorTunnelEnableTitle")}`}
+                onClick={() => update("tunnelEnabled", !form.tunnelEnabled)}
+                className={`h-6 w-11 shrink-0 rounded-full border border-transparent transition-colors ${
+                  form.tunnelEnabled ? "bg-emerald-600" : "bg-slate-200 dark:bg-slate-700"
+                }`}
+              >
+                <span
+                  className={`block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                    form.tunnelEnabled ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {form.tunnelEnabled ? (
+              <div className="space-y-3 pt-2 border-t border-slate-200/60 dark:border-slate-800/60">
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="tunnel-source"
+                      value="savedHost"
+                      checked={form.tunnelSourceKind === "savedHost"}
+                      onChange={() => update("tunnelSourceKind", "savedHost")}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>{label("serverMonitorTunnelSourceSaved")}</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="tunnel-source"
+                      value="custom"
+                      checked={form.tunnelSourceKind === "custom"}
+                      onChange={() => update("tunnelSourceKind", "custom")}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>{label("serverMonitorTunnelSourceCustom")}</span>
+                  </label>
+                </div>
+
+                {form.tunnelSourceKind === "savedHost" ? (
+                  <div className="space-y-2">
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        {label("serverMonitorTunnelSelectHost")}
+                      </span>
+                      <select
+                        data-testid="tunnel-saved-host-select"
+                        aria-label={`${t("serverMonitorTunnelSelectHost")} ${alt("serverMonitorTunnelSelectHost")}`}
+                        value={
+                          sshServers.find((s) => s.name === form.tunnelSavedHostName)?.id ??
+                          (form.tunnelSavedHostName ? "custom_tunnel_manual" : "")
+                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (!val) {
+                            update("tunnelSavedHostName", "");
+                            return;
+                          }
+                          const s = sshServers.find((srv) => srv.id === val || srv.name === val);
+                          if (s) {
+                            update("tunnelSavedHostName", s.name);
+                          }
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                      >
+                        <option value="">{t("serverMonitorSshServerChoose")}</option>
+                        {sshServers.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} · {s.user}@{s.host}:{s.port}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        {label("serverMonitorSavedHostName")}
+                      </span>
+                      <input
+                        value={form.tunnelSavedHostName}
+                        placeholder="~/.ssh/config Host alias"
+                        onChange={(e) => update("tunnelSavedHostName", e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-mono text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_120px]">
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          {label("serverMonitorTunnelHost")}
+                        </span>
+                        <input
+                          value={form.tunnelHost}
+                          placeholder="跳板机公网 IP / 域名"
+                          onChange={(e) => update("tunnelHost", e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-mono text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                        />
+                      </label>
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          {label("serverMonitorPort")}
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={65535}
+                          value={form.tunnelPort}
+                          onChange={(e) => update("tunnelPort", e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-mono text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                        />
+                      </label>
+                    </div>
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        {label("serverMonitorUser")}
+                      </span>
+                      <input
+                        value={form.tunnelUser}
+                        onChange={(e) => update("tunnelUser", e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-mono text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                      />
+                    </label>
+                    <div className="space-y-1.5">
+                      <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        {label("serverMonitorAuthKind")}
+                      </span>
+                      <CustomSelect
+                        ariaLabel={`${t("serverMonitorAuthKind")} ${alt("serverMonitorAuthKind")}`}
+                        value={form.tunnelAuthKind}
+                        onChange={(value) => update("tunnelAuthKind", value)}
+                        options={authOptions}
+                      />
+                    </div>
+                    {form.tunnelAuthKind === "key" ? (
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          {label("serverMonitorKeyPath")}
+                        </span>
+                        <input
+                          value={form.tunnelKeyPath}
+                          onChange={(e) => update("tunnelKeyPath", e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-mono text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                        />
+                      </label>
+                    ) : (
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          {label("serverMonitorPassword")}
+                        </span>
+                        <input
+                          type="password"
+                          value={form.tunnelPassword}
+                          onChange={(e) => update("tunnelPassword", e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-800 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                        />
+                        {isEditing && target?.tunnel?.hasPassword ? (
+                          <span className="block text-xs text-slate-400">
+                            {label("serverMonitorPasswordKeep")}
+                          </span>
+                        ) : null}
+                      </label>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
 
           {error ? (
             <p role="alert" className="text-xs text-destructive">

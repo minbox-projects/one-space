@@ -64,6 +64,8 @@ const targetA = {
   lastErrorKind: null,
   lastError: null,
   lastSuccessAtMs: 1000,
+  hasAlert: false,
+  alertReasons: [],
   collecting: false,
   nextCollectionAtMs: 2000,
 };
@@ -84,6 +86,8 @@ const targetB = {
   lastErrorKind: null,
   lastError: null,
   lastSuccessAtMs: 1000,
+  hasAlert: false,
+  alertReasons: [],
   collecting: false,
   nextCollectionAtMs: 2000,
 };
@@ -185,7 +189,7 @@ describe("ServerMonitorTool", () => {
     expect(await screen.findByText(/12.3%/)).toBeInTheDocument();
     expect(screen.getByText(/—/)).toBeInTheDocument();
     expect(screen.getByText(/partial/i)).toBeInTheDocument();
-    expect(screen.getByText(/eth0/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/eth0/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/alpha/i)).toBeInTheDocument();
   });
 
@@ -219,10 +223,72 @@ describe("ServerMonitorTool", () => {
     await act(async () => {
       renderWithProviders(<ServerMonitorTool />);
     });
-    const select = await screen.findByRole("combobox", { name: /interface/i });
-    await user.selectOptions(select, "eth1");
-    expect(screen.getByText(/eth1/i)).toBeInTheDocument();
+    // Metric card has NIC CustomSelect
+    const metricNicSelect = await screen.findByTestId("metric-nic-select");
+    await user.selectOptions(metricNicSelect, "eth1");
+    expect(screen.getAllByText(/eth1/i).length).toBeGreaterThan(0);
     expect(invokeMock).not.toHaveBeenCalledWith("server_monitor_refresh", expect.anything());
+
+    // Switch in history chart also reflects and keeps sync
+    const netBtn = await screen.findByRole("button", { name: /网络|Network/i });
+    await user.click(netBtn);
+    const historyNicSelect = await screen.findByTestId("history-nic-select");
+    expect(historyNicSelect).toHaveValue("eth1");
+    await user.selectOptions(historyNicSelect, "eth0");
+    expect(metricNicSelect).toHaveValue("eth0");
+  });
+
+  it("disk switching in metric card updates metric details and synchronizes with history", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return statePopulated;
+      if (command === "server_monitor_history") return [
+        {
+          id: 1,
+          targetId: "t1",
+          collectedAtMs: 1000,
+          outcome: { success: sampleSnapshot },
+          samplingWindowSeconds: 1,
+          sourceMode: "interval",
+          expectedIntervalSeconds: 300,
+          cpu: sampleSnapshot.cpu,
+          memory: sampleSnapshot.memory,
+          disks: sampleSnapshot.disks,
+          networks: sampleSnapshot.networks,
+          networkInterface: "eth0",
+          errorKind: null,
+          error: null,
+        },
+      ];
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+
+    // Default busiest disk is "/" with 80.0%
+    expect(screen.getAllByText("80.0%").length).toBeGreaterThan(0);
+    expect(screen.getByText(/\/ \(ext4\)/)).toBeInTheDocument();
+
+    // Select "/data" (10.0%) from metric card dropdown
+    const diskSelect = await screen.findByTestId("metric-disk-select");
+    await user.selectOptions(diskSelect, "/data");
+
+    // Metric card should now display "/data" info
+    expect(screen.getByText(/\/data \(ext4\)/)).toBeInTheDocument();
+    expect(screen.getAllByText("10.0%").length).toBeGreaterThanOrEqual(2);
+
+    // In history chart, switch to disk tab and verify synchronization
+    const diskTabBtn = await screen.findByRole("button", { name: /磁盘|Disk/i });
+    await user.click(diskTabBtn);
+    const historyDiskSelect = await screen.findByTestId("history-disk-select");
+    expect(historyDiskSelect).toHaveValue("/data");
+
+    // Clicking disk row in All Disks list selects that disk
+    const rootRow = screen.getByTestId("disk-row-/");
+    await user.click(rootRow);
+    expect(diskSelect).toHaveValue("/");
+    expect(screen.getByText(/\/ \(ext4\)/)).toBeInTheDocument();
   });
 
   it("history 7 days calls command and renders", async () => {
@@ -306,9 +372,194 @@ describe("ServerMonitorTool", () => {
     await act(async () => {
       renderWithProviders(<ServerMonitorTool />);
     });
-    const btn = await screen.findByRole("button", { name: /collect now|refresh/i });
-    await user.click(btn);
-    expect(invokeMock).toHaveBeenCalledWith("server_monitor_refresh", { targetId: "t1" });
+    const toolbarBtn = await screen.findByTestId("toolbar-collect-now-btn");
+    await user.click(toolbarBtn);
+
+    const detailBtn = await screen.findByTestId("detail-collect-now-btn");
+    await user.click(detailBtn);
+
+    const refreshCalls = invokeMock.mock.calls.filter((call) => call[0] === "server_monitor_refresh");
+    expect(refreshCalls).toHaveLength(2);
+    expect(refreshCalls[0]).toEqual(["server_monitor_refresh", { targetId: "t1" }]);
+    expect(refreshCalls[1]).toEqual(["server_monitor_refresh", { targetId: "t1" }]);
+  });
+
+  it("disables collect-now buttons when collecting is true", async () => {
+    const collectingState = {
+      ...statePopulated,
+      targets: [
+        {
+          ...targetA,
+          collecting: true,
+        },
+      ],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return collectingState;
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const toolbarBtn = await screen.findByTestId("toolbar-collect-now-btn");
+    const detailBtn = await screen.findByTestId("detail-collect-now-btn");
+    expect(toolbarBtn).toBeDisabled();
+    expect(detailBtn).toBeDisabled();
+  });
+
+  it("renders ssh tunnel badge when target has tunnel enabled", async () => {
+    const tunnelState = {
+      ...statePopulated,
+      targets: [
+        {
+          ...targetA,
+          tunnel: {
+            enabled: true,
+            sourceKind: "custom",
+            savedHostName: null,
+            host: "jump.example.com",
+            port: 22,
+            user: "jumpuser",
+            authKind: "password",
+            keyPath: null,
+            hasPassword: true,
+          },
+        },
+      ],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return tunnelState;
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const badges = await screen.findAllByText(/SSH 隧道|SSH Tunnel/i);
+    expect(badges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders all disks usage overview rows", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return statePopulated;
+      if (command === "server_monitor_history") {
+        return [
+          {
+            collectedAtMs: 1000,
+            outcome: { success: sampleSnapshot },
+            samplingWindowSeconds: 1,
+            sourceMode: "interval",
+            cpu: sampleSnapshot.cpu,
+            memory: sampleSnapshot.memory,
+            disks: sampleSnapshot.disks,
+            networks: sampleSnapshot.networks,
+            networkInterface: "eth0",
+          },
+        ];
+      }
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const rootDiskRow = await screen.findByTestId("disk-row-/");
+    const dataDiskRow = await screen.findByTestId("disk-row-/data");
+    expect(rootDiskRow).toBeTruthy();
+    expect(dataDiskRow).toBeTruthy();
+    expect(screen.getByText("全部硬盘使用情况")).toBeTruthy();
+  });
+
+  it("renders alert badges on server card and banner in detail when hasAlert is true", async () => {
+    const alertTarget = {
+      ...targetA,
+      hasAlert: true,
+      alertReasons: ["CPU 使用率 92.5% (阈值 80%)", "磁盘 [/] 使用率 88.0% (阈值 85%)"],
+    };
+    const alertState = {
+      ...statePopulated,
+      targets: [alertTarget, targetB],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return alertState;
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    const cardAlertBadge = await screen.findByTestId("alert-badge-t1");
+    expect(cardAlertBadge).toBeTruthy();
+    const detailAlertPill = await screen.findByTestId("selected-target-alert-pill");
+    expect(detailAlertPill).toBeTruthy();
+    const alertBanner = await screen.findByTestId("selected-target-alert-banner");
+    expect(alertBanner).toBeTruthy();
+    expect(alertBanner.textContent).toContain("CPU 使用率 92.5%");
+    expect(alertBanner.textContent).toContain("磁盘 [/] 使用率 88.0%");
+  });
+
+  it("dynamically shows alert badges when target hasAlert is false but current metrics have disk exceeding threshold", async () => {
+    // target 本身 hasAlert 为 false（例如历史旧数据未重新采集）
+    const initialTarget = {
+      ...targetA,
+      hasAlert: false,
+      alertReasons: [],
+    };
+    const stateWithNoAlertTarget = {
+      ...statePopulated,
+      targets: [initialTarget],
+    };
+    // 但其最近的采集样本中硬盘使用率达 99.9%（已飘红）
+    const highDiskSnapshot = {
+      ...sampleSnapshot,
+      disks: [
+        {
+          filesystem: "/dev/vda3",
+          mountPoint: "/",
+          totalBytes: 100_000_000,
+          usedBytes: 99_900_000,
+          availableBytes: 100_000,
+          usedPercent: 99.9,
+        },
+      ],
+    };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return stateWithNoAlertTarget;
+      if (command === "server_monitor_history") {
+        return [
+          {
+            id: 1,
+            targetId: "t1",
+            collectedAtMs: 1000,
+            outcome: { success: highDiskSnapshot },
+            samplingWindowSeconds: 1,
+            sourceMode: "interval",
+            expectedIntervalSeconds: 300,
+            cpu: sampleSnapshot.cpu,
+            memory: sampleSnapshot.memory,
+            disks: highDiskSnapshot.disks,
+            networks: sampleSnapshot.networks,
+            networkInterface: "eth0",
+            errorKind: null,
+            error: null,
+          },
+        ];
+      }
+      return undefined;
+    });
+
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+
+    // 验证：即使后端 target.hasAlert 为 false，左侧卡片与详情顶部仍然动态展现告警标注与横幅
+    const cardAlertBadge = await screen.findByTestId("alert-badge-t1");
+    expect(cardAlertBadge).toBeTruthy();
+    const detailAlertPill = await screen.findByTestId("selected-target-alert-pill");
+    expect(detailAlertPill).toBeTruthy();
+    const alertBanner = await screen.findByTestId("selected-target-alert-banner");
+    expect(alertBanner).toBeTruthy();
+    expect(alertBanner.textContent).toContain("磁盘 [/] 使用率 99.9%");
   });
 
   it("error state shows banner and clears on empty reload", async () => {
@@ -475,6 +726,84 @@ describe("ServerFormDialog", () => {
         name: "prod-cloud",
         sourceKind: "savedHost",
         savedHostName: "prod-cloud",
+      }),
+    );
+  });
+
+  it("supports configuring and saving ssh tunnel", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_ssh_hosts") {
+        return [
+          {
+            name: "jump-box",
+            host_name: "1.2.3.4",
+            user: "jump",
+            port: 22,
+          },
+        ];
+      }
+      if (command === "get_secret") return null;
+      return undefined;
+    });
+
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onTestConnection = vi.fn().mockResolvedValue({ succeeded: true, partial: false, snapshot: sampleSnapshot });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      renderWithProviders(
+        <ServerFormDialog
+          isOpen={true}
+          target={null}
+          onClose={vi.fn()}
+          onSave={onSave}
+          onTestConnection={onTestConnection}
+        />,
+      );
+    });
+
+    // 切换为 custom 模式
+    const customOption = screen.getByTestId("source-custom");
+    await user.click(customOption);
+
+    // 填写目标服务器名称和内网 IP
+    const nameInput = screen.getByTestId("target-name-input");
+    await user.type(nameInput, "internal-db");
+
+    const hostInput = screen.getByTestId("target-host-input");
+    await user.type(hostInput, "10.0.1.50");
+
+    const userInput = screen.getByTestId("target-user-input");
+    await user.type(userInput, "dbadmin");
+
+    const passwordInput = screen.getByTestId("target-password-input");
+    await user.type(passwordInput, "dbpassword");
+
+    // 点击开启 SSH 隧道开关
+    const tunnelSwitch = screen.getByRole("switch", { name: /通过 ssh 隧道连接|connect via ssh tunnel/i });
+    await user.click(tunnelSwitch);
+
+    // 选择跳板机为 savedHost
+    const select = await screen.findByTestId("tunnel-saved-host-select");
+    await user.selectOptions(select, "config:jump-box");
+
+    // 保存提交
+    const saveBtn = screen.getByRole("button", { name: /save|保存/i });
+    await user.click(saveBtn);
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "internal-db",
+        sourceKind: "custom",
+        custom: expect.objectContaining({
+          host: "10.0.1.50",
+          user: "dbadmin",
+        }),
+        tunnel: expect.objectContaining({
+          enabled: true,
+          sourceKind: "savedHost",
+          savedHostName: "jump-box",
+        }),
       }),
     );
   });

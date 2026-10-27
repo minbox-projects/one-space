@@ -93,6 +93,11 @@ export interface ServerMonitorSettings {
   intervalMinutes: number;
   dailyTimes: string[];
   retentionDays: number;
+  alertEnabled: boolean;
+  cpuThresholdPercent: number;
+  memoryThresholdPercent: number;
+  diskThresholdPercent: number;
+  alertCooldownMinutes: number;
 }
 
 export const DEFAULT_SERVER_MONITOR_SETTINGS: ServerMonitorSettings = {
@@ -101,7 +106,24 @@ export const DEFAULT_SERVER_MONITOR_SETTINGS: ServerMonitorSettings = {
   intervalMinutes: 5,
   dailyTimes: ["09:00"],
   retentionDays: 7,
+  alertEnabled: true,
+  cpuThresholdPercent: 80,
+  memoryThresholdPercent: 85,
+  diskThresholdPercent: 85,
+  alertCooldownMinutes: 60,
 };
+
+export interface ServerMonitorTunnelView {
+  enabled: boolean;
+  sourceKind: ServerMonitorSourceKind;
+  savedHostName: string | null;
+  host: string | null;
+  port: number | null;
+  user: string | null;
+  authKind: ServerMonitorAuthKind | null;
+  keyPath: string | null;
+  hasPassword: boolean;
+}
 
 export interface ServerMonitorTargetView {
   id: string;
@@ -115,10 +137,13 @@ export interface ServerMonitorTargetView {
   authKind: ServerMonitorAuthKind | null;
   keyPath: string | null;
   hasPassword: boolean;
+  tunnel?: ServerMonitorTunnelView | null;
   blocked: boolean;
   lastErrorKind: ServerMonitorFailureKind | null;
   lastError: string | null;
   lastSuccessAtMs: number | null;
+  hasAlert: boolean;
+  alertReasons: string[];
   collecting: boolean;
   nextCollectionAtMs: number | null;
 }
@@ -140,6 +165,18 @@ export interface ServerMonitorCustomDraft {
   password?: string | null;
 }
 
+export interface ServerMonitorTunnelDraft {
+  enabled: boolean;
+  sourceKind: ServerMonitorSourceKind;
+  savedHostName?: string | null;
+  host?: string | null;
+  port?: number | null;
+  user?: string | null;
+  authKind?: ServerMonitorAuthKind | null;
+  keyPath?: string | null;
+  password?: string | null;
+}
+
 export interface ServerMonitorTargetDraft {
   id?: string | null;
   name: string;
@@ -147,6 +184,7 @@ export interface ServerMonitorTargetDraft {
   sourceKind: ServerMonitorSourceKind;
   savedHostName?: string | null;
   custom?: ServerMonitorCustomDraft | null;
+  tunnel?: ServerMonitorTunnelDraft | null;
 }
 
 export interface ServerMonitorTestResult {
@@ -361,6 +399,10 @@ export function validateServerMonitorSettings(
 ): boolean {
   if (!isIntegerInRange(settings.intervalMinutes, 1, 1440)) return false;
   if (!isIntegerInRange(settings.retentionDays, 1, 30)) return false;
+  if (!isIntegerInRange(settings.cpuThresholdPercent, 1, 100)) return false;
+  if (!isIntegerInRange(settings.memoryThresholdPercent, 1, 100)) return false;
+  if (!isIntegerInRange(settings.diskThresholdPercent, 1, 100)) return false;
+  if (!isIntegerInRange(settings.alertCooldownMinutes, 1, 1440)) return false;
   if (!Array.isArray(settings.dailyTimes) || settings.dailyTimes.length === 0) {
     return false;
   }
@@ -383,6 +425,36 @@ export function validateServerMonitorDraft(
 ): boolean {
   const name = typeof draft.name === "string" ? draft.name.trim() : "";
   if (name.length < 1 || name.length > 80) return false;
+
+  if (draft.tunnel && draft.tunnel.enabled) {
+    const tunnel = draft.tunnel;
+    if (tunnel.sourceKind === "savedHost") {
+      if (typeof tunnel.savedHostName !== "string" || tunnel.savedHostName.trim().length === 0) {
+        return false;
+      }
+    } else if (tunnel.sourceKind === "custom") {
+      if (typeof tunnel.host !== "string" || tunnel.host.trim().length === 0) {
+        return false;
+      }
+      if (!isIntegerInRange(tunnel.port, 1, 65535)) return false;
+      if (typeof tunnel.user !== "string" || tunnel.user.trim().length === 0) {
+        return false;
+      }
+      if (tunnel.authKind === "key") {
+        if (typeof tunnel.keyPath !== "string" || tunnel.keyPath.trim().length === 0) {
+          return false;
+        }
+      } else if (tunnel.authKind === "password") {
+        const hasPassword = typeof tunnel.password === "string" && tunnel.password.length > 0;
+        const editing = Boolean(editingTargetId || draft.id);
+        if (!hasPassword && !editing) return false;
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
 
   if (draft.sourceKind === "savedHost") {
     return (
@@ -437,6 +509,22 @@ export function normalizeServerMonitorSettings(
     retentionDays: isIntegerInRange(input?.retentionDays, 1, 30)
       ? (input?.retentionDays as number)
       : DEFAULT_SERVER_MONITOR_SETTINGS.retentionDays,
+    alertEnabled:
+      typeof input?.alertEnabled === "boolean"
+        ? input.alertEnabled
+        : DEFAULT_SERVER_MONITOR_SETTINGS.alertEnabled,
+    cpuThresholdPercent: isIntegerInRange(input?.cpuThresholdPercent, 1, 100)
+      ? (input?.cpuThresholdPercent as number)
+      : DEFAULT_SERVER_MONITOR_SETTINGS.cpuThresholdPercent,
+    memoryThresholdPercent: isIntegerInRange(input?.memoryThresholdPercent, 1, 100)
+      ? (input?.memoryThresholdPercent as number)
+      : DEFAULT_SERVER_MONITOR_SETTINGS.memoryThresholdPercent,
+    diskThresholdPercent: isIntegerInRange(input?.diskThresholdPercent, 1, 100)
+      ? (input?.diskThresholdPercent as number)
+      : DEFAULT_SERVER_MONITOR_SETTINGS.diskThresholdPercent,
+    alertCooldownMinutes: isIntegerInRange(input?.alertCooldownMinutes, 1, 1440)
+      ? (input?.alertCooldownMinutes as number)
+      : DEFAULT_SERVER_MONITOR_SETTINGS.alertCooldownMinutes,
   };
 }
 

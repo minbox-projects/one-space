@@ -1,10 +1,10 @@
 //! Interval and daily scheduling, target mutation and settings changes.
 
 use super::collector::{
-    build_custom_record, same_source, validate_target, COLLECTION_LIMIT_ERROR,
+    build_custom_record, build_tunnel_record, same_source, validate_target, COLLECTION_LIMIT_ERROR,
 };
 use super::state::{
-    daily_slot_eligible, invalidate_target_sessions, local_slot_ms, today_string,
+    daily_slot_eligible, evaluate_alert, invalidate_target_sessions, local_slot_ms, today_string,
     DailyQueueEntry, ServerMonitorRuntime,
 };
 use crate::server_monitor::storage::ServerMonitorConfig;
@@ -349,6 +349,10 @@ impl ServerMonitorRuntime {
             .custom
             .as_ref()
             .map(|custom| build_custom_record(custom, existing.as_ref()));
+        let tunnel = draft
+            .tunnel
+            .as_ref()
+            .map(|tunnel| build_tunnel_record(tunnel, existing.as_ref()));
         let record = ServerMonitorTargetRecord {
             id: id.clone(),
             name,
@@ -360,6 +364,7 @@ impl ServerMonitorRuntime {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             custom,
+            tunnel,
             created_at_ms: existing
                 .as_ref()
                 .map(|record| record.created_at_ms)
@@ -372,6 +377,17 @@ impl ServerMonitorRuntime {
             last_success_at_ms: existing
                 .as_ref()
                 .and_then(|record| record.last_success_at_ms),
+            has_alert: existing
+                .as_ref()
+                .map(|record| record.has_alert)
+                .unwrap_or(false),
+            alert_reasons: existing
+                .as_ref()
+                .map(|record| record.alert_reasons.clone())
+                .unwrap_or_default(),
+            last_alert_at_ms: existing
+                .as_ref()
+                .and_then(|record| record.last_alert_at_ms),
         };
         validate_target(&record)?;
         if config
@@ -552,6 +568,13 @@ impl ServerMonitorRuntime {
         let mut config = inner.config.clone();
         let previous = config.settings.clone();
         config.settings = settings.clone();
+        for target in &mut config.targets {
+            if let Ok(Some(snapshot)) = self.store.latest_snapshot(&target.id) {
+                let (has_alert, reasons) = evaluate_alert(&snapshot, &settings);
+                target.has_alert = has_alert;
+                target.alert_reasons = reasons;
+            }
+        }
         self.store.save_config(&config)?;
         inner.config = config;
         inner.error = None;

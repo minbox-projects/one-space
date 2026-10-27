@@ -19,6 +19,7 @@ pub(super) const CANCELLED_MESSAGE: &str = "Collection was cancelled";
 pub(crate) trait ServerMonitorEventSink: Send + Sync {
     fn publish(&self, state: &ServerMonitorState);
     fn notify_failure(&self, target_id: &str, target_name: &str, error_message: &str);
+    fn notify_alert(&self, target_id: &str, target_name: &str, alert_reasons: &[String]);
 }
 
 #[cfg(test)]
@@ -28,6 +29,7 @@ pub(crate) struct NoopEventSink;
 impl ServerMonitorEventSink for NoopEventSink {
     fn publish(&self, _state: &ServerMonitorState) {}
     fn notify_failure(&self, _target_id: &str, _target_name: &str, _error_message: &str) {}
+    fn notify_alert(&self, _target_id: &str, _target_name: &str, _alert_reasons: &[String]) {}
 }
 
 struct TauriEventSink {
@@ -61,6 +63,39 @@ impl ServerMonitorEventSink for TauriEventSink {
         };
         crate::messages::record_message_silent(&self.app, input);
     }
+
+    fn notify_alert(&self, target_id: &str, target_name: &str, alert_reasons: &[String]) {
+        let summary_text = alert_reasons.join(", ");
+        let detail_text = format!(
+            "服务器 [{}] 检测到以下资源使用率超过告警阈值:\n{}",
+            target_name,
+            alert_reasons
+                .iter()
+                .map(|r| format!("- {}", r))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let input = crate::messages::MessageCreateInput {
+            source: "server_monitor".to_string(),
+            category: "resource_alert".to_string(),
+            severity: "warning".to_string(),
+            title: format!("服务器监控告警 - {}", target_name),
+            summary: Some(format!("服务器 [{}] 出现资源告警: {}", target_name, summary_text)),
+            detail: Some(detail_text),
+            dedupe_key: Some(format!("server_monitor_alert:{}", target_id)),
+            target: Some(crate::messages::MessageTarget {
+                tab: "more-tools".to_string(),
+                section: Some("server-monitor".to_string()),
+                entity_id: Some(target_id.to_string()),
+            }),
+            metadata: Some(serde_json::json!({
+                "target_id": target_id,
+                "target_name": target_name,
+                "reasons": alert_reasons,
+            })),
+        };
+        crate::messages::record_message_silent(&self.app, input);
+    }
 }
 
 pub(crate) trait ServerMonitorClock: Send + Sync {
@@ -73,6 +108,44 @@ impl ServerMonitorClock for SystemClock {
     fn now_ms(&self) -> i64 {
         Local::now().timestamp_millis()
     }
+}
+
+pub(super) fn evaluate_alert(
+    snapshot: &MetricSnapshot,
+    settings: &ServerMonitorSettings,
+) -> (bool, Vec<String>) {
+    if !settings.alert_enabled {
+        return (false, Vec::new());
+    }
+    let mut reasons = Vec::new();
+    if let Some(ref cpu) = snapshot.cpu {
+        if cpu.usage_percent >= settings.cpu_threshold_percent as f64 {
+            reasons.push(format!(
+                "CPU 使用率 {:.1}% (阈值 {}%)",
+                cpu.usage_percent, settings.cpu_threshold_percent
+            ));
+        }
+    }
+    if let Some(ref memory) = snapshot.memory {
+        if memory.used_percent >= settings.memory_threshold_percent as f64 {
+            reasons.push(format!(
+                "内存使用率 {:.1}% (阈值 {}%)",
+                memory.used_percent, settings.memory_threshold_percent
+            ));
+        }
+    }
+    if let Some(ref disks) = snapshot.disks {
+        for disk in disks {
+            if disk.used_percent >= settings.disk_threshold_percent as f64 {
+                reasons.push(format!(
+                    "磁盘 [{}] 使用率 {:.1}% (阈值 {}%)",
+                    disk.mount_point, disk.used_percent, settings.disk_threshold_percent
+                ));
+            }
+        }
+    }
+    let has_alert = !reasons.is_empty();
+    (has_alert, reasons)
 }
 
 pub(super) struct Inner {
@@ -226,13 +299,27 @@ impl ServerMonitorRuntime {
         events: Arc<dyn ServerMonitorEventSink>,
         clock: Arc<dyn ServerMonitorClock>,
     ) -> Arc<Self> {
-        let (config, config_broken) = match store.load_config() {
+        let (mut config, config_broken) = match store.load_config() {
             Ok(config) => (config, false),
             Err(error) => {
                 log::error!("Server monitor configuration could not be loaded: {error}");
                 (ServerMonitorConfig::default(), true)
             }
         };
+        let mut alert_state_changed = false;
+        for target in &mut config.targets {
+            if let Ok(Some(snapshot)) = store.latest_snapshot(&target.id) {
+                let (has_alert, reasons) = evaluate_alert(&snapshot, &config.settings);
+                if target.has_alert != has_alert || target.alert_reasons != reasons {
+                    target.has_alert = has_alert;
+                    target.alert_reasons = reasons;
+                    alert_state_changed = true;
+                }
+            }
+        }
+        if alert_state_changed && !config_broken {
+            let _ = store.save_config(&config);
+        }
         Arc::new(Self {
             store,
             connector,

@@ -167,6 +167,18 @@ describe("server monitor validation", () => {
   it("validates settings boundaries", () => {
     expect(validateServerMonitorSettings({ ...baseSettings, intervalMinutes: 1, retentionDays: 1 })).toBe(true);
     expect(validateServerMonitorSettings({ ...baseSettings, intervalMinutes: 1440, retentionDays: 30 })).toBe(true);
+    expect(validateServerMonitorSettings({ ...baseSettings, cpuThresholdPercent: 1 })).toBe(true);
+    expect(validateServerMonitorSettings({ ...baseSettings, cpuThresholdPercent: 100 })).toBe(true);
+    expect(validateServerMonitorSettings({ ...baseSettings, cpuThresholdPercent: 0 })).toBe(false);
+    expect(validateServerMonitorSettings({ ...baseSettings, cpuThresholdPercent: 101 })).toBe(false);
+    expect(validateServerMonitorSettings({ ...baseSettings, memoryThresholdPercent: 0 })).toBe(false);
+    expect(validateServerMonitorSettings({ ...baseSettings, memoryThresholdPercent: 101 })).toBe(false);
+    expect(validateServerMonitorSettings({ ...baseSettings, diskThresholdPercent: 0 })).toBe(false);
+    expect(validateServerMonitorSettings({ ...baseSettings, diskThresholdPercent: 101 })).toBe(false);
+    expect(validateServerMonitorSettings({ ...baseSettings, alertCooldownMinutes: 1 })).toBe(true);
+    expect(validateServerMonitorSettings({ ...baseSettings, alertCooldownMinutes: 1440 })).toBe(true);
+    expect(validateServerMonitorSettings({ ...baseSettings, alertCooldownMinutes: 0 })).toBe(false);
+    expect(validateServerMonitorSettings({ ...baseSettings, alertCooldownMinutes: 1441 })).toBe(false);
     expect(validateServerMonitorSettings({ ...baseSettings, intervalMinutes: 0 })).toBe(false);
     expect(validateServerMonitorSettings({ ...baseSettings, intervalMinutes: 1441 })).toBe(false);
     expect(validateServerMonitorSettings({ ...baseSettings, intervalMinutes: 1.5 })).toBe(false);

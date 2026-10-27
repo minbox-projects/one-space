@@ -1,4 +1,4 @@
-import { Clock, Plus, Server, X } from "lucide-react";
+import { Bell, Clock, Plus, Server, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Switch } from "@/components/ui/switch";
@@ -40,6 +40,14 @@ export interface ServerMonitorSettingsViewProps {
   onRetentionInputChange: (value: string) => void;
   newTimeInput: string;
   onNewTimeInputChange: (value: string) => void;
+  cpuThresholdInput?: string;
+  onCpuThresholdInputChange?: (value: string) => void;
+  memoryThresholdInput?: string;
+  onMemoryThresholdInputChange?: (value: string) => void;
+  diskThresholdInput?: string;
+  onDiskThresholdInputChange?: (value: string) => void;
+  alertCooldownInput?: string;
+  onAlertCooldownInputChange?: (value: string) => void;
   onShowToast?: (type: "success" | "error", text: string) => void;
 }
 
@@ -52,12 +60,25 @@ export function ServerMonitorSettingsView({
   onRetentionInputChange,
   newTimeInput,
   onNewTimeInputChange,
+  cpuThresholdInput,
+  onCpuThresholdInputChange,
+  memoryThresholdInput,
+  onMemoryThresholdInputChange,
+  diskThresholdInput,
+  onDiskThresholdInputChange,
+  alertCooldownInput,
+  onAlertCooldownInputChange,
   onShowToast,
 }: ServerMonitorSettingsViewProps) {
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage || i18n.language || "zh";
   const alternate = language.startsWith("zh") ? "en" : "zh";
   const alt = (key: string) => i18n.getFixedT(alternate)(key);
+
+  const cpuVal = cpuThresholdInput ?? String(settings.cpuThresholdPercent);
+  const memVal = memoryThresholdInput ?? String(settings.memoryThresholdPercent);
+  const diskVal = diskThresholdInput ?? String(settings.diskThresholdPercent);
+  const cooldownVal = alertCooldownInput ?? String(settings.alertCooldownMinutes);
 
   const setMode = (scheduleMode: ServerMonitorScheduleMode) => {
     onSettingsChange({ ...settings, scheduleMode });
@@ -92,6 +113,7 @@ export function ServerMonitorSettingsView({
   };
 
   return (
+    <>
     <SettingCard
       id="section-server-monitor"
       icon={Server}
@@ -243,5 +265,147 @@ export function ServerMonitorSettingsView({
         </p>
       </div>
     </SettingCard>
+
+    <SettingCard
+      id="section-server-monitor-alerts"
+      icon={Bell}
+      title={<BiText translationKey="serverMonitorAlertTitle" />}
+      description={<BiText translationKey="serverMonitorAlertDesc" />}
+    >
+      <div className="flex items-center justify-between gap-4">
+        <div className="space-y-0.5">
+          <h3 className="text-sm font-medium text-foreground">
+            <BiText translationKey="serverMonitorAlertEnabled" />
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            <BiText translationKey="serverMonitorAlertEnabledDesc" />
+          </p>
+        </div>
+        <Switch
+          aria-label={`${t("serverMonitorAlertEnabled")} ${alt("serverMonitorAlertEnabled")}`}
+          checked={settings.alertEnabled}
+          onCheckedChange={(checked) =>
+            onSettingsChange({ ...settings, alertEnabled: checked })
+          }
+        />
+      </div>
+
+      {settings.alertEnabled ? (
+        <>
+          <hr className="border-border/50" />
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div className="space-y-1.5">
+              <label htmlFor="server-monitor-cpu-threshold" className="text-sm font-medium text-foreground">
+                <BiText translationKey="serverMonitorCpuThreshold" />
+              </label>
+              <div className="relative">
+                <input
+                  id="server-monitor-cpu-threshold"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={cpuVal}
+                  onChange={(event) => {
+                    onCpuThresholdInputChange?.(event.target.value);
+                    const n = Number.parseInt(event.target.value, 10);
+                    if (Number.isInteger(n) && n >= 1 && n <= 100) {
+                      onSettingsChange({ ...settings, cpuThresholdPercent: n });
+                    }
+                  }}
+                  className="w-full rounded-xl border bg-background px-4 py-2 pr-8 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-muted-foreground">
+                  %
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label htmlFor="server-monitor-memory-threshold" className="text-sm font-medium text-foreground">
+                <BiText translationKey="serverMonitorMemoryThreshold" />
+              </label>
+              <div className="relative">
+                <input
+                  id="server-monitor-memory-threshold"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={memVal}
+                  onChange={(event) => {
+                    onMemoryThresholdInputChange?.(event.target.value);
+                    const n = Number.parseInt(event.target.value, 10);
+                    if (Number.isInteger(n) && n >= 1 && n <= 100) {
+                      onSettingsChange({ ...settings, memoryThresholdPercent: n });
+                    }
+                  }}
+                  className="w-full rounded-xl border bg-background px-4 py-2 pr-8 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-muted-foreground">
+                  %
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label htmlFor="server-monitor-disk-threshold" className="text-sm font-medium text-foreground">
+                <BiText translationKey="serverMonitorDiskThreshold" />
+              </label>
+              <div className="relative">
+                <input
+                  id="server-monitor-disk-threshold"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={diskVal}
+                  onChange={(event) => {
+                    onDiskThresholdInputChange?.(event.target.value);
+                    const n = Number.parseInt(event.target.value, 10);
+                    if (Number.isInteger(n) && n >= 1 && n <= 100) {
+                      onSettingsChange({ ...settings, diskThresholdPercent: n });
+                    }
+                  }}
+                  className="w-full rounded-xl border bg-background px-4 py-2 pr-8 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-muted-foreground">
+                  %
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            <BiText translationKey="serverMonitorThresholdHint" />
+          </p>
+
+          <hr className="border-border/50" />
+
+          <div className="space-y-1.5">
+            <label htmlFor="server-monitor-alert-cooldown" className="text-sm font-medium text-foreground">
+              <BiText translationKey="serverMonitorAlertCooldownMinutes" />
+            </label>
+            <input
+              id="server-monitor-alert-cooldown"
+              type="number"
+              min={1}
+              max={1440}
+              value={cooldownVal}
+              onChange={(event) => {
+                onAlertCooldownInputChange?.(event.target.value);
+                const n = Number.parseInt(event.target.value, 10);
+                if (Number.isInteger(n) && n >= 1 && n <= 1440) {
+                  onSettingsChange({ ...settings, alertCooldownMinutes: n });
+                }
+              }}
+              className="w-full rounded-xl border bg-background px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/20"
+            />
+            <p className="text-xs text-muted-foreground">
+              <BiText translationKey="serverMonitorAlertCooldownHint" />
+            </p>
+          </div>
+        </>
+      ) : null}
+    </SettingCard>
+    </>
   );
 }

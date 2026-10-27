@@ -2,10 +2,12 @@ import type { ReactNode } from "react";
 import { HardDrive, MemoryStick, Network, Cpu } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { CustomSelect } from "@/components/common/CustomSelect";
 import {
   formatBytes,
   formatPercent,
   formatRate,
+  type DiskMetric,
   type MetricSnapshot,
   type NetworkMetric,
 } from "@/lib/serverMonitor";
@@ -144,34 +146,111 @@ function MetricCard({
 
 export interface MetricCardsProps {
   metrics: MetricSnapshot | null;
-  networks: NetworkMetric[];
-  selectedInterface: string | null;
-  selectedNetwork: NetworkMetric | null;
-  onSelectInterface: (value: string) => void;
+  networks?: NetworkMetric[];
+  availableMountPoints?: string[];
+  selectedMountPoint?: string | null;
+  selectedDisk?: DiskMetric | null;
+  onSelectMountPoint?: (mountPoint: string) => void;
+  availableInterfaces?: string[];
+  selectedInterface?: string | null;
+  selectedNetwork?: NetworkMetric | null;
+  onSelectInterface?: (value: string) => void;
 }
 
 export function MetricCards({
   metrics,
-  networks,
+  networks = [],
+  availableMountPoints = [],
+  selectedMountPoint,
+  selectedDisk,
+  onSelectMountPoint,
+  availableInterfaces = [],
   selectedInterface,
   selectedNetwork,
   onSelectInterface,
 }: MetricCardsProps) {
-  const { t, i18n } = useTranslation();
-  const language = i18n.resolvedLanguage || i18n.language || "zh";
-  const alternate = language.startsWith("zh") ? "en" : "zh";
+  const { t } = useTranslation();
 
   const cpu = metrics?.cpu ?? null;
   const memory = metrics?.memory ?? null;
   const disks = Array.isArray(metrics?.disks) ? metrics.disks : [];
-  const busiestDisk = disks.reduce<(typeof disks)[number] | null>(
-    (current, disk) =>
-      !current || disk.usedPercent > current.usedPercent ? disk : current,
-    null,
-  );
+
+  const diskOptions =
+    availableMountPoints.length > 0
+      ? availableMountPoints
+      : disks.map((d) => d.mountPoint);
+
+  const activeDisk =
+    selectedDisk ??
+    (selectedMountPoint ? disks.find((d) => d.mountPoint === selectedMountPoint) : null) ??
+    disks.reduce<(typeof disks)[number] | null>(
+      (current, disk) => (!current || disk.usedPercent > current.usedPercent ? disk : current),
+      null,
+    ) ??
+    (disks.length > 0 ? disks[0] : null);
+
+  const currentMountPoint = selectedMountPoint ?? activeDisk?.mountPoint ?? diskOptions[0] ?? "";
+
+  const interfaceOptions =
+    availableInterfaces.length > 0
+      ? availableInterfaces
+      : networks.map((n) => n.interface);
+
+  const currentInterface =
+    selectedInterface ?? selectedNetwork?.interface ?? interfaceOptions[0] ?? "";
 
   return (
     <div className="space-y-3 min-w-0 max-w-full">
+      {/* 顶部控制工具条：展示实时指标标题与磁盘、网络接口下拉选择器 */}
+      <div className="relative z-30 flex flex-wrap items-center justify-between gap-2.5 px-0.5">
+        <div className="flex items-center gap-2">
+          <span className="flex h-2 w-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20" />
+          <h4 className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+            <BiText translationKey="serverMonitorRealtimeTitle" />
+          </h4>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          {diskOptions.length > 0 ? (
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                <BiText translationKey="serverMonitorMountPoint" />:
+              </span>
+              <CustomSelect
+                size="sm"
+                value={currentMountPoint}
+                onChange={(val) => onSelectMountPoint?.(val)}
+                options={diskOptions.map((mp) => ({ value: mp, label: mp }))}
+                ariaLabel={t("serverMonitorMountPoint")}
+                selectTestId="metric-disk-select"
+                triggerTestId="metric-disk-select-trigger"
+                triggerClassName="h-7 text-xs font-mono min-w-[90px] max-w-[140px] px-2 py-0 bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm"
+                menuClassName="min-w-full w-max max-w-[240px] shadow-xl"
+              />
+            </div>
+          ) : null}
+
+          {interfaceOptions.length > 0 ? (
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                <BiText translationKey="serverMonitorNetworkInterface" />:
+              </span>
+              <CustomSelect
+                size="sm"
+                value={currentInterface}
+                onChange={(val) => onSelectInterface?.(val)}
+                options={interfaceOptions.map((iface) => ({ value: iface, label: iface }))}
+                ariaLabel={t("serverMonitorNetworkInterface")}
+                selectTestId="metric-nic-select"
+                triggerTestId="metric-nic-select-trigger"
+                triggerClassName="h-7 text-xs font-mono min-w-[90px] max-w-[140px] px-2 py-0 bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm"
+                menuClassName="min-w-full w-max max-w-[240px] shadow-xl"
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4 min-w-0">
         <MetricCard
           icon={<Cpu className="h-4 w-4" />}
@@ -203,12 +282,12 @@ export function MetricCards({
         <MetricCard
           icon={<HardDrive className="h-4 w-4" />}
           labelKey="serverMonitorDisk"
-          value={formatPercent(busiestDisk?.usedPercent)}
-          percent={busiestDisk?.usedPercent}
-          unavailable={!busiestDisk}
+          value={formatPercent(activeDisk?.usedPercent)}
+          percent={activeDisk?.usedPercent}
+          unavailable={!activeDisk}
           detail={
-            busiestDisk
-              ? `${busiestDisk.mountPoint} · ${formatBytes(busiestDisk.usedBytes)} / ${formatBytes(busiestDisk.totalBytes)}`
+            activeDisk
+              ? `${activeDisk.mountPoint} (${activeDisk.filesystem}) · ${formatBytes(activeDisk.usedBytes)} / ${formatBytes(activeDisk.totalBytes)} · ${t("serverMonitorDiskFree")}: ${formatBytes(activeDisk.availableBytes)}`
               : null
           }
         />
@@ -225,26 +304,66 @@ export function MetricCards({
         />
       </div>
 
-      {networks.length > 0 ? (
-        <div className="flex min-w-0 max-w-full items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white px-4 py-2.5 text-xs shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <span className="shrink-0 font-medium text-slate-600 dark:text-slate-300">
-            <BiText translationKey="serverMonitorNetworkInterface" />
-          </span>
-          <select
-            aria-label={`${t("serverMonitorNetworkInterface")} ${i18n.getFixedT(alternate)("serverMonitorNetworkInterface")}`}
-            value={selectedInterface ?? selectedNetwork?.interface ?? networks[0].interface}
-            onChange={(event) => onSelectInterface(event.target.value)}
-            className="h-8 max-w-[200px] sm:max-w-[320px] truncate rounded-lg border border-slate-200 bg-slate-50/50 px-2.5 text-xs font-mono font-medium text-slate-800 transition-all hover:border-slate-300 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-          >
-            {networks.map((item) => (
-              <option
-                key={item.interface}
-                value={item.interface}
-                label={item.interface}
-                aria-label={item.interface}
-              />
-            ))}
-          </select>
+      {disks.length > 0 ? (
+        <div className="min-w-0 max-w-full rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2">
+              <HardDrive className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+              <span className="text-xs font-semibold text-slate-900 dark:text-white">
+                <BiText translationKey="serverMonitorAllDisksTitle" />
+              </span>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-mono text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                {disks.length}
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-800/80">
+            {disks.map((disk) => {
+              const tone = getProgressTone(disk.usedPercent);
+              const clampedPercent = Math.min(100, Math.max(0, disk.usedPercent));
+              const isSelected = disk.mountPoint === currentMountPoint;
+              return (
+                <div
+                  key={disk.mountPoint}
+                  data-testid={`disk-row-${disk.mountPoint}`}
+                  onClick={() => onSelectMountPoint?.(disk.mountPoint)}
+                  className={`py-2 px-2 -mx-2 rounded-xl cursor-pointer transition-colors flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60 ${
+                    isSelected ? "bg-emerald-50/60 dark:bg-emerald-950/30 ring-1 ring-emerald-500/30" : ""
+                  }`}
+                >
+                  <div className="min-w-0 sm:w-1/3 flex items-baseline gap-2">
+                    <span className="font-mono font-semibold text-slate-900 dark:text-white truncate" title={disk.mountPoint}>
+                      {disk.mountPoint}
+                    </span>
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-500 dark:bg-slate-800 dark:text-slate-400 shrink-0">
+                      {disk.filesystem}
+                    </span>
+                  </div>
+
+                  <div className="min-w-0 sm:w-1/3 text-[11px] text-slate-500 dark:text-slate-400">
+                    <span>
+                      {formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)}
+                    </span>
+                    <span className="ml-1.5 opacity-70">
+                      ({t("serverMonitorDiskFree")}: {formatBytes(disk.availableBytes)})
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-3 sm:w-1/3 sm:justify-end">
+                    <div className="h-1.5 w-24 sm:w-28 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800 shrink-0">
+                      <div
+                        className={`h-full transition-all duration-300 ${tone.bar}`}
+                        style={{ width: `${clampedPercent}%` }}
+                      />
+                    </div>
+                    <span className={`w-12 text-right font-mono font-bold text-xs ${tone.text}`}>
+                      {formatPercent(disk.usedPercent)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       ) : null}
     </div>
