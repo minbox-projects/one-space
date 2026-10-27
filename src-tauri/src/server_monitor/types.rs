@@ -48,6 +48,7 @@ pub(crate) enum MonitorAuth {
 /// One collection's connection request.
 #[derive(Debug, Clone)]
 pub(crate) struct MonitorConnectRequest {
+    #[allow(dead_code)]
     pub target_id: String,
     pub source: MonitorSource,
     pub password: Option<String>,
@@ -63,7 +64,6 @@ pub(crate) enum MonitorTransportErrorKind {
     HostKey,
     Config,
     Timeout,
-    Script,
 }
 
 #[derive(Debug, Clone)]

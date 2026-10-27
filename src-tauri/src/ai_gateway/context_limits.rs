@@ -11,9 +11,9 @@
 
 use super::model_pools::expand_fallback_model_in;
 use super::selection::can_convert_from;
-use super::{
-    GatewayConfig, GatewayUpstreamProvider, ModelPool, ModelPoolCandidate, UpstreamProtocol,
-};
+use super::{GatewayUpstreamProvider, ModelPool, ModelPoolCandidate, UpstreamProtocol};
+#[cfg(test)]
+use super::GatewayConfig;
 
 /// One exact configured source identity: the owning provider, the public local
 /// model, the upstream model and the effective protocol. The same identity is
@@ -258,6 +258,7 @@ pub(in crate::ai_gateway) fn resolve_public_context_window_from(
 }
 
 /// Resolve from a complete configuration.
+#[cfg(test)]
 pub(in crate::ai_gateway) fn resolve_public_context_window(
     config: &GatewayConfig,
     public_model: &str,

@@ -278,6 +278,7 @@ fn gateway_protocol_servable(
 /// Opencode activation plus projection to opencode.json are applied separately
 /// via the service-provider active list and projection after the upsert
 /// succeeds.
+#[cfg(test)]
 pub(in crate::ai_gateway) fn build_gateway_provider(
     provider_id: &str,
     tool: &str,

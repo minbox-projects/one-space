@@ -666,6 +666,7 @@ pub(in crate::ai_gateway) fn classify_failure(
 
 /// Maximum bounded retries after a provider's first attempt in one request
 /// (so a provider is contacted at most `1 + MAX_RETRIES_PER_PROVIDER` times).
+#[cfg(test)]
 pub(in crate::ai_gateway) const MAX_RETRIES_PER_PROVIDER: u32 = 5;
 
 const RETRY_BASE_DELAY_MILLIS: u128 = 2_000;
@@ -1099,6 +1100,7 @@ pub(in crate::ai_gateway) fn rearm_mapping_probe_cooldown(
 /// Record a failure on every row matching `target`'s trimmed key. Returns `true`
 /// when that key is (or becomes) auto-disabled. `Transient` and `ReturnToClient`
 /// never count as failures.
+#[cfg(test)]
 pub(in crate::ai_gateway) fn register_mapping_failure(
     provider: &mut GatewayUpstreamProvider,
     target: &MappingTarget,
@@ -1213,14 +1215,8 @@ fn offset_natural_day(timestamp: u64, offset_hours: i32) -> i64 {
     ((timestamp as i64) + offset_seconds).div_euclid(SECONDS_PER_DAY)
 }
 
-fn utc8_natural_day(timestamp: u64) -> u64 {
-    const SECONDS_PER_DAY: u64 = 86_400;
-    const UTC8_OFFSET_SECONDS: u64 = 8 * 3_600;
-    timestamp / SECONDS_PER_DAY
-        + (timestamp % SECONDS_PER_DAY + UTC8_OFFSET_SECONDS) / SECONDS_PER_DAY
-}
-
 /// Whether a daily-reset quota mark is due at the explicit `now`.
+#[allow(dead_code)]
 pub(in crate::ai_gateway) fn daily_quota_reset_due(key: &UpstreamKey, now: u64) -> bool {
     daily_quota_reset_due_with_offset(key, now, 8)
 }
