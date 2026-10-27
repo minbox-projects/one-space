@@ -40,7 +40,7 @@ fn runtime_public_methods_are_callable_boundary() {
 use crate::server_monitor::transport::{MonitorConnector, MonitorConnection};
 use crate::server_monitor::types::{
     MonitorConnectRequest, MonitorSource, MonitorTransportError, ServerMonitorScheduleMode,
-    ServerMonitorSettings, ServerMonitorTargetDraft, ServerMonitorTargetRecord,
+    ServerMonitorSettings, ServerMonitorState, ServerMonitorTargetDraft, ServerMonitorTargetRecord,
 };
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -1450,4 +1450,61 @@ fn real_ssh_runtime_interval_daily_and_pause_smoke() {
         Some(h) => std::env::set_var("HOME", h),
         None => std::env::remove_var("HOME"),
     }
+}
+
+struct RecordingEventSink {
+    failures: std::sync::Mutex<Vec<(String, String, String)>>,
+}
+
+impl ServerMonitorEventSink for RecordingEventSink {
+    fn publish(&self, _state: &ServerMonitorState) {}
+    fn notify_failure(&self, target_id: &str, target_name: &str, error_message: &str) {
+        if let Ok(mut lock) = self.failures.lock() {
+            lock.push((
+                target_id.to_string(),
+                target_name.to_string(),
+                error_message.to_string(),
+            ));
+        }
+    }
+}
+
+#[test]
+fn collection_failure_notifies_event_sink() {
+    let root = std::env::temp_dir().join(format!("onespace-sm-notif-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(ServerMonitorStore::new(root.clone()));
+    let config = ServerMonitorConfig::default();
+    store.save_config(&config).unwrap();
+
+    let connector = Arc::new(EnhancedConnector::new(framed_output()));
+    connector.fail_auth_remaining.store(1, Ordering::SeqCst);
+    let sink = Arc::new(RecordingEventSink {
+        failures: std::sync::Mutex::new(Vec::new()),
+    });
+    let events: Arc<dyn ServerMonitorEventSink> = sink.clone();
+    let clock = Arc::new(AtomicClock {
+        value: AtomicI64::new(0),
+    });
+    let runtime = ServerMonitorRuntime::new_with_clock(
+        store.clone(),
+        connector.clone() as Arc<dyn MonitorConnector>,
+        events,
+        clock.clone(),
+    );
+    let mut draft = make_target_draft("test-server");
+    draft.name = "My Server".to_string();
+    runtime.upsert_target(draft).unwrap();
+    runtime.start();
+    runtime.tick(0).unwrap();
+    runtime.wait_for_idle();
+
+    assert!(wait_until(|| sink.failures.lock().unwrap().len() == 1, 5000));
+    let failures = sink.failures.lock().unwrap().clone();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].0, "test-server");
+    assert_eq!(failures[0].1, "My Server");
+    assert!(!failures[0].2.is_empty());
+
+    runtime.shutdown();
+    let _ = std::fs::remove_dir_all(root);
 }

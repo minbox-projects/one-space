@@ -33,6 +33,12 @@ export const SOURCE_LABELS: Record<string, string> = {
   content: "Content",
   ai_gateway: "AI Gateway",
   uptime_monitor: "Uptime Monitor",
+  server_monitor: "Server Monitor",
+  ssl_certificate: "SSL Certificate",
+  snippets: "Snippets",
+  notes: "Notes",
+  bookmarks: "Bookmarks",
+  file_sharing: "File Sharing",
 };
 
 export function getSourceLabel(
@@ -40,9 +46,13 @@ export function getSourceLabel(
   t?: (key: string, fallback?: string) => string,
 ): string {
   if (t) {
-    const key = `source_${source}`;
-    const translated = t(key, SOURCE_LABELS[source] || source);
-    if (translated && translated !== key) return translated;
+    const defaultLabel = SOURCE_LABELS[source] || source || "System";
+    const msgKey = `messageSource_${source}`;
+    const srcKey = `source_${source}`;
+    const translated = t(msgKey, t(srcKey, defaultLabel));
+    if (translated && translated !== msgKey && translated !== srcKey) {
+      return translated;
+    }
   }
   return SOURCE_LABELS[source] || source || "System";
 }

@@ -31,6 +31,7 @@ const CANCELLED_MESSAGE: &str = "Collection was cancelled";
 /// Event boundary for safe state publication.
 pub(crate) trait ServerMonitorEventSink: Send + Sync {
     fn publish(&self, state: &ServerMonitorState);
+    fn notify_failure(&self, target_id: &str, target_name: &str, error_message: &str);
 }
 
 #[cfg(test)]
@@ -39,6 +40,7 @@ pub(crate) struct NoopEventSink;
 #[cfg(test)]
 impl ServerMonitorEventSink for NoopEventSink {
     fn publish(&self, _state: &ServerMonitorState) {}
+    fn notify_failure(&self, _target_id: &str, _target_name: &str, _error_message: &str) {}
 }
 
 struct TauriEventSink {
@@ -49,6 +51,28 @@ impl ServerMonitorEventSink for TauriEventSink {
     fn publish(&self, state: &ServerMonitorState) {
         use tauri::Emitter;
         let _ = self.app.emit("server-monitor-updated", state);
+    }
+
+    fn notify_failure(&self, target_id: &str, target_name: &str, error_message: &str) {
+        let input = crate::messages::MessageCreateInput {
+            source: "server_monitor".to_string(),
+            category: "collect_failed".to_string(),
+            severity: "error".to_string(),
+            title: format!("服务器监控采集异常 - {}", target_name),
+            summary: Some(format!("服务器 [{}] 监控指标采集失败", target_name)),
+            detail: Some(error_message.to_string()),
+            dedupe_key: Some(format!("server_monitor_error:{}", target_id)),
+            target: Some(crate::messages::MessageTarget {
+                tab: "more-tools".to_string(),
+                section: Some("server-monitor".to_string()),
+                entity_id: Some(target_id.to_string()),
+            }),
+            metadata: Some(serde_json::json!({
+                "target_id": target_id,
+                "target_name": target_name,
+            })),
+        };
+        crate::messages::record_message_silent(&self.app, input);
     }
 }
 
@@ -727,6 +751,7 @@ impl ServerMonitorRuntime {
     ) {
         let now = self.clock.now_ms();
         let mut prune: Option<(u32, i64, String)> = None;
+        let mut failure_notification: Option<(String, String, String)> = None;
 
         if let Ok(mut inner) = self.inner.lock() {
             inner.active = inner.active.saturating_sub(1);
@@ -760,6 +785,12 @@ impl ServerMonitorRuntime {
                         target.blocked = kind.is_blocking();
                         target.last_error_kind = Some(kind);
                         target.last_error = report.error.clone();
+                        let error_msg = report
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "Unknown collection failure".to_string());
+                        failure_notification =
+                            Some((target.id.clone(), target.name.clone(), error_msg));
                     } else if report.snapshot.is_some() {
                         target.blocked = false;
                         target.last_error_kind = None;
@@ -805,6 +836,9 @@ impl ServerMonitorRuntime {
                 report.error = Some(CANCELLED_MESSAGE.to_string());
                 report.cancelled = true;
             }
+        }
+        if let Some((target_id, target_name, error_msg)) = failure_notification {
+            self.events.notify_failure(&target_id, &target_name, &error_msg);
         }
         handle.complete(report);
         if let Some((retention, now_ms, today)) = prune {

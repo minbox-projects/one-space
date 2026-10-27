@@ -90,6 +90,28 @@ export const FOCUSED_MESSAGE_TYPE_CATALOG: FocusedMessageTypeDef[] = [
     isRecommended: true,
   },
 
+  // --- 服务器监控 ---
+  {
+    id: "server_monitor:collect_failed",
+    source: "server_monitor",
+    category: "collect_failed",
+    defaultSeverity: "error",
+    nameKey: "msgType_server_monitor_collect_failed_title",
+    descKey: "msgType_server_monitor_collect_failed_desc",
+    isRecommended: true,
+  },
+
+  // --- SSL 证书 ---
+  {
+    id: "ssl_certificate:expiring_soon",
+    source: "ssl_certificate",
+    category: "expiring_soon",
+    defaultSeverity: "warning",
+    nameKey: "msgType_ssl_certificate_expiring_soon_title",
+    descKey: "msgType_ssl_certificate_expiring_soon_desc",
+    isRecommended: true,
+  },
+
   // --- SSH 隧道 ---
   {
     id: "ssh_tunnels:disconnect",

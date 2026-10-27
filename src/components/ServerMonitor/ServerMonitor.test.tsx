@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ServerMonitorTool } from "@/components/ServerMonitor";
 import { HistoryChart } from "@/components/ServerMonitor/HistoryChart";
+import { formatNetworkInterfaceTail, NetworkInterfaceDisplay } from "@/components/ServerMonitor/MetricCards";
+import { ServerFormDialog } from "@/components/ServerMonitor/ServerFormDialog";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
 import type { ServerMonitorSample } from "@/lib/serverMonitor";
@@ -365,6 +367,116 @@ describe("ServerMonitorTool", () => {
     // no crash
     expect(screen.getByText(/alpha/i)).toBeInTheDocument();
   });
+
+  it("search query filters the target list", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return statePopulated;
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    expect(screen.getByText(/alpha/i)).toBeInTheDocument();
+    expect(screen.getByText(/beta/i)).toBeInTheDocument();
+
+    const searchInput = screen.getByPlaceholderText(/search|搜索/i);
+    await user.type(searchInput, "beta");
+
+    expect(screen.queryByText(/alpha/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/beta/i)).toBeInTheDocument();
+  });
+
+  it("status filter button filters the target list", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "server_monitor_snapshot") return {
+        settings: {},
+        targets: [
+          { ...targetA, enabled: true },
+          { ...targetB, enabled: false },
+        ],
+        nextCollectionAtMs: 2000,
+        lastSuccessAtMs: 1000,
+        error: null,
+      };
+      if (command === "server_monitor_history") return [];
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await act(async () => {
+      renderWithProviders(<ServerMonitorTool />);
+    });
+    expect(screen.getByText(/alpha/i)).toBeInTheDocument();
+    expect(screen.getByText(/beta/i)).toBeInTheDocument();
+
+    // 点击已暂停筛选（筛选胶囊带有数量标签）
+    const pausedBtn = screen.getByTestId("filter-paused");
+    await user.click(pausedBtn);
+
+    expect(screen.queryByText(/alpha/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/beta/i)).toBeInTheDocument();
+  });
+});
+
+describe("ServerFormDialog", () => {
+  it("loads SSH servers and auto fills form when selected", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_ssh_hosts") {
+        return [
+          {
+            name: "prod-cloud",
+            host_name: "10.10.10.10",
+            user: "admin",
+            port: 2202,
+          },
+        ];
+      }
+      if (command === "get_secret") return null;
+      return undefined;
+    });
+
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onTestConnection = vi.fn().mockResolvedValue({ succeeded: true, partial: false, snapshot: sampleSnapshot });
+    const user = userEvent.setup();
+
+    await act(async () => {
+      renderWithProviders(
+        <ServerFormDialog
+          isOpen={true}
+          target={null}
+          onClose={vi.fn()}
+          onSave={onSave}
+          onTestConnection={onTestConnection}
+        />,
+      );
+    });
+
+    // 切换为 savedHost 来源（通过点击对应的模式标签）
+    const savedHostOption = screen.getByTestId("source-savedHost");
+    await user.click(savedHostOption);
+
+    // 下拉框选择已配置的 SSH 服务器
+    const select = await screen.findByRole("combobox", { name: /from ssh servers|从 ssh 服务器选择/i });
+    await user.selectOptions(select, "config:prod-cloud");
+
+    // 自动填充名称与主机别名输入框，以及信息预览
+    const filledInputs = await screen.findAllByDisplayValue("prod-cloud");
+    expect(filledInputs.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/10.10.10.10:2202/).length).toBeGreaterThanOrEqual(1);
+
+    // 保存提交
+    const saveBtn = screen.getByRole("button", { name: /save|保存/i });
+    await user.click(saveBtn);
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "prod-cloud",
+        sourceKind: "savedHost",
+        savedHostName: "prod-cloud",
+      }),
+    );
+  });
 });
 
 describe("HistoryChart", () => {
@@ -383,5 +495,32 @@ describe("HistoryChart", () => {
     ];
     const { container } = renderWithProviders(<HistoryChart samples={samples} range="sevenDays" />);
     expect(container).toBeTruthy();
+  });
+});
+
+describe("NetworkInterfaceDisplay", () => {
+  it("keeps short interface names unchanged", () => {
+    expect(formatNetworkInterfaceTail("eth0", 9)).toEqual({
+      display: "eth0",
+      isTruncated: false,
+      tail: "eth0",
+    });
+
+    const { container } = renderWithProviders(<NetworkInterfaceDisplay name="eth0" />);
+    expect(container.textContent).toContain("eth0");
+    expect(container.textContent).not.toContain("…");
+  });
+
+  it("truncates long interface names from the front and keeps the tail", () => {
+    const longName = "br-7c48f87b8d4e";
+    const res = formatNetworkInterfaceTail(longName, 9);
+    expect(res.isTruncated).toBe(true);
+    expect(res.tail).toBe("8f87b8d4e");
+    expect(res.display).toBe("…8f87b8d4e");
+
+    const { container } = renderWithProviders(<NetworkInterfaceDisplay name={longName} />);
+    expect(container.textContent).toContain("…");
+    expect(container.textContent).toContain("8f87b8d4e");
+    expect(container.querySelector("[title='br-7c48f87b8d4e']")).toBeInTheDocument();
   });
 });

@@ -105,9 +105,21 @@ export function HistoryChart({
         .map((point, index) => `${index === 0 ? "M" : "L"} ${x(point.timestamp).toFixed(1)} ${y(point.percent).toFixed(1)}`)
         .join(" ");
 
+    const areaFor = (segment: Point[]) => {
+      if (segment.length < 2) return "";
+      const first = segment[0];
+      const last = segment[segment.length - 1];
+      const bottomY = HEIGHT - PADDING;
+      const linePart = segment
+        .map((point, index) => `${index === 0 ? "M" : "L"} ${x(point.timestamp).toFixed(1)} ${y(point.percent).toFixed(1)}`)
+        .join(" ");
+      return `${linePart} L ${x(last.timestamp).toFixed(1)} ${bottomY} L ${x(first.timestamp).toFixed(1)} ${bottomY} Z`;
+    };
+
     return {
       points,
       segments: segments.map(pathFor),
+      areas: segments.map(areaFor).filter(Boolean),
       x,
       y,
       lastPercent: points.length > 0 ? points[points.length - 1].percent : null,
@@ -121,14 +133,16 @@ export function HistoryChart({
   return (
     <div className={className}>
       {chart.points.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
-          {t("serverMonitorHistoryEmpty")}
-          <span className="sr-only"> {i18n.getFixedT(alternate)("serverMonitorHistoryEmpty")}</span>
-        </p>
+        <div className="flex h-36 flex-col items-center justify-center rounded-xl border border-dashed border-border/80 bg-muted/10 p-6 text-center">
+          <p className="text-xs text-muted-foreground">
+            {t("serverMonitorHistoryEmpty")}
+            <span className="sr-only"> {i18n.getFixedT(alternate)("serverMonitorHistoryEmpty")}</span>
+          </p>
+        </div>
       ) : (
         <>
-          <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
-            <span>
+          <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+            <span className="font-medium">
               {t("serverMonitorCpu")}
               <span className="sr-only"> {i18n.getFixedT(alternate)("serverMonitorCpu")}</span>
             </span>
@@ -137,21 +151,47 @@ export function HistoryChart({
             role="img"
             aria-label={title}
             viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-            className="h-44 w-full overflow-visible"
+            className="h-44 w-full overflow-hidden"
             preserveAspectRatio="none"
           >
             <title>{title}</title>
+            <defs>
+              <linearGradient id="serverMonitorChartGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.28" />
+                <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity="0.0" />
+              </linearGradient>
+            </defs>
+
             {[25, 50, 75].map((percent) => (
-              <line
-                key={percent}
-                x1={PADDING}
-                x2={WIDTH - PADDING}
-                y1={chart.y(percent)}
-                y2={chart.y(percent)}
-                className="stroke-border/60"
-                strokeWidth={1}
+              <g key={percent}>
+                <line
+                  x1={PADDING}
+                  x2={WIDTH - PADDING}
+                  y1={chart.y(percent)}
+                  y2={chart.y(percent)}
+                  className="stroke-border/50"
+                  strokeWidth={1}
+                  strokeDasharray="4 4"
+                />
+                <text
+                  x={WIDTH - PADDING + 4}
+                  y={chart.y(percent) + 3}
+                  className="fill-muted-foreground/60 text-[9px] font-mono select-none"
+                >
+                  {percent}%
+                </text>
+              </g>
+            ))}
+
+            {chart.areas.map((path, index) => (
+              <path
+                key={`area-${index}`}
+                d={path}
+                fill="url(#serverMonitorChartGradient)"
+                stroke="none"
               />
             ))}
+
             {chart.segments.map((path, index) => (
               <path
                 key={`segment-${index}`}
@@ -163,6 +203,7 @@ export function HistoryChart({
                 strokeLinejoin="round"
               />
             ))}
+
             {chart.points.map((point, index) => (
               <circle
                 key={`${point.timestamp}-${index}`}

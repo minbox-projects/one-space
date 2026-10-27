@@ -22,6 +22,12 @@ export type MessageSource =
   | "content"
   | "ai_gateway"
   | "uptime_monitor"
+  | "server_monitor"
+  | "ssl_certificate"
+  | "snippets"
+  | "notes"
+  | "bookmarks"
+  | "file_sharing"
   | (string & {});
 
 export interface MessageTarget {

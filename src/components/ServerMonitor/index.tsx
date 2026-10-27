@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Pencil, Plus, Settings2, Trash2 } from "lucide-react";
+import {
+  Activity,
+  ChevronDown,
+  ChevronUp,
+  Info,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  Server,
+  Settings2,
+  Trash2,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { useConfirmDialog } from "@/components/ConfirmDialogProvider";
@@ -37,10 +49,17 @@ import { ServerFormDialog } from "./ServerFormDialog";
 type PillTone = "success" | "warning" | "error" | "neutral";
 
 const PILL_CLASSES: Record<PillTone, string> = {
-  success: "border-emerald-500/20 bg-emerald-500/10 text-emerald-600",
-  warning: "border-amber-500/20 bg-amber-500/10 text-amber-600",
-  error: "border-destructive/20 bg-destructive/10 text-destructive",
-  neutral: "border-border bg-muted text-muted-foreground",
+  success: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  warning: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  error: "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  neutral: "border-slate-300/60 bg-slate-100 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300",
+};
+
+const STATUS_RING_CLASSES: Record<PillTone, string> = {
+  success: "bg-emerald-500 ring-4 ring-emerald-500/20",
+  warning: "bg-amber-500 ring-4 ring-amber-500/20",
+  error: "bg-rose-500 ring-4 ring-rose-500/20",
+  neutral: "bg-slate-400 ring-4 ring-slate-400/20",
 };
 
 function useBi() {
@@ -82,7 +101,7 @@ function StatusPill({
 }) {
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${PILL_CLASSES[tone]}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${PILL_CLASSES[tone]}`}
     >
       <BiText translationKey={translationKey} />
     </span>
@@ -142,6 +161,9 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingTarget, setEditingTarget] = useState<ServerMonitorTargetView | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "error" | "paused">("all");
+  const [guidanceOpen, setGuidanceOpen] = useState(false);
 
   const applyState = useCallback((next: ServerMonitorState) => {
     setState(next);
@@ -230,6 +252,44 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
     () => (Array.isArray(state?.targets) ? state?.targets ?? [] : []),
     [state?.targets],
   );
+
+  const totalCount = targets.length;
+  const activeCount = useMemo(
+    () => targets.filter((t) => t.enabled && !t.blocked && !t.lastError).length,
+    [targets],
+  );
+  const errorCount = useMemo(
+    () => targets.filter((t) => t.blocked || Boolean(t.lastError)).length,
+    [targets],
+  );
+  const pausedCount = useMemo(
+    () => targets.filter((t) => !t.enabled).length,
+    [targets],
+  );
+
+  const filteredTargets = useMemo(() => {
+    return targets.filter((target) => {
+      if (statusFilter === "active" && (!target.enabled || target.blocked || target.lastError)) {
+        return false;
+      }
+      if (statusFilter === "error" && !target.blocked && !target.lastError) {
+        return false;
+      }
+      if (statusFilter === "paused" && target.enabled) {
+        return false;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchName = target.name.toLowerCase().includes(q);
+        const matchHost = (target.host || "").toLowerCase().includes(q);
+        const matchSaved = (target.savedHostName || "").toLowerCase().includes(q);
+        const matchUser = (target.user || "").toLowerCase().includes(q);
+        return matchName || matchHost || matchSaved || matchUser;
+      }
+      return true;
+    });
+  }, [targets, statusFilter, searchQuery]);
+
   const selectedTarget = useMemo(
     () => targets.find((target) => target.id === selectedId) ?? targets[0] ?? null,
     [targets, selectedId],
@@ -412,14 +472,19 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
       title={t("serverMonitor")}
       description={t("serverMonitorDesc")}
       icon={
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">
           <Activity className="h-5 w-5" />
         </div>
       }
       error={null}
       actions={
         <>
-          <Button type="button" size="sm" onClick={openAdd}>
+          <Button
+            type="button"
+            size="sm"
+            onClick={openAdd}
+            className="rounded-xl bg-slate-900 text-white shadow-sm hover:bg-slate-800 dark:bg-emerald-600 dark:hover:bg-emerald-700"
+          >
             <Plus className="h-3.5 w-3.5" />
             <BiText translationKey="serverMonitorAdd" />
           </Button>
@@ -429,12 +494,19 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
               size="sm"
               variant="outline"
               onClick={() => void handleCollectNow(selectedTarget)}
+              className="rounded-xl border-slate-200 dark:border-slate-800"
             >
-              <Activity className="h-3.5 w-3.5" />
+              <Activity className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
               <BiText translationKey="serverMonitorCollectNow" />
             </Button>
           ) : null}
-          <Button type="button" size="sm" variant="outline" onClick={openSettings}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={openSettings}
+            className="rounded-xl border-slate-200 dark:border-slate-800"
+          >
             <Settings2 className="h-3.5 w-3.5" />
             <BiText translationKey="serverMonitorSettings" />
           </Button>
@@ -445,7 +517,7 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
         <div className="space-y-3">
           <div
             role="alert"
-            className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive break-words"
+            className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive break-words"
           >
             {error}
           </div>
@@ -476,217 +548,427 @@ export function ServerMonitorTool({ isVisible = true }: ServerMonitorToolProps) 
       ) : null}
 
       {targets.length > 0 ? (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
-          <aside className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              <BiText translationKey="serverMonitorListTitle" />
-            </h3>
-            <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
-              {targets.map((target) => {
-                const active = selectedTarget?.id === target.id;
-                const listKey = target.blocked
-                  ? "serverMonitorStatusError"
-                  : !target.enabled
-                    ? "serverMonitorStatusPaused"
-                    : target.collecting
-                      ? "serverMonitorStatusCollecting"
-                      : "serverMonitorStatusActive";
-                return (
-                  <button
-                    key={target.id}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => setSelectedId(target.id)}
-                    className={`min-w-[160px] rounded-xl border px-3 py-2 text-left transition-colors lg:min-w-0 ${
-                      active
-                        ? "border-primary/50 bg-primary/10"
-                        : "border-border/70 bg-card hover:border-primary/30"
-                    }`}
-                  >
-                    <span className="block truncate text-sm font-medium text-foreground">
-                      {target.name}
-                    </span>
-                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                      {target.host ?? target.savedHostName ?? target.id}
-                    </span>
-                    <span className="mt-1 block text-[11px] text-muted-foreground">
-                      <BiText translationKey={listKey} />
-                    </span>
-                  </button>
-                );
-              })}
+        <div className="w-full max-w-full min-w-0 space-y-4 overflow-x-hidden">
+          {/* 顶部统计卡片仪表板 */}
+          <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm transition hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between">
+                <span className="truncate text-xs font-medium text-slate-500 dark:text-slate-400">
+                  <BiText translationKey="serverMonitorTotalServers" />
+                </span>
+                <span className="h-2 w-2 shrink-0 rounded-full bg-slate-400 ring-4 ring-slate-400/20" />
+              </div>
+              <span className="mt-2 block font-mono text-2xl font-bold tracking-tight text-slate-900 dark:text-white truncate">
+                {totalCount}
+              </span>
             </div>
-          </aside>
+            <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm transition hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between">
+                <span className="truncate text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                  <BiText translationKey="serverMonitorRunningServers" />
+                </span>
+                <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20" />
+              </div>
+              <span className="mt-2 block font-mono text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400 truncate">
+                {activeCount}
+              </span>
+            </div>
+            <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm transition hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between">
+                <span className="truncate text-xs font-medium text-rose-600 dark:text-rose-400">
+                  <BiText translationKey="serverMonitorErrorServers" />
+                </span>
+                <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500 ring-4 ring-rose-500/20" />
+              </div>
+              <span className="mt-2 block font-mono text-2xl font-bold tracking-tight text-rose-600 dark:text-rose-400 truncate">
+                {errorCount}
+              </span>
+            </div>
+            <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm transition hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between">
+                <span className="truncate text-xs font-medium text-slate-500 dark:text-slate-400">
+                  <BiText translationKey="serverMonitorPausedServers" />
+                </span>
+                <span className="h-2 w-2 shrink-0 rounded-full bg-slate-300 ring-4 ring-slate-300/20 dark:bg-slate-600" />
+              </div>
+              <span className="mt-2 block font-mono text-2xl font-bold tracking-tight text-slate-900 dark:text-white truncate">
+                {pausedCount}
+              </span>
+            </div>
+          </div>
 
-          <section className="min-w-0 space-y-4">
-            {selectedTarget ? (
-              <>
-                <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-border/70 bg-card p-4 shadow-sm">
-                  <div className="min-w-0">
-                    <p className="truncate font-mono text-sm text-foreground">
-                      {selectedTarget.host ??
-                        selectedTarget.savedHostName ??
-                        selectedTarget.id}
-                      {selectedTarget.user ? ` · ${selectedTarget.user}` : ""}
-                      {selectedTarget.port ? ` · ${selectedTarget.port}` : ""}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {settings.scheduleMode === "daily" ? (
-                        <BiText
-                          translationKey="serverMonitorScheduleDaily"
-                          values={{ times: settings.dailyTimes.join(", ") }}
-                        />
-                      ) : (
-                        <BiText
-                          translationKey="serverMonitorScheduleInterval"
-                          values={{ minutes: settings.intervalMinutes }}
-                        />
-                      )}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {status ? <StatusPill translationKey={status.key} tone={status.tone} /> : null}
-                    {partial ? (
-                      <StatusPill translationKey="serverMonitorPartial" tone="warning" />
-                    ) : null}
-                  </div>
-                </div>
+          {/* 筛选与搜索工具条 */}
+          <div className="flex flex-wrap items-center justify-between gap-3 min-w-0">
+            <div className="flex flex-wrap items-center rounded-xl bg-slate-100 p-1 dark:bg-slate-800/80">
+              <button
+                type="button"
+                data-testid="filter-all"
+                onClick={() => setStatusFilter("all")}
+                className={`rounded-lg px-3 py-1 text-xs transition-all ${
+                  statusFilter === "all"
+                    ? "bg-white font-semibold text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white"
+                    : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                }`}
+              >
+                <BiText translationKey="serverMonitorFilterAll" /> ({totalCount})
+              </button>
+              <button
+                type="button"
+                data-testid="filter-active"
+                onClick={() => setStatusFilter("active")}
+                className={`rounded-lg px-3 py-1 text-xs transition-all ${
+                  statusFilter === "active"
+                    ? "bg-emerald-600 font-semibold text-white shadow-sm"
+                    : "text-slate-500 hover:text-emerald-600 dark:text-slate-400 dark:hover:text-emerald-400"
+                }`}
+              >
+                <BiText translationKey="serverMonitorFilterActive" /> ({activeCount})
+              </button>
+              <button
+                type="button"
+                data-testid="filter-error"
+                onClick={() => setStatusFilter("error")}
+                className={`rounded-lg px-3 py-1 text-xs transition-all ${
+                  statusFilter === "error"
+                    ? "bg-rose-600 font-semibold text-white shadow-sm"
+                    : "text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400"
+                }`}
+              >
+                <BiText translationKey="serverMonitorFilterError" /> ({errorCount})
+              </button>
+              <button
+                type="button"
+                data-testid="filter-paused"
+                onClick={() => setStatusFilter("paused")}
+                className={`rounded-lg px-3 py-1 text-xs transition-all ${
+                  statusFilter === "paused"
+                    ? "bg-slate-600 font-semibold text-white shadow-sm dark:bg-slate-600"
+                    : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                }`}
+              >
+                <BiText translationKey="serverMonitorFilterPaused" /> ({pausedCount})
+              </button>
+            </div>
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-border/70 bg-card p-3">
-                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                      <BiText translationKey="serverMonitorNextCollection" />
-                    </p>
-                    <p className="mt-1 text-sm font-medium text-foreground">
-                      {nextCollectionAt ? (
-                        formatMonitorTimestamp(nextCollectionAt)
-                      ) : (
-                        <BiText translationKey="serverMonitorNever" />
-                      )}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-border/70 bg-card p-3">
-                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                      <BiText translationKey="serverMonitorLastSuccess" />
-                    </p>
-                    <p className="mt-1 text-sm font-medium text-foreground">
-                      {lastSuccessAt ? (
-                        formatMonitorTimestamp(lastSuccessAt)
-                      ) : (
-                        <BiText translationKey="serverMonitorNever" />
-                      )}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-border/70 bg-card p-3">
-                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                      <BiText translationKey="serverMonitorLastGood" />
-                    </p>
-                    <p className="mt-1 text-sm font-medium text-foreground">
-                      {latestSample ? (
-                        formatMonitorTimestamp(latestSample.collectedAtMs)
-                      ) : (
-                        <BiText translationKey="serverMonitorNever" />
-                      )}
-                    </p>
-                  </div>
-                </div>
+            <div className="relative w-full sm:w-auto sm:min-w-[220px]">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t("serverMonitorSearchPlaceholder")}
+                className="w-full rounded-xl border border-slate-200 bg-white py-1.5 pl-8 pr-3 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+              />
+            </div>
+          </div>
 
-                {selectedTarget.lastError ? (
-                  <div
-                    role="alert"
-                    className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive break-words"
-                  >
-                    {selectedTarget.lastError}
-                  </div>
-                ) : null}
+          <div className="grid min-w-0 max-w-full grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+            <aside className="min-w-0 space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                <BiText translationKey="serverMonitorListTitle" />
+              </h3>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1">
+                {filteredTargets.length > 0 ? (
+                  filteredTargets.map((target) => {
+                    const active = selectedTarget?.id === target.id;
+                    const listKey = target.blocked
+                      ? "serverMonitorStatusError"
+                      : !target.enabled
+                        ? "serverMonitorStatusPaused"
+                        : target.collecting
+                          ? "serverMonitorStatusCollecting"
+                          : "serverMonitorStatusActive";
+                    const tone: PillTone = target.blocked
+                      ? "error"
+                      : !target.enabled
+                        ? "neutral"
+                        : target.collecting
+                          ? "warning"
+                          : "success";
 
-                <MetricCards
-                  metrics={metrics}
-                  networks={networks}
-                  selectedInterface={selectedInterface}
-                  selectedNetwork={selectedNetwork}
-                  onSelectInterface={setSelectedInterface}
-                />
-
-                <div className="space-y-2 rounded-xl border border-border/70 bg-card p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold text-foreground">
-                      <BiText translationKey="serverMonitorHistory" />
-                    </h3>
-                    <div className="flex items-center gap-1.5">
-                      <Button
+                    return (
+                      <button
+                        key={target.id}
                         type="button"
-                        size="sm"
-                        variant={range === "twentyFourHours" ? "default" : "outline"}
-                        onClick={() => setRange("twentyFourHours")}
+                        aria-pressed={active}
+                        onClick={() => setSelectedId(target.id)}
+                        className={`w-full min-w-0 rounded-2xl border p-3.5 text-left transition-all ${
+                          active
+                            ? "border-emerald-500/60 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-500/20 dark:border-emerald-500/50 dark:bg-emerald-950/20"
+                            : "border-slate-200/80 bg-white hover:border-slate-300 hover:bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700"
+                        }`}
                       >
-                        <BiText translationKey="serverMonitorRange24h" />
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={range === "sevenDays" ? "default" : "outline"}
-                        onClick={() => setRange("sevenDays")}
-                      >
-                        <BiText translationKey="serverMonitorRange7d" />
-                      </Button>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="block truncate text-sm font-semibold text-slate-900 dark:text-white">
+                            {target.name}
+                          </span>
+                          <span
+                            className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${STATUS_RING_CLASSES[tone]}`}
+                          />
+                        </div>
+                        <span className="mt-1 block truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                          {target.host ?? target.savedHostName ?? target.id}
+                          {target.user ? ` · ${target.user}` : ""}
+                        </span>
+                        <div className="mt-2 flex items-center justify-between text-[11px]">
+                          <span className="font-medium text-slate-500 dark:text-slate-400">
+                            <BiText translationKey={listKey} />
+                          </span>
+                          {target.savedHostName ? (
+                            <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                              SSH
+                            </span>
+                          ) : null}
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400 dark:border-slate-800">
+                    未找到匹配的服务器
+                  </div>
+                )}
+              </div>
+            </aside>
+
+            <section className="min-w-0 max-w-full space-y-4">
+              {selectedTarget ? (
+                <>
+                  <div className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          {status ? (
+                            <span
+                              className={`flex h-3 w-3 shrink-0 rounded-full ${STATUS_RING_CLASSES[status.tone]}`}
+                            />
+                          ) : null}
+                          <p className="truncate font-mono text-base sm:text-lg font-bold tracking-tight text-slate-900 dark:text-white">
+                            {selectedTarget.host ??
+                              selectedTarget.savedHostName ??
+                              selectedTarget.id}
+                            {selectedTarget.user ? ` · ${selectedTarget.user}` : ""}
+                            {selectedTarget.port ? ` · ${selectedTarget.port}` : ""}
+                          </p>
+                          {status ? (
+                            <StatusPill translationKey={status.key} tone={status.tone} />
+                          ) : null}
+                          {partial ? (
+                            <StatusPill translationKey="serverMonitorPartial" tone="warning" />
+                          ) : null}
+                        </div>
+                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                          {settings.scheduleMode === "daily" ? (
+                            <BiText
+                              translationKey="serverMonitorScheduleDaily"
+                              values={{ times: settings.dailyTimes.join(", ") }}
+                            />
+                          ) : (
+                            <BiText
+                              translationKey="serverMonitorScheduleInterval"
+                              values={{ minutes: settings.intervalMinutes }}
+                            />
+                          )}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openEdit(selectedTarget)}
+                          className="rounded-xl border-slate-200 dark:border-slate-800"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          <BiText translationKey="serverMonitorEdit" />
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void handleToggleEnabled(selectedTarget)}
+                          className="rounded-xl border-slate-200 dark:border-slate-800"
+                        >
+                          <BiText
+                            translationKey={
+                              selectedTarget.enabled
+                                ? "serverMonitorPause"
+                                : "serverMonitorResume"
+                            }
+                          />
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void handleDelete(selectedTarget)}
+                          className="rounded-xl border-rose-200 bg-rose-50/50 text-rose-600 hover:bg-rose-100 hover:text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/20 dark:text-rose-400 dark:hover:bg-rose-950/40"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <BiText translationKey="serverMonitorDelete" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                  <HistoryChart
-                    samples={samples}
-                    range={range}
-                    expectedIntervalSeconds={latestSample?.expectedIntervalSeconds ?? null}
-                  />
-                </div>
 
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" size="sm" variant="outline" onClick={() => openEdit(selectedTarget)}>
-                    <Pencil className="h-3.5 w-3.5" />
-                    <BiText translationKey="serverMonitorEdit" />
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void handleToggleEnabled(selectedTarget)}
-                  >
-                    <BiText
-                      translationKey={
-                        selectedTarget.enabled ? "serverMonitorPause" : "serverMonitorResume"
-                      }
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="rounded-2xl border border-slate-200/80 bg-white p-3.5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                      <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        <BiText translationKey="serverMonitorNextCollection" />
+                      </p>
+                      <p className="mt-1 font-mono text-sm font-semibold text-slate-900 dark:text-slate-100">
+                        {nextCollectionAt ? (
+                          formatMonitorTimestamp(nextCollectionAt)
+                        ) : (
+                          <BiText translationKey="serverMonitorNever" />
+                        )}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200/80 bg-white p-3.5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                      <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        <BiText translationKey="serverMonitorLastSuccess" />
+                      </p>
+                      <p className="mt-1 font-mono text-sm font-semibold text-slate-900 dark:text-slate-100">
+                        {lastSuccessAt ? (
+                          formatMonitorTimestamp(lastSuccessAt)
+                        ) : (
+                          <BiText translationKey="serverMonitorNever" />
+                        )}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200/80 bg-white p-3.5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                      <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        <BiText translationKey="serverMonitorLastGood" />
+                      </p>
+                      <p className="mt-1 font-mono text-sm font-semibold text-slate-900 dark:text-slate-100">
+                        {latestSample ? (
+                          formatMonitorTimestamp(latestSample.collectedAtMs)
+                        ) : (
+                          <BiText translationKey="serverMonitorNever" />
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  {selectedTarget.lastError ? (
+                    <div
+                      role="alert"
+                      className="rounded-2xl border border-rose-200 bg-rose-50/70 p-3.5 text-xs text-rose-800 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-300 break-words"
+                    >
+                      {selectedTarget.lastError}
+                    </div>
+                  ) : null}
+
+                  <MetricCards
+                    metrics={metrics}
+                    networks={networks}
+                    selectedInterface={selectedInterface}
+                    selectedNetwork={selectedNetwork}
+                    onSelectInterface={setSelectedInterface}
+                  />
+
+                  <div className="space-y-3 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                        <BiText translationKey="serverMonitorHistory" />
+                      </h3>
+                      <div className="flex items-center rounded-xl bg-slate-100 p-0.5 dark:bg-slate-800">
+                        <button
+                          type="button"
+                          onClick={() => setRange("twentyFourHours")}
+                          className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                            range === "twentyFourHours"
+                              ? "bg-white font-semibold text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white"
+                              : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                          }`}
+                        >
+                          <BiText translationKey="serverMonitorRange24h" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRange("sevenDays")}
+                          className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                            range === "sevenDays"
+                              ? "bg-white font-semibold text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white"
+                              : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                          }`}
+                        >
+                          <BiText translationKey="serverMonitorRange7d" />
+                        </button>
+                      </div>
+                    </div>
+                    <HistoryChart
+                      samples={samples}
+                      range={range}
+                      expectedIntervalSeconds={latestSample?.expectedIntervalSeconds ?? null}
                     />
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void handleDelete(selectedTarget)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    <BiText translationKey="serverMonitorDelete" />
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <ToolEmptyState title={t("serverMonitorNoSelection")} />
-            )}
-          </section>
+                  </div>
+                </>
+              ) : (
+                <ToolEmptyState title={t("serverMonitorNoSelection")} />
+              )}
+            </section>
+          </div>
         </div>
       ) : null}
 
-      <div className="space-y-2 rounded-xl border border-border/60 bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold text-foreground">
-          <BiText translationKey="serverMonitorGuidanceTitle" />
-        </h3>
-        <ul className="list-disc space-y-1 pl-5 text-xs leading-relaxed text-muted-foreground">
-          <li><BiText translationKey="serverMonitorGuidanceCommands" /></li>
-          <li><BiText translationKey="serverMonitorGuidanceAccess" /></li>
-          <li><BiText translationKey="serverMonitorGuidanceNoAgent" /></li>
-          <li><BiText translationKey="serverMonitorGuidanceLifetime" /></li>
-          <li><BiText translationKey="serverMonitorGuidanceTime" /></li>
-          <li><BiText translationKey="serverMonitorGuidanceSampling" /></li>
-          <li><BiText translationKey="serverMonitorGuidanceHost" /></li>
-        </ul>
+      <div className="rounded-xl border border-slate-200/70 bg-slate-50/50 p-2.5 text-xs dark:border-slate-800/70 dark:bg-slate-900/30">
+        <button
+          type="button"
+          onClick={() => setGuidanceOpen(!guidanceOpen)}
+          className="group flex w-full items-center justify-between text-left"
+        >
+          <div className="flex items-center gap-2">
+            <Info className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <h3 className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              <BiText translationKey="serverMonitorGuidanceTitle" />
+            </h3>
+            <span className="hidden text-[11px] text-slate-400 sm:inline dark:text-slate-500">
+              (只读采集 · 无需 sudo / agent)
+            </span>
+          </div>
+          <span className="flex items-center gap-1 text-[11px] font-medium text-slate-400 transition group-hover:text-slate-600 dark:text-slate-500 dark:group-hover:text-slate-300">
+            <BiText
+              translationKey={
+                guidanceOpen
+                  ? "serverMonitorGuidanceHide"
+                  : "serverMonitorGuidanceShow"
+              }
+            />
+            {guidanceOpen ? (
+              <ChevronUp className="h-3 w-3" />
+            ) : (
+              <ChevronDown className="h-3 w-3" />
+            )}
+          </span>
+        </button>
+
+        <div className={`mt-2 border-t border-slate-200/60 pt-2 dark:border-slate-800/60 ${guidanceOpen ? "block" : "hidden"}`}>
+          <ul className="list-disc space-y-1 pl-5 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+            <li>
+              <BiText translationKey="serverMonitorGuidanceCommands" />
+            </li>
+            <li>
+              <BiText translationKey="serverMonitorGuidanceAccess" />
+            </li>
+            <li>
+              <BiText translationKey="serverMonitorGuidanceNoAgent" />
+            </li>
+            <li>
+              <BiText translationKey="serverMonitorGuidanceLifetime" />
+            </li>
+            <li>
+              <BiText translationKey="serverMonitorGuidanceTime" />
+            </li>
+            <li>
+              <BiText translationKey="serverMonitorGuidanceSampling" />
+            </li>
+            <li>
+              <BiText translationKey="serverMonitorGuidanceHost" />
+            </li>
+          </ul>
+        </div>
       </div>
 
       <ServerFormDialog

@@ -2,6 +2,8 @@ import {
   isToolboxInvokeAvailable,
   invokeToolboxCommand,
 } from "@/toolbox/invoke";
+import { sshHostsList } from "@/lib/sshTunnels";
+import type { SshHost } from "@/components/sshTunnels/types";
 
 export const SERVER_MONITOR_UPDATED_EVENT = "server-monitor-updated";
 
@@ -436,4 +438,73 @@ export function normalizeServerMonitorSettings(
       ? (input?.retentionDays as number)
       : DEFAULT_SERVER_MONITOR_SETTINGS.retentionDays,
   };
+}
+
+export interface AvailableSshServer {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  sourceType: "config" | "history";
+  authType?: "password" | "key";
+  authVal?: string;
+}
+
+export async function loadAvailableSshServers(): Promise<AvailableSshServer[]> {
+  const result: AvailableSshServer[] = [];
+  try {
+    const configHosts = await sshHostsList<SshHost[]>();
+    if (Array.isArray(configHosts)) {
+      for (const h of configHosts) {
+        if (!h.name || h.name === "*") continue;
+        result.push({
+          id: `config:${h.name}`,
+          name: h.name,
+          host: h.host_name || h.name,
+          port: h.port || 22,
+          user: h.user || "root",
+          sourceType: "config",
+        });
+      }
+    }
+  } catch {
+    // Ignore config host loading failures
+  }
+
+  try {
+    if (isToolboxInvokeAvailable()) {
+      const savedHistoryStr = await invokeToolboxCommand<string | null>("get_secret", {
+        key: "onespace_ssh_history",
+      });
+      if (savedHistoryStr) {
+        const historyList = JSON.parse(savedHistoryStr);
+        if (Array.isArray(historyList)) {
+          for (const item of historyList) {
+            const alreadyExists = result.some(
+              (r) =>
+                r.name === item.name ||
+                (r.host === item.host_name && r.user === item.user && r.port === item.port),
+            );
+            if (!alreadyExists && item.host_name) {
+              result.push({
+                id: `history:${item.id || item.name || item.host_name}`,
+                name: item.name || `${item.user || "root"}@${item.host_name}`,
+                host: item.host_name,
+                port: item.port || 22,
+                user: item.user || "root",
+                sourceType: "history",
+                authType: item.auth_type,
+                authVal: item.auth_val,
+              });
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore history loading failures
+  }
+
+  return result;
 }

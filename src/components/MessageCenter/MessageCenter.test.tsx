@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageCenter } from "./MessageCenter";
+import { SOURCE_LABELS, getSourceLabel } from "./types";
 import type { MessageRecord } from "@/lib/messages";
 
 const invokeMock = vi.fn();
@@ -438,5 +439,26 @@ describe("src/components/MessageCenter/MessageCenter.tsx", () => {
         screen.queryByText(/特别关注消息订阅|Focused Message Subscriptions/i),
       ).not.toBeInTheDocument();
     });
+  });
+
+  it("getSourceLabel supports all built-in sources and fallback/translations", () => {
+    // 1. 验证默认英文 label
+    expect(SOURCE_LABELS.server_monitor).toBe("Server Monitor");
+    expect(SOURCE_LABELS.ssl_certificate).toBe("SSL Certificate");
+    expect(getSourceLabel("server_monitor")).toBe("Server Monitor");
+    expect(getSourceLabel("unknown_source")).toBe("unknown_source");
+
+    // 2. 验证多语言翻译兼容 messageSource_ 与 source_
+    const mockT = (key: string, fallback?: string) => {
+      const dict: Record<string, string> = {
+        messageSource_server_monitor: "服务器监控",
+        source_ssl_certificate: "SSL 证书",
+      };
+      return dict[key] || fallback || key;
+    };
+
+    expect(getSourceLabel("server_monitor", mockT)).toBe("服务器监控");
+    expect(getSourceLabel("ssl_certificate", mockT)).toBe("SSL 证书");
+    expect(getSourceLabel("custom_xyz", mockT)).toBe("custom_xyz");
   });
 });
