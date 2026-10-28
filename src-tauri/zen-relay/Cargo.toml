@@ -1,0 +1,26 @@
+[package]
+name = "onespace-zen-relay"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+name = "onespace_zen_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "onespace-zen-relay"
+path = "src/main.rs"
+
+[dependencies]
+wreq = { version = "=6.0.0-rc.31", features = ["socks", "stream"] }
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body = "1"
+http-body-util = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time"] }
+bytes = "1"
+http = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
