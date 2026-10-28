@@ -106,10 +106,15 @@ class SessionRunner:
             if not session_name:
                 session_name = f"dev_{self._sanitize_name(repo_name)}"
         else:
-            project_dir = os.path.abspath(target)
+            if not os.path.isabs(target) and not os.path.exists(target):
+                project_dir = os.path.join(self.workspace_root, target)
+            else:
+                project_dir = os.path.abspath(target)
+
             if not os.path.exists(project_dir):
-                print(f"错误: 既未找到名为 [{target}] 的活跃会话，本地目录亦不存在: {target}", file=sys.stderr)
-                sys.exit(1)
+                print(f"工作目录不存在，正在自动创建: {project_dir}")
+                os.makedirs(project_dir, exist_ok=True)
+
             if not session_name:
                 base_name = os.path.basename(project_dir)
                 session_name = f"dev_{self._sanitize_name(base_name)}"
@@ -142,17 +147,20 @@ class SessionRunner:
 if __name__ == "__main__":
     runner = SessionRunner()
     if len(sys.argv) < 2:
-        # 无参数时，若只有一个活跃会话则直接恢复
+        # 无参数时：若有 1 个活跃会话直接恢复；若有多个列出选择；若无活跃会话自动进入默认工作空间
         active = runner.list_sessions()
         if len(active) == 1:
             runner.attach_session(active[0])
             sys.exit(0)
-        print("用法:")
-        print("  cloud-session <会话名或项目目录/Git URL>  # 接入已有会话或创建新会话")
-        print("  cloud-session attach [session_name]   # 显式恢复连接到会话")
-        print("  cloud-session list                    # 列出所有活跃会话")
-        print("  cloud-session kill <session_name>     # 结束指定会话")
-        sys.exit(0)
+        elif len(active) > 1:
+            print("存在多个活跃会话，请选择恢复连接:", file=sys.stderr)
+            for s in active:
+                print(f"  - cloud-session {s}", file=sys.stderr)
+            sys.exit(0)
+        else:
+            print("当前无活跃会话，正在默认工作区启动全新会话...")
+            runner.start_or_attach("workspace")
+            sys.exit(0)
 
     action = sys.argv[1]
     if action == "list":
