@@ -38,12 +38,63 @@ class SessionRunner:
     def session_exists(self, session_name: str) -> bool:
         return session_name in self.list_sessions()
 
+    def attach_session(self, session_name: Optional[str] = None):
+        """直接 attach 到指定或唯一的活跃会话"""
+        active = self.list_sessions()
+        if not active:
+            print("当前没有活跃的云端会话可供恢复。", file=sys.stderr)
+            sys.exit(1)
+
+        target = session_name
+        if not target:
+            if len(active) == 1:
+                target = active[0]
+            else:
+                print("存在多个活跃会话，请指定要恢复的会话名称:", file=sys.stderr)
+                for s in active:
+                    print(f"  - {s}", file=sys.stderr)
+                sys.exit(1)
+
+        if not self.session_exists(target):
+            if self.session_exists(f"dev_{target}"):
+                target = f"dev_{target}"
+            else:
+                print(f"错误: 会话 [{target}] 不存在。", file=sys.stderr)
+                sys.exit(1)
+
+        print(f"正在恢复连接会话 [{target}]...")
+        os.execvp("tmux", ["tmux", "attach-session", "-t", target])
+
     def start_or_attach(self, target: str, session_name: Optional[str] = None):
         """
         进入目标项目并启动/恢复 tmux 会话中的 opencode。
-        target: 可以是本地目录路径，也可以是 git clone URL (https://... 或 git@...)
+        target: 可以是会话名、Git URL、本地相对/绝对路径或 workspace 下的目录名
         """
-        # 1. 解析目标目录
+        # 1. 优先检查 target 本身是否就是一个已存在的 tmux 会话
+        if self.session_exists(target):
+            print(f"检测到已有活跃会话 [{target}]，正在恢复连接...")
+            os.execvp("tmux", ["tmux", "attach-session", "-t", target])
+            return
+
+        # 2. 检查 dev_<target> 是否是已存在的会话
+        derived_session = f"dev_{self._sanitize_name(target)}"
+        if self.session_exists(derived_session):
+            print(f"检测到已有活跃会话 [{derived_session}]，正在恢复连接...")
+            os.execvp("tmux", ["tmux", "attach-session", "-t", derived_session])
+            return
+
+        # 3. 检查显式传入的 session_name 是否已存在
+        if session_name and self.session_exists(session_name):
+            print(f"检测到已有活跃会话 [{session_name}]，正在恢复连接...")
+            os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+            return
+
+        # 4. 检查是否在 workspace_root 中存在该子目录（例如传入 "one-space"）
+        ws_dir = os.path.join(self.workspace_root, target)
+        if not os.path.exists(target) and os.path.exists(ws_dir):
+            target = ws_dir
+
+        # 5. 解析 target 是远程 Git 仓库还是本地目录
         if target.startswith("http://") or target.startswith("https://") or target.startswith("git@"):
             repo_name = target.rstrip("/").split("/")[-1]
             if repo_name.endswith(".git"):
@@ -57,22 +108,22 @@ class SessionRunner:
         else:
             project_dir = os.path.abspath(target)
             if not os.path.exists(project_dir):
-                print(f"错误: 本地目录不存在: {project_dir}", file=sys.stderr)
+                print(f"错误: 既未找到名为 [{target}] 的活跃会话，本地目录亦不存在: {target}", file=sys.stderr)
                 sys.exit(1)
             if not session_name:
                 base_name = os.path.basename(project_dir)
                 session_name = f"dev_{self._sanitize_name(base_name)}"
 
-        # 2. 检查会话是否存在
+        # 6. 如果生成的 session_name 已经存在，恢复它
         if self.session_exists(session_name):
             print(f"检测到已有会话 [{session_name}]，正在恢复连接...")
             os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
             return
 
-        # 3. 创建全新 tmux 会话并在其中启动 opencode
+        # 7. 创建全新 tmux 会话并在其中启动 opencode
         print(f"创建全新长程编程会话 [{session_name}] (工作目录: {project_dir})...")
         print("提示：合上 Mac 盖子或断开 SSH，该会话仍会在云端持续运行。")
-        print(f"重新连入命令: tmux attach -t {session_name}\n")
+        print(f"重新连入命令: cloud-session {session_name}\n")
 
         init_cmd = f"cd {project_dir} && export PATH=$PATH:/root/.opencode/bin && opencode"
         cmd = [
@@ -91,10 +142,16 @@ class SessionRunner:
 if __name__ == "__main__":
     runner = SessionRunner()
     if len(sys.argv) < 2:
+        # 无参数时，若只有一个活跃会话则直接恢复
+        active = runner.list_sessions()
+        if len(active) == 1:
+            runner.attach_session(active[0])
+            sys.exit(0)
         print("用法:")
-        print("  cloud-session <git-url或本地路径> [session_name]  # 启动或接入长程会话")
-        print("  cloud-session list                             # 列出所有活跃会话")
-        print("  cloud-session kill <session_name>              # 结束指定会话")
+        print("  cloud-session <会话名或项目目录/Git URL>  # 接入已有会话或创建新会话")
+        print("  cloud-session attach [session_name]   # 显式恢复连接到会话")
+        print("  cloud-session list                    # 列出所有活跃会话")
+        print("  cloud-session kill <session_name>     # 结束指定会话")
         sys.exit(0)
 
     action = sys.argv[1]
@@ -106,6 +163,9 @@ if __name__ == "__main__":
             print("活跃会话列表:")
             for s in sessions:
                 print(f"  - {s}")
+    elif action == "attach":
+        s_name = sys.argv[2] if len(sys.argv) > 2 else None
+        runner.attach_session(s_name)
     elif action == "kill":
         if len(sys.argv) < 3:
             print("请指定要杀死的会话名称", file=sys.stderr)
