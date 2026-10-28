@@ -98,7 +98,7 @@ pub(in crate::ai_gateway) async fn stop_server() -> Result<GatewayStatus, String
             let _ = tx.send(());
         }
     }
-    match config {
+    let status: Result<GatewayStatus, String> = match config {
         Ok(config) => Ok(status_from_config(&config, false)),
         // Stopping the listener must not depend on a readable configuration:
         // an unreadable config still stops the server and reports a
@@ -113,7 +113,11 @@ pub(in crate::ai_gateway) async fn stop_server() -> Result<GatewayStatus, String
             key_count: 0,
             default_key_id: None,
         }),
-    }
+    };
+    // The sidecar is owned by the gateway runtime, so stopping the listener
+    // always terminates it, independent of whether the config is readable.
+    super::super::zen_sidecar::stop();
+    status
 }
 
 /// Synchronous best-effort stop for the shutdown path: signal the running
@@ -128,6 +132,7 @@ pub(in crate::ai_gateway) fn stop_server_now() {
             }
         }
     }
+    super::super::zen_sidecar::stop();
 }
 
 pub(in crate::ai_gateway) fn server_status() -> Result<GatewayStatus, String> {

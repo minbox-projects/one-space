@@ -24,6 +24,7 @@ mod tests;
 mod types_config;
 mod usage_log;
 mod usage_store;
+mod zen_sidecar;
 
 mod auto_refresh;
 

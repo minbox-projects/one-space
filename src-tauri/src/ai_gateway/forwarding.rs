@@ -1,6 +1,6 @@
 use super::anthropic::{convert_request, is_conversion_path, is_messages_path, DEFAULT_ANTHROPIC_VERSION};
 use super::openai_conversion;
-use super::{GatewayUpstreamProvider, UpstreamProtocol};
+use super::{GatewayUpstreamProvider, TransportStrategy, UpstreamProtocol};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -81,6 +81,21 @@ fn shared_client() -> Arc<Client> {
     get_shared_client(&super::GatewaySettings::default())
 }
 
+/// The sidecar is a loopback process, so its client must never inherit the
+/// user's upstream proxy. SSE responses may stay open far longer than the
+/// gateway's ordinary read timeout.
+fn sidecar_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(3600))
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
+}
+
 pub(in crate::ai_gateway) fn join_url(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let path = path.trim_start_matches('/');
@@ -114,6 +129,8 @@ fn is_forwardable_client_header(name: &str) -> bool {
             | "proxy-authorization"
             | "authorization"
             | "x-api-key"
+            | "x-onespace-sidecar-token"
+            | "x-onespace-upstream-base"
             | "content-type"
             | "accept"
     )
@@ -138,7 +155,7 @@ pub(in crate::ai_gateway) fn rewrite_body_model(
     }
 }
 
-fn build_request(
+async fn build_request(
     provider: &GatewayUpstreamProvider,
     path: &str,
     body: &[u8],
@@ -163,7 +180,6 @@ fn build_request(
     } else {
         path
     };
-    let url = join_url(&provider.base_url, upstream_path);
     // A pool candidate removes its recognized reasoning entry controls before
     // the adapter sees them, so the ordinary Anthropic adapter keeps rejecting
     // the controls on every ordinary route.
@@ -189,7 +205,25 @@ fn build_request(
         Some(native) => super::reasoning::inject_native_controls(rewritten, native)?,
         None => rewritten,
     };
-    let client = get_shared_client(settings);
+    // Sidecar providers always go through the local relay and never fall back
+    // to the direct upstream URL. Direct providers keep the shared client and
+    // the existing URL joining.
+    let (client, url, sidecar_identity) = match provider.transport {
+        TransportStrategy::OpencodeZenSidecar => {
+            let started = super::zen_sidecar::ensure_started(settings).await?;
+            let endpoint = started.endpoint_base.trim_end_matches('/');
+            (
+                sidecar_client().clone(),
+                format!("{endpoint}{upstream_path}"),
+                Some((started.token, provider.base_url.trim().to_string())),
+            )
+        }
+        TransportStrategy::Direct => (
+            get_shared_client(settings).as_ref().clone(),
+            join_url(&provider.base_url, upstream_path),
+            None,
+        ),
+    };
     let mut request = client.post(url);
     // Forward unknown client headers (e.g. vendor session headers) so upstream
     // requirements like `x-opencode-session` survive the relay. Invalid names
@@ -204,6 +238,13 @@ fn build_request(
         ) {
             request = request.header(header_name, header_value);
         }
+    }
+    if let Some((token, upstream_base)) = sidecar_identity {
+        // Added after client-header forwarding so a client value can never
+        // override the gateway's sidecar-only headers.
+        request = request
+            .header("x-onespace-sidecar-token", token)
+            .header("x-onespace-upstream-base", upstream_base);
     }
     request = request
         .header("content-type", "application/json")
@@ -251,7 +292,8 @@ pub(in crate::ai_gateway) async fn forward_non_streaming_with_protocol(
         client_headers,
         upstream_protocol,
         settings,
-    )?;
+    )
+    .await?;
     let response = request.send().await.map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
     let headers = response.headers().clone();
@@ -291,7 +333,8 @@ pub(in crate::ai_gateway) async fn open_streaming_response_with_protocol(
         client_headers,
         upstream_protocol,
         settings,
-    )?;
+    )
+    .await?;
     request.send().await.map_err(|e| e.to_string())
 }
 
