@@ -453,6 +453,49 @@ describe("ProviderTemplateEditDialog", () => {
     const saved = onSave.mock.calls[0][0] as GatewayProviderTemplate;
     expect(saved.icon).toBeNull();
   });
+
+  it("round-trips transport_strategy without exposing a transport control", async () => {
+    const { onSave } = renderDialog({
+      template: { ...baseTemplate, transport_strategy: "opencode_zen_sidecar" } as GatewayProviderTemplate,
+    });
+
+    expect(screen.queryByTestId("template-edit-transport-strategy")).toBeNull();
+    const selects = Array.from(document.querySelectorAll("select"));
+    expect(selects.some((select) => select.value === "opencode_zen_sidecar")).toBe(
+      false,
+    );
+
+    fireEvent.change(screen.getByTestId("template-edit-name"), {
+      target: { value: "Renamed Template" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayProviderTemplate;
+    expect(saved.transport_strategy).toBe("opencode_zen_sidecar");
+  });
+
+  it("defaults a new custom template transport_strategy to direct", async () => {
+    const { onSave } = renderDialog({ template: null });
+
+    fireEvent.change(screen.getByTestId("template-edit-name"), {
+      target: { value: "New Sidecar-less Template" },
+    });
+    fireEvent.change(screen.getByTestId("template-edit-base-url"), {
+      target: { value: "https://new.example.com/v1" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("template-edit-save-btn"));
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as GatewayProviderTemplate;
+    expect(saved.transport_strategy).toBe("direct");
+  });
 });
 
 // ---------------------------------------------------------------------------

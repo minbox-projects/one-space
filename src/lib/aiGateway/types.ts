@@ -930,6 +930,17 @@ export type GatewayTemplateErrorStrategy = "generic";
 
 
 /**
+ * Upstream transport strategy a provider template declares (closed set).
+ *
+ * `direct` forwards through the application's own HTTP client. The sidecar
+ * strategy routes through the bundled loopback relay, which originates the
+ * upstream TLS connection itself so upstream endpoints that reject the main
+ * client's TLS profile keep working.
+ */
+export type GatewayTemplateTransportStrategy = "direct" | "opencode_zen_sidecar";
+
+
+/**
  * The effective policy a provider resolves from its bound template, or the
  * generic fallback when it is unbound or its binding cannot be resolved.
  */
@@ -953,6 +964,12 @@ export interface GatewayProviderTemplate {
   quota_strategy?: GatewayTemplateQuotaStrategy;
   /** Error-handling strategy; a missing/unknown value reads as `generic`. */
   error_strategy?: GatewayTemplateErrorStrategy;
+  /**
+   * Upstream transport; a missing/unknown value reads as `direct`. The bound
+   * template is the only authority: the transport is never inferred from the
+   * provider name, base URL or icon, so editing those never switches it.
+   */
+  transport_strategy?: GatewayTemplateTransportStrategy;
   source: string;
   models_url?: string | null;
   models: GatewayProviderTemplateModel[];

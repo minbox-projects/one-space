@@ -34,6 +34,7 @@ import {
   type GatewayTemplateErrorStrategy,
   type GatewayTemplateQuotaStrategy,
   type GatewayTemplateSyncStrategy,
+  type GatewayTemplateTransportStrategy,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
   type ModelPrice,
@@ -88,6 +89,9 @@ export function ProviderTemplateEditDialog({
     useState<GatewayTemplateQuotaStrategy>("none");
   const [errorStrategy, setErrorStrategy] =
     useState<GatewayTemplateErrorStrategy>("generic");
+  // The bound template owns the transport; it has no visible control here.
+  const [transportStrategy, setTransportStrategy] =
+    useState<GatewayTemplateTransportStrategy>("direct");
   const [models, setModels] = useState<TemplateModelDraft[]>([]);
   const [priceDrafts, setPriceDrafts] = useState<GatewayPriceDraft[]>([]);
   const [expandedModels, setExpandedModels] = useState<Record<number, boolean>>(
@@ -122,6 +126,7 @@ export function ProviderTemplateEditDialog({
       setSyncStrategy(template.sync_strategy ?? "generic");
       setQuotaStrategy(template.quota_strategy ?? "none");
       setErrorStrategy(template.error_strategy ?? "generic");
+      setTransportStrategy(template.transport_strategy ?? "direct");
       const nextModels = template.models
         ? template.models.map((model) => ({
             ...model,
@@ -161,6 +166,7 @@ export function ProviderTemplateEditDialog({
       setSyncStrategy("generic");
       setQuotaStrategy("none");
       setErrorStrategy("generic");
+      setTransportStrategy("direct");
       setModels([]);
       setPriceDrafts([]);
       setSource("");
@@ -348,6 +354,7 @@ export function ProviderTemplateEditDialog({
       sync_strategy: syncStrategy,
       quota_strategy: quotaStrategy,
       error_strategy: errorStrategy,
+      transport_strategy: transportStrategy,
       source: source.trim(),
       models_url: modelsUrl.trim() ? modelsUrl.trim() : null,
       models: savedModels,
