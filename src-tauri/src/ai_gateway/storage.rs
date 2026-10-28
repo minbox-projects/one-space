@@ -7,12 +7,55 @@ use super::{
 };
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(in crate::ai_gateway) fn config_path() -> Result<PathBuf, String> {
     Ok(crate::config::get_app_dir()?.join(CONFIG_FILE))
+}
+
+/// Suffix of the one-time raw-byte configuration backup taken before the
+/// schema-5 rewrite.
+const PRE_SCHEMA5_BACKUP_SUFFIX: &str = ".bak-pre-schema5";
+
+/// Best-effort one-time raw-byte copy of the pre-migration configuration next to
+/// the original file, readable only by the owner on Unix. The copy is created
+/// only when it does not already exist, so repeated reads never overwrite the
+/// original bytes, and every failure is ignored so the migration still proceeds.
+/// The backup is the supported downgrade source: an older application cannot
+/// read the schema-5 binding, and restoring this file is required before a
+/// downgrade.
+fn write_pre_schema5_backup(path: &Path, raw: &[u8]) {
+    let Some(file_name) = path.file_name() else {
+        return;
+    };
+    let mut backup_name = file_name.to_os_string();
+    backup_name.push(PRE_SCHEMA5_BACKUP_SUFFIX);
+    let backup_path = path.with_file_name(backup_name);
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let Ok(mut file) = options.open(&backup_path) else {
+        return;
+    };
+    if file.write_all(raw).is_err() {
+        drop(file);
+        let _ = fs::remove_file(&backup_path);
+        return;
+    }
+    drop(file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&backup_path, fs::Permissions::from_mode(0o600));
+    }
 }
 
 /// Read, decrypt, migrate and normalize the configuration at `path` without
@@ -27,11 +70,15 @@ pub(in crate::ai_gateway) fn config_path() -> Result<PathBuf, String> {
 /// had to change, so the version checkpoint always advances; an already-current
 /// file is left byte-identical.
 fn read_config_locked(path: &Path) -> Result<Option<(GatewayConfig, bool)>, String> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let content = std::str::from_utf8(&raw).map_err(|error| error.to_string())?;
     if content.trim().is_empty() {
         return Ok(None);
     }
@@ -45,6 +92,7 @@ fn read_config_locked(path: &Path) -> Result<Option<(GatewayConfig, bool)>, Stri
         .unwrap_or(0) as u32;
     let needs_migration = stored_version < GATEWAY_CONFIG_SCHEMA_VERSION;
     if needs_migration {
+        write_pre_schema5_backup(path, &raw);
         super::migration::migrate_legacy_config(&mut value);
         if let Some(object) = value.as_object_mut() {
             object.insert(
@@ -246,7 +294,15 @@ pub(in crate::ai_gateway) fn resolve_default_key_id(
 /// trim provider strings, drop unusable mappings and resolve the default key.
 fn normalize_stored_config(config: &mut GatewayConfig) {
     config.port = resolve_port(config.port, cfg!(debug_assertions));
-    for provider in &mut config.providers {
+    for index in 0..config.providers.len() {
+        // Resolve against the whole configuration before taking the mutable
+        // provider borrow, then publish the authoritative template-declared
+        // transport into the runtime cache.
+        let transport = {
+            let provider = &config.providers[index];
+            super::templates::effective_transport_strategy(config, provider)
+        };
+        let provider = &mut config.providers[index];
         if provider.weight < MIN_PROVIDER_WEIGHT || provider.weight > MAX_PROVIDER_WEIGHT {
             provider.weight = provider.weight.clamp(MIN_PROVIDER_WEIGHT, MAX_PROVIDER_WEIGHT);
         }
@@ -259,6 +315,7 @@ fn normalize_stored_config(config: &mut GatewayConfig) {
         provider.mappings.retain(|mapping| {
             !mapping.local_model.trim().is_empty() && !mapping.upstream_model.trim().is_empty()
         });
+        provider.transport = transport;
     }
     config.default_key_id = resolve_default_key_id(&config.keys, config.default_key_id.as_deref());
 }

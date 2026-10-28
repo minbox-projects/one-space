@@ -3,6 +3,7 @@
 use super::super::storage::new_provider_id;
 use super::super::types_config::{
     GatewayConfig, GatewayUpstreamProvider, ProviderTemplate, ProviderTemplateState, QuotaStrategy,
+    TransportStrategy,
 };
 use super::snapshot::{builtin_templates, find_builtin_template};
 
@@ -66,6 +67,19 @@ pub(in crate::ai_gateway) fn effective_quota_strategy(
 ) -> QuotaStrategy {
     effective_provider_template(config, provider)
         .map(|template| template.quota_strategy)
+        .unwrap_or_default()
+}
+
+/// The effective transport strategy for a provider: its bound and resolvable
+/// template's declared strategy, else `direct` for an unbound, unknown or
+/// deleted binding. The template declaration is authoritative; URL, name and
+/// icon are never consulted.
+pub(in crate::ai_gateway) fn effective_transport_strategy(
+    config: &GatewayConfig,
+    provider: &GatewayUpstreamProvider,
+) -> TransportStrategy {
+    effective_provider_template(config, provider)
+        .map(|template| template.transport_strategy)
         .unwrap_or_default()
 }
 

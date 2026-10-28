@@ -96,6 +96,7 @@ pub fn apply_create_provider_from_template(
         }],
         template_id: Some(template_id.to_string()),
         protocol,
+        transport: template.transport_strategy,
         mappings: template
             .models
             .iter()

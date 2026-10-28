@@ -23,7 +23,7 @@ use crate::ai_gateway::templates::{
 };
 use crate::ai_gateway::types_config::{
     GatewayConfig, GatewayKey, GatewayUpstreamProvider, ModelMapping, ModelPrice, ProviderTemplate,
-    ProviderTemplateModel, ProviderTemplateState, TerminalSyncRecord, UpstreamProtocol,
+    ProviderTemplateModel, ProviderTemplateState, TerminalSyncRecord, TransportStrategy, UpstreamProtocol,
 };
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -184,7 +184,7 @@ fn find_price_row<'a>(
 #[test]
 fn builtin_templates_declare_their_model_list_urls() {
     let templates = builtin_templates().expect("built-in templates must parse");
-    assert_eq!(templates.len(), 2, "the snapshot must ship exactly two templates");
+    assert_eq!(templates.len(), 3, "the snapshot must ship exactly three templates");
 
     let go = templates
         .iter()
@@ -194,6 +194,10 @@ fn builtin_templates_declare_their_model_list_urls() {
         .iter()
         .find(|template| template.id == "commandcode")
         .expect("the commandcode template must exist");
+    let zen_free = templates
+        .iter()
+        .find(|template| template.id == "opencode-zen-free")
+        .expect("the opencode-zen-free template must exist");
 
     assert!(
         commandcode.models.is_empty(),
@@ -219,6 +223,63 @@ fn builtin_templates_declare_their_model_list_urls() {
     assert_eq!(go.icon.as_deref(), Some("opencode"));
     assert_eq!(commandcode.icon.as_deref(), Some("commandcode"));
 
+    assert_eq!(zen_free.base_url, "https://opencode.ai/zen/v1");
+    assert_eq!(zen_free.source, "https://opencode.ai/zen/v1/models");
+    assert_eq!(zen_free.models_url, None);
+    assert_eq!(zen_free.icon.as_deref(), Some("opencode"));
+    assert_eq!(
+        zen_free.transport_strategy,
+        TransportStrategy::OpencodeZenSidecar
+    );
+
+    let expected = [
+        ("big-pickle", "zen-free-big-pickle"),
+        ("beam-free", "zen-free-beam"),
+        ("mimo-v2.6-flash-free", "zen-free-mimo"),
+        ("nemotron-3.5-super-vl-free", "zen-free-nemotron-vl"),
+        ("nemotron-3.5-lightning-free", "zen-free-nemotron-lightning"),
+        ("deepseek-v4.1-flash-free", "zen-free-deepseek"),
+        ("glm-5.3-flash-free", "zen-free-glm"),
+        ("flint-40b-free", "zen-free-flint-40b"),
+    ];
+    assert_eq!(zen_free.models.len(), 8);
+    for (upstream, local) in expected {
+        let model = zen_free
+            .models
+            .iter()
+            .find(|model| model.upstream_model == upstream)
+            .expect("model present");
+        assert_eq!(model.local_model.as_deref(), Some(local));
+    }
+
+    let glm = zen_free
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "glm-5.3-flash-free")
+        .expect("glm model present");
+    assert_eq!(glm.display_name.as_deref(), Some("Zen GLM-5.3-Flash Free"));
+    assert_eq!(
+        glm.reasoning_efforts,
+        vec!["low".to_string(), "high".to_string(), "max".to_string()]
+    );
+
+    let beam = zen_free
+        .models
+        .iter()
+        .find(|model| model.upstream_model == "beam-free")
+        .expect("beam model present");
+    assert_eq!(beam.display_name.as_deref(), Some("Zen Beam Free"));
+    assert_eq!(
+        beam.reasoning_efforts,
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string()
+        ]
+    );
+
     assert_eq!(
         find_builtin_template("opencode-go")
             .expect("opencode-go must resolve")
@@ -231,6 +292,12 @@ fn builtin_templates_declare_their_model_list_urls() {
             .id,
         "commandcode"
     );
+    assert_eq!(
+        find_builtin_template("opencode-zen-free")
+            .expect("opencode-zen-free must resolve")
+            .id,
+        "opencode-zen-free"
+    );
 }
 
 /// AC-001 / REQ-002: before any sync both built-in views fall back to the
@@ -240,7 +307,7 @@ fn builtin_templates_declare_their_model_list_urls() {
 fn provider_template_views_expose_the_builtin_snapshot() {
     let config = GatewayConfig::default();
     let views = provider_template_views(&config).expect("built-in templates must resolve");
-    assert_eq!(views.len(), 2, "both built-in templates must be returned");
+    assert_eq!(views.len(), 3, "all three built-in templates must be returned");
 
     let commandcode = views
         .iter()
@@ -250,6 +317,10 @@ fn provider_template_views_expose_the_builtin_snapshot() {
         .iter()
         .find(|view| view.template.id == "opencode-go")
         .expect("the opencode-go view must exist");
+    let zen_free = views
+        .iter()
+        .find(|view| view.template.id == "opencode-zen-free")
+        .expect("the opencode-zen-free view must exist");
 
     for view in [commandcode, go] {
         assert!(view.from_snapshot, "an unsynced template reports the snapshot");
@@ -263,6 +334,14 @@ fn provider_template_views_expose_the_builtin_snapshot() {
     assert!(
         commandcode.template.models.is_empty(),
         "the CommandCode snapshot ships no models"
+    );
+
+    assert!(zen_free.from_snapshot, "an unsynced template reports the snapshot");
+    assert_eq!(zen_free.synced_at, None, "a snapshot view has no sync timestamp");
+    assert_eq!(
+        zen_free.template.transport_strategy,
+        TransportStrategy::OpencodeZenSidecar,
+        "the zen-free view exposes the sidecar transport"
     );
 }
 
@@ -4286,7 +4365,7 @@ async fn template_sync_multi_provider_additions_aggregate_in_one_message() {
 // `opencode_go`) and `error_strategy` (`generic`). Missing values default to
 // generic/none/generic, stored snapshot payloads tolerate unknown values and
 // resolve to those defaults, and a new save with an invalid value is rejected.
-// The built-in catalog is exactly CommandCode and OpenCode Go; provider upsert
+// The built-in catalog includes CommandCode, OpenCode Go and OpenCode Zen Free; provider upsert
 // validates `template_id` (bind/rebind, `null` unbind, unknown/deleted reject).
 // ===========================================================================
 
@@ -4306,7 +4385,8 @@ fn template_strategy_fields_are_closed_with_tolerant_defaults_on_read() {
             "base_url": "https://valid.example.com/v1",
             "sync_strategy": "opencode_go",
             "quota_strategy": "commandcode",
-            "error_strategy": "generic"
+            "error_strategy": "generic",
+            "transport_strategy": "opencode_zen_sidecar"
         },
         {
             "id": "missing",
@@ -4319,7 +4399,8 @@ fn template_strategy_fields_are_closed_with_tolerant_defaults_on_read() {
             "base_url": "https://unknown.example.com/v1",
             "sync_strategy": "not_a_strategy",
             "quota_strategy": "not_a_strategy",
-            "error_strategy": "not_a_strategy"
+            "error_strategy": "not_a_strategy",
+            "transport_strategy": "not_a_strategy"
         }
     ]"#;
     let templates = parse_template_snapshot(snapshot).expect("the snapshot must parse");
@@ -4328,6 +4409,7 @@ fn template_strategy_fields_are_closed_with_tolerant_defaults_on_read() {
     assert_eq!(values[0]["sync_strategy"], json!("opencode_go"));
     assert_eq!(values[0]["quota_strategy"], json!("commandcode"));
     assert_eq!(values[0]["error_strategy"], json!("generic"));
+    assert_eq!(values[0]["transport_strategy"], json!("opencode_zen_sidecar"));
 
     for (index, label) in [(1usize, "a missing"), (2usize, "an unknown")] {
         assert_eq!(
@@ -4345,6 +4427,11 @@ fn template_strategy_fields_are_closed_with_tolerant_defaults_on_read() {
             json!("generic"),
             "{label} error strategy must default to generic"
         );
+        assert_eq!(
+            values[index]["transport_strategy"],
+            json!("direct"),
+            "{label} transport strategy must default to direct"
+        );
     }
 }
 
@@ -4352,7 +4439,7 @@ fn template_strategy_fields_are_closed_with_tolerant_defaults_on_read() {
 /// typed template boundary, while every valid closed value is accepted.
 #[test]
 fn provider_template_new_save_rejects_an_unknown_strategy_value() {
-    for field in ["sync_strategy", "quota_strategy", "error_strategy"] {
+    for field in ["sync_strategy", "quota_strategy", "error_strategy", "transport_strategy"] {
         let mut object = json!({
             "id": "t",
             "name": "T",
@@ -4373,6 +4460,7 @@ fn provider_template_new_save_rejects_an_unknown_strategy_value() {
         "sync_strategy": "opencode_go",
         "quota_strategy": "opencode_go",
         "error_strategy": "generic",
+        "transport_strategy": "opencode_zen_sidecar",
     }));
     assert!(
         accepted.is_ok(),
@@ -4390,6 +4478,7 @@ fn valid_template_strategy_values_survive_upsert_and_reload() {
         "sync_strategy": "opencode_go",
         "quota_strategy": "commandcode",
         "error_strategy": "generic",
+        "transport_strategy": "opencode_zen_sidecar",
     }))
     .expect("the strategy fixture must deserialize");
 
@@ -4406,21 +4495,26 @@ fn valid_template_strategy_values_survive_upsert_and_reload() {
     assert_eq!(value["sync_strategy"], json!("opencode_go"));
     assert_eq!(value["quota_strategy"], json!("commandcode"));
     assert_eq!(value["error_strategy"], json!("generic"));
+    assert_eq!(value["transport_strategy"], json!("opencode_zen_sidecar"));
     assert_eq!(views.len(), reloaded.len());
 }
 
-/// AC-002: the built-in catalog is exactly CommandCode and OpenCode Go; the
-/// OpenCode Zen built-in is gone and each built-in carries its approved
-/// strategies.
+/// AC-002: the built-in catalog is exactly CommandCode, OpenCode Go and
+/// OpenCode Zen Free; the legacy OpenCode Zen built-in is gone and each
+/// built-in carries its approved strategies.
 #[test]
-fn builtin_catalog_ships_exactly_commandcode_and_opencode_go() {
+fn builtin_catalog_ships_exactly_commandcode_opencode_go_and_opencode_zen_free() {
     let builtins = builtin_templates().expect("the built-in snapshot must parse");
     let mut ids: Vec<String> = builtins.iter().map(|t| t.id.clone()).collect();
     ids.sort();
     assert_eq!(
         ids,
-        vec!["commandcode".to_string(), "opencode-go".to_string()],
-        "the catalog must ship exactly CommandCode and OpenCode Go"
+        vec![
+            "commandcode".to_string(),
+            "opencode-go".to_string(),
+            "opencode-zen-free".to_string()
+        ],
+        "the catalog must ship exactly CommandCode, OpenCode Go and OpenCode Zen Free"
     );
     assert!(
         !ids.iter().any(|id| id == "opencode-zen"),
@@ -4450,6 +4544,13 @@ fn builtin_catalog_ships_exactly_commandcode_and_opencode_go() {
         "the Go built-in must use the Go model-list URL"
     );
     assert_eq!(go["base_url"], json!("https://opencode.ai/zen/go/v1"));
+
+    let zen_free = by_id("opencode-zen-free");
+    assert_eq!(zen_free["transport_strategy"], json!("opencode_zen_sidecar"));
+    assert_eq!(zen_free["sync_strategy"], json!("generic"));
+    assert_eq!(zen_free["quota_strategy"], json!("none"));
+    assert_eq!(zen_free["error_strategy"], json!("generic"));
+    assert_eq!(zen_free["icon"], json!("opencode"));
 }
 
 /// AC-003: the Go baseline declares exactly the 20 Chat Completions and six

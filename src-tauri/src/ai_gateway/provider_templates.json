@@ -53,5 +53,28 @@
       { "upstream_model": "muse-spark-1.2-contributor", "protocol": "responses", "enabled": true }
     ],
     "icon": "opencode"
+  },
+  {
+    "id": "opencode-zen-free",
+    "name": "OpenCode Zen Free",
+    "description": "OpenCode Zen 免费模型网关，经本地中继转发",
+    "base_url": "https://opencode.ai/zen/v1",
+    "protocol": "chat_completions",
+    "sync_strategy": "generic",
+    "quota_strategy": "none",
+    "error_strategy": "generic",
+    "transport_strategy": "opencode_zen_sidecar",
+    "source": "https://opencode.ai/zen/v1/models",
+    "models": [
+      { "upstream_model": "big-pickle", "local_model": "zen-free-big-pickle", "display_name": "Zen Big Pickle", "enabled": true, "reasoning_efforts": [] },
+      { "upstream_model": "beam-free", "local_model": "zen-free-beam", "display_name": "Zen Beam Free", "enabled": true, "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"] },
+      { "upstream_model": "mimo-v2.6-flash-free", "local_model": "zen-free-mimo", "display_name": "Zen Mimo V2.6 Flash Free", "enabled": true, "reasoning_efforts": [] },
+      { "upstream_model": "nemotron-3.5-super-vl-free", "local_model": "zen-free-nemotron-vl", "display_name": "Zen Nemotron 3.5 Super VL Free", "enabled": true, "reasoning_efforts": ["none", "minimal", "low", "medium", "high", "xhigh"] },
+      { "upstream_model": "nemotron-3.5-lightning-free", "local_model": "zen-free-nemotron-lightning", "display_name": "Zen Nemotron 3.5 Lightning Free", "enabled": true, "reasoning_efforts": [] },
+      { "upstream_model": "deepseek-v4.1-flash-free", "local_model": "zen-free-deepseek", "display_name": "Zen DeepSeek V4.1 Flash Free", "enabled": true, "reasoning_efforts": ["low", "high", "max"] },
+      { "upstream_model": "glm-5.3-flash-free", "local_model": "zen-free-glm", "display_name": "Zen GLM-5.3-Flash Free", "enabled": true, "reasoning_efforts": ["low", "high", "max"] },
+      { "upstream_model": "flint-40b-free", "local_model": "zen-free-flint-40b", "display_name": "Zen Flint 40B Free", "enabled": true, "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"] }
+    ],
+    "icon": "opencode"
   }
 ]

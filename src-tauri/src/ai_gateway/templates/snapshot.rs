@@ -2,7 +2,7 @@
 
 use super::super::types_config::{
     ErrorStrategy, OffPeakPrice, ProviderTemplate, ProviderTemplateModel, QuotaStrategy,
-    SyncStrategy, UpstreamProtocol,
+    SyncStrategy, TransportStrategy, UpstreamProtocol,
 };
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -28,6 +28,8 @@ struct RawTemplate {
     quota_strategy: Option<String>,
     #[serde(default)]
     error_strategy: Option<String>,
+    #[serde(default)]
+    transport_strategy: Option<String>,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -98,6 +100,15 @@ fn parse_quota_strategy(raw: Option<&str>) -> QuotaStrategy {
 /// anything else resolves to it.
 fn parse_error_strategy(_raw: Option<&str>) -> ErrorStrategy {
     ErrorStrategy::Generic
+}
+
+/// Tolerant read of a persisted transport strategy: only the closed known values
+/// are honored and anything else (missing, unknown, legacy) resolves to direct.
+fn parse_transport_strategy(raw: Option<&str>) -> TransportStrategy {
+    match raw {
+        Some("opencode_zen_sidecar") => TransportStrategy::OpencodeZenSidecar,
+        _ => TransportStrategy::Direct,
+    }
 }
 
 /// Parse a top-level JSON array of templates into the validated template model.
@@ -186,6 +197,7 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
             sync_strategy: parse_sync_strategy(item.sync_strategy.as_deref()),
             quota_strategy: parse_quota_strategy(item.quota_strategy.as_deref()),
             error_strategy: parse_error_strategy(item.error_strategy.as_deref()),
+            transport_strategy: parse_transport_strategy(item.transport_strategy.as_deref()),
             source: item.source,
             models_url,
             models,

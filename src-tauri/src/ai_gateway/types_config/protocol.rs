@@ -26,6 +26,21 @@ impl UpstreamProtocol {
     }
 }
 
+/// How the gateway reaches a provider's upstream endpoint.
+///
+/// `direct` forwards from the application process with the existing HTTP client.
+/// `opencode_zen_sidecar` forwards through the bundled loopback sidecar so the
+/// upstream TLS connection uses the sidecar's client profile. The value is
+/// declared by the provider's bound template and is authoritative: URL, name,
+/// icon and other stored fields never select a transport.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportStrategy {
+    #[default]
+    Direct,
+    OpencodeZenSidecar,
+}
+
 /// Model-synchronization strategy declared by a provider template.
 ///
 /// `generic` keeps today's model-list parsing and protocol-inheritance

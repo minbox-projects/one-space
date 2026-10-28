@@ -50,6 +50,13 @@ const OFF_PEAKS_KEY: &str = "off_peaks";
 const LEGACY_OPENCODE_ZEN_TEMPLATE_ID: &str = "opencode-zen";
 /// Current OpenCode Go template identity.
 const OPENCODE_GO_TEMPLATE_ID: &str = "opencode-go";
+/// Built-in OpenCode Zen Free template identity introduced with schema 5.
+const OPENCODE_ZEN_FREE_TEMPLATE_ID: &str = "opencode-zen-free";
+/// Exact provider name the schema-5 binding migration recognizes.
+const OPENCODE_ZEN_FREE_PROVIDER_NAME: &str = "OpenCode Zen Free";
+/// Normalized OpenCode Zen Free upstream base URL.
+const OPENCODE_ZEN_FREE_BASE_URL: &str = "https://opencode.ai/zen/v1";
+const NAME_FIELD: &str = "name";
 const TEMPLATE_ID_FIELD: &str = "template_id";
 const TEMPLATE_FIELD: &str = "template";
 const SYNCED_AT_FIELD: &str = "synced_at";
@@ -360,6 +367,63 @@ fn migrate_opencode_zen_to_go(object: &mut Map<String, Value>) -> bool {
     changed
 }
 
+/// Trim surrounding whitespace and every trailing slash from a stored base URL
+/// before comparing it with the canonical OpenCode Zen Free URL.
+fn normalize_provider_base_url(value: &str) -> &str {
+    value.trim().trim_end_matches('/')
+}
+
+/// Whether a raw provider object carries no usable `template_id`: the field is
+/// missing, `null`, a blank string, or a non-string shape this migration cannot
+/// interpret as an existing binding.
+fn provider_has_no_template(provider: &Map<String, Value>) -> bool {
+    match provider.get(TEMPLATE_ID_FIELD) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(id)) => id.trim().is_empty(),
+        _ => false,
+    }
+}
+
+/// Bind the one untemplated provider whose trimmed name is exactly `OpenCode Zen
+/// Free` and whose normalized base URL is exactly the canonical Zen URL to the
+/// built-in OpenCode Zen Free template. Keys, mappings, prices and every other
+/// provider stay untouched. Idempotent: a second pass sees the new binding.
+fn migrate_opencode_zen_free_binding(object: &mut Map<String, Value>) -> bool {
+    let Some(providers) = object
+        .get_mut(PROVIDERS_FIELD)
+        .and_then(Value::as_array_mut)
+    else {
+        return false;
+    };
+    let mut changed = false;
+    for provider in providers.iter_mut() {
+        let Some(provider) = provider.as_object_mut() else {
+            continue;
+        };
+        if !provider_has_no_template(provider) {
+            continue;
+        }
+        let name_matches = provider
+            .get(NAME_FIELD)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some(OPENCODE_ZEN_FREE_PROVIDER_NAME);
+        let url_matches = provider
+            .get(BASE_URL_FIELD)
+            .and_then(Value::as_str)
+            .map(normalize_provider_base_url)
+            == Some(OPENCODE_ZEN_FREE_BASE_URL);
+        if name_matches && url_matches {
+            provider.insert(
+                TEMPLATE_ID_FIELD.to_string(),
+                Value::String(OPENCODE_ZEN_FREE_TEMPLATE_ID.to_string()),
+            );
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Legacy provider-level single credential field, superseded by the ordered
 /// `keys` pool. This is the only non-test production source allowed to name it.
 const LEGACY_SINGLE_KEY_FIELD: &str = "api_key";
@@ -498,6 +562,7 @@ pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value) -> bool {
             .as_object_mut()
             .expect("config was checked to be an object");
         let changed = migrate_opencode_zen_to_go(object);
+        let changed = changed | migrate_opencode_zen_free_binding(object);
         changed | migrate_pool_fallbacks(object)
     };
     let reachable = reachable_provider_models(config);

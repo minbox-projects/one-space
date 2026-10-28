@@ -307,7 +307,7 @@ fn legacy_config_read_drops_provider_runtime_keys() {
 fn current_version_config_read_is_side_effect_free() {
     let _home = isolated_temp_home("migration-current-version");
     let current = json!({
-        "schema_version": 4,
+        "schema_version": crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
         "enabled": true,
         "providers": [{
             "id": "p",
@@ -977,7 +977,7 @@ fn replaced_legacy_usage_database_is_reopened_and_migrated_by_queries() {
 // ---------------------------------------------------------------------------
 
 /// Encoded current key-pool schema version.
-const KEY_POOL_SCHEMA_VERSION: u32 = 4;
+const KEY_POOL_SCHEMA_VERSION: u32 = crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION;
 
 /// One migrated `Default` key entry for `value`.
 fn expected_default_key(value: &str) -> Value {
@@ -1242,12 +1242,12 @@ fn failed_key_pool_rewrite_keeps_previous_bytes_and_retries() {
 // ===========================================================================
 
 /// The schema version the Zen-to-Go migration advances to.
-const ZEN_TO_GO_SCHEMA_VERSION: u32 = 4;
+const ZEN_TO_GO_SCHEMA_VERSION: u32 = crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION;
 
 /// The schema version the ordered fallback model list advances to. The
 /// legacy single provider-specific fallback migrates into a one-entry
 /// gateway-model list under this version gate.
-const ORDERED_FALLBACK_SCHEMA_VERSION: u32 = 4;
+const ORDERED_FALLBACK_SCHEMA_VERSION: u32 = crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION;
 
 /// One declared Chat Completions and one declared Responses id from the shipped
 /// Go baseline. Reading them at runtime keeps the fixtures independent of the
@@ -1740,7 +1740,7 @@ fn zen_migration_failed_rewrite_keeps_old_bytes_and_retries() {
 fn future_schema_version_is_neither_downgraded_nor_migrated() {
     let _home = isolated_temp_home("migration-future-v4");
     write_encrypted_config(&json!({
-        "schema_version": 4,
+        "schema_version": crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION + 1,
         "provider_templates": [{
             "template_id": "opencode-zen",
             "template": {
@@ -1768,7 +1768,8 @@ fn future_schema_version_is_neither_downgraded_nor_migrated() {
 
     let loaded = read_config().expect("a future version must stay readable");
     assert_eq!(
-        loaded.schema_version, 4,
+        loaded.schema_version,
+        crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION + 1,
         "the future version must be preserved"
     );
     assert!(
@@ -1965,14 +1966,14 @@ fn persisted_config_with_unknown_strategy_values_reads_with_generic_defaults() {
     );
 }
 
-/// The migration is gated by a schema-version bump to 4 for the ordered
-/// fallback model list.
+/// The current configuration schema is pinned to 5 for the template-transport
+/// and pre-schema-5 backup change.
 #[test]
-fn gateway_config_schema_version_advances_to_four() {
+fn gateway_config_schema_version_advances_to_five() {
     assert_eq!(
         crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
-        ORDERED_FALLBACK_SCHEMA_VERSION,
-        "the ordered fallback model list must be gated by schema version 4"
+        5,
+        "the template-transport/backup change must be gated by schema version 5"
     );
 }
 
@@ -3016,4 +3017,97 @@ fn current_version_pool_without_a_fallback_value_is_not_rewritten() {
         bytes_before,
         "a current-version configuration must never be rewritten"
     );
+}
+
+#[test]
+fn opencode_zen_sidecar_schema5_migration_red() {
+    let _home = isolated_temp_home("migration-schema5-opencode-zen");
+    let cfg = json!({
+        "schema_version": 4,
+        "enabled": true,
+        "providers": [
+            {
+                "id": "target",
+                "name": "OpenCode Zen Free",
+                "base_url": "https://opencode.ai/zen/v1",
+                "api_key": "sk-target",
+                "protocol": "chat_completions",
+                "mappings": [{"local_model": "zen-free-glm", "upstream_model": "glm-5.3-flash-free", "enabled": true}],
+                "keys": [{"id": "k", "name": "Default", "value": "sk-target"}]
+            },
+            {
+                "id": "other",
+                "name": "Other",
+                "base_url": "https://other.example.com/v1",
+                "api_key": "sk-other",
+                "protocol": "chat_completions",
+                "mappings": []
+            }
+        ]
+    });
+    write_encrypted_config(&cfg);
+    let pre_bytes = raw_config_bytes();
+    let backup_path = config_path().unwrap().parent().unwrap().join("ai_gateway.json.bak-pre-schema5");
+    let _ = fs::remove_file(&backup_path);
+
+    read_config().expect("first read must migrate");
+    let on_disk = decrypted_config_json();
+    let providers = on_disk["providers"].as_array().expect("providers");
+    let target = providers.iter().find(|p| p["id"] == "target").expect("target");
+    assert_eq!(target["template_id"], "opencode-zen-free");
+    assert_eq!(target["mappings"].as_array().unwrap().len(), 1);
+    let other = providers.iter().find(|p| p["id"] == "other").expect("other");
+    assert!(other.get("template_id").is_none() || other["template_id"].is_null());
+    assert_eq!(on_disk["schema_version"], 5);
+
+    let bytes_after = raw_config_bytes();
+    read_config().expect("second read");
+    assert_eq!(raw_config_bytes(), bytes_after);
+
+    assert!(backup_path.exists());
+    let backup_bytes = fs::read(&backup_path).expect("backup bytes");
+    assert_eq!(backup_bytes, pre_bytes);
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&backup_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+
+    // second read does not overwrite backup
+    assert_eq!(fs::read(&backup_path).unwrap(), pre_bytes);
+}
+
+#[test]
+fn opencode_zen_sidecar_schema5_counterexamples_red() {
+    let cases = [
+        ("Other Name", "https://opencode.ai/zen/v1", None),
+        ("OpenCode Zen Free", "https://example.com/zen/v1", None),
+        ("OpenCode Zen Free", "https://opencode.ai/zen/v1", Some("existing-template")),
+    ];
+    for (name, url, tid) in cases {
+        let _home = isolated_temp_home("migration-schema5-counterexample");
+        let mut provider = json!({
+            "id": "target",
+            "name": name,
+            "base_url": url,
+            "api_key": "sk-target",
+            "protocol": "chat_completions",
+            "mappings": []
+        });
+        if let Some(t) = tid {
+            provider["template_id"] = json!(t);
+        }
+        let cfg = json!({
+            "schema_version": 4,
+            "enabled": true,
+            "providers": [provider]
+        });
+        write_encrypted_config(&cfg);
+        read_config().expect("read");
+        let on_disk = decrypted_config_json();
+        let target = &on_disk["providers"][0];
+        if tid.is_some() {
+            assert_eq!(target["template_id"], tid.unwrap());
+        } else {
+            assert!(target.get("template_id").is_none() || target["template_id"].is_null());
+        }
+    }
 }

@@ -22,8 +22,10 @@ use super::terminal::TerminalSyncRecord;
 /// `opencode-go` template identity and provider bindings, replacing the old
 /// `opencode-zen` built-in through the same version-gated migration. Version 4
 /// replaces a pool's single provider-specific `fallback` candidate with an
-/// ordered list of gateway local model ids.
-pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 4;
+/// ordered list of gateway local model ids. Version 5 adds the template-declared
+/// sidecar transport and binds the matching untemplated provider to the built-in
+/// OpenCode Zen Free template.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 5;
 
 /// Persisted AI Gateway configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

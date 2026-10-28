@@ -23,7 +23,9 @@ pub use pool::{
     PoolReasoningMapping, PoolReasoningProfile,
 };
 pub use price::{ModelPrice, OffPeakPrice};
-pub use protocol::{ErrorStrategy, QuotaStrategy, SyncStrategy, UpstreamProtocol};
+pub use protocol::{
+    ErrorStrategy, QuotaStrategy, SyncStrategy, TransportStrategy, UpstreamProtocol,
+};
 pub use provider::{
     GatewayUpstreamProvider, KeyFailureKind, ModelMapping, UpstreamKey,
     AUTO_DISABLE_PROBE_COOLDOWN_SECS, FAILURE_THRESHOLD, KEY_PROBE_COOLDOWN_SECS,

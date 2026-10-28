@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::defaults::{default_provider_weight, default_true};
 use super::pool::PoolCandidateIdentity;
-use super::protocol::UpstreamProtocol;
+use super::protocol::{TransportStrategy, UpstreamProtocol};
 
 /// A single "local model name -> remote model name" mapping for an upstream provider.
 ///
@@ -177,6 +177,12 @@ pub struct GatewayUpstreamProvider {
     pub default_model: Option<String>,
     #[serde(default)]
     pub protocol: UpstreamProtocol,
+    /// Transport resolved from this provider's bound template. It is a runtime
+    /// cache published by configuration normalization and is deliberately never
+    /// serialized: the persisted record only carries the template binding, and
+    /// an absent or broken binding resolves to direct.
+    #[serde(skip)]
+    pub transport: TransportStrategy,
     #[serde(default)]
     pub mappings: Vec<ModelMapping>,
     #[serde(default = "default_true")]
@@ -214,6 +220,7 @@ impl Default for GatewayUpstreamProvider {
             attempt_key: String::new(),
             default_model: None,
             protocol: UpstreamProtocol::ChatCompletions,
+            transport: TransportStrategy::Direct,
             mappings: Vec::new(),
             enabled: true,
             template_id: None,

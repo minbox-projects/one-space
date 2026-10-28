@@ -2,6 +2,7 @@ use super::health::pool_candidate_cooling;
 #[cfg(test)]
 use super::scheduler::note_pool_provider_copy;
 use super::super::selection::{can_convert_from, select_usable_key};
+use super::super::templates::effective_transport_strategy;
 use super::super::{
     GatewayConfig, GatewayUpstreamProvider, ModelMapping, ModelPool, ModelPoolCandidate,
     PoolCandidateIdentity, PoolNativeReasoning, UpstreamProtocol,
@@ -106,6 +107,7 @@ pub(super) fn resolve_candidate(
                         // borrowed so their count never scales with the stored set.
                         if provider.enabled && mapping.enabled {
                             prepared = Some(prepare_provider(
+                                config,
                                 provider,
                                 alias,
                                 mapping,
@@ -167,6 +169,7 @@ pub(super) fn resolve_candidate(
 /// serves the exact original upstream model, and `default_model` is cleared so
 /// no unselected sibling can ever be selected.
 fn prepare_provider(
+    config: &GatewayConfig,
     provider: &GatewayUpstreamProvider,
     alias: &str,
     mapping: &ModelMapping,
@@ -174,6 +177,7 @@ fn prepare_provider(
     weight: u32,
 ) -> GatewayUpstreamProvider {
     let mut prepared = provider.clone();
+    prepared.transport = effective_transport_strategy(config, provider);
     #[cfg(test)]
     note_pool_provider_copy();
     let mut row = mapping.clone();

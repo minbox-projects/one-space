@@ -34,4 +34,5 @@ pub(in crate::ai_gateway) use source::{fetch_template_models, fetch_template_mod
 #[allow(unused_imports)]
 pub(in crate::ai_gateway) use state::{
     effective_provider_template, effective_quota_strategy, effective_template,
+    effective_transport_strategy,
 };

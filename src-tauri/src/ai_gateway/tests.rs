@@ -35381,3 +35381,138 @@ async fn gateway_cost_breakdown_retry_records_failed_attempt_then_priced_success
     super::runtime_http::stop_server().await.unwrap();
     drop(home);
 }
+
+
+#[test]
+fn opencode_zen_sidecar_transport_resolution_red() {
+    use crate::ai_gateway::types_config::{GatewayConfig, GatewayUpstreamProvider, ProviderTemplate, ProviderTemplateState, TransportStrategy};
+    use crate::ai_gateway::templates::builtin_templates;
+    let builtins = builtin_templates().expect("built-in templates must parse");
+    let tpl = builtins.iter().find(|t| t.id == "opencode-zen-free").expect("template exists");
+    assert_eq!(tpl.base_url, "https://opencode.ai/zen/v1");
+    assert_eq!(tpl.transport_strategy, TransportStrategy::OpencodeZenSidecar);
+    assert_eq!(tpl.icon.as_deref(), Some("opencode"));
+    let expected = [
+        ("big-pickle", "zen-free-big-pickle"),
+        ("beam-free", "zen-free-beam"),
+        ("mimo-v2.6-flash-free", "zen-free-mimo"),
+        ("nemotron-3.5-super-vl-free", "zen-free-nemotron-vl"),
+        ("nemotron-3.5-lightning-free", "zen-free-nemotron-lightning"),
+        ("deepseek-v4.1-flash-free", "zen-free-deepseek"),
+        ("glm-5.3-flash-free", "zen-free-glm"),
+        ("flint-40b-free", "zen-free-flint-40b"),
+    ];
+    assert_eq!(tpl.models.len(), 8);
+    for (upstream, local) in expected {
+        let m = tpl.models.iter().find(|m| m.upstream_model == upstream).expect("model present");
+        assert_eq!(m.local_model.as_deref(), Some(local));
+    }
+
+    // effective_transport_strategy resolver coverage.
+    let mut cfg = GatewayConfig::default();
+    let p = GatewayUpstreamProvider {
+        id: "p".to_string(),
+        template_id: Some("opencode-zen-free".to_string()),
+        ..GatewayUpstreamProvider::default()
+    };
+    assert_eq!(crate::ai_gateway::templates::effective_transport_strategy(&cfg, &p), TransportStrategy::OpencodeZenSidecar);
+    let p2 = GatewayUpstreamProvider::default();
+    assert_eq!(crate::ai_gateway::templates::effective_transport_strategy(&cfg, &p2), TransportStrategy::Direct);
+    let p3 = GatewayUpstreamProvider {
+        id: "p3".to_string(),
+        template_id: Some("unknown-template".to_string()),
+        ..GatewayUpstreamProvider::default()
+    };
+    assert_eq!(crate::ai_gateway::templates::effective_transport_strategy(&cfg, &p3), TransportStrategy::Direct);
+    cfg.deleted_template_ids.push("opencode-zen-free".to_string());
+    let p4 = GatewayUpstreamProvider {
+        id: "p4".to_string(),
+        template_id: Some("opencode-zen-free".to_string()),
+        ..GatewayUpstreamProvider::default()
+    };
+    assert_eq!(crate::ai_gateway::templates::effective_transport_strategy(&cfg, &p4), TransportStrategy::Direct);
+    // another binding -> direct
+    let mut cfg5 = GatewayConfig::default();
+    let p5 = GatewayUpstreamProvider {
+        id: "p5".to_string(),
+        template_id: Some("opencode-go".to_string()),
+        ..GatewayUpstreamProvider::default()
+    };
+    assert_eq!(crate::ai_gateway::templates::effective_transport_strategy(&cfg5, &p5), TransportStrategy::Direct);
+    // persisted custom template without the field -> direct
+    let mut cfg6 = GatewayConfig::default();
+    cfg6.provider_templates.push(ProviderTemplateState {
+        template_id: "custom".to_string(),
+        template: Some(ProviderTemplate { id: "custom".to_string(), ..ProviderTemplate::default() }),
+        synced_at: None,
+        source: None
+    });
+    let p6 = GatewayUpstreamProvider {
+        id: "p6".to_string(),
+        template_id: Some("custom".to_string()),
+        ..GatewayUpstreamProvider::default()
+    };
+    assert_eq!(crate::ai_gateway::templates::effective_transport_strategy(&cfg6, &p6), TransportStrategy::Direct);
+
+    // write-path cached transport via normalize_stored_config
+    let mut cfgw = GatewayConfig::default();
+    cfgw.providers.push(GatewayUpstreamProvider {
+        id: "s".to_string(),
+        template_id: Some("opencode-zen-free".to_string()),
+        ..GatewayUpstreamProvider::default()
+    });
+    cfgw.providers.push(GatewayUpstreamProvider {
+        id: "d".to_string(),
+        ..GatewayUpstreamProvider::default()
+    });
+    crate::ai_gateway::storage::normalize_config(&mut cfgw);
+    let sp = cfgw.providers.iter().find(|p| p.id == "s").unwrap();
+    assert_eq!(sp.transport, TransportStrategy::OpencodeZenSidecar);
+    let dp = cfgw.providers.iter().find(|p| p.id == "d").unwrap();
+    assert_eq!(dp.transport, TransportStrategy::Direct);
+    // refresh when binding changes
+    let spm = cfgw.providers.iter_mut().find(|p| p.id == "s").unwrap();
+    spm.template_id = None;
+    crate::ai_gateway::storage::normalize_config(&mut cfgw);
+    let sp2 = cfgw.providers.iter().find(|p| p.id == "s").unwrap();
+    assert_eq!(sp2.transport, TransportStrategy::Direct);
+
+    // serde coverage
+    assert_eq!(serde_json::to_string(&TransportStrategy::Direct).unwrap(), "\"direct\"");
+    assert_eq!(serde_json::to_string(&TransportStrategy::OpencodeZenSidecar).unwrap(), "\"opencode_zen_sidecar\"");
+    // strict ProviderTemplate deserialization of an unknown value fails.
+    let raw = r#"{"id":"t","transport_strategy":"bogus"}"#;
+    assert!(serde_json::from_str::<ProviderTemplate>(raw).is_err());
+
+    // tolerant read path: a persisted template with an unknown transport value
+    // loads as Direct.
+    let state_raw = r#"{"template_id":"t","template":{"id":"t","transport_strategy":"bogus"}}"#;
+    let state: crate::ai_gateway::types_config::ProviderTemplateState =
+        serde_json::from_str(state_raw).expect("tolerant read must not fail");
+    assert_eq!(
+        state.template.as_ref().map(|t| t.transport_strategy),
+        Some(TransportStrategy::Direct)
+    );
+}
+
+#[test]
+fn template_delete_refusal_while_bound_red() {
+    use crate::ai_gateway::types_config::{GatewayConfig, GatewayUpstreamProvider, TransportStrategy};
+    let mut cfg = GatewayConfig::default();
+    cfg.providers.push(GatewayUpstreamProvider {
+        id: "p".to_string(),
+        name: "OpenCode Zen Free".to_string(),
+        template_id: Some("opencode-zen-free".to_string()),
+        ..GatewayUpstreamProvider::default()
+    });
+    let before_templates = cfg.provider_templates.clone();
+    let before_binding = cfg.providers[0].template_id.clone();
+    let res = crate::ai_gateway::templates::apply_delete_provider_template(&mut cfg, "opencode-zen-free", |_| Ok(()));
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    assert!(err.contains("opencode-zen-free"));
+    assert_eq!(cfg.provider_templates, before_templates);
+    assert_eq!(cfg.providers[0].template_id, before_binding);
+    let p = &cfg.providers[0];
+    assert_eq!(crate::ai_gateway::templates::effective_transport_strategy(&cfg, &p), TransportStrategy::OpencodeZenSidecar);
+}
