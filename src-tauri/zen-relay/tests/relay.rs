@@ -322,7 +322,7 @@ fn sidecar_does_not_log_secrets() {
     let request = concat!(
         "POST /v1/chat/completions HTTP/1.1\\r\\n",
         "Host: 127.0.0.1\\r\\n",
-        "Authorization: Bearer secret-SENTINEL-value\\r\\n",
+        "Authorization: Bearer SAFE_FIXTURE_sidecar_sentinel\\r\\n",
         "Content-Type: application/json\\r\\n",
         "x-onespace-sidecar-token: test-sidecar-token\\r\\n",
         "x-onespace-upstream-base: https://opencode.ai/zen/v1\\r\\n",
@@ -338,7 +338,7 @@ fn sidecar_does_not_log_secrets() {
         .recv_timeout(Duration::from_secs(5))
         .unwrap_or_default();
     assert!(!stderr_text.contains("test-sidecar-token"));
-    assert!(!stderr_text.contains("secret-SENTINEL-value"));
+    assert!(!stderr_text.contains("SAFE_FIXTURE_sidecar_sentinel"));
     assert!(!stderr_text.contains("Bearer"));
     assert!(!stderr_text.contains("secret body value"));
 }
