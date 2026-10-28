@@ -1,0 +1,17 @@
+[Unit]
+Description=OneSpace Cloud Agent (Gateway & Auto-PR Runner)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/onespace-cloud-agent
+Environment=PATH=/root/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/python3 /root/onespace-cloud-agent/agent.py /root/onespace-cloud-agent/config.json
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
