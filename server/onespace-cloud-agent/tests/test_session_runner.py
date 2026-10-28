@@ -177,5 +177,107 @@ class TestSessionRunner(unittest.TestCase):
         self.assertIn("origin/main", cmd)
 
 
+    @patch("core.session_runner.subprocess.run")
+    def test_list_sessions_detailed(self, mock_subproc):
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "dev_onespace_feat-login|1700000000|2|/root/workspaces/login|9876\n"
+        mock_subproc.return_value = mock_res
+
+        sessions = self.runner.list_sessions_detailed()
+        self.assertEqual(len(sessions), 1)
+        s = sessions[0]
+        self.assertEqual(s["session_name"], "dev_onespace_feat-login")
+        self.assertEqual(s["repo_name"], "onespace")
+        self.assertEqual(s["branch"], "feat-login")
+        self.assertEqual(s["created_at"], 1700000000)
+        self.assertEqual(s["windows_count"], 2)
+        self.assertEqual(s["working_dir"], "/root/workspaces/login")
+        self.assertEqual(s["pane_pid"], 9876)
+        self.assertTrue(s["is_active"])
+
+    def test_list_worktrees_detailed(self):
+        # 创建一个带有 -worktrees 的目录结构
+        wt_base = os.path.join(self.tmp_ws, "my-repo-worktrees")
+        branch_dir = os.path.join(wt_base, "feat-test")
+        os.makedirs(branch_dir, exist_ok=True)
+
+        wts = self.runner.list_worktrees_detailed()
+        self.assertEqual(len(wts), 1)
+        self.assertEqual(wts[0]["repo_name"], "my-repo")
+        self.assertEqual(wts[0]["branch"], "feat-test")
+        self.assertEqual(wts[0]["worktree_path"], branch_dir)
+        self.assertFalse(wts[0]["has_active_session"])
+
+    @patch("core.session_runner.subprocess.run")
+    def test_start_or_attach_no_attach_headless(self, mock_subproc):
+        repo_dir = os.path.join(self.tmp_ws, "test-repo")
+        os.makedirs(repo_dir, exist_ok=True)
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_subproc.return_value = mock_res
+
+        res = self.runner.start_or_attach("test-repo", use_yolo=False, extra_args="--model test-model", attach=False)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["session_name"], "dev_test-repo")
+        
+        # 验证 tmux new-session -d 命令调用
+        calls = [list(c.args[0]) for c in mock_subproc.call_args_list]
+        tmux_calls = [c for c in calls if "tmux" in c and "new-session" in c]
+        self.assertTrue(tmux_calls)
+        cmd = tmux_calls[0]
+        self.assertIn("-d", cmd)
+        # 验证命令中无 --yolo 但有 --model test-model
+        full_init_cmd = cmd[-1]
+        self.assertNotIn("--yolo", full_init_cmd)
+        self.assertIn("--model test-model", full_init_cmd)
+
+    @patch("os.execvp")
+    @patch.object(SessionRunner, "session_exists", return_value=False)
+    def test_restore_named_session_reuses_existing_worktree(self, _mock_exists, mock_execvp):
+        wt_dir = os.path.join(self.tmp_ws, "one-space-worktrees", "test1")
+        os.makedirs(wt_dir, exist_ok=True)
+
+        res = self.runner.start_or_attach("dev_one-space_test1")
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["session_name"], "dev_one-space_test1")
+        mock_execvp.assert_called_once()
+        cmd = mock_execvp.call_args[0][1]
+        self.assertEqual(cmd[0:3], ["tmux", "new-session", "-s"])
+        self.assertEqual(cmd[3], "dev_one-space_test1")
+        self.assertEqual(cmd[5], wt_dir)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp_ws, "dev_one-space_test1")))
+
+    @patch("os.execvp")
+    @patch.object(SessionRunner, "session_exists", return_value=False)
+    def test_restore_named_session_matches_sanitized_names(self, _mock_exists, mock_execvp):
+        wt_dir = os.path.join(self.tmp_ws, "my_repo-worktrees", "feat_x")
+        os.makedirs(wt_dir, exist_ok=True)
+
+        res = self.runner.start_or_attach("dev_my_repo_feat_x")
+
+        self.assertTrue(res["success"])
+        cmd = mock_execvp.call_args[0][1]
+        self.assertEqual(cmd[3], "dev_my_repo_feat_x")
+        self.assertEqual(cmd[5], wt_dir)
+
+    @patch("os.execvp")
+    @patch.object(SessionRunner, "session_exists", return_value=False)
+    def test_restore_named_session_without_workspace_raises(self, _mock_exists, _mock_execvp):
+        with self.assertRaises(RuntimeError):
+            self.runner.start_or_attach("dev_missing")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp_ws, "dev_missing")))
+
+    @patch("os.execvp")
+    @patch.object(SessionRunner, "session_exists", return_value=False)
+    def test_session_survives_opencode_exit_with_fallback_shell(self, _mock_exists, mock_execvp):
+        self.runner.start_or_attach("brand-new-project")
+
+        init_cmd = mock_execvp.call_args[0][1][-1]
+        self.assertIn("opencode", init_cmd)
+        self.assertIn("exec bash -l", init_cmd)
+
+
 if __name__ == "__main__":
     unittest.main()
