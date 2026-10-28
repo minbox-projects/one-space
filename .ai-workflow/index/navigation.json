@@ -9779,6 +9779,18 @@
         },
         {
           "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorTunnelDraft",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
+          "name": "ServerMonitorTunnelView",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/serverMonitor.ts",
           "name": "formatBytes",
           "kind": "function",
           "visibility": "public"
@@ -20164,6 +20176,77 @@
         "src-tauri/src/app_store/provider_projection/codex.rs",
         "src-tauri/src/app_store/tests/gateway_context_projection.rs",
         "src-tauri/src/claude_profiles.rs"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "ai-gateway-zen-sidecar",
+      "name": "AI Gateway OpenCode Zen Sidecar",
+      "aliases": [],
+      "module_root": "src-tauri/src",
+      "entries": [
+        "src-tauri/src/ai_gateway/zen_sidecar.rs",
+        "src-tauri/src/ai_gateway/forwarding.rs",
+        "src-tauri/src/ai_gateway/migration.rs",
+        "src-tauri/src/ai_gateway/types_config/template.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src-tauri/src/ai_gateway/types_config/protocol.rs",
+          "name": "TransportStrategy",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway/types.ts",
+          "name": "GatewayTemplateTransportStrategy",
+          "kind": "type",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [
+        "src/lib/aiGateway/types.ts",
+        "src-tauri/src/ai_gateway/provider_templates.json",
+        "src-tauri/src/ai_gateway/storage.rs",
+        "src-tauri/src/ai_gateway/templates/state.rs",
+        "src-tauri/src/ai_gateway/types_config/protocol.rs",
+        "src-tauri/src/ai_gateway/types_config/provider.rs",
+        "src-tauri/zen-relay/Cargo.toml",
+        "src-tauri/zen-relay/src/lib.rs",
+        "src-tauri/zen-relay/src/main.rs",
+        "src-tauri/scripts/build-zen-relay.mjs",
+        "src-tauri/tauri.conf.json",
+        ".github/workflows/release.yml"
+      ],
+      "tests": [
+        "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
+        "src-tauri/src/ai_gateway/tests/migration.rs",
+        "src-tauri/src/ai_gateway/tests/templates.rs"
+      ],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "backend",
+      "responsibility": "Template-bound OpenCode Zen Free transport through an isolated BoringSSL loopback relay with a one-time schema-5 binding",
+      "read_scope": [
+        ".github/workflows/release.yml",
+        "src-tauri/scripts/build-zen-relay.mjs",
+        "src-tauri/src/ai_gateway/forwarding.rs",
+        "src-tauri/src/ai_gateway/migration.rs",
+        "src-tauri/src/ai_gateway/provider_templates.json",
+        "src-tauri/src/ai_gateway/storage.rs",
+        "src-tauri/src/ai_gateway/templates/state.rs",
+        "src-tauri/src/ai_gateway/tests/migration.rs",
+        "src-tauri/src/ai_gateway/tests/templates.rs",
+        "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
+        "src-tauri/src/ai_gateway/types_config/protocol.rs",
+        "src-tauri/src/ai_gateway/types_config/provider.rs",
+        "src-tauri/src/ai_gateway/types_config/template.rs",
+        "src-tauri/src/ai_gateway/zen_sidecar.rs",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/zen-relay/Cargo.toml",
+        "src-tauri/zen-relay/src/lib.rs",
+        "src-tauri/zen-relay/src/main.rs",
+        "src/lib/aiGateway/types.ts"
       ],
       "shared_entry": false
     },
