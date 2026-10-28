@@ -113,7 +113,9 @@ class GatewayEngine:
                 p_name = c.get("provider")
                 m_name = c.get("model")
                 if p_name in self.providers and self.providers[p_name].is_active:
-                    candidates.append((p_name, m_name))
+                    provider = self.providers[p_name]
+                    upstream = provider.models.get(m_name, {}).get("upstream_model", m_name) if isinstance(provider.models.get(m_name), dict) else m_name
+                    candidates.append((p_name, upstream))
             if candidates:
                 return candidates
 
@@ -122,7 +124,9 @@ class GatewayEngine:
             parts = requested_model.split("/", 1)
             p_name, m_name = parts[0], parts[1]
             if p_name in self.providers and self.providers[p_name].is_active:
-                return [(p_name, m_name)]
+                provider = self.providers[p_name]
+                upstream = provider.models.get(m_name, {}).get("upstream_model", m_name) if isinstance(provider.models.get(m_name), dict) else m_name
+                return [(p_name, upstream)]
 
         # 3. 遍历各服务商是否有直接对应的模型映射
         for p_name, provider in self.providers.items():

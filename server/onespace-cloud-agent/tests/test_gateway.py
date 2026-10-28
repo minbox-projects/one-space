@@ -70,8 +70,8 @@ class TestGateway(unittest.TestCase):
     def test_model_pool_resolution(self):
         candidates = self.gateway.resolve_candidates("smart-coder")
         self.assertEqual(len(candidates), 2)
-        self.assertEqual(candidates[0], ("provider_a", "model_a1"))
-        self.assertEqual(candidates[1], ("provider_b", "model_b1"))
+        self.assertEqual(candidates[0], ("provider_a", "upstream_a1"))
+        self.assertEqual(candidates[1], ("provider_b", "upstream_b1"))
 
     def test_direct_prefix_resolution(self):
         candidates = self.gateway.resolve_candidates("provider_a/custom-model")
