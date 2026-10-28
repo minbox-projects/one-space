@@ -143,7 +143,7 @@ class IssueWorker:
             env["PATH"] = f"/root/.opencode/bin:{env.get('PATH', '')}"
 
             run_res = subprocess.run(
-                ["opencode", "run", prompt],
+                ["opencode", "run", "--yolo", prompt],
                 cwd=task_dir,
                 env=env,
                 stdout=subprocess.PIPE,

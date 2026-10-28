@@ -35,14 +35,25 @@ if [ ! -f /root/onespace-cloud-agent/config.json ]; then
 fi
 EOF
 
-# 4. 配置 cloud-session 快捷命令
-echo "[4/6] 配置全局快捷命令 /usr/local/bin/cloud-session..."
+# 4. 配置 cloud-session 与 oc 快捷命令 (对齐本地 oc="opencode --yolo" 默认全授权)
+echo "[4/6] 配置全局快捷命令 /usr/local/bin/cloud-session 与 /usr/local/bin/oc..."
 ssh "${REMOTE_HOST}" << 'EOF'
 cat << 'INNER_EOF' > /usr/local/bin/cloud-session
 #!/usr/bin/env bash
 exec /usr/bin/python3 /root/onespace-cloud-agent/core/session_runner.py "$@"
 INNER_EOF
 chmod +x /usr/local/bin/cloud-session
+
+cat << 'INNER_EOF' > /usr/local/bin/oc
+#!/usr/bin/env bash
+export PATH=$PATH:/root/.opencode/bin
+exec /root/.opencode/bin/opencode --yolo "$@"
+INNER_EOF
+chmod +x /usr/local/bin/oc
+
+if ! grep -q 'alias oc=' /root/.bashrc 2>/dev/null; then
+    echo 'alias oc="opencode --yolo"' >> /root/.bashrc
+fi
 EOF
 
 # 5. 注册与启动 systemd 服务

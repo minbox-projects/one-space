@@ -120,12 +120,12 @@ class SessionRunner:
             os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
             return
 
-        # 7. 创建全新 tmux 会话并在其中启动 opencode
-        print(f"创建全新长程编程会话 [{session_name}] (工作目录: {project_dir})...")
+        # 7. 创建全新 tmux 会话并在其中启动 opencode (默认开启 --yolo 全权限自动授权模式)
+        print(f"创建全新长程编程会话 [{session_name}] (工作目录: {project_dir}, 默认授权全部权限 --yolo)...")
         print("提示：合上 Mac 盖子或断开 SSH，该会话仍会在云端持续运行。")
         print(f"重新连入命令: cloud-session {session_name}\n")
 
-        init_cmd = f"cd {project_dir} && export PATH=$PATH:/root/.opencode/bin && opencode"
+        init_cmd = f"cd {project_dir} && export PATH=$PATH:/root/.opencode/bin && opencode --yolo"
         cmd = [
             "tmux", "new-session",
             "-s", session_name,
