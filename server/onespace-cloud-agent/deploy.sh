@@ -50,6 +50,7 @@ export PATH=$PATH:/root/.opencode/bin
 exec /root/.opencode/bin/opencode --yolo "$@"
 INNER_EOF
 chmod +x /usr/local/bin/oc
+ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode
 
 if ! grep -q 'alias oc=' /root/.bashrc 2>/dev/null; then
     echo 'alias oc="opencode --yolo"' >> /root/.bashrc
