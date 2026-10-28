@@ -9,9 +9,11 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from core.disk_guardian import DiskGuardian
 from core.gateway import GatewayEngine, GatewayRequestHandler
 from core.issue_worker import IssueWorker, start_worker_loop
@@ -84,7 +86,82 @@ class CloudAgentDaemon:
             time.sleep(1)
 
 
+def get_status_report(config_path: str = "config.json") -> dict:
+    """生成系统健康与服务状态报表"""
+    guardian = DiskGuardian()
+    disk_info = guardian.get_disk_usage("/")
+    
+    # 检查网关连通性
+    port = 17688
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                port = cfg.get("ai_gateway", {}).get("port", 17688)
+        except Exception:
+            pass
+
+    gateway_health = {"status": "unreachable", "port": port}
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            if resp.status == 200:
+                gateway_health = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        gateway_health["error"] = str(e)
+
+    # 检查 systemd 服务状态
+    service_active = False
+    try:
+        res = subprocess.run(
+            ["systemctl", "is-active", "onespace-cloud-agent"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False
+        )
+        service_active = (res.stdout.strip() == "active")
+    except Exception:
+        # 非 systemd 环境或本地测试
+        service_active = True
+
+    return {
+        "service_active": service_active,
+        "disk": disk_info,
+        "gateway": gateway_health,
+        "timestamp": int(time.time())
+    }
+
+
 if __name__ == "__main__":
-    cfg_file = sys.argv[1] if len(sys.argv) > 1 else "config.json"
+    args = sys.argv[1:]
+    is_json = "--json" in args
+
+    if args and args[0] == "status":
+        cfg = "config.json"
+        for a in args[1:]:
+            if not a.startswith("-"):
+                cfg = a
+                break
+        report = get_status_report(cfg)
+        if is_json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(f"Service Active: {report['service_active']}")
+            print(f"Disk: {report['disk']['used_gb']}G / {report['disk']['total_gb']}G ({report['disk']['use_percent']}%)")
+            print(f"Gateway: {report['gateway'].get('status', 'unknown')}")
+        sys.exit(0)
+
+    if args and args[0] == "tasks":
+        tasks = IssueWorker.read_task_history_file()
+        if is_json:
+            print(json.dumps(tasks, ensure_ascii=False, indent=2))
+        else:
+            print(f"Total Tasks: {len(tasks)}")
+            for t in tasks:
+                print(f"  - [{t.get('status')}] {t.get('repo')}#{t.get('issue_number')} {t.get('title')}")
+        sys.exit(0)
+
+    cfg_file = args[0] if args and not args[0].startswith("-") else "config.json"
     daemon = CloudAgentDaemon(cfg_file)
     daemon.run()

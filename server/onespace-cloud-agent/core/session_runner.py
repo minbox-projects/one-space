@@ -72,11 +72,20 @@ class SessionRunner:
                 else:
                     repo_name = session_name
 
+                worktree_name = ""
+                if "-worktrees/" in working_dir:
+                    parts = working_dir.split("-worktrees/")
+                    if len(parts) > 1:
+                        worktree_name = parts[1].strip("/")
+                elif working_dir:
+                    worktree_name = os.path.basename(working_dir.rstrip("/"))
+
                 results.append({
                     "session_name": session_name,
                     "repo_name": repo_name,
                     "branch": branch,
                     "working_dir": working_dir,
+                    "worktree_name": worktree_name,
                     "created_at": created_at,
                     "windows_count": windows_count,
                     "pane_pid": pane_pid,

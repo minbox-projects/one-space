@@ -22,6 +22,11 @@ import {
   serverMonitorGetSettings,
   type ServerMonitorSettings,
 } from "@/lib/serverMonitor";
+import {
+  cloudAgentGetSettings,
+  DEFAULT_CLOUD_AGENT_SETTINGS,
+  type CloudAgentSettings,
+} from "@/lib/cloudAgent";
 import type {
   ProxyConfig,
   StorageConfig,
@@ -71,6 +76,8 @@ export interface SettingsLoadersContext {
   setServerMonitorIntervalInput: Dispatch<SetStateAction<string>>;
   setServerMonitorRetentionInput: Dispatch<SetStateAction<string>>;
   setServerMonitorNewTimeInput: Dispatch<SetStateAction<string>>;
+  setCloudAgentSettings?: Dispatch<SetStateAction<CloudAgentSettings>>;
+  setSavedCloudAgentSettings?: Dispatch<SetStateAction<CloudAgentSettings>>;
 }
 
 export function createSettingsLoaders({
@@ -104,6 +111,8 @@ export function createSettingsLoaders({
   setServerMonitorIntervalInput,
   setServerMonitorRetentionInput,
   setServerMonitorNewTimeInput,
+  setCloudAgentSettings,
+  setSavedCloudAgentSettings,
 }: SettingsLoadersContext) {
   const getAutostartEnabled = async (): Promise<boolean | null> => {
     try {
@@ -238,6 +247,18 @@ export function createSettingsLoaders({
     }
   };
 
+  const loadCloudAgentSettings = async () => {
+    try {
+      const cfg = await cloudAgentGetSettings();
+      setCloudAgentSettings?.(cfg);
+      setSavedCloudAgentSettings?.(cfg);
+    } catch (e) {
+      console.error(e);
+      setCloudAgentSettings?.(DEFAULT_CLOUD_AGENT_SETTINGS);
+      setSavedCloudAgentSettings?.(DEFAULT_CLOUD_AGENT_SETTINGS);
+    }
+  };
+
   return {
     getAutostartEnabled,
     setAutostartEnabled,
@@ -247,5 +268,6 @@ export function createSettingsLoaders({
     loadAiGateway,
     loadSslConfig,
     loadServerMonitorSettings,
+    loadCloudAgentSettings,
   };
 }

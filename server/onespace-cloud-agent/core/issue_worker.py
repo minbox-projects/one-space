@@ -53,11 +53,15 @@ class IssueWorker:
         self.trigger_label: str = worker_cfg.get("trigger_label", "bot:task")
         self.poll_interval: int = worker_cfg.get("poll_interval_seconds", 180)
         self.workspace_root: str = worker_cfg.get("workspace_root", "/root/cloud-agent-workspaces")
+        self.opencode_yolo_mode: bool = worker_cfg.get("opencode_yolo_mode", True)
         self.state_file: str = os.path.expanduser("~/.config/onespace-cloud-agent/worker_state.json")
+        self.history_file: str = os.path.expanduser("~/.config/onespace-cloud-agent/task_history.json")
         self.guardian = guardian
         self.notifier = notifier
         self.processed_issues: Dict[str, List[int]] = {}  # {repo: [issue_numbers]}
+        self.task_history: List[Dict[str, Any]] = []
         self.load_state()
+        self.load_history()
 
     def load_state(self):
         os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
@@ -75,6 +79,45 @@ class IssueWorker:
                 json.dump(self.processed_issues, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.warning(f"保存任务状态文件失败: {e}")
+
+    def load_history(self):
+        os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, "r", encoding="utf-8") as f:
+                    self.task_history = json.load(f)
+            except Exception as e:
+                logger.warning(f"读取任务流水文件失败: {e}")
+                self.task_history = []
+
+    def save_history(self):
+        try:
+            with open(self.history_file, "w", encoding="utf-8") as f:
+                json.dump(self.task_history[-50:], f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存任务流水文件失败: {e}")
+
+    def record_task_update(self, task_id: str, updates: Dict[str, Any]):
+        for task in self.task_history:
+            if task.get("id") == task_id:
+                task.update(updates)
+                self.save_history()
+                return
+        # 新增
+        new_entry = {"id": task_id, **updates}
+        self.task_history.append(new_entry)
+        self.save_history()
+
+    @staticmethod
+    def read_task_history_file() -> List[Dict[str, Any]]:
+        history_file = os.path.expanduser("~/.config/onespace-cloud-agent/task_history.json")
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return []
 
     def is_issue_processed(self, repo: str, issue_number: int) -> bool:
         return issue_number in self.processed_issues.get(repo, [])
@@ -127,6 +170,21 @@ class IssueWorker:
 
         logger.info(f"========== 开始处理任务: [{repo}] #{issue_number} {issue_title} ==========")
         task_dir = None
+        started_at = int(time.time())
+        clean_repo_name = repo.replace("/", "_")
+        task_id = f"task_{clean_repo_name}_{issue_number}_{started_at}"
+
+        self.record_task_update(task_id, {
+            "repo": repo,
+            "issue_number": issue_number,
+            "title": issue_title,
+            "status": "running",
+            "started_at": started_at,
+            "branch": "",
+            "pr_url": "",
+            "error_message": "",
+            "duration_seconds": 0
+        })
 
         try:
             # 1. 发送接单通知与 Issue 评论
@@ -137,9 +195,7 @@ class IssueWorker:
             self.notifier.notify_task_started(repo, issue_number, issue_title)
 
             # 2. 准备隔离的工作空间与分支
-            clean_repo_name = repo.replace("/", "_")
-            timestamp = int(time.time())
-            task_dir = os.path.join(self.workspace_root, f"task_{clean_repo_name}_{issue_number}_{timestamp}")
+            task_dir = os.path.join(self.workspace_root, task_id)
             os.makedirs(task_dir, exist_ok=True)
 
             logger.info(f"克隆仓库到工作目录: {task_dir}")
@@ -154,9 +210,10 @@ class IssueWorker:
             subprocess.run(["git", "-C", task_dir, "config", "user.name", "OneSpace Cloud Bot"], check=False)
             subprocess.run(["git", "-C", task_dir, "config", "user.email", "bot@onespace.local"], check=False)
 
-            branch_name = f"bot/issue-{issue_number}-{timestamp}"
+            branch_name = f"bot/issue-{issue_number}-{started_at}"
             logger.info(f"创建分支: {branch_name}")
             subprocess.run(["git", "-C", task_dir, "checkout", "-b", branch_name], check=True)
+            self.record_task_update(task_id, {"branch": branch_name})
 
             # 3. 组织 Prompt 并调用 opencode run
             prompt = (
@@ -173,8 +230,13 @@ class IssueWorker:
             env = os.environ.copy()
             env["PATH"] = f"/root/.opencode/bin:{env.get('PATH', '')}"
 
+            run_cmd = ["opencode", "run"]
+            if self.opencode_yolo_mode:
+                run_cmd.append("--yolo")
+            run_cmd.append(prompt)
+
             run_res = subprocess.run(
-                ["opencode", "run", "--yolo", prompt],
+                run_cmd,
                 cwd=task_dir,
                 env=env,
                 stdout=subprocess.PIPE,
@@ -196,6 +258,12 @@ class IssueWorker:
                     repo, issue_number,
                     "⚠️ **执行反馈**: OpenCode 分析与执行完成，但未产生任何代码修改。请检查 Issue 描述是否清晰或已实现。"
                 )
+                now = int(time.time())
+                self.record_task_update(task_id, {
+                    "status": "no_changes",
+                    "finished_at": now,
+                    "duration_seconds": now - started_at
+                })
                 self.mark_issue_processed(repo, issue_number)
                 return
 
@@ -239,6 +307,13 @@ class IssueWorker:
             )
             self.comment_issue(repo, issue_number, completion_comment)
             self.notifier.notify_task_completed(repo, issue_number, issue_title, pr_url)
+            now = int(time.time())
+            self.record_task_update(task_id, {
+                "status": "completed",
+                "pr_url": pr_url,
+                "finished_at": now,
+                "duration_seconds": now - started_at
+            })
             self.mark_issue_processed(repo, issue_number)
 
         except Exception as e:
@@ -249,6 +324,13 @@ class IssueWorker:
                 f"❌ **任务执行异常**\n\n执行过程中遇到错误: ```{error_msg}```\n请检查云端日志或介入排查。"
             )
             self.notifier.notify_task_failed(repo, issue_number, issue_title, error_msg)
+            now = int(time.time())
+            self.record_task_update(task_id, {
+                "status": "failed",
+                "error_message": error_msg,
+                "finished_at": now,
+                "duration_seconds": now - started_at
+            })
             self.mark_issue_processed(repo, issue_number)
 
         finally:

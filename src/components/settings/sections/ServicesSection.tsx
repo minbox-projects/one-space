@@ -5,6 +5,7 @@ import {
   Network,
   ShieldCheck,
   Server,
+  CloudCog,
 } from "lucide-react";
 import { SubTabNavigation, type SubTabItem } from "../common/SubTabNavigation";
 import { ServerMonitorSettingsView } from "./ServerMonitorSettings";
@@ -30,6 +31,11 @@ import { ProxySettingsPanel } from "./services/ProxySettingsPanel";
 import { ProtocolRouterSettingsPanel } from "./services/ProtocolRouterSettingsPanel";
 import { AiGatewaySettingsPanel } from "./services/AiGatewaySettingsPanel";
 import { SslCertificateSettingsPanel } from "./services/SslCertificateSettingsPanel";
+import { CloudAgentSettingsPanel } from "./services/CloudAgentSettingsPanel";
+import {
+  DEFAULT_CLOUD_AGENT_SETTINGS,
+  type CloudAgentSettings,
+} from "@/lib/cloudAgent";
 
 export interface ServicesSectionProps {
   subTab: LegacySettingsSection;
@@ -68,6 +74,8 @@ export interface ServicesSectionProps {
   setServerMonitorRetentionInput?: (val: string) => void;
   serverMonitorNewTimeInput?: string;
   setServerMonitorNewTimeInput?: (val: string) => void;
+  cloudAgentSettings?: CloudAgentSettings;
+  setCloudAgentSettings?: React.Dispatch<React.SetStateAction<CloudAgentSettings>>;
   onShowToast?: (type: "success" | "error", text: string) => void;
   subTabDirtyMap?: Record<string, boolean>;
 }
@@ -109,6 +117,8 @@ export function ServicesSection({
   setServerMonitorRetentionInput,
   serverMonitorNewTimeInput = "",
   setServerMonitorNewTimeInput,
+  cloudAgentSettings = DEFAULT_CLOUD_AGENT_SETTINGS,
+  setCloudAgentSettings,
   onShowToast,
   subTabDirtyMap = {},
 }: ServicesSectionProps) {
@@ -149,6 +159,13 @@ export function ServicesSection({
       fallbackTitle: "服务器监控",
       icon: Server,
       dirty: subTabDirtyMap["server-monitor"],
+    },
+    {
+      id: "cloud-agent",
+      titleKey: "cloudAgent",
+      fallbackTitle: "云端智能体",
+      icon: CloudCog,
+      dirty: subTabDirtyMap["cloud-agent"],
     },
   ];
 
@@ -227,6 +244,16 @@ export function ServicesSection({
           onRetentionInputChange={(value) => setServerMonitorRetentionInput?.(value)}
           newTimeInput={serverMonitorNewTimeInput}
           onNewTimeInputChange={(value) => setServerMonitorNewTimeInput?.(value)}
+          onShowToast={onShowToast}
+        />
+      )}
+
+      {/* 6. Cloud Agent */}
+      {subTab === "cloud-agent" && (
+        <CloudAgentSettingsPanel
+          t={t}
+          settings={cloudAgentSettings}
+          setSettings={setCloudAgentSettings || (() => {})}
           onShowToast={onShowToast}
         />
       )}

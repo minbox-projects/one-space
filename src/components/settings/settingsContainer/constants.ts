@@ -12,6 +12,7 @@ export const ALL_LEGACY_SECTIONS: LegacySettingsSection[] = [
   "ai-gateway",
   "ssl-certificate",
   "server-monitor",
+  "cloud-agent",
   "shortcuts",
   "ai",
   "appearance",

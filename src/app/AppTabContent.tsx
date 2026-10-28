@@ -1,4 +1,5 @@
 import { AiSessions } from "@/components/AiSessions";
+import { CloudAgent } from "@/components/CloudAgent";
 import { Workspaces } from "@/components/Workspaces";
 import { AiEnvironments } from "@/components/AiEnvironments";
 import { AiUsageStats } from "@/components/AiUsageStats";
@@ -97,6 +98,13 @@ export function AppTabContent({
               if (hash) window.location.hash = hash;
             }}
           />
+        </div>
+      )}
+      {shouldRenderTab("cloud-agent") && (
+        <div className={activeTab === "cloud-agent" ? "h-full" : "hidden"}>
+          <AppErrorBoundary label="云端智能体" resetKey={activeTab}>
+            <CloudAgent isVisible={activeTab === "cloud-agent"} />
+          </AppErrorBoundary>
         </div>
       )}
       {shouldRenderTab("ai-environments") && (

@@ -9,6 +9,7 @@ pub mod ble_lock;
 mod claude_profiles;
 mod cli_probe;
 mod cli_updates;
+pub mod cloud_agent;
 mod config;
 mod crypto;
 mod file_sharing;

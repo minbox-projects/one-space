@@ -32,6 +32,7 @@ export interface SettingsResetContext {
   loadAiGateway: () => Promise<void>;
   loadSslConfig: () => Promise<void>;
   loadServerMonitorSettings: () => Promise<void>;
+  loadCloudAgentSettings?: () => Promise<void>;
   savedSslConfig: SslConfig;
   setSslAlertDaysInput: Dispatch<SetStateAction<string>>;
   getAutostartEnabled: () => Promise<boolean | null>;
@@ -52,6 +53,7 @@ export function createResetCurrentTabHandler({
   loadAiGateway,
   loadSslConfig,
   loadServerMonitorSettings,
+  loadCloudAgentSettings,
   savedSslConfig,
   setSslAlertDaysInput,
   getAutostartEnabled,
@@ -169,6 +171,29 @@ export function createResetCurrentTabHandler({
         );
         if (!confirmed) return;
         await loadServerMonitorSettings();
+        setMessage({
+          type: "success",
+          text: t("currentSectionResetSuccess", "Current section has been reset."),
+        });
+        setTimeout(() => setMessage({ type: "", text: "" }), 3000);
+        return;
+      }
+
+      if (activeSubTab === "cloud-agent") {
+        const confirmed = await confirmDialog(
+          t(
+            "confirmResetSettingsSection",
+            "Discard unsaved changes in this settings section and reload the saved values?",
+          ),
+          {
+            title: t("confirmResetSettingsSectionTitle", "Reset settings"),
+            okLabel: t("reset", "Reset"),
+            cancelLabel: t("cancel", "Cancel"),
+            kind: "warning",
+          },
+        );
+        if (!confirmed) return;
+        await loadCloudAgentSettings?.();
         setMessage({
           type: "success",
           text: t("currentSectionResetSuccess", "Current section has been reset."),

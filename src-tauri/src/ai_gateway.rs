@@ -39,6 +39,7 @@ pub(crate) use daily_reset::{start_daily_reset_scanner, stop_daily_reset_scanner
 pub use provider_usage::*;
 pub use types_config::*;
 pub use usage_log::*;
+pub(crate) use storage::read_config_shared;
 
 /// Tauri event telling an open AI Gateway page to reload the persisted
 /// configuration and template mappings after a backend configuration change,

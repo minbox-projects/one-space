@@ -399,7 +399,7 @@ fn scope_model_prices(config: &mut GatewayConfig) {
 
 /// Read the configuration as a shared immutable value. Read-only consumers use
 /// this so an unchanged warm configuration is handed out without a deep copy.
-pub(in crate::ai_gateway) fn read_config_shared() -> Result<Arc<GatewayConfig>, String> {
+pub(crate) fn read_config_shared() -> Result<Arc<GatewayConfig>, String> {
     let path = config_path()?;
     if let Some(config) = read_config_file_shared(&path)? {
         migrate_legacy_files();
@@ -409,7 +409,7 @@ pub(in crate::ai_gateway) fn read_config_shared() -> Result<Arc<GatewayConfig>, 
 }
 
 /// Read an owned configuration for callers that need ownership of the value.
-pub(in crate::ai_gateway) fn read_config() -> Result<GatewayConfig, String> {
+pub(crate) fn read_config() -> Result<GatewayConfig, String> {
     let path = config_path()?;
     if let Some(config) = owned_cached_config(&path) {
         migrate_legacy_files();

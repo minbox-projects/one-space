@@ -24,6 +24,7 @@ export type LegacySettingsSection =
   | "ai-gateway"
   | "ssl-certificate"
   | "server-monitor"
+  | "cloud-agent"
   | "shortcuts"
   | "ai"
   | "appearance"
@@ -63,6 +64,8 @@ export function resolveSettingsTab(input?: string): ResolvedSettingsRoute {
       return { mainTab: "services", subTab: "ssl-certificate" };
     case "server-monitor":
       return { mainTab: "services", subTab: "server-monitor" };
+    case "cloud-agent":
+      return { mainTab: "services", subTab: "cloud-agent" };
     case "services":
       return { mainTab: "services", subTab: "proxy" };
 
@@ -318,6 +321,7 @@ export const MAIN_SETTINGS_CATEGORIES: {
       { id: "ai-gateway", titleKey: "aiGatewaySettings", fallbackTitle: "AI 网关" },
       { id: "ssl-certificate", titleKey: "sslCertificate", fallbackTitle: "SSL 证书" },
       { id: "server-monitor", titleKey: "serverMonitor", fallbackTitle: "服务器监控" },
+      { id: "cloud-agent", titleKey: "cloudAgent", fallbackTitle: "云端智能体" },
     ],
   },
   {

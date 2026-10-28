@@ -9,6 +9,7 @@ import type {
 import type { SslConfig } from "@/lib/sslCertificate";
 import type { ServerMonitorSettings } from "@/lib/serverMonitor";
 import type { GatewaySettings } from "@/lib/aiGateway";
+import type { CloudAgentSettings } from "@/lib/cloudAgent";
 import {
   getTabSnapshot,
   normalizeProtocolRouterForCompare,
@@ -41,6 +42,8 @@ export interface TabDirtyInput {
   savedServerMonitorSettings: ServerMonitorSettings;
   serverMonitorIntervalInput: string;
   serverMonitorRetentionInput: string;
+  cloudAgentSettings?: CloudAgentSettings;
+  savedCloudAgentSettings?: CloudAgentSettings;
 }
 
 export function computeTabDirtyMap(input: TabDirtyInput): Record<string, boolean> {
@@ -68,6 +71,8 @@ export function computeTabDirtyMap(input: TabDirtyInput): Record<string, boolean
     savedServerMonitorSettings,
     serverMonitorIntervalInput,
     serverMonitorRetentionInput,
+    cloudAgentSettings,
+    savedCloudAgentSettings,
   } = input;
 
   const next: Record<string, boolean> = {};
@@ -144,6 +149,13 @@ export function computeTabDirtyMap(input: TabDirtyInput): Record<string, boolean
           String(savedServerMonitorSettings.intervalMinutes) ||
         serverMonitorRetentionInput.trim() !==
           String(savedServerMonitorSettings.retentionDays);
+      return;
+    }
+    if (tab === "cloud-agent") {
+      next[tab] =
+        Boolean(cloudAgentSettings && savedCloudAgentSettings) &&
+        JSON.stringify(cloudAgentSettings) !==
+          JSON.stringify(savedCloudAgentSettings);
       return;
     }
     if (tab === "news") {

@@ -51,6 +51,10 @@ import {
   DEFAULT_SERVER_MONITOR_SETTINGS,
   type ServerMonitorSettings,
 } from "@/lib/serverMonitor";
+import {
+  DEFAULT_CLOUD_AGENT_SETTINGS,
+  type CloudAgentSettings,
+} from "@/lib/cloudAgent";
 
 export interface SettingsContainerProps {
   initialTab?: string;
@@ -167,6 +171,12 @@ export function SettingsContainer({
   const [serverMonitorRetentionInput, setServerMonitorRetentionInput] = useState("7");
   const [serverMonitorNewTimeInput, setServerMonitorNewTimeInput] = useState("");
 
+  // Cloud Agent States
+  const [cloudAgentSettings, setCloudAgentSettings] =
+    useState<CloudAgentSettings>(DEFAULT_CLOUD_AGENT_SETTINGS);
+  const [savedCloudAgentSettings, setSavedCloudAgentSettings] =
+    useState<CloudAgentSettings>(DEFAULT_CLOUD_AGENT_SETTINGS);
+
   // Skills & Subagents States
   const [skillsSyncState, setSkillsSyncState] = useState<SkillsSyncState | null>(null);
   const [skillsSyncNowLoading, setSkillsSyncNowLoading] = useState(false);
@@ -194,6 +204,7 @@ export function SettingsContainer({
     loadAiGateway,
     loadSslConfig,
     loadServerMonitorSettings,
+    loadCloudAgentSettings,
   } = createSettingsLoaders({
     t,
     setConfig,
@@ -225,6 +236,8 @@ export function SettingsContainer({
     setServerMonitorIntervalInput,
     setServerMonitorRetentionInput,
     setServerMonitorNewTimeInput,
+    setCloudAgentSettings,
+    setSavedCloudAgentSettings,
   });
 
   // Keyboard shortcut listener
@@ -276,6 +289,7 @@ export function SettingsContainer({
     void loadAiGateway();
     void loadSslConfig();
     void loadServerMonitorSettings();
+    void loadCloudAgentSettings();
   }, []);
 
   useEffect(() => {
@@ -311,6 +325,8 @@ export function SettingsContainer({
         savedServerMonitorSettings,
         serverMonitorIntervalInput,
         serverMonitorRetentionInput,
+        cloudAgentSettings,
+        savedCloudAgentSettings,
       }),
     [
       config,
@@ -336,6 +352,8 @@ export function SettingsContainer({
       savedServerMonitorSettings,
       serverMonitorIntervalInput,
       serverMonitorRetentionInput,
+      cloudAgentSettings,
+      savedCloudAgentSettings,
     ],
   );
 
@@ -428,6 +446,8 @@ export function SettingsContainer({
     setSavedServerMonitorSettings,
     setServerMonitorIntervalInput,
     setServerMonitorRetentionInput,
+    cloudAgentSettings,
+    setSavedCloudAgentSettings,
   });
 
   const handleResetCurrentTab = createResetCurrentTabHandler({
@@ -442,6 +462,7 @@ export function SettingsContainer({
     loadAiGateway,
     loadSslConfig,
     loadServerMonitorSettings,
+    loadCloudAgentSettings,
     savedSslConfig,
     setSslAlertDaysInput,
     getAutostartEnabled,
@@ -634,6 +655,8 @@ export function SettingsContainer({
                   setServerMonitorRetentionInput={setServerMonitorRetentionInput}
                   serverMonitorNewTimeInput={serverMonitorNewTimeInput}
                   setServerMonitorNewTimeInput={setServerMonitorNewTimeInput}
+                  cloudAgentSettings={cloudAgentSettings}
+                  setCloudAgentSettings={setCloudAgentSettings}
                   onShowToast={(type, text) => {
                     setMessage({ type, text });
                     setTimeout(() => setMessage({ type: "", text: "" }), 3000);

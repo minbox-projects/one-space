@@ -56,6 +56,8 @@ import enDocs from "./locales/en/docs";
 import zhDocs from "./locales/zh/docs";
 import enAbout from "./locales/en/about";
 import zhAbout from "./locales/zh/about";
+import enCloudAgent from "./locales/en/cloudAgent";
+import zhCloudAgent from "./locales/zh/cloudAgent";
 import enCommon from "./locales/en/common";
 import zhCommon from "./locales/zh/common";
 
@@ -96,6 +98,7 @@ const resources = {
     ...enMail,
     ...enDocs,
     ...enAbout,
+    ...enCloudAgent,
     ...enCommon,
     },
   },
@@ -129,6 +132,7 @@ const resources = {
     ...zhMail,
     ...zhDocs,
     ...zhAbout,
+    ...zhCloudAgent,
     ...zhCommon,
     },
   },

@@ -26,6 +26,10 @@ import {
   validateServerMonitorSettings,
   type ServerMonitorSettings,
 } from "@/lib/serverMonitor";
+import {
+  cloudAgentSaveSettings,
+  type CloudAgentSettings,
+} from "@/lib/cloudAgent";
 import type {
   LegacySettingsSection,
   ProxyConfig,
@@ -95,6 +99,8 @@ export interface SettingsSaveContext {
   >;
   setServerMonitorIntervalInput: Dispatch<SetStateAction<string>>;
   setServerMonitorRetentionInput: Dispatch<SetStateAction<string>>;
+  cloudAgentSettings?: CloudAgentSettings;
+  setSavedCloudAgentSettings?: Dispatch<SetStateAction<CloudAgentSettings>>;
 }
 
 export function createSaveCurrentTabHandler({
@@ -140,6 +146,8 @@ export function createSaveCurrentTabHandler({
   setSavedServerMonitorSettings,
   setServerMonitorIntervalInput,
   setServerMonitorRetentionInput,
+  cloudAgentSettings,
+  setSavedCloudAgentSettings,
 }: SettingsSaveContext) {
   const handleSaveCurrentTab = async () => {
     if (activeSubTab === "security") return;
@@ -440,6 +448,46 @@ export function createSaveCurrentTabHandler({
         setSavedServerMonitorSettings(normalized);
         setServerMonitorIntervalInput(String(normalized.intervalMinutes));
         setServerMonitorRetentionInput(String(normalized.retentionDays));
+        setMessage({
+          type: "success",
+          text: t("currentSectionSavedSuccess", "Current section saved."),
+        });
+        setTimeout(() => setMessage({ type: "", text: "" }), 3000);
+        return;
+      }
+
+      if (activeSubTab === "cloud-agent") {
+        if (!cloudAgentSettings) return;
+        const saved = await runUserAction(
+          actionContext,
+          {
+            source: "settings",
+            category: "cloud-agent",
+            action: "save-cloud-agent-settings",
+            target: { tab: "settings", section: "cloud-agent" },
+            dedupeKey: "settings:cloud-agent:save",
+            confirm: {
+              message: t(
+                "confirmSaveCloudAgent",
+                "确定要保存并应用当前的云端智能体设置吗？",
+              ),
+              title: t("confirmSaveCloudAgentTitle", "保存云端智能体设置"),
+              okLabel: t("save", "保存"),
+              cancelLabel: t("cancel", "取消"),
+              kind: "warning",
+            },
+            success: {
+              title: t("settingsSectionSavedTitle", "设置已保存"),
+              summary: t("currentSectionSavedSuccess", "当前设置已保存并生效。"),
+            },
+            error: {
+              title: t("settingsSaveFailedTitle", "保存设置失败"),
+            },
+          },
+          async () => cloudAgentSaveSettings(cloudAgentSettings),
+        );
+        if (saved === null) return;
+        setSavedCloudAgentSettings?.(cloudAgentSettings);
         setMessage({
           type: "success",
           text: t("currentSectionSavedSuccess", "Current section saved."),

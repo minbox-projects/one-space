@@ -7,6 +7,7 @@ import {
   Sparkles,
   Cpu,
   Bot,
+  CloudCog,
   BarChart3,
   Network,
 } from "lucide-react";
@@ -71,6 +72,11 @@ export function useAppNavigationGroups({
             name: t("aiSessions"),
             icon: Terminal,
             count: counts.sessions,
+          },
+          {
+            id: "cloud-agent",
+            name: t("cloudAgent", "Cloud Agent"),
+            icon: CloudCog,
           },
           {
             id: "ai-gateway",

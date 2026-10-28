@@ -17195,6 +17195,11 @@
         },
         {
           "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
+          "to": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel"
+        },
+        {
+          "kind": "imports",
           "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSectionProps",
           "to": "src/components/settings/types.ts#LegacySettingsSection"
         },
@@ -20839,6 +20844,315 @@
         "src/toolbox/registry.ts",
         "src/toolbox/types.ts",
         "zh_keys.txt"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "cloud-agent",
+      "name": "Cloud Agent Management",
+      "aliases": [
+        "cloud-agent",
+        "cloud-session",
+        "opencode-cloud"
+      ],
+      "module_root": "src",
+      "entries": [
+        "src/components/CloudAgent/index.tsx",
+        "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
+        "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
+        "src/components/CloudAgent/components/PrPipelineTab.tsx",
+        "src/components/CloudAgent/components/GatewayPanel.tsx",
+        "src/components/CloudAgent/components/NewSessionModal.tsx",
+        "src/components/CloudAgent/components/CloudAgentHeader.tsx",
+        "src/components/CloudAgent/hooks/useCloudAgent.ts",
+        "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
+        "src/lib/cloudAgent.ts",
+        "src-tauri/src/cloud_agent.rs",
+        "src-tauri/src/cloud_agent/commands.rs",
+        "src-tauri/src/cloud_agent/types.rs",
+        "src-tauri/src/cloud_agent/settings.rs",
+        "src-tauri/src/cloud_agent/ssh.rs",
+        "src-tauri/src/cloud_agent/terminal.rs",
+        "src-tauri/src/cloud_agent/gateway_sync.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
+          "name": "ActiveSessionsTab",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentHeader.tsx",
+          "name": "CloudAgentHeader",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/GatewayPanel.tsx",
+          "name": "GatewayPanel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
+          "name": "NewSessionModal",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "PrPipelineTab",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
+          "name": "WorktreesHistoryTab",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
+          "name": "CloudAgentTab",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
+          "name": "useCloudAgent",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/index.tsx",
+          "name": "CloudAgent",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
+          "name": "CloudAgentSettingsPanel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentSettings",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "DEFAULT_CLOUD_AGENT_SETTINGS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudSession",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "LastCommit",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudWorktree",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "DiskUsage",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "GatewayHealth",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentStatus",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentTask",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "GatewaySyncResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentGetSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentSaveSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentGetStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentListSessions",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentListWorktrees",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentListTasks",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CreateSessionParams",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentCreateSession",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentKillSession",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "LaunchTerminalParams",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentLaunchTerminal",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentSyncGateway",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [
+        "src/i18n/locales/en/cloudAgent.ts",
+        "src/i18n/locales/zh/cloudAgent.ts"
+      ],
+      "tests": [
+        "src/components/CloudAgent/CloudAgent.test.tsx",
+        "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
+        "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
+        "src-tauri/src/cloud_agent/tests.rs"
+      ],
+      "depends_on": [],
+      "relations": [
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/ToastProvider.tsx#useToast"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/hooks/useCloudAgent.ts#useCloudAgent"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/CloudAgentHeader.tsx#CloudAgentHeader"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/ActiveSessionsTab.tsx#ActiveSessionsTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx#WorktreesHistoryTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/PrPipelineTab.tsx#PrPipelineTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/GatewayPanel.tsx#GatewayPanel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/NewSessionModal.tsx#NewSessionModal"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        }
+      ],
+      "owner_role": "shared",
+      "responsibility": "OneSpace桌面端与OneSpace Cloud Agent深度协同管理套件，包括云端长程编程会话看板、macOS本地原生终端一键直连、AI网关安全双端同步、24/7自动PR流水线监控与OpenCode yolo授权配置",
+      "read_scope": [
+        "src/components/CloudAgent/index.tsx",
+        "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
+        "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
+        "src/components/CloudAgent/components/PrPipelineTab.tsx",
+        "src/components/CloudAgent/components/GatewayPanel.tsx",
+        "src/components/CloudAgent/components/NewSessionModal.tsx",
+        "src/components/CloudAgent/components/CloudAgentHeader.tsx",
+        "src/components/CloudAgent/hooks/useCloudAgent.ts",
+        "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
+        "src/lib/cloudAgent.ts",
+        "src/components/CloudAgent/CloudAgent.test.tsx",
+        "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
+        "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
+        "src/i18n/locales/en/cloudAgent.ts",
+        "src/i18n/locales/zh/cloudAgent.ts",
+        "src-tauri/src/cloud_agent.rs",
+        "src-tauri/src/cloud_agent/commands.rs",
+        "src-tauri/src/cloud_agent/types.rs",
+        "src-tauri/src/cloud_agent/settings.rs",
+        "src-tauri/src/cloud_agent/ssh.rs",
+        "src-tauri/src/cloud_agent/terminal.rs",
+        "src-tauri/src/cloud_agent/gateway_sync.rs",
+        "src-tauri/src/cloud_agent/tests.rs"
       ],
       "shared_entry": false
     }
