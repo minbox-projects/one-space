@@ -95,17 +95,15 @@ function main() {
   }
   console.log(`[zen-relay] built ${profile} artifact: ${artifactPath}`);
 
-  if (isRelease) {
-    const binariesDir = join(repoRoot, 'src-tauri', 'binaries');
-    const destination = join(
-      binariesDir,
-      `${binaryName}-${targetTriple}${isWindowsTarget ? '.exe' : ''}`,
-    );
-    mkdirSync(binariesDir, { recursive: true });
-    copyFileSync(artifactPath, destination);
-    if (process.platform !== 'win32') chmodSync(destination, 0o755);
-    console.log(`[zen-relay] copied release artifact: ${destination}`);
-  }
+  const binariesDir = join(repoRoot, 'src-tauri', 'binaries');
+  const destination = join(
+    binariesDir,
+    `${binaryName}-${targetTriple}${isWindowsTarget ? '.exe' : ''}`,
+  );
+  mkdirSync(binariesDir, { recursive: true });
+  copyFileSync(artifactPath, destination);
+  if (process.platform !== 'win32') chmodSync(destination, 0o755);
+  console.log(`[zen-relay] copied ${profile} artifact: ${destination}`);
 }
 
 try {
