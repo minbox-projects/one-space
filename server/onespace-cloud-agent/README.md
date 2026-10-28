@@ -48,10 +48,17 @@ ssh -t dmit-server "gh auth login"
 
 ## 核心使用场景
 
-### 场景 1：Mac 合盖即走的长程重构
+### 场景 1：Mac 合盖即走的长程重构 (支持 Git Worktree 隔离模式)
 在任意时刻，直接在服务器上为目标项目开启会话：
 ```bash
+# 1. 单参数：基于主仓库主分支开启/恢复
 ssh -t dmit-server "cloud-session https://github.com/your-name/your-repo.git"
+
+# 2. 双参数：基于 Git Worktree 为特定分支创建独立隔离工作区（并发无冲突）
+ssh -t dmit-server "cloud-session your-repo my-feature-branch"
+
+# 3. 恢复已有会话：直接恢复唯一会话
+ssh -t dmit-server "cloud-session"
 ```
 * 进入 `opencode` 界面后下达大型任务。
 * 此时直接断开 SSH 或合上 MacBook 屏幕，云端将持续执行。

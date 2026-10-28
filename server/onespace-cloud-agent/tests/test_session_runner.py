@@ -35,6 +35,26 @@ class TestSessionRunner(unittest.TestCase):
         cmd_args = mock_execvp.call_args[0][1]
         self.assertIn("dev_brand-new-project", cmd_args)
 
+    @patch("os.execvp")
+    @patch("subprocess.run")
+    def test_feature_branch_worktree_isolation(self, mock_subproc, mock_execvp):
+        # 模拟主仓库存在
+        repo_dir = os.path.join(self.tmp_ws, "test-repo")
+        os.makedirs(repo_dir, exist_ok=True)
+
+        # 模拟 git 命令返回
+        mock_res = unittest.mock.MagicMock()
+        mock_res.returncode = 0
+        mock_subproc.return_value = mock_res
+
+        self.runner.start_or_attach("test-repo", "feat-auth")
+
+        mock_execvp.assert_called_once()
+        cmd_args = mock_execvp.call_args[0][1]
+        self.assertIn("dev_test-repo_feat-auth", cmd_args)
+        expected_wt_dir = os.path.join(self.tmp_ws, "test-repo-worktrees", "feat-auth")
+        self.assertIn(expected_wt_dir, cmd_args)
+
 
 if __name__ == "__main__":
     unittest.main()

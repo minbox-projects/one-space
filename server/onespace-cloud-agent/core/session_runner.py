@@ -65,67 +65,98 @@ class SessionRunner:
         print(f"正在恢复连接会话 [{target}]...")
         os.execvp("tmux", ["tmux", "attach-session", "-t", target])
 
-    def start_or_attach(self, target: str, session_name: Optional[str] = None):
+    def _prepare_worktree(self, main_repo_dir: str, branch: str) -> str:
+        """为指定的主仓库和分支创建或复用独立的 git worktree"""
+        repo_name = os.path.basename(main_repo_dir)
+        clean_branch = self._sanitize_name(branch)
+        worktree_base = os.path.join(self.workspace_root, f"{repo_name}-worktrees")
+        os.makedirs(worktree_base, exist_ok=True)
+        worktree_dir = os.path.join(worktree_base, clean_branch)
+
+        if os.path.exists(worktree_dir):
+            return worktree_dir
+
+        print(f"正在为仓库 [{repo_name}] 创建隔离特性工作区 (分支: {branch})...")
+        branch_check = subprocess.run(
+            ["git", "-C", main_repo_dir, "rev-parse", "--verify", branch],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False
+        )
+        if branch_check.returncode == 0:
+            cmd = ["git", "-C", main_repo_dir, "worktree", "add", worktree_dir, branch]
+        else:
+            cmd = ["git", "-C", main_repo_dir, "worktree", "add", "-b", branch, worktree_dir]
+
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if res.returncode != 0 and not os.path.exists(worktree_dir):
+            raise RuntimeError(f"创建 Git Worktree 失败: {res.stderr.strip()}")
+
+        return worktree_dir
+
+    def start_or_attach(self, target: str, feature_branch: Optional[str] = None):
         """
         进入目标项目并启动/恢复 tmux 会话中的 opencode。
         target: 可以是会话名、Git URL、本地相对/绝对路径或 workspace 下的目录名
+        feature_branch: 可选的特性分支名。若提供，将自动基于目标仓库创建完全隔离的独立 Git Worktree 工作区。
         """
-        # 1. 优先检查 target 本身是否就是一个已存在的 tmux 会话
-        if self.session_exists(target):
-            print(f"检测到已有活跃会话 [{target}]，正在恢复连接...")
-            os.execvp("tmux", ["tmux", "attach-session", "-t", target])
-            return
+        # 1. 若未指定 feature_branch，优先检查 target 是否是已存在的会话
+        if not feature_branch:
+            if self.session_exists(target):
+                print(f"检测到已有活跃会话 [{target}]，正在恢复连接...")
+                os.execvp("tmux", ["tmux", "attach-session", "-t", target])
+                return
 
-        # 2. 检查 dev_<target> 是否是已存在的会话
-        derived_session = f"dev_{self._sanitize_name(target)}"
-        if self.session_exists(derived_session):
-            print(f"检测到已有活跃会话 [{derived_session}]，正在恢复连接...")
-            os.execvp("tmux", ["tmux", "attach-session", "-t", derived_session])
-            return
+            derived_session = f"dev_{self._sanitize_name(target)}"
+            if self.session_exists(derived_session):
+                print(f"检测到已有活跃会话 [{derived_session}]，正在恢复连接...")
+                os.execvp("tmux", ["tmux", "attach-session", "-t", derived_session])
+                return
 
-        # 3. 检查显式传入的 session_name 是否已存在
-        if session_name and self.session_exists(session_name):
-            print(f"检测到已有活跃会话 [{session_name}]，正在恢复连接...")
-            os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
-            return
-
-        # 4. 检查是否在 workspace_root 中存在该子目录（例如传入 "one-space"）
-        ws_dir = os.path.join(self.workspace_root, target)
-        if not os.path.exists(target) and os.path.exists(ws_dir):
-            target = ws_dir
-
-        # 5. 解析 target 是远程 Git 仓库还是本地目录
+        # 2. 解析基础主仓库路径
         if target.startswith("http://") or target.startswith("https://") or target.startswith("git@"):
             repo_name = target.rstrip("/").split("/")[-1]
             if repo_name.endswith(".git"):
                 repo_name = repo_name[:-4]
-            project_dir = os.path.join(self.workspace_root, repo_name)
-            if not os.path.exists(project_dir):
-                print(f"正在克隆远程仓库 {target} 到 {project_dir}...")
-                subprocess.run(["git", "clone", target, project_dir], check=True)
-            if not session_name:
-                session_name = f"dev_{self._sanitize_name(repo_name)}"
+            main_repo_dir = os.path.join(self.workspace_root, repo_name)
+            if not os.path.exists(main_repo_dir):
+                print(f"正在克隆远程仓库 {target} 到 {main_repo_dir}...")
+                subprocess.run(["git", "clone", target, main_repo_dir], check=True)
         else:
-            if not os.path.isabs(target) and not os.path.exists(target):
-                project_dir = os.path.join(self.workspace_root, target)
+            ws_dir = os.path.join(self.workspace_root, target)
+            if not os.path.exists(target) and os.path.exists(ws_dir):
+                main_repo_dir = ws_dir
+            elif not os.path.isabs(target) and not os.path.exists(target):
+                main_repo_dir = os.path.join(self.workspace_root, target)
             else:
-                project_dir = os.path.abspath(target)
+                main_repo_dir = os.path.abspath(target)
+            repo_name = os.path.basename(main_repo_dir)
 
-            if not os.path.exists(project_dir):
-                print(f"工作目录不存在，正在自动创建: {project_dir}")
-                os.makedirs(project_dir, exist_ok=True)
+        # 3. 处理独立特性分支 Worktree 或主目录工作区
+        if feature_branch:
+            clean_branch = self._sanitize_name(feature_branch)
+            session_name = f"dev_{self._sanitize_name(repo_name)}_{clean_branch}"
 
-            if not session_name:
-                base_name = os.path.basename(project_dir)
-                session_name = f"dev_{self._sanitize_name(base_name)}"
+            # 若该特性的 tmux 会话已存在，直接连入
+            if self.session_exists(session_name):
+                print(f"检测到特性分支已有活跃会话 [{session_name}]，正在恢复连接...")
+                os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+                return
 
-        # 6. 如果生成的 session_name 已经存在，恢复它
-        if self.session_exists(session_name):
-            print(f"检测到已有会话 [{session_name}]，正在恢复连接...")
-            os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
-            return
+            project_dir = self._prepare_worktree(main_repo_dir, feature_branch)
+        else:
+            session_name = f"dev_{self._sanitize_name(repo_name)}"
+            if self.session_exists(session_name):
+                print(f"检测到已有会话 [{session_name}]，正在恢复连接...")
+                os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+                return
 
-        # 7. 创建全新 tmux 会话并在其中启动 opencode (默认开启 --yolo 全权限自动授权模式)
+            if not os.path.exists(main_repo_dir):
+                print(f"工作目录不存在，正在自动创建: {main_repo_dir}")
+                os.makedirs(main_repo_dir, exist_ok=True)
+            project_dir = main_repo_dir
+
+        # 4. 创建全新 tmux 会话并在其中启动 opencode (默认开启 --yolo 全权限自动授权模式)
         print(f"创建全新长程编程会话 [{session_name}] (工作目录: {project_dir}, 默认授权全部权限 --yolo)...")
         print("提示：合上 Mac 盖子或断开 SSH，该会话仍会在云端持续运行。")
         print(f"重新连入命令: cloud-session {session_name}\n")
