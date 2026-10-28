@@ -76,8 +76,10 @@ curl -s http://127.0.0.1:17688/health || echo "正在拉起中..."
 echo ""
 if ! gh auth status > /dev/null 2>&1; then
     echo ""
-    echo "⚠️  GitHub 尚未登录。请在 Mac 终端运行以下命令完成一次性登录："
-    echo "    ssh -t dmit-server 'gh auth login'"
+    echo "⚠️  GitHub 尚未登录。Linux 服务器通常没有浏览器，请使用 Personal access tokens (classic) 授权："
+    echo "    1. 在 GitHub 生成 PAT (classic)，至少勾选 repo 权限"
+    echo "    2. 在 Mac 终端执行: echo 'ghp_xxx' | ssh dmit-server 'gh auth login --with-token'"
+    echo "    或在 config.json 的 issue_worker.github_token 中填写 token"
 else
     echo "✅ GitHub 已处于登录授权状态。"
 fi
