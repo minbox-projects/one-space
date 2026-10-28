@@ -171,7 +171,7 @@ class GatewayEngine:
         self.sync_to_opencode_config()
 
     def sync_to_opencode_config(self):
-        """自动将当前网关可用的模型列表注入到 OpenCode 的主配置文件中"""
+        """自动将当前网关可用的模型列表注入到 OpenCode 的主配置文件中，与 OneSpace App 保持完全一致"""
         try:
             cfg_dir = os.path.expanduser("~/.config/opencode")
             os.makedirs(cfg_dir, exist_ok=True)
@@ -195,33 +195,55 @@ class GatewayEngine:
             if "$schema" not in current_cfg:
                 current_cfg["$schema"] = "https://opencode.ai/config.json"
 
-            if "provider" not in current_cfg:
-                current_cfg["provider"] = {}
-
+            # 整理网关当前模型列表（与 OneSpace 桌面端结构完全对齐）
             models_dict = {}
+
+            # 1. 优先放入虚拟模型池
             for pool_id, pool_meta in self.model_pools.items():
                 models_dict[pool_id] = {
                     "name": pool_meta.get("description", pool_id),
                     "limit": {"context": 1000000, "output": 0}
                 }
+
+            # 2. 放入各活跃服务商模型（保持纯净模型标识与显示名）
             for p_name, provider in self.providers.items():
                 if not provider.is_active:
                     continue
                 for m_id, m_meta in provider.models.items():
-                    disp = m_meta.get("display_name", m_id) if isinstance(m_meta, dict) else m_id
-                    models_dict[f"{p_name}/{m_id}"] = {
-                        "name": f"[{p_name}] {disp}",
-                        "limit": {"context": 1000000, "output": 0}
-                    }
+                    if m_id in models_dict:
+                        continue
+                    disp_name = m_id
+                    ctx_window = 1000000
+                    reasoning_efforts = []
 
-            current_cfg["provider"]["gateway"] = {
-                "name": "OneSpace Cloud Gateway",
-                "npm": "@ai-sdk/openai-compatible",
-                "options": {
-                    "baseURL": f"http://127.0.0.1:{self.global_port}/v1",
-                    "apiKey": "sk-onespace-cloud-agent"
-                },
-                "models": models_dict
+                    if isinstance(m_meta, dict):
+                        disp_name = m_meta.get("display_name", m_id)
+                        ctx_window = m_meta.get("context_window", 1000000) or 1000000
+                        reasoning_efforts = m_meta.get("reasoning_efforts", [])
+
+                    model_entry = {
+                        "name": disp_name,
+                        "limit": {"context": ctx_window, "output": 0}
+                    }
+                    if reasoning_efforts:
+                        model_entry["reasoning"] = True
+                        model_entry["variants"] = {
+                            rf: {"reasoningEffort": rf} for rf in reasoning_efforts
+                        }
+
+                    models_dict[m_id] = model_entry
+
+            # 与 OneSpace App 保持严格一致：只写入且仅保留一个 "AI Gateway" 提供商
+            current_cfg["provider"] = {
+                "gateway": {
+                    "name": "AI Gateway",
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {
+                        "baseURL": f"http://127.0.0.1:{self.global_port}/v1",
+                        "apiKey": "sk-onespace-cloud-agent"
+                    },
+                    "models": models_dict
+                }
             }
 
             if not current_cfg.get("model") and "cloud-coder" in self.model_pools:
@@ -230,7 +252,7 @@ class GatewayEngine:
             with open(opencode_cfg_file, "w", encoding="utf-8") as f:
                 json.dump(current_cfg, f, ensure_ascii=False, indent=2)
 
-            logger.info(f"已自动同步 {len(models_dict)} 个模型到 OpenCode 终端配置: {opencode_cfg_file}")
+            logger.info(f"已按 OneSpace 规范同步 {len(models_dict)} 个模型到 OpenCode 终端配置 (单 AI Gateway 提供商): {opencode_cfg_file}")
         except Exception as e:
             logger.warning(f"同步模型到 OpenCode 终端配置失败: {e}")
 
