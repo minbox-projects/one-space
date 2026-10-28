@@ -97,6 +97,7 @@ class GatewayEngine:
         # 加载模型池
         self.model_pools = gw_cfg.get("model_pools", {})
         logger.info(f"配置加载完成: {len(self.providers)} 个服务商, {len(self.model_pools)} 个模型池, 端口 {self.global_port}")
+        self.sync_to_opencode_config()
 
     def resolve_candidates(self, requested_model: str) -> List[Tuple[str, str]]:
         """
@@ -167,6 +168,71 @@ class GatewayEngine:
                         logger.info(f"[{name}] 模板同步成功，新增 {count} 个模型")
             except Exception as e:
                 logger.warning(f"[{name}] 模板同步失败: {e}")
+        self.sync_to_opencode_config()
+
+    def sync_to_opencode_config(self):
+        """自动将当前网关可用的模型列表注入到 OpenCode 的主配置文件中"""
+        try:
+            cfg_dir = os.path.expanduser("~/.config/opencode")
+            os.makedirs(cfg_dir, exist_ok=True)
+            opencode_cfg_file = os.path.join(cfg_dir, "opencode.json")
+            jsonc_file = os.path.join(cfg_dir, "opencode.jsonc")
+
+            if os.path.exists(jsonc_file):
+                try:
+                    os.remove(jsonc_file)
+                except Exception:
+                    pass
+
+            current_cfg = {}
+            if os.path.exists(opencode_cfg_file):
+                try:
+                    with open(opencode_cfg_file, "r", encoding="utf-8") as f:
+                        current_cfg = json.load(f)
+                except Exception:
+                    pass
+
+            if "$schema" not in current_cfg:
+                current_cfg["$schema"] = "https://opencode.ai/config.json"
+
+            if "provider" not in current_cfg:
+                current_cfg["provider"] = {}
+
+            models_dict = {}
+            for pool_id, pool_meta in self.model_pools.items():
+                models_dict[pool_id] = {
+                    "name": pool_meta.get("description", pool_id),
+                    "limit": {"context": 1000000, "output": 0}
+                }
+            for p_name, provider in self.providers.items():
+                if not provider.is_active:
+                    continue
+                for m_id, m_meta in provider.models.items():
+                    disp = m_meta.get("display_name", m_id) if isinstance(m_meta, dict) else m_id
+                    models_dict[f"{p_name}/{m_id}"] = {
+                        "name": f"[{p_name}] {disp}",
+                        "limit": {"context": 1000000, "output": 0}
+                    }
+
+            current_cfg["provider"]["gateway"] = {
+                "name": "OneSpace Cloud Gateway",
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {
+                    "baseURL": f"http://127.0.0.1:{self.global_port}/v1",
+                    "apiKey": "sk-onespace-cloud-agent"
+                },
+                "models": models_dict
+            }
+
+            if not current_cfg.get("model") and "cloud-coder" in self.model_pools:
+                current_cfg["model"] = "gateway/cloud-coder"
+
+            with open(opencode_cfg_file, "w", encoding="utf-8") as f:
+                json.dump(current_cfg, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"已自动同步 {len(models_dict)} 个模型到 OpenCode 终端配置: {opencode_cfg_file}")
+        except Exception as e:
+            logger.warning(f"同步模型到 OpenCode 终端配置失败: {e}")
 
     def start_background_tasks(self):
         def _sync_loop():
