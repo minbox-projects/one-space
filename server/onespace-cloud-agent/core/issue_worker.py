@@ -15,6 +15,29 @@ from core.notifier import Notifier
 
 logger = logging.getLogger("onespace-worker")
 
+LOCAL_GIT_EXCLUDES = ("__pycache__/", "*.py[cod]")
+
+
+def write_local_git_excludes(repo_dir: str) -> None:
+    """将生成缓存写入克隆仓库的本地排除文件，避免被 git add -A 提交。"""
+    exclude_path = os.path.join(repo_dir, ".git", "info", "exclude")
+    os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
+
+    content = ""
+    if os.path.exists(exclude_path):
+        with open(exclude_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+    existing = {line.strip() for line in content.splitlines()}
+    missing = [pattern for pattern in LOCAL_GIT_EXCLUDES if pattern not in existing]
+    if not missing:
+        return
+
+    with open(exclude_path, "a", encoding="utf-8") as f:
+        if content and not content.endswith("\n"):
+            f.write("\n")
+        f.write("\n".join(missing) + "\n")
+
 
 class IssueWorker:
     def __init__(self, config: Dict[str, Any], guardian: DiskGuardian, notifier: Notifier):
@@ -124,6 +147,8 @@ class IssueWorker:
             clone_res = subprocess.run(clone_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
             if clone_res.returncode != 0:
                 raise RuntimeError(f"克隆仓库失败: {clone_res.stderr.strip()}")
+
+            write_local_git_excludes(task_dir)
 
             # 配置本地 git 提交者
             subprocess.run(["git", "-C", task_dir, "config", "user.name", "OneSpace Cloud Bot"], check=False)

@@ -4,10 +4,11 @@ issue_worker.py 单元测试
 """
 
 import os
+import subprocess
 import tempfile
 import unittest
 from core.disk_guardian import DiskGuardian
-from core.issue_worker import IssueWorker
+from core.issue_worker import IssueWorker, write_local_git_excludes
 from core.notifier import Notifier
 
 
@@ -44,6 +45,27 @@ class TestIssueWorker(unittest.TestCase):
         worker2.state_file = self.worker.state_file
         worker2.load_state()
         self.assertTrue(worker2.is_issue_processed("test/repo", 101))
+
+    def test_local_excludes_keep_python_caches_out_of_the_commit(self):
+        repo_dir = os.path.join(self.tmp_dir, "repo")
+        os.makedirs(os.path.join(repo_dir, "core", "__pycache__"))
+        subprocess.run(["git", "init", "-q", repo_dir], check=True)
+        with open(os.path.join(repo_dir, "core", "issue_worker.cpython-312.pyc"), "wb") as f:
+            f.write(b"cache")
+        with open(os.path.join(repo_dir, "README.md"), "w", encoding="utf-8") as f:
+            f.write("# repo\n")
+
+        write_local_git_excludes(repo_dir)
+        subprocess.run(["git", "-C", repo_dir, "add", "-A"], check=True)
+
+        staged = subprocess.run(
+            ["git", "-C", repo_dir, "diff", "--cached", "--name-only"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(staged.stdout.split(), ["README.md"])
 
     def test_github_token_env_injection(self):
         token_cfg = {
