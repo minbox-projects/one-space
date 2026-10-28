@@ -233,10 +233,10 @@ class GatewayEngine:
 
                     models_dict[m_id] = model_entry
 
-            # 与 OneSpace App 保持严格一致：只写入且仅保留一个 "AI Gateway" 提供商
+            # 与 OneSpace App 保持严格一致：只写入且仅保留一个 "Cloud Agent Gateway" 提供商
             current_cfg["provider"] = {
                 "gateway": {
-                    "name": "AI Gateway",
+                    "name": "Cloud Agent Gateway",
                     "npm": "@ai-sdk/openai-compatible",
                     "options": {
                         "baseURL": f"http://127.0.0.1:{self.global_port}/v1",
@@ -252,7 +252,7 @@ class GatewayEngine:
             with open(opencode_cfg_file, "w", encoding="utf-8") as f:
                 json.dump(current_cfg, f, ensure_ascii=False, indent=2)
 
-            logger.info(f"已按 OneSpace 规范同步 {len(models_dict)} 个模型到 OpenCode 终端配置 (单 AI Gateway 提供商): {opencode_cfg_file}")
+            logger.info(f"已按 OneSpace 规范同步 {len(models_dict)} 个模型到 OpenCode 终端配置 (单 Cloud Agent Gateway 提供商): {opencode_cfg_file}")
         except Exception as e:
             logger.warning(f"同步模型到 OpenCode 终端配置失败: {e}")
 

@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from core.gateway import GatewayEngine, ProviderState
 
 
@@ -81,6 +82,18 @@ class TestGateway(unittest.TestCase):
     def test_mapped_model_resolution(self):
         candidates = self.gateway.resolve_candidates("model_a1")
         self.assertTrue(any(c == ("provider_a", "upstream_a1") for c in candidates))
+
+    def test_sync_to_opencode_config_provider_name(self):
+        with tempfile.TemporaryDirectory() as tmp_home:
+            with patch("os.path.expanduser", side_effect=lambda p: p.replace("~", tmp_home)):
+                self.gateway.sync_to_opencode_config()
+                cfg_path = os.path.join(tmp_home, ".config", "opencode", "opencode.json")
+                self.assertTrue(os.path.exists(cfg_path))
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                self.assertIn("provider", cfg)
+                self.assertIn("gateway", cfg["provider"])
+                self.assertEqual(cfg["provider"]["gateway"]["name"], "Cloud Agent Gateway")
 
 
 if __name__ == "__main__":
