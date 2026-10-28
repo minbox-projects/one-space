@@ -1,0 +1,52 @@
+{
+  "ai_gateway": {
+    "port": 17688,
+    "auto_sync_interval_seconds": 3600,
+    "providers": {
+      "deepseek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "api_keys": [
+          "sk-your-deepseek-api-key"
+        ],
+        "models": {
+          "deepseek-chat": { "upstream_model": "deepseek-chat" },
+          "deepseek-coder": { "upstream_model": "deepseek-coder" }
+        },
+        "is_active": true
+      },
+      "opencode-zen": {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "api_keys": [
+          "zen-your-key"
+        ],
+        "template_url": "https://opencode.ai/zen/go/v1/models",
+        "models": {},
+        "is_active": false
+      }
+    },
+    "model_pools": {
+      "cloud-coder": {
+        "description": "默认自主编程候选池，优先使用 deepseek-chat，失败自动容灾",
+        "candidates": [
+          { "provider": "deepseek", "model": "deepseek-chat" }
+        ]
+      }
+    }
+  },
+  "issue_worker": {
+    "enabled": true,
+    "github_token": "ghp_your_github_personal_access_token",
+    "watch_repositories": [
+      "your-github-username/your-target-repo"
+    ],
+    "trigger_label": "bot:task",
+    "poll_interval_seconds": 180,
+    "workspace_root": "/root/cloud-agent-workspaces"
+  },
+  "notification": {
+    "enabled": false,
+    "dingtalk_webhook": "https://oapi.dingtalk.com/robot/send?access_token=your_token",
+    "dingtalk_secret": "SEC_your_secret",
+    "wechat_work_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your_key"
+  }
+}
