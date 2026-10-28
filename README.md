@@ -163,6 +163,8 @@ npm run tauri dev
 
 `npm run tauri dev` 使用独立的 `~/.config/onespace-dev` 应用目录，与已安装的 release 应用（`~/.config/onespace`）互不共享可变状态；首次 debug 启动会按条件从 release 目录播种 `.local_key` 与 `ai_gateway.json`（仅在 dev 目标缺失时复制、绝不覆盖），用量数据库不参与复制。dev 默认使用 local 存储，并使用自己的终端服务商标识 `gateway-dev` / `AI Gateway (Dev)`。
 
+`npm run tauri dev` / `npm run tauri build` 会先经 `src-tauri/scripts/build-zen-relay.mjs` 自动构建隔离的 OpenCode Zen sidecar（独立 Rust crate）。构建需要 `cmake` 与 `ninja`：macOS 执行 `brew install cmake ninja`，Windows 执行 `choco install cmake ninja`。发布构建会把产物复制为 `src-tauri/binaries/onespace-zen-relay-<target-triple>[.exe]` 供 Tauri 打包。
+
 常用命令：
 
 | 命令 | 说明 |

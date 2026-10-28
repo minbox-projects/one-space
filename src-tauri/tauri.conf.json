@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "node src-tauri/scripts/build-zen-relay.mjs --dev && npm run dev",
+    "beforeBuildCommand": "node src-tauri/scripts/build-zen-relay.mjs --release && npm run build"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -31,6 +31,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "externalBin": ["binaries/onespace-zen-relay"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

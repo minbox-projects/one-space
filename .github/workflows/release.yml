@@ -73,6 +73,29 @@ jobs:
       - name: install frontend dependencies
         run: npm ci
 
+      - name: install cmake and ninja (macOS)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1; then
+            brew install cmake ninja
+          fi
+          cmake --version
+          ninja --version
+
+      - name: install cmake and ninja (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $missing = @()
+          if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) { $missing += 'cmake' }
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { $missing += 'ninja' }
+          if ($missing.Count -gt 0) {
+            choco install $missing -y --no-progress
+          }
+          cmake --version
+          ninja --version
+
       - name: build frontend
         run: npm run build
 
@@ -132,6 +155,12 @@ jobs:
           fi
           rm -f "$CERT_PATH"
           echo "Imported signing identity '$APPLE_SIGNING_IDENTITY' for codesign."
+
+      - name: build zen relay sidecar
+        shell: bash
+        env:
+          ONESPACE_TARGET_TRIPLE: ${{ matrix.target }}
+        run: node src-tauri/scripts/build-zen-relay.mjs --release
 
       - uses: tauri-apps/tauri-action@v0
         env:
