@@ -66,8 +66,10 @@ class ProviderState:
 
 
 class GatewayEngine:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, sync_opencode: bool = True, opencode_config_path: Optional[str] = None):
         self.config_path = config_path
+        self.sync_opencode = sync_opencode
+        self.opencode_config_path = opencode_config_path
         self.providers: Dict[str, ProviderState] = {}
         self.model_pools: Dict[str, Dict[str, Any]] = {}
         self.global_port = 17688
@@ -97,7 +99,8 @@ class GatewayEngine:
         # 加载模型池
         self.model_pools = gw_cfg.get("model_pools", {})
         logger.info(f"配置加载完成: {len(self.providers)} 个服务商, {len(self.model_pools)} 个模型池, 端口 {self.global_port}")
-        self.sync_to_opencode_config()
+        if self.sync_opencode:
+            self.sync_to_opencode_config()
 
     def resolve_candidates(self, requested_model: str) -> List[Tuple[str, str]]:
         """
@@ -168,21 +171,30 @@ class GatewayEngine:
                         logger.info(f"[{name}] 模板同步成功，新增 {count} 个模型")
             except Exception as e:
                 logger.warning(f"[{name}] 模板同步失败: {e}")
-        self.sync_to_opencode_config()
+        if self.sync_opencode:
+            self.sync_to_opencode_config()
 
-    def sync_to_opencode_config(self):
+    def sync_to_opencode_config(self, target_file: Optional[str] = None):
         """自动将当前网关可用的模型列表注入到 OpenCode 的主配置文件中，与 OneSpace App 保持完全一致"""
-        try:
-            cfg_dir = os.path.expanduser("~/.config/opencode")
-            os.makedirs(cfg_dir, exist_ok=True)
-            opencode_cfg_file = os.path.join(cfg_dir, "opencode.json")
-            jsonc_file = os.path.join(cfg_dir, "opencode.jsonc")
+        target_path = target_file or self.opencode_config_path
+        if not self.sync_opencode and not target_path:
+            return
 
-            if os.path.exists(jsonc_file):
-                try:
-                    os.remove(jsonc_file)
-                except Exception:
-                    pass
+        try:
+            if target_path:
+                opencode_cfg_file = target_path
+                os.makedirs(os.path.dirname(os.path.abspath(opencode_cfg_file)), exist_ok=True)
+            else:
+                cfg_dir = os.path.expanduser("~/.config/opencode")
+                os.makedirs(cfg_dir, exist_ok=True)
+                opencode_cfg_file = os.path.join(cfg_dir, "opencode.json")
+                jsonc_file = os.path.join(cfg_dir, "opencode.jsonc")
+
+                if os.path.exists(jsonc_file):
+                    try:
+                        os.remove(jsonc_file)
+                    except Exception:
+                        pass
 
             current_cfg = {}
             if os.path.exists(opencode_cfg_file):

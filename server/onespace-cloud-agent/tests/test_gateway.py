@@ -49,7 +49,7 @@ class TestGateway(unittest.TestCase):
         self.tmp_file = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
         json.dump(self.test_config, self.tmp_file)
         self.tmp_file.close()
-        self.gateway = GatewayEngine(self.tmp_file.name)
+        self.gateway = GatewayEngine(self.tmp_file.name, sync_opencode=False)
 
     def tearDown(self):
         if os.path.exists(self.tmp_file.name):
@@ -62,7 +62,7 @@ class TestGateway(unittest.TestCase):
         self.assertEqual(k1, "key_a1")
         self.assertEqual(k2, "key_a2")
 
-        # 冷却 key_a1
+    # 冷却 key_a1
         p.mark_key_failed("key_a1", cooldown_seconds=60)
         # 再次获取，应该跳过已冷却的 key_a1，只返回 key_a2
         k3 = p.get_available_key()
@@ -84,16 +84,23 @@ class TestGateway(unittest.TestCase):
         self.assertTrue(any(c == ("provider_a", "upstream_a1") for c in candidates))
 
     def test_sync_to_opencode_config_provider_name(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg_path = os.path.join(tmp_dir, "opencode.json")
+            self.gateway.sync_to_opencode_config(target_file=cfg_path)
+            self.assertTrue(os.path.exists(cfg_path))
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertIn("provider", cfg)
+            self.assertIn("gateway", cfg["provider"])
+            self.assertEqual(cfg["provider"]["gateway"]["name"], "Cloud Agent Gateway")
+
+    def test_sync_disabled_does_not_touch_disk(self):
         with tempfile.TemporaryDirectory() as tmp_home:
             with patch("os.path.expanduser", side_effect=lambda p: p.replace("~", tmp_home)):
+                # sync_opencode=False 且未指定 target_file 时不产生任何文件
                 self.gateway.sync_to_opencode_config()
                 cfg_path = os.path.join(tmp_home, ".config", "opencode", "opencode.json")
-                self.assertTrue(os.path.exists(cfg_path))
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                self.assertIn("provider", cfg)
-                self.assertIn("gateway", cfg["provider"])
-                self.assertEqual(cfg["provider"]["gateway"]["name"], "Cloud Agent Gateway")
+                self.assertFalse(os.path.exists(cfg_path))
 
 
 if __name__ == "__main__":
