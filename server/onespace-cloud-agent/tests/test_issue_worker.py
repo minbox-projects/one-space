@@ -45,6 +45,16 @@ class TestIssueWorker(unittest.TestCase):
         worker2.load_state()
         self.assertTrue(worker2.is_issue_processed("test/repo", 101))
 
+    def test_github_token_env_injection(self):
+        token_cfg = {
+            "issue_worker": {
+                "github_token": "ghp_mock_token_12345"
+            }
+        }
+        _ = IssueWorker(token_cfg, self.guardian, self.notifier)
+        self.assertEqual(os.environ.get("GH_TOKEN"), "ghp_mock_token_12345")
+        self.assertEqual(os.environ.get("GITHUB_TOKEN"), "ghp_mock_token_12345")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,7 @@
   },
   "issue_worker": {
     "enabled": true,
+    "github_token": "ghp_your_github_personal_access_token",
     "watch_repositories": [
       "your-github-username/your-target-repo"
     ],

@@ -20,6 +20,12 @@ class IssueWorker:
     def __init__(self, config: Dict[str, Any], guardian: DiskGuardian, notifier: Notifier):
         worker_cfg = config.get("issue_worker", {})
         self.enabled: bool = worker_cfg.get("enabled", True)
+        self.github_token: str = worker_cfg.get("github_token", "")
+        if self.github_token:
+            os.environ["GH_TOKEN"] = self.github_token
+            os.environ["GITHUB_TOKEN"] = self.github_token
+            logger.info("已从配置文件加载 GitHub Token (GH_TOKEN)")
+
         self.watch_repositories: List[str] = worker_cfg.get("watch_repositories", [])
         self.trigger_label: str = worker_cfg.get("trigger_label", "bot:task")
         self.poll_interval: int = worker_cfg.get("poll_interval_seconds", 180)
