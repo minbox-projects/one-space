@@ -65,6 +65,53 @@ class SessionRunner:
         print(f"正在恢复连接会话 [{target}]...")
         os.execvp("tmux", ["tmux", "attach-session", "-t", target])
 
+    def _has_origin_remote(self, main_repo_dir: str) -> bool:
+        res = subprocess.run(
+            ["git", "-C", main_repo_dir, "remote"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False
+        )
+        if res.returncode != 0:
+            return False
+        return "origin" in res.stdout.split()
+
+    def _fetch_origin(self, main_repo_dir: str) -> None:
+        res = subprocess.run(
+            ["git", "-C", main_repo_dir, "fetch", "--prune", "origin"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False
+        )
+        if res.returncode != 0:
+            raise RuntimeError(f"拉取远程仓库 origin 失败，已停止创建 Git Worktree: {res.stderr.strip()}")
+
+    def _resolve_new_branch_base(self, main_repo_dir: str) -> str:
+        symref = subprocess.run(
+            ["git", "-C", main_repo_dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False
+        )
+        if symref.returncode == 0 and symref.stdout.strip():
+            return symref.stdout.strip()
+
+        for candidate in ("origin/main", "origin/master"):
+            probe = subprocess.run(
+                ["git", "-C", main_repo_dir, "rev-parse", "--verify", "--quiet", candidate],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False
+            )
+            if probe.returncode == 0:
+                return candidate
+
+        return "HEAD"
+
     def _prepare_worktree(self, main_repo_dir: str, branch: str) -> str:
         """为指定的主仓库和分支创建或复用独立的 git worktree"""
         repo_name = os.path.basename(main_repo_dir)
@@ -77,6 +124,9 @@ class SessionRunner:
             return worktree_dir
 
         print(f"正在为仓库 [{repo_name}] 创建隔离特性工作区 (分支: {branch})...")
+        if self._has_origin_remote(main_repo_dir):
+            self._fetch_origin(main_repo_dir)
+
         branch_check = subprocess.run(
             ["git", "-C", main_repo_dir, "rev-parse", "--verify", branch],
             stdout=subprocess.PIPE,
@@ -86,7 +136,8 @@ class SessionRunner:
         if branch_check.returncode == 0:
             cmd = ["git", "-C", main_repo_dir, "worktree", "add", worktree_dir, branch]
         else:
-            cmd = ["git", "-C", main_repo_dir, "worktree", "add", "-b", branch, worktree_dir]
+            base = self._resolve_new_branch_base(main_repo_dir)
+            cmd = ["git", "-C", main_repo_dir, "worktree", "add", "-b", branch, worktree_dir, base]
 
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
         if res.returncode != 0 and not os.path.exists(worktree_dir):
