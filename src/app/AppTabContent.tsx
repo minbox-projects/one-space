@@ -102,7 +102,7 @@ export function AppTabContent({
       )}
       {shouldRenderTab("cloud-agent") && (
         <div className={activeTab === "cloud-agent" ? "h-full" : "hidden"}>
-          <AppErrorBoundary label="云端智能体" resetKey={activeTab}>
+          <AppErrorBoundary label="AI 云端智能体" resetKey={activeTab}>
             <CloudAgent isVisible={activeTab === "cloud-agent"} />
           </AppErrorBoundary>
         </div>

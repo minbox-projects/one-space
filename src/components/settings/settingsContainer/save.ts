@@ -470,9 +470,9 @@ export function createSaveCurrentTabHandler({
             confirm: {
               message: t(
                 "confirmSaveCloudAgent",
-                "确定要保存并应用当前的云端智能体设置吗？",
+                "确定要保存并应用当前的 AI 云端智能体设置吗？",
               ),
-              title: t("confirmSaveCloudAgentTitle", "保存云端智能体设置"),
+              title: t("confirmSaveCloudAgentTitle", "保存 AI 云端智能体设置"),
               okLabel: t("save", "保存"),
               cancelLabel: t("cancel", "取消"),
               kind: "warning",

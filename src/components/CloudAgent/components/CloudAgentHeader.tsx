@@ -76,7 +76,7 @@ export function CloudAgentHeader({
           </div>
           <div>
             <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-              {t("cloudAgentTitle", "云端智能体 (Cloud Agent)")}
+              {t("cloudAgentTitle", "AI 云端智能体 (Cloud Agent)")}
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               {t(

@@ -163,7 +163,7 @@ export function ServicesSection({
     {
       id: "cloud-agent",
       titleKey: "cloudAgent",
-      fallbackTitle: "云端智能体",
+      fallbackTitle: "AI 云端智能体",
       icon: CloudCog,
       dirty: subTabDirtyMap["cloud-agent"],
     },

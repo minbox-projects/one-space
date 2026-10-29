@@ -41,7 +41,7 @@ export function PrPipelineTab({
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
           {t(
             "noPipelineTasksDesc",
-            "当监控的 GitHub 仓库被打上任务触发标签（如 bot:task）时，Cloud Agent 将自动接单、无头实施、创建 PR 并闭环记录流水。"
+            "当监控的 GitHub 仓库被打上任务触发标签（如 bot:task）时，AI 云端智能体将自动接单、无头实施、创建 PR 并闭环记录流水。"
           )}
         </p>
       </div>

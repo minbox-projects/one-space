@@ -321,7 +321,7 @@ export const MAIN_SETTINGS_CATEGORIES: {
       { id: "ai-gateway", titleKey: "aiGatewaySettings", fallbackTitle: "AI 网关" },
       { id: "ssl-certificate", titleKey: "sslCertificate", fallbackTitle: "SSL 证书" },
       { id: "server-monitor", titleKey: "serverMonitor", fallbackTitle: "服务器监控" },
-      { id: "cloud-agent", titleKey: "cloudAgent", fallbackTitle: "云端智能体" },
+      { id: "cloud-agent", titleKey: "cloudAgent", fallbackTitle: "AI 云端智能体" },
     ],
   },
   {
