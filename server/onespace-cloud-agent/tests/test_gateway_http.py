@@ -405,3 +405,731 @@ class UpstreamCallCountTests(unittest.TestCase):
         st, _ = self._req(body, cl=str(len(body)))
         self.assertNotIn(st, (413, 400))
         self.assertGreaterEqual(_UPSTREAM_CALLS["count"], 1)
+
+
+import socket
+import time as _time
+
+# ---------------------------------------------------------------------------
+# Step 2: provider failover, cooling and streaming relay
+# ---------------------------------------------------------------------------
+
+
+class _FailoverUpstream(http.server.BaseHTTPRequestHandler):
+    records = []
+    key_behavior = {}
+
+    def do_POST(self):
+        key = self.headers.get("Authorization", "").rsplit(" ", 1)[-1]
+        _FailoverUpstream.records.append(key)
+        behavior = _FailoverUpstream.key_behavior.get(key, "ok")
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        if n:
+            self.rfile.read(n)
+        if behavior == "429":
+            retry_after = _FailoverUpstream.key_behavior.get(key + ":ra", "5")
+            body = b'{"error":"rate limited"}'
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Retry-After", str(retry_after))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif behavior == "500":
+            body = b'{"error":"server error"}'
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif behavior == "400":
+            body = b'{"error":"bad request"}'
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif behavior == "transport":
+            self.close_connection = True
+            try:
+                self.request.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            return
+        else:
+            body = b'{"choices":[{"message":{"content":"ok"}}]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        self.wfile.flush()
+
+    def log_message(self, *a):
+        pass
+
+
+def _failover_config(up_port):
+    return {
+        "ai_gateway": {
+            "port": 17688,
+            "auth": {"token": "sk-test-token", "require": True},
+            "max_body_bytes": 10485760,
+            "retry": {"max_cooldown_seconds": 600},
+            "providers": {
+                "provider_a": {
+                    "base_url": f"http://127.0.0.1:{up_port}",
+                    "api_keys": ["key_a1", "key_a2"],
+                    "models": {"model_a1": {"upstream_model": "upstream_a1"}},
+                    "is_active": True,
+                },
+                "provider_b": {
+                    "base_url": f"http://127.0.0.1:{up_port}",
+                    "api_keys": ["key_b1"],
+                    "models": {"model_b1": {"upstream_model": "upstream_b1"}},
+                    "is_active": True,
+                },
+            },
+            "model_pools": {
+                "smart-coder": {
+                    "description": "pool",
+                    "candidates": [
+                        {"provider": "provider_a", "model": "model_a1"},
+                        {"provider": "provider_b", "model": "model_b1"},
+                    ],
+                }
+            },
+        }
+    }
+
+
+class FailoverTests(unittest.TestCase):
+    def setUp(self):
+        _FailoverUpstream.records = []
+        _FailoverUpstream.key_behavior = {}
+        self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FailoverUpstream)
+        self.up_port = self.up.server_address[1]
+        threading.Thread(target=self.up.serve_forever, daemon=True).start()
+        cfg = _failover_config(self.up_port)
+        self.tmp = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
+        json.dump(cfg, self.tmp)
+        self.tmp.close()
+        self.gateway = GatewayEngine(self.tmp.name, sync_opencode=False)
+        handler = type("H", (GatewayRequestHandler,), {})
+        handler.gateway = self.gateway
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.h = {"Authorization": "Bearer sk-test-token", "Content-Type": "application/json"}
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.up.shutdown()
+        if os.path.exists(self.tmp.name):
+            os.remove(self.tmp.name)
+
+    def _post(self, model="smart-coder"):
+        data = json.dumps({"model": model}).encode()
+        req = urllib.request.Request(self.base + "/chat/completions", data=data, headers={**self.h, "Content-Length": str(len(data))})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_429_failover_same_provider_first(self):
+        _FailoverUpstream.key_behavior = {"key_a1": "429"}
+        st, _ = self._post()
+        self.assertEqual(st, 200)
+        self.assertEqual(_FailoverUpstream.records, ["key_a1", "key_a2"])
+        self.assertNotIn("key_b1", _FailoverUpstream.records)
+
+    def test_5xx_failover_same_provider_first(self):
+        _FailoverUpstream.key_behavior = {"key_a1": "500"}
+        st, _ = self._post()
+        self.assertEqual(st, 200)
+        self.assertEqual(_FailoverUpstream.records, ["key_a1", "key_a2"])
+
+    def test_transport_failover_same_provider_first(self):
+        _FailoverUpstream.key_behavior = {"key_a1": "transport"}
+        st, _ = self._post()
+        self.assertEqual(st, 200)
+        self.assertEqual(_FailoverUpstream.records, ["key_a1", "key_a2"])
+
+    def test_nonretryable_400_fails_fast(self):
+        _FailoverUpstream.key_behavior = {"key_a1": "400"}
+        st, _ = self._post()
+        self.assertEqual(st, 400)
+        self.assertEqual(_FailoverUpstream.records, ["key_a1"])
+
+
+class CoolingTests(unittest.TestCase):
+    def setUp(self):
+        _FailoverUpstream.records = []
+        _FailoverUpstream.key_behavior = {}
+        self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FailoverUpstream)
+        self.up_port = self.up.server_address[1]
+        threading.Thread(target=self.up.serve_forever, daemon=True).start()
+        cfg = _failover_config(self.up_port)
+        self.tmp = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
+        json.dump(cfg, self.tmp)
+        self.tmp.close()
+        self.gateway = GatewayEngine(self.tmp.name, sync_opencode=False)
+        handler = type("H", (GatewayRequestHandler,), {})
+        handler.gateway = self.gateway
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.h = {"Authorization": "Bearer sk-test-token", "Content-Type": "application/json"}
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.up.shutdown()
+        if os.path.exists(self.tmp.name):
+            os.remove(self.tmp.name)
+
+    def _post(self, model="smart-coder"):
+        data = json.dumps({"model": model}).encode()
+        req = urllib.request.Request(self.base + "/chat/completions", data=data, headers={**self.h, "Content-Length": str(len(data))})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+
+    def test_all_cooling_returns_429_no_calls(self):
+        _FailoverUpstream.key_behavior = {"key_a1": "429", "key_a2": "429", "key_b1": "429"}
+        # first request exhausts
+        st, hdrs, _ = self._post()
+        self.assertEqual(st, 429)
+        first_calls = len(_FailoverUpstream.records)
+        _FailoverUpstream.records = []
+        st2, hdrs2, _ = self._post()
+        self.assertEqual(st2, 429)
+        self.assertEqual(len(_FailoverUpstream.records), 0)
+        ra = hdrs2.get("Retry-After") or hdrs2.get("retry-after")
+        self.assertIsNotNone(ra)
+        self.assertEqual(int(float(ra)), 5)
+
+
+class CooldownTimingTests(unittest.TestCase):
+    def setUp(self):
+        _FailoverUpstream.records = []
+        _FailoverUpstream.key_behavior = {}
+        self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FailoverUpstream)
+        self.up_port = self.up.server_address[1]
+        threading.Thread(target=self.up.serve_forever, daemon=True).start()
+        # single-key provider to force all-cooling after one failure
+        cfg = {
+            "ai_gateway": {
+                "port": 17688,
+                "auth": {"token": "sk-test-token", "require": True},
+                "max_body_bytes": 10485760,
+                "retry": {"max_cooldown_seconds": 600},
+                "providers": {
+                    "p": {
+                        "base_url": f"http://127.0.0.1:{self.up_port}",
+                        "api_keys": ["onlykey"],
+                        "models": {"m": {"upstream_model": "upstream-m"}},
+                        "is_active": True,
+                    }
+                },
+                "model_pools": {},
+            }
+        }
+        self.tmp = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
+        json.dump(cfg, self.tmp)
+        self.tmp.close()
+        self.gateway = GatewayEngine(self.tmp.name, sync_opencode=False)
+        handler = type("H", (GatewayRequestHandler,), {})
+        handler.gateway = self.gateway
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.h = {"Authorization": "Bearer sk-test-token", "Content-Type": "application/json"}
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.up.shutdown()
+        if os.path.exists(self.tmp.name):
+            os.remove(self.tmp.name)
+        # restore time
+        import core.gateway as gwmod
+        gwmod.time.monotonic = _time.monotonic
+
+    def _clock(self, value):
+        import core.gateway as gwmod
+        gwmod.time.monotonic = lambda: value
+
+    def _post(self, model="m"):
+        data = json.dumps({"model": model}).encode()
+        req = urllib.request.Request(self.base + "/chat/completions", data=data, headers={**self.h, "Content-Length": str(len(data))})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+
+    def test_retry_after_capped(self):
+        self._clock(1000.0)
+        _FailoverUpstream.key_behavior = {"onlykey": "429", "onlykey:ra": "9999"}
+        st, hdrs, _ = self._post()
+        self.assertEqual(st, 429)
+        ra = hdrs.get("Retry-After") or hdrs.get("retry-after")
+        self.assertEqual(int(float(ra)), 600)
+
+    def test_invalid_retry_after_http_default(self):
+        self._clock(1000.0)
+        for ra_val in ("0", "-5", "abc"):
+            _FailoverUpstream.key_behavior = {"onlykey": "429", "onlykey:ra": ra_val}
+            # reset cooldowns by new gateway? reuse; clock same but key cooling; advance clock to release first
+            self._clock(1000.0 + 10000.0)
+            st, hdrs, _ = self._post()
+            # transport? no, http 429 -> default 60, but if already cooling? New failure marks 60 from now
+            # response for exhausted should be 429 with 60
+            self.assertEqual(st, 429)
+            ra = hdrs.get("Retry-After") or hdrs.get("retry-after")
+            self.assertEqual(int(float(ra)), 60)
+            self._clock(1000.0 + 10000.0)
+
+    def test_transport_default_30(self):
+        self._clock(1000.0)
+        _FailoverUpstream.key_behavior = {"onlykey": "transport"}
+        st, hdrs, _ = self._post()
+        self.assertEqual(st, 429)
+        ra = hdrs.get("Retry-After") or hdrs.get("retry-after")
+        self.assertEqual(int(float(ra)), 30)
+
+    def test_expiry_releases_key(self):
+        self._clock(1000.0)
+        _FailoverUpstream.key_behavior = {"onlykey": "transport"}
+        st, _, _ = self._post()
+        self.assertEqual(st, 429)
+        # advance beyond cooldown
+        self._clock(1000.0 + 31.0)
+        _FailoverUpstream.key_behavior = {"onlykey": "ok"}
+        _FailoverUpstream.records = []
+        st2, _, _ = self._post()
+        self.assertEqual(st2, 200)
+        self.assertGreaterEqual(len(_FailoverUpstream.records), 1)
+
+
+class StreamingRelayTests(unittest.TestCase):
+    def setUp(self):
+        self.handler_cls = self._handler_cls()
+        self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.handler_cls)
+        self.up_port = self.up.server_address[1]
+        threading.Thread(target=self.up.serve_forever, daemon=True).start()
+        cfg = {
+            "ai_gateway": {
+                "port": 17688,
+                "auth": {"token": "sk-test-token", "require": True},
+                "max_body_bytes": 10485760,
+                "providers": {
+                    "p": {
+                        "base_url": f"http://127.0.0.1:{self.up_port}",
+                        "api_keys": ["k"],
+                        "models": {"m": {"upstream_model": "upstream-m"}},
+                        "is_active": True,
+                    }
+                },
+                "model_pools": {},
+            }
+        }
+        self.tmp = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
+        json.dump(cfg, self.tmp)
+        self.tmp.close()
+        self.gateway = GatewayEngine(self.tmp.name, sync_opencode=False)
+        handler = type("H", (GatewayRequestHandler,), {})
+        handler.gateway = self.gateway
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.h = {"Authorization": "Bearer sk-test-token", "Content-Type": "application/json"}
+
+    def _handler_cls(self):
+        class H(http.server.BaseHTTPRequestHandler):
+            calls = []
+
+            def do_POST(self):
+                H.calls.append(self.headers.get("Authorization"))
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                if n:
+                    self.rfile.read(n)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                try:
+                    self.wfile.write(b"data: prefix\n\n")
+                    self.wfile.flush()
+                    _time.sleep(1.0)
+                    self.wfile.write(b"x" * 70000)
+                    self.wfile.write(b"data: final\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                self.close_connection = True
+
+            def log_message(self, *a):
+                pass
+        H.calls = []
+        return H
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.up.shutdown()
+        if os.path.exists(self.tmp.name):
+            os.remove(self.tmp.name)
+
+    def test_prefix_prompt_and_complete_bytes(self):
+        data = json.dumps({"model": "m", "stream": True}).encode()
+        req = (
+            f"POST /chat/completions HTTP/1.1\r\n"
+            f"Host: localhost\r\n"
+            f"Authorization: Bearer sk-test-token\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(data)}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode() + data
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+        s.settimeout(2)
+        s.sendall(req)
+        buf = b""
+        # prefix must arrive promptly while upstream is still open
+        deadline = _time.monotonic() + 0.4
+        while b"prefix" not in buf and _time.monotonic() < deadline:
+            try:
+                c = s.recv(4096)
+            except socket.timeout:
+                break
+            if not c:
+                break
+            buf += c
+        self.assertIn(b"prefix", buf)
+        self.assertLess(_time.monotonic(), deadline + 0.05)
+        # read rest
+        s.settimeout(5)
+        while True:
+            try:
+                c = s.recv(65536)
+            except socket.timeout:
+                break
+            if not c:
+                break
+            buf += c
+        s.close()
+        self.assertIn(b"data: final", buf)
+        self.assertGreaterEqual(len(buf), 70000)
+
+    def test_downstream_disconnect_no_cooldown(self):
+        data = json.dumps({"model": "m", "stream": True}).encode()
+        req = (
+            f"POST /chat/completions HTTP/1.1\r\n"
+            f"Host: localhost\r\n"
+            f"Authorization: Bearer sk-test-token\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(data)}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode() + data
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+        s.settimeout(2)
+        s.sendall(req)
+        # read prefix
+        buf = b""
+        deadline = _time.time() + 1.0
+        while b"prefix" not in buf and _time.time() < deadline:
+            try:
+                c = s.recv(4096)
+            except socket.timeout:
+                break
+            if not c:
+                break
+            buf += c
+        s.close()
+        _time.sleep(0.5)
+        # exactly one upstream call for the disconnected request
+        self.assertEqual(len(self.handler_cls.calls), 1)
+        # follow-up request should succeed (same key, no cooldown/fallback)
+        st, _ = self._simple_post()
+        self.assertEqual(st, 200)
+
+    def _simple_post(self):
+        data = json.dumps({"model": "m", "stream": False}).encode()
+        # upstream handler only handles POST streaming? It ignores stream flag and writes SSE always; adjust? 
+        # For follow-up non-stream, upstream still returns SSE-ish; status 200 is enough.
+        req = urllib.request.Request(self.base + "/chat/completions", data=data, headers={**self.h, "Content-Length": str(len(data))})
+        try:
+            with urllib.request.urlopen(req) as r:
+                r.read()
+                return r.status, None
+        except urllib.error.HTTPError as e:
+            return e.code, None
+
+
+
+class StreamingFailureTests(unittest.TestCase):
+    def setUp(self):
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                if n:
+                    self.rfile.read(n)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b"data: prefix\n\n")
+                self.wfile.flush()
+                self.close_connection = True
+                try:
+                    self.request.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+
+            def log_message(self, *a):
+                pass
+
+        self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.up_port = self.up.server_address[1]
+        threading.Thread(target=self.up.serve_forever, daemon=True).start()
+        cfg = {
+            "ai_gateway": {
+                "port": 17688,
+                "auth": {"token": "sk-test-token", "require": True},
+                "max_body_bytes": 10485760,
+                "providers": {
+                    "p": {
+                        "base_url": f"http://127.0.0.1:{self.up_port}",
+                        "api_keys": ["k"],
+                        "models": {"m": {"upstream_model": "upstream-m"}},
+                        "is_active": True,
+                    }
+                },
+                "model_pools": {},
+            }
+        }
+        self.tmp = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
+        json.dump(cfg, self.tmp)
+        self.tmp.close()
+        self.gateway = GatewayEngine(self.tmp.name, sync_opencode=False)
+        handler = type("H", (GatewayRequestHandler,), {})
+        handler.gateway = self.gateway
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.port}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.up.shutdown()
+        if os.path.exists(self.tmp.name):
+            os.remove(self.tmp.name)
+
+    def test_post_header_failure_closes_without_second_body(self):
+        data = json.dumps({"model": "m", "stream": True}).encode()
+        req = (
+            f"POST /chat/completions HTTP/1.1\r\n"
+            f"Host: localhost\r\n"
+            f"Authorization: Bearer sk-test-token\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(data)}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode() + data
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+        s.settimeout(5)
+        s.sendall(req)
+        buf = b""
+        while True:
+            try:
+                c = s.recv(4096)
+            except socket.timeout:
+                break
+            if not c:
+                break
+            buf += c
+        s.close()
+        self.assertIn(b"prefix", buf)
+        self.assertNotIn(b"model_not_found", buf)
+
+
+import http.client as _http_client
+
+
+class StreamingReadCapacityTests(unittest.TestCase):
+    def setUp(self):
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                if n:
+                    self.rfile.read(n)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b"data: prefix\n\n")
+                self.wfile.flush()
+                _time.sleep(0.2)
+                self.wfile.write(b"x" * 70000)
+                self.wfile.write(b"data: final\n\n")
+                self.wfile.flush()
+                self.close_connection = True
+
+            def log_message(self, *a):
+                pass
+
+        self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.up_port = self.up.server_address[1]
+        threading.Thread(target=self.up.serve_forever, daemon=True).start()
+        cfg = {
+            "ai_gateway": {
+                "port": 17688,
+                "auth": {"token": "sk-test-token", "require": True},
+                "max_body_bytes": 10485760,
+                "providers": {
+                    "p": {
+                        "base_url": f"http://127.0.0.1:{self.up_port}",
+                        "api_keys": ["k"],
+                        "models": {"m": {"upstream_model": "upstream-m"}},
+                        "is_active": True,
+                    }
+                },
+                "model_pools": {},
+            }
+        }
+        self.tmp = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
+        json.dump(cfg, self.tmp)
+        self.tmp.close()
+        self.gateway = GatewayEngine(self.tmp.name, sync_opencode=False)
+        handler = type("H", (GatewayRequestHandler,), {})
+        handler.gateway = self.gateway
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.h = {"Authorization": "Bearer sk-test-token", "Content-Type": "application/json"}
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.up.shutdown()
+        if os.path.exists(self.tmp.name):
+            os.remove(self.tmp.name)
+
+    def test_read_capacity_65536_and_no_unbounded_read(self):
+        orig_read1 = _http_client.HTTPResponse.read1
+        orig_read = _http_client.HTTPResponse.read
+        read1_amts = []
+        read_amts = []
+
+        def spy_read1(self, amt=-1):
+            read1_amts.append(amt)
+            return orig_read1(self, amt)
+
+        def spy_read(self, amt=-1):
+            read_amts.append(amt)
+            return orig_read(self, amt)
+
+        _http_client.HTTPResponse.read1 = spy_read1
+        _http_client.HTTPResponse.read = spy_read
+        try:
+            data = json.dumps({"model": "m", "stream": True}).encode()
+            req = urllib.request.Request(self.base + "/chat/completions", data=data, headers={**self.h, "Content-Length": str(len(data))})
+            with urllib.request.urlopen(req) as r:
+                while True:
+                    c = r.read(65536)
+                    if not c:
+                        break
+        finally:
+            _http_client.HTTPResponse.read1 = orig_read1
+            _http_client.HTTPResponse.read = orig_read
+
+        self.assertIn(65536, read1_amts)
+        self.assertNotIn(-1, read_amts)
+
+
+class ZeroKeyProviderTests(unittest.TestCase):
+    def setUp(self):
+        self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Upstream if False else None) if False else None
+        # simple upstream returning ok
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                if n:
+                    self.rfile.read(n)
+                body = b'{"choices":[{"message":{"content":"ok"}}]}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *a):
+                pass
+        self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.up_port = self.up.server_address[1]
+        threading.Thread(target=self.up.serve_forever, daemon=True).start()
+        cfg = {
+            "ai_gateway": {
+                "port": 17688,
+                "auth": {"token": "sk-test-token", "require": True},
+                "max_body_bytes": 10485760,
+                "providers": {
+                    "nokey": {
+                        "base_url": f"http://127.0.0.1:{self.up_port}",
+                        "api_keys": [],
+                        "models": {"m": {"upstream_model": "upstream-m"}},
+                        "is_active": True,
+                    },
+                    "keyed": {
+                        "base_url": f"http://127.0.0.1:{self.up_port}",
+                        "api_keys": ["k"],
+                        "models": {"m": {"upstream_model": "upstream-m"}},
+                        "is_active": True,
+                    },
+                },
+                "model_pools": {
+                    "pool": {"description": "d", "candidates": [
+                        {"provider": "nokey", "model": "m"},
+                        {"provider": "keyed", "model": "m"},
+                    ]},
+                },
+            }
+        }
+        self.tmp = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
+        json.dump(cfg, self.tmp)
+        self.tmp.close()
+        self.gateway = GatewayEngine(self.tmp.name, sync_opencode=False)
+        handler = type("H", (GatewayRequestHandler,), {})
+        handler.gateway = self.gateway
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.h = {"Authorization": "Bearer sk-test-token", "Content-Type": "application/json"}
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.up.shutdown()
+        if os.path.exists(self.tmp.name):
+            os.remove(self.tmp.name)
+
+    def _post(self, model):
+        data = json.dumps({"model": model}).encode()
+        req = urllib.request.Request(self.base + "/chat/completions", data=data, headers={**self.h, "Content-Length": str(len(data))})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_zero_key_skipped_keyed_serves(self):
+        st, _ = self._post("pool")
+        self.assertEqual(st, 200)
+
+    def test_known_model_only_zero_key_returns_502(self):
+        st, _ = self._post("m")
+        # model "m" resolves via both providers (mapped); nokey skipped, keyed serves -> 200? Actually m maps to both providers, keyed has key -> 200.
+        # For a model only on zero-key provider, create direct provider/model path nokey/m? prefix passthrough -> nokey provider has no key -> no candidates? resolve returns known? prefix path returns candidate if provider active regardless of keys. Then handler get_available_key None -> skip; no candidates left -> known True? resolve known True for prefix? Actually prefix path sets known? In code prefix path returns candidates, True (known). Handler candidates nonempty initially; after skip all, falls through to 502 (all candidates exhausted). So expect 502.
+        st2, _ = self._post("nokey/m")
+        self.assertEqual(st2, 502)

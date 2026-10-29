@@ -14,6 +14,7 @@ import hmac
 import http.server
 import json
 import logging
+import math
 import os
 import tempfile
 import threading
@@ -27,6 +28,10 @@ logger = logging.getLogger("onespace-gateway")
 
 DEFAULT_AUTH_TOKEN = "sk-onespace-cloud-agent"
 DEFAULT_MAX_BODY_BYTES = 10485760
+DEFAULT_HTTP_COOLDOWN_SECONDS = 60.0
+DEFAULT_TRANSPORT_COOLDOWN_SECONDS = 30.0
+DEFAULT_MAX_COOLDOWN_SECONDS = 600.0
+STREAM_READ_SIZE = 65536
 
 
 class ProviderKeyState:
@@ -65,16 +70,19 @@ class ProviderState:
             key_state=self.key_state,
         )
 
+    def _prune_cooldowns(self, now: float) -> None:
+        self.key_state.key_cooldowns = {
+            k: v for k, v in self.key_state.key_cooldowns.items() if v > now
+        }
+
     def get_available_key(self) -> Optional[str]:
         with self.key_state.lock:
-            now = time.time()
+            now = time.monotonic()
             if not self.api_keys:
                 return None
 
             # 清理过期的冷却
-            self.key_state.key_cooldowns = {
-                k: v for k, v in self.key_state.key_cooldowns.items() if v > now
-            }
+            self._prune_cooldowns(now)
 
             # 尝试轮询未冷却的 key；已冷却的 key 绝不复用
             num_keys = len(self.api_keys)
@@ -87,9 +95,48 @@ class ProviderState:
             logger.warning(f"[{self.name}] 所有 API Key 均处于冷却中")
             return None
 
-    def mark_key_failed(self, key: str, cooldown_seconds: float = 60.0):
+    def get_usable_keys(self) -> List[str]:
+        """Return each non-cooling key once, in rotation order, for one attempt plan."""
         with self.key_state.lock:
-            self.key_state.key_cooldowns[key] = time.time() + cooldown_seconds
+            now = time.monotonic()
+            self._prune_cooldowns(now)
+            num_keys = len(self.api_keys)
+            if not num_keys:
+                return []
+
+            start = self.key_state.key_index
+            usable: List[str] = []
+            seen = set()
+            for offset in range(num_keys):
+                key = self.api_keys[(start + offset) % num_keys]
+                if key in seen:
+                    continue
+                seen.add(key)
+                if key not in self.key_state.key_cooldowns:
+                    usable.append(key)
+            if usable:
+                self.key_state.key_index = (start + 1) % num_keys
+            return usable
+
+    def key_availability(self) -> Tuple[bool, List[float]]:
+        """Return whether any key is usable plus the remaining positive cooldowns."""
+        with self.key_state.lock:
+            now = time.monotonic()
+            self._prune_cooldowns(now)
+            if not self.api_keys:
+                return False, []
+            usable = any(k not in self.key_state.key_cooldowns for k in self.api_keys)
+            remaining = [v - now for v in self.key_state.key_cooldowns.values() if v > now]
+            return usable, remaining
+
+    def is_key_cooling(self, key: str) -> bool:
+        with self.key_state.lock:
+            deadline = self.key_state.key_cooldowns.get(key)
+            return deadline is not None and deadline > time.monotonic()
+
+    def mark_key_failed(self, key: str, cooldown_seconds: float = DEFAULT_HTTP_COOLDOWN_SECONDS):
+        with self.key_state.lock:
+            self.key_state.key_cooldowns[key] = time.monotonic() + cooldown_seconds
             logger.warning(f"[{self.name}] Key ...{key[-6:] if len(key) > 6 else key} 失败，冷却 {cooldown_seconds}s")
 
 
@@ -116,6 +163,7 @@ class GatewayEngine:
         self.auth_require = True
         self.auth_token = DEFAULT_AUTH_TOKEN
         self.max_body_bytes = DEFAULT_MAX_BODY_BYTES
+        self.max_cooldown_seconds = DEFAULT_MAX_COOLDOWN_SECONDS
 
         self.global_port = 17688
         self.auto_sync_interval = 3600
@@ -163,6 +211,18 @@ class GatewayEngine:
         except (TypeError, ValueError):
             parsed_max_body = DEFAULT_MAX_BODY_BYTES
         self.max_body_bytes = parsed_max_body if parsed_max_body > 0 else DEFAULT_MAX_BODY_BYTES
+
+        retry_cfg = gw_cfg.get("retry", {})
+        if not isinstance(retry_cfg, dict):
+            retry_cfg = {}
+        raw_max_cooldown = retry_cfg.get("max_cooldown_seconds", DEFAULT_MAX_COOLDOWN_SECONDS)
+        try:
+            parsed_max_cooldown = float(raw_max_cooldown)
+        except (TypeError, ValueError):
+            parsed_max_cooldown = DEFAULT_MAX_COOLDOWN_SECONDS
+        if not math.isfinite(parsed_max_cooldown) or parsed_max_cooldown <= 0:
+            parsed_max_cooldown = DEFAULT_MAX_COOLDOWN_SECONDS
+        self.max_cooldown_seconds = parsed_max_cooldown
 
         providers_data = gw_cfg.get("providers", {})
         if not isinstance(providers_data, dict):
@@ -445,13 +505,65 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def send_json_response(self, status: int, data: Any):
+    def send_json_response(self, status: int, data: Any, extra_headers: Optional[Dict[str, str]] = None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for header, value in (extra_headers or {}).items():
+            self.send_header(header, value)
         self.end_headers()
         self.wfile.write(body)
+
+    @staticmethod
+    def _retry_after_seconds(headers: Any) -> Optional[float]:
+        """Return a positive finite numeric Retry-After value, otherwise None."""
+        if headers is None:
+            return None
+        raw = headers.get("Retry-After")
+        if raw is None:
+            return None
+        try:
+            value = float(str(raw).strip())
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value) or value <= 0:
+            return None
+        return value
+
+    def _http_failure_cooldown(self, headers: Any) -> float:
+        retry_after = self._retry_after_seconds(headers)
+        if retry_after is None:
+            return DEFAULT_HTTP_COOLDOWN_SECONDS
+        return min(retry_after, self.gateway.max_cooldown_seconds)
+
+    def _send_all_cooling(self, providers: List["ProviderState"]) -> bool:
+        """Send 429 when every configured key on the matching candidates is cooling."""
+        keyed = [p for p in providers if p.api_keys]
+        if not keyed:
+            return False
+        remaining: List[float] = []
+        for provider in keyed:
+            usable, cooldowns = provider.key_availability()
+            if usable:
+                return False
+            remaining.extend(cooldowns)
+        positive = [value for value in remaining if value > 0]
+        if not positive:
+            return False
+        retry_after = max(1, int(math.ceil(min(positive))))
+        self.send_json_response(
+            429,
+            {
+                "error": {
+                    "message": "所有上游 API Key 均在冷却中，请稍后重试。",
+                    "type": "rate_limit_error",
+                    "code": "all_keys_cooling",
+                }
+            },
+            extra_headers={"Retry-After": str(retry_after)},
+        )
+        return True
 
     def _reject_origin(self) -> bool:
         """Universal Origin rejection before auth, body reading or forwarding."""
@@ -600,15 +712,29 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
 
         is_stream = req_data.get("stream", False) is True
 
+        providers = self.gateway.providers
+        active_providers: List[ProviderState] = []
+        for p_name, _ in candidates:
+            provider = providers.get(p_name)
+            if provider is not None and provider.is_active:
+                active_providers.append(provider)
+
+        # A fully cooling candidate set is answered without any upstream attempt.
+        if active_providers and self._send_all_cooling(active_providers):
+            return
+
         last_error_message = "未知错误"
         for idx, (p_name, target_model) in enumerate(candidates):
-            provider = self.gateway.providers.get(p_name)
+            provider = providers.get(p_name)
             if not provider or not provider.is_active:
                 continue
 
-            api_key = provider.get_available_key()
-            if not api_key:
-                logger.warning(f"[{p_name}] 无可用 API Key，跳过")
+            api_keys = provider.get_usable_keys()
+            if not api_keys:
+                if not provider.api_keys:
+                    logger.warning(f"[{p_name}] 无可用 API Key，跳过")
+                else:
+                    logger.warning(f"[{p_name}] 所有 API Key 均处于冷却中，跳过")
                 continue
 
             req_data["model"] = target_model
@@ -620,64 +746,44 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
 
             logger.info(
                 f"请求转发: model={requested_model} -> [{p_name}] model={target_model} "
-                f"(尝试 {idx+1}/{len(candidates)})"
+                f"(候选 {idx+1}/{len(candidates)}, {len(api_keys)} 个可用 Key)"
             )
 
-            req = urllib.request.Request(
-                upstream_url,
-                data=forward_body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                    "Accept": "text/event-stream" if is_stream else "application/json",
-                    "User-Agent": "OneSpace-Cloud-Gateway/1.0"
-                },
-                method="POST"
-            )
-
-            try:
-                resp = urllib.request.urlopen(req, timeout=120)
-                status_code = resp.status
-
-                if is_stream:
-                    self.send_response(status_code)
-                    for k, v in resp.getheaders():
-                        if k.lower() in ("content-type", "cache-control", "connection"):
-                            self.send_header(k, v)
-                    self.end_headers()
-
-                    try:
-                        while True:
-                            chunk = resp.read(1024)
-                            if not chunk:
-                                break
-                            self.wfile.write(chunk)
-                            self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
-                        logger.info("下游客户端主动断开连接")
-                    return
-                else:
-                    resp_body = resp.read()
-                    self.send_response(status_code)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(resp_body)))
-                    self.end_headers()
-                    self.wfile.write(resp_body)
-                    return
-
-            except urllib.error.HTTPError as e:
-                err_text = ""
-                try:
-                    err_text = e.read().decode("utf-8")
-                except Exception:
-                    pass
-                last_error_message = f"[{p_name}] HTTP {e.code}: {err_text or e.reason}"
-                logger.warning(f"转发失败: {last_error_message}")
-
-                if e.code in (429, 500, 502, 503, 504):
-                    provider.mark_key_failed(api_key, cooldown_seconds=60.0)
+            for api_key in api_keys:
+                # Another request may have cooled this key since the snapshot.
+                if provider.is_key_cooling(api_key):
                     continue
-                else:
+
+                req = urllib.request.Request(
+                    upstream_url,
+                    data=forward_body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}",
+                        "Accept": "text/event-stream" if is_stream else "application/json",
+                        "User-Agent": "OneSpace-Cloud-Gateway/1.0"
+                    },
+                    method="POST"
+                )
+
+                try:
+                    resp = urllib.request.urlopen(req, timeout=120)
+                except urllib.error.HTTPError as e:
+                    err_text = ""
+                    try:
+                        err_text = e.read().decode("utf-8")
+                    except Exception:
+                        pass
+                    last_error_message = f"[{p_name}] HTTP {e.code}: {err_text or e.reason}"
+                    logger.warning(f"转发失败: {last_error_message}")
+
+                    if e.code == 429 or 500 <= e.code < 600:
+                        provider.mark_key_failed(
+                            api_key, self._http_failure_cooldown(e.headers)
+                        )
+                        continue
+
+                    # Non-retryable business errors fail fast without failover.
                     self.send_json_response(e.code, {
                         "error": {
                             "message": f"上游服务商业务报错: {err_text or e.reason}",
@@ -686,18 +792,77 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                         }
                     })
                     return
+                except Exception as e:
+                    last_error_message = f"[{p_name}] 网络传输异常: {e}"
+                    logger.warning(f"转发网络异常: {last_error_message}")
+                    provider.mark_key_failed(
+                        api_key, cooldown_seconds=DEFAULT_TRANSPORT_COOLDOWN_SECONDS
+                    )
+                    continue
 
-            except Exception as e:
-                last_error_message = f"[{p_name}] 网络传输异常: {e}"
-                logger.warning(f"转发网络异常: {last_error_message}")
-                provider.mark_key_failed(api_key, cooldown_seconds=30.0)
-                continue
+                if is_stream:
+                    self._relay_stream(resp)
+                    return
+
+                resp_body = resp.read()
+                self.send_response(resp.status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(resp_body)))
+                self.end_headers()
+                self.wfile.write(resp_body)
+                return
+
+        if active_providers and self._send_all_cooling(active_providers):
+            return
 
         self.send_json_response(502, {
             "error": {
                 "message": f"所有上游候选均重试失败。最后错误: {last_error_message}"
             }
         })
+
+    def _relay_stream(self, resp: Any) -> None:
+        """Relay upstream bytes promptly and keep downstream/upstream faults distinct."""
+        committed = False
+        try:
+            self.send_response(resp.status)
+            for k, v in resp.getheaders():
+                if k.lower() in ("content-type", "cache-control", "connection"):
+                    self.send_header(k, v)
+            self.end_headers()
+            committed = True
+
+            read1 = getattr(resp, "read1", None)
+            while True:
+                try:
+                    if read1 is not None:
+                        chunk = read1(STREAM_READ_SIZE)
+                    else:
+                        chunk = resp.read(STREAM_READ_SIZE)
+                except Exception as e:
+                    if committed:
+                        logger.warning(f"上游流式响应头已提交后读取失败，关闭连接: {e}")
+                    else:
+                        logger.warning(f"上游流式读取失败: {e}")
+                    self.close_connection = True
+                    return
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                    logger.info(f"下游客户端主动断开连接: {e}")
+                    self.close_connection = True
+                    return
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            logger.info(f"下游客户端在响应头阶段断开连接: {e}")
+            self.close_connection = True
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
 
 
 def run_gateway_server(config_path: str, host: str = "127.0.0.1"):
