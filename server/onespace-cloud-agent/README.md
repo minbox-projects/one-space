@@ -6,7 +6,7 @@
 2. **Mac 合盖即走的长程重构会话**：基于 `tmux` + `opencode --yolo`，断网或合盖不丢会话，随时可恢复现场；支持 Git Worktree 隔离开发。
 3. **24/7 代码库监控与自动 PR 助手**：监听带指定标签的 GitHub Issue，先校验作者仓库权限，再自动接单、无头调用 `opencode run` 实施修改、提交分支并创建 Pull Request。
 4. **多渠道通知**：支持钉钉自定义机器人（含安全加签）与企业微信群机器人，任务接单、完成或异常时即时推送。
-5. **磁盘空间守护者（Disk Guardian）**：按白名单修剪过期 OpenCode `log` 与 `tool-output` 缓存、释放任务自有临时目录、清理过期且空闲的已注册 Worktree；默认保留全部会话文件与 `opencode.db*`、`repos`、`snapshot`，在 12GB~20GB 磁盘限制下长期稳定运行。
+5. **磁盘空间守护者（Disk Guardian）**：按白名单修剪过期 OpenCode `log` 与 `tool-output` 缓存、释放任务自有临时目录、清理过期且空闲的已注册 Worktree；默认保留全部会话文件与 `opencode.db*`、`repos`、`snapshot`。
 
 ---
 
@@ -67,7 +67,7 @@ server/onespace-cloud-agent/
 ssh dmit-server "systemctl restart onespace-cloud-agent"
 ```
 
-部署不做热加载：代码或配置改动都要重启服务才生效。需要回滚时，先停止服务，再从 `/root/onespace-cloud-agent-backups/` 中选择操作者确认的代码/配置快照手工恢复，并重新安装匹配的服务单元与启动器；没有自动回滚开关。
+部署不做热加载：代码或配置改动都要重启服务才生效。需要回滚时，先停止服务，再从 `/root/onespace-cloud-agent-backups/` 中选择操作者确认的代码/配置快照手工恢复，并重新安装匹配的服务单元与启动器；没有自动回滚开关。若目标版本是旧 worker，恢复后还必须先把 `~/.config/onespace-cloud-agent/worker_state.json.v1.bak` 还原为 `worker_state.json`，绝不能让旧版本读取 v2 状态；不存在该备份时按预装/空状态恢复，不伪造备份。恢复后依次确认未认证的 `/health`、携带 Bearer 凭据的模型列表与一次已知模型请求。默认清理不删除会话数据；被应急清理删除的会话文件只能依赖操作者事先的数据备份恢复，回退代码无法找回。
 
 ### 登录 GitHub（Personal access tokens classic）
 
@@ -307,6 +307,8 @@ curl -s http://127.0.0.1:17688/v1/chat/completions \
 - `GET /models`、`GET /v1/models`（需 Bearer 凭据）
 - `POST /chat/completions`、`POST /v1/chat/completions`（需 Bearer 凭据，支持流式 SSE）
 
+示例使用默认凭据；配置了自定义 `ai_gateway.auth.token` 时请替换为对应值。
+
 服务启动时以及每次模板同步后，网关会自动把模型池和活跃服务商模型同步到 `~/.config/opencode/opencode.json`，并统一使用单一 `Cloud Agent Gateway` 提供商（示例中的 `apiKey` 取自 `ai_gateway.auth.token`）：
 
 ```json
@@ -326,7 +328,7 @@ curl -s http://127.0.0.1:17688/v1/chat/completions \
 
 同步只读取并写入 `opencode.json`：仅替换 `provider.gateway`，保留其他 provider 与所有既有顶层配置；缺少 `$schema` 或默认模型时可初始化。若同目录存在 `opencode.jsonc`，网关保持其字节不变并记录警告——OpenCode 可能优先读取 JSONC，需要手动合并或删除。写入使用同目录临时文件加 `os.replace`，整个读取/合并/写入事务串行化；既有 JSON 非法或不是对象时保持原文件不变并记录警告。
 
-> 桌面端「同步 AI 网关到云端」会用本地网关配置整体覆盖远端 `ai_gateway` 段，云端的自定义 `auth` 与 `max_body_bytes` 会被重置为默认值，需要在该操作后重新补回。
+> 桌面端「同步 AI 网关到云端」会用本地网关配置整体覆盖远端 `ai_gateway` 段，云端的自定义 `auth`、`max_body_bytes` 与 `retry.max_cooldown_seconds` 会被重置为默认值，需要在该操作后重新补回。
 
 ---
 
