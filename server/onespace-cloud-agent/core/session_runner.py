@@ -5,13 +5,296 @@ onespace-cloud-agent: 长程编程与重构会话管理器 (Session Runner)
 """
 
 import json
+import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("onespace-session-runner")
+
+FALLBACK_OPENCODE_BIN = "/root/.opencode/bin/opencode"
+TMUX_PANE_FORMAT = "#{pane_current_path}|#{session_name}|#{pane_id}"
+TMUX_SESSION_PANE_FORMAT = (
+    "#{session_name}|#{session_created}|#{session_windows}|"
+    "#{pane_current_path}|#{pane_pid}"
+)
+
+
+def _parse_worktree_porcelain(output: str) -> List[Dict[str, str]]:
+    """解析 ``git worktree list --porcelain`` 输出。"""
+    worktrees: List[Dict[str, str]] = []
+    current: Dict[str, str] = {}
+    for raw_line in (output or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            if current:
+                worktrees.append(current)
+                current = {}
+            continue
+        key, _, value = line.partition(" ")
+        if key == "worktree":
+            if current:
+                worktrees.append(current)
+            current = {"path": value, "branch": "", "head": ""}
+        elif key == "HEAD":
+            current["head"] = value
+        elif key == "branch":
+            if value.startswith("refs/heads/"):
+                value = value[len("refs/heads/"):]
+            current["branch"] = value
+        elif key in ("locked", "prunable", "bare", "detached"):
+            current[key] = value or "1"
+    if current:
+        worktrees.append(current)
+    return worktrees
+
+
+def list_worktree_registrations(repo_dir: str) -> Optional[List[Dict[str, str]]]:
+    """返回 Git 注册的 Worktree；无法检查时返回 ``None``。"""
+    try:
+        res = subprocess.run(
+            ["git", "-C", repo_dir, "worktree", "list", "--porcelain"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        logger.warning("检查 Git Worktree 注册信息失败: %s", exc)
+        return None
+    if res.returncode != 0:
+        logger.warning(
+            "检查 Git Worktree 注册信息失败: %s", (res.stderr or "").strip()
+        )
+        return None
+    return _parse_worktree_porcelain(res.stdout or "")
+
+
+def _parse_pane_lines(
+    output: str, path_index: int, session_index: int, pane_index: int
+) -> List[Dict[str, str]]:
+    panes: List[Dict[str, str]] = []
+    for line in (output or "").splitlines():
+        parts = line.split("|")
+        if len(parts) <= max(path_index, session_index, pane_index):
+            continue
+        pane_path = parts[path_index].strip()
+        if not pane_path:
+            continue
+        panes.append(
+            {
+                "path": pane_path,
+                "session": parts[session_index].strip(),
+                "pane_id": parts[pane_index].strip(),
+            }
+        )
+    return panes
+
+
+def collect_tmux_panes() -> Optional[List[Dict[str, str]]]:
+    """检查所有 tmux 面板的工作目录；完全无法检查时返回 ``None``。"""
+    try:
+        res = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", TMUX_PANE_FORMAT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        res = None
+    if res is not None and res.returncode == 0:
+        panes = _parse_pane_lines(res.stdout or "", 0, 1, 2)
+        if panes:
+            return panes
+    try:
+        res = subprocess.run(
+            ["tmux", "list-sessions", "-F", TMUX_SESSION_PANE_FORMAT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+    if res.returncode != 0:
+        return None
+    return _parse_pane_lines(res.stdout or "", 3, 0, 4)
+
+
+def _find_registration(
+    registrations: List[Dict[str, str]], path: str
+) -> Optional[Dict[str, str]]:
+    target = os.path.abspath(path)
+    for entry in registrations:
+        if os.path.abspath(entry.get("path", "")) == target:
+            return entry
+    return None
+
+
+def _path_within(path: str, root: str) -> bool:
+    candidate = os.path.abspath(path)
+    base = os.path.abspath(root)
+    return candidate == base or candidate.startswith(base + os.sep)
+
+
+def worktree_is_clean(path: str) -> Optional[bool]:
+    """返回 Worktree 是否干净（含未跟踪文件）；无法检查时返回 ``None``。"""
+    try:
+        res = subprocess.run(
+            [
+                "git",
+                "-C",
+                path,
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        logger.warning("检查 Worktree 状态失败 %s: %s", path, exc)
+        return None
+    if res.returncode != 0:
+        logger.warning(
+            "检查 Worktree 状态失败 %s: %s", path, (res.stderr or "").strip()
+        )
+        return None
+    return not (res.stdout or "").strip()
+
+
+def remove_registered_worktree(main_repo_dir: str, worktree_path: str) -> bool:
+    """使用非强制 Git 移除 Worktree，保留分支。"""
+    try:
+        res = subprocess.run(
+            ["git", "-C", main_repo_dir, "worktree", "remove", worktree_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        logger.warning("移除 Worktree 失败 %s: %s", worktree_path, exc)
+        return False
+    if res.returncode != 0:
+        logger.warning(
+            "移除 Worktree 失败 %s: %s", worktree_path, (res.stderr or "").strip()
+        )
+        return False
+    return True
+
+
+def find_worktree_root(pane_path: str, workspace_root: str) -> Optional[str]:
+    """把面板路径（可位于子目录）解析为 ``<workspace_root>/*-worktrees/<branch>``。"""
+    if not pane_path:
+        return None
+    base = os.path.abspath(workspace_root)
+    pane = os.path.abspath(pane_path)
+    try:
+        relative = os.path.relpath(pane, base)
+    except ValueError:
+        return None
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        return None
+    parts = relative.split(os.sep)
+    if len(parts) < 2 or not parts[0].endswith("-worktrees") or not parts[1]:
+        return None
+    return os.path.join(base, parts[0], parts[1])
+
+
+def _is_managed_worktree_root(path: str, workspace_root: str) -> bool:
+    base = os.path.abspath(path)
+    parent = os.path.dirname(base)
+    return (
+        os.path.dirname(parent) == os.path.abspath(workspace_root)
+        and os.path.basename(parent).endswith("-worktrees")
+    )
+
+
+def cleanup_registered_worktree(
+    worktree_path: str,
+    workspace_root: str,
+    active_pane_paths: List[str],
+    registrations: Optional[List[Dict[str, str]]] = None,
+) -> bool:
+    """在注册、干净、无活动面板且位于受管根目录时移除 Worktree。"""
+    if not _is_managed_worktree_root(worktree_path, workspace_root):
+        logger.info("保留受管根目录之外的 Worktree: %s", worktree_path)
+        return False
+    if any(_path_within(pane, worktree_path) for pane in active_pane_paths if pane):
+        logger.info("保留仍被 tmux 面板使用的 Worktree: %s", worktree_path)
+        return False
+    if registrations is None:
+        registrations = list_worktree_registrations(worktree_path)
+    if registrations is None:
+        logger.warning("无法检查 Worktree 注册信息，已保留: %s", worktree_path)
+        return False
+    if _find_registration(registrations, worktree_path) is None:
+        logger.info("保留未注册的 Worktree 目录: %s", worktree_path)
+        return False
+    clean = worktree_is_clean(worktree_path)
+    if clean is None:
+        logger.warning("无法检查 Worktree 状态，已保留: %s", worktree_path)
+        return False
+    if not clean:
+        logger.info("保留存在未提交改动的 Worktree: %s", worktree_path)
+        return False
+    main_repo = registrations[0].get("path", "") if registrations else ""
+    return remove_registered_worktree(main_repo or worktree_path, worktree_path)
+
+
+def sweep_stale_worktrees(
+    workspace_root: str, retention_days: int, now: Optional[float] = None
+) -> None:
+    """清理超过保留期、已注册、干净且无 tmux 面板使用的 Worktree。"""
+    base = os.path.abspath(workspace_root)
+    if not os.path.isdir(base):
+        return
+    cutoff = (time.time() if now is None else now) - (retention_days * 86400)
+    panes = collect_tmux_panes()
+    if panes is None:
+        logger.warning("无法检查 tmux 面板，跳过过期 Worktree 清理")
+        return
+    active_paths = [pane.get("path", "") for pane in panes]
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError as exc:
+        logger.warning("列出工作区失败 %s: %s", base, exc)
+        return
+    for entry in entries:
+        if not entry.endswith("-worktrees"):
+            continue
+        worktree_base = os.path.join(base, entry)
+        if os.path.islink(worktree_base) or not os.path.isdir(worktree_base):
+            continue
+        try:
+            branch_dirs = sorted(os.listdir(worktree_base))
+        except OSError as exc:
+            logger.warning("列出 Worktree 目录失败 %s: %s", worktree_base, exc)
+            continue
+        for branch_dir in branch_dirs:
+            candidate = os.path.join(worktree_base, branch_dir)
+            if os.path.islink(candidate) or not os.path.isdir(candidate):
+                continue
+            try:
+                mtime = os.path.getmtime(candidate)
+            except OSError as exc:
+                logger.warning("检查 Worktree 时间失败 %s: %s", candidate, exc)
+                continue
+            if mtime >= cutoff:
+                continue
+            try:
+                cleanup_registered_worktree(candidate, base, active_paths)
+            except Exception as exc:
+                logger.warning("清理过期 Worktree 失败 %s: %s", candidate, exc)
 
 
 class SessionRunner:
@@ -233,22 +516,40 @@ class SessionRunner:
                     if not os.path.isdir(wt_dir):
                         continue
                     candidate = f"dev_{self._sanitize_name(repo_name)}_{self._sanitize_name(branch_dir)}"
-                    if candidate == session_name:
+                    if candidate != session_name:
+                        continue
+                    registrations = list_worktree_registrations(wt_dir)
+                    if registrations is None:
+                        continue
+                    if any(
+                        os.path.abspath(item.get("path", "")) == os.path.abspath(wt_dir)
+                        and self._sanitize_name(item.get("branch", ""))
+                        == self._sanitize_name(branch_dir)
+                        for item in registrations
+                    ):
                         return wt_dir
             elif os.path.exists(os.path.join(entry_path, ".git")):
                 if session_name == f"dev_{self._sanitize_name(entry)}":
                     return entry_path
         return None
 
+    def _resolve_opencode_bin(self) -> str:
+        """从当前 PATH 解析 opencode，并保留既有绝对路径作为兜底。"""
+        resolved = shutil.which("opencode")
+        if resolved:
+            return resolved
+        if os.path.exists(FALLBACK_OPENCODE_BIN):
+            return FALLBACK_OPENCODE_BIN
+        logger.warning("未在 PATH 或 %s 找到 opencode 可执行文件", FALLBACK_OPENCODE_BIN)
+        return FALLBACK_OPENCODE_BIN
+
     def _build_init_command(self, project_dir: str, use_yolo: bool, extra_args: str) -> str:
-        auth_flag = "--yolo" if use_yolo else ""
-        extra_flag = f" {extra_args.strip()}" if extra_args and extra_args.strip() else ""
-        return (
-            f"cd {shlex.quote(project_dir)} && export PATH=$PATH:/root/.opencode/bin && "
-            f"opencode {auth_flag}{extra_flag}; "
-            f"echo 'opencode 已退出，当前为兜底 shell；输入 oc 重新进入，或 exit 结束会话'; "
-            f"exec bash -l"
-        ).strip()
+        argv = [self._resolve_opencode_bin()]
+        if use_yolo:
+            argv.append("--yolo")
+        if extra_args and extra_args.strip():
+            argv.extend(shlex.split(extra_args))
+        return shlex.join(argv)
 
     def _spawn_session(
         self,
@@ -355,14 +656,44 @@ class SessionRunner:
 
     def _prepare_worktree(self, main_repo_dir: str, branch: str) -> str:
         """为指定的主仓库和分支创建或复用独立的 git worktree"""
+        if not branch or branch.startswith("-"):
+            raise RuntimeError(f"分支名无效，已拒绝执行 Git 操作: {branch!r}")
+
+        ref_check = subprocess.run(
+            ["git", "-C", main_repo_dir, "check-ref-format", "--branch", branch],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if ref_check.returncode != 0:
+            raise RuntimeError(
+                f"分支名未通过 Git 校验: {branch!r}: {(ref_check.stderr or '').strip()}"
+            )
+
         repo_name = os.path.basename(main_repo_dir)
         clean_branch = self._sanitize_name(branch)
         worktree_base = os.path.join(self.workspace_root, f"{repo_name}-worktrees")
         os.makedirs(worktree_base, exist_ok=True)
         worktree_dir = os.path.join(worktree_base, clean_branch)
 
+        registrations = list_worktree_registrations(main_repo_dir)
         if os.path.exists(worktree_dir):
-            return worktree_dir
+            registered = (
+                registrations is not None
+                and any(
+                    os.path.abspath(item.get("path", ""))
+                    == os.path.abspath(worktree_dir)
+                    and item.get("branch", "") == branch
+                    for item in registrations
+                )
+            )
+            if registered:
+                return worktree_dir
+            raise RuntimeError(
+                f"目录 [{worktree_dir}] 已存在但未作为分支 [{branch}] 注册为 Git Worktree；"
+                "已停止创建会话，请先人工确认该目录。"
+            )
 
         print(f"正在为仓库 [{repo_name}] 创建隔离特性工作区 (分支: {branch})...")
         if self._has_origin_remote(main_repo_dir):
@@ -381,8 +712,10 @@ class SessionRunner:
             cmd = ["git", "-C", main_repo_dir, "worktree", "add", "-b", branch, worktree_dir, base]
 
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
-        if res.returncode != 0 and not os.path.exists(worktree_dir):
-            raise RuntimeError(f"创建 Git Worktree 失败: {res.stderr.strip()}")
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"创建 Git Worktree 失败: {(res.stderr or '').strip()}"
+            )
 
         return worktree_dir
 
@@ -482,9 +815,56 @@ class SessionRunner:
 
         return self._spawn_session(session_name, project_dir, use_yolo, extra_args, attach)
 
+    def _cleanup_after_kill(self, session_name: str, pane_paths: List[str]) -> None:
+        panes_after = collect_tmux_panes()
+        if panes_after is None:
+            logger.warning(
+                "无法检查 tmux 面板，保留会话 [%s] 关联的 Worktree", session_name
+            )
+            return
+        active_paths = [
+            pane.get("path", "")
+            for pane in panes_after
+            if pane.get("session") != session_name and pane.get("path")
+        ]
+        roots = {
+            root
+            for root in (
+                find_worktree_root(path, self.workspace_root) for path in pane_paths
+            )
+            if root
+        }
+        for root in sorted(roots):
+            try:
+                registrations = list_worktree_registrations(root)
+                cleanup_registered_worktree(
+                    root,
+                    self.workspace_root,
+                    active_paths,
+                    registrations=registrations,
+                )
+            except Exception as exc:
+                logger.warning("会话终止后的 Worktree 清理失败 %s: %s", root, exc)
+
     def kill_session(self, session_name: str) -> bool:
+        panes_before = collect_tmux_panes()
+        pane_paths = (
+            [
+                pane.get("path", "")
+                for pane in panes_before
+                if pane.get("session") == session_name and pane.get("path")
+            ]
+            if panes_before is not None
+            else []
+        )
         res = subprocess.run(["tmux", "kill-session", "-t", session_name], check=False)
-        return res.returncode == 0
+        if res.returncode != 0:
+            return False
+        try:
+            self._cleanup_after_kill(session_name, pane_paths)
+        except Exception as exc:
+            logger.warning("会话终止后的清理失败 [%s]: %s", session_name, exc)
+        return True
 
 
 if __name__ == "__main__":

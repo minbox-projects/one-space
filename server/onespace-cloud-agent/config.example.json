@@ -59,5 +59,14 @@
     "dingtalk_webhook": "https://oapi.dingtalk.com/robot/send?access_token=your_token",
     "dingtalk_secret": "SEC_your_secret",
     "wechat_work_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your_key"
+  },
+  "guardian": {
+    "data_roots": [
+      "~/.local/share/opencode",
+      "~/.cache/opencode"
+    ],
+    "cache_retention_days": 7,
+    "cleanup_sessions": false,
+    "worktree_retention_days": 7
   }
 }

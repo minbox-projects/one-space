@@ -6,7 +6,7 @@
 2. **Mac 合盖即走的长程重构会话**：基于 `tmux` + `opencode --yolo`，断网或合盖不丢会话，随时可恢复现场；支持 Git Worktree 隔离开发。
 3. **24/7 代码库监控与自动 PR 助手**：监听带指定标签的 GitHub Issue，先校验作者仓库权限，再自动接单、无头调用 `opencode run` 实施修改、提交分支并创建 Pull Request。
 4. **多渠道通知**：支持钉钉自定义机器人（含安全加签）与企业微信群机器人，任务接单、完成或异常时即时推送。
-5. **磁盘空间守护者（Disk Guardian）**：自动清理任务工作目录、修剪过期 OpenCode 历史与缓存，在 12GB~20GB 磁盘限制下长期稳定运行。
+5. **磁盘空间守护者（Disk Guardian）**：按白名单修剪过期 OpenCode `log` 与 `tool-output` 缓存、释放任务自有临时目录、清理过期且空闲的已注册 Worktree；默认保留全部会话文件与 `opencode.db*`、`repos`、`snapshot`，在 12GB~20GB 磁盘限制下长期稳定运行。
 
 ---
 
@@ -15,7 +15,7 @@
 ```text
 server/onespace-cloud-agent/
 ├── agent.py                 # 主守护进程入口（管理 Gateway、Worker、Guardian）
-├── config.example.json      # 配置文件模板（网关、Issue Worker、通知）
+├── config.example.json      # 配置文件模板（网关、Issue Worker、通知、磁盘守护）
 ├── deploy.sh                # Mac 端执行的自动化远程安装/更新部署脚本
 ├── core/
 │   ├── gateway.py           # 轻量 Linux AI 网关（多 Provider 轮询、密钥冷却、模型池、模板同步）
@@ -34,7 +34,7 @@ server/onespace-cloud-agent/
 
 - Linux 服务器（Debian/Ubuntu 等），Python 3，无需安装第三方 Python 依赖。
 - `git`、`tmux`、GitHub CLI（`gh`）。
-- `opencode` 已安装并位于 `/root/.opencode/bin/opencode`（`deploy.sh` 会配置 PATH 与软链接）。
+- `opencode` 已安装且位于服务 PATH 中；未在 PATH 找到时回退 `/root/.opencode/bin/opencode`（`deploy.sh` 会配置 PATH 与软链接）。
 - 可免密 SSH 登录目标服务器，且服务器可访问 GitHub 与各 AI 服务商 API。
 
 ---
@@ -197,6 +197,22 @@ Issue Worker 启动时会执行不带 `--show-token` 的 `gh auth status` 检查
 
 每个通道的单次投递最多 3 次总尝试：传输错误、HTTP 429 与 5xx 视为短暂失败，重试间隔为 1 秒、2 秒；其他 4xx 只尝试一次。钉钉与企业微信通道互相独立，单通道失败不影响另一通道，也不会改变任务结果；错误与日志中只出现去掉查询串的 webhook 地址，不输出凭据。
 
+### `guardian`
+
+| 字段 | 说明 |
+| --- | --- |
+| `guardian.data_roots` | OpenCode 数据根目录列表，默认 `~/.local/share/opencode` 与 `~/.cache/opencode`。 |
+| `guardian.cache_retention_days` | 缓存保留天数，默认 `7`；常规清理只删除 `log` 与 `tool-output` 下早于该期限的条目。 |
+| `guardian.cleanup_sessions` | 是否允许应急清理历史会话文件，默认 `false`；设为 `true` 时才额外允许删除 `sessions` 下超过保留期的旧文件，数据库、仓库与快照仍保留。 |
+| `guardian.worktree_retention_days` | 共享 Worktree 的过期清理阈值，默认 `7` 天，按 Worktree 目录 mtime 判断。 |
+
+### Worktree 与会话清理
+
+- 终止会话（`cloud-session kill`）后，只有同时满足以下条件的 Worktree 才会以非强制 `git worktree remove` 移除：位于 `<workspace_root>/*-worktrees` 下、没有被其他 tmux 面板使用（按面板当前路径判断，包含其子目录）、且工作区干净（含未跟踪文件）。分支保留，不会清理无关注册。
+- 周期性过期清扫只处理已注册、干净、无会话使用、且目录 mtime 早于 `guardian.worktree_retention_days` 的 Worktree；脏工作区、仍被使用、未注册、位于受管根目录之外或无法检查的目录都会保留并记录日志。
+- 磁盘守护只修剪白名单缓存：在 `guardian.data_roots` 的 `log` 与 `tool-output` 中删除超过 `guardian.cache_retention_days` 的条目；`guardian.cleanup_sessions` 默认为 `false` 时保留全部会话文件，只有显式设为 `true` 才额外允许删除 `sessions` 下超过同一保留期的旧文件。`opencode.db*`、`repos` 与 `snapshot` 在任何模式下都保留，符号链接不会被跟随到数据根目录之外。
+- 单个条目删除失败只记录日志并继续处理其他条目；剩余空间低于 2 GB 时记录告警，但不会因此缩短保留期。任务自有临时目录的清理与共享 Worktree 清理相互独立。
+
 ---
 
 ## 核心使用场景
@@ -222,8 +238,10 @@ ssh dmit-server "cloud-session kill <session-name>"
 ```
 
 - 单参数会优先恢复同名活跃会话；若不存在，则克隆 Git URL 或使用 `workspace_root` 下的目录，并创建 `dev_<repo>` 会话。
-- 双参数会在 `<workspace_root>/<repo>-worktrees/<branch>` 创建或复用 Worktree，并创建 `dev_<repo>_<branch>` 会话。
-- 会话中的 `opencode` 默认使用 `--yolo` 全权限自动授权模式。
+- 双参数会在 `<workspace_root>/<repo>-worktrees/<清洗后的分支>` 创建或复用 Worktree，并创建 `dev_<repo>_<branch>` 会话；目录名沿用既有分支清洗规则，交付给 Git 的分支仍保持调用者给出的原值。
+- 分支以 `-` 开头时在任何 Git 调用前被拒绝，其余分支用 argv `git check-ref-format --branch` 校验，因此包含空格等非法分支会由 Git 校验失败拒绝而不会进入 shell；路径与合法分支始终作为字面 argv 元素传递。仅当 Git 注册的路径与分支都与目标一致时才复用或恢复既有 Worktree，未注册目录或创建失败残留的目录会直接报错，不会启动 OpenCode。
+- 会话中的 `opencode` 优先从当前 PATH 解析，未找到时回退 `/root/.opencode/bin/opencode`；默认初始化命令恰为 `shlex` 转义后的可执行文件加 `--yolo`，项目路径只通过 tmux `-c` 传入。`--no-yolo` 与 `--extra-args` 经 `shlex.split` 后再转义保留，不存在兜底 shell 命令，OpenCode 退出后会话也不会回落到 shell。
+- 会话终止或过期清扫时的 Worktree 清理规则见「Worktree 与会话清理」：只移除受管根目录内、无其他面板使用且干净的已注册 Worktree，并保留分支。
 - 进入 `opencode` 后下达任务，直接断开 SSH 或合上屏幕，云端会继续执行；再次执行相同命令即可恢复现场。
 
 ### 场景 2：24/7 代码库监控与自动提 PR

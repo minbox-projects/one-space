@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 onespace-cloud-agent: 磁盘空间守护者 (Disk Guardian)
-针对 20G VPS 磁盘空间，提供工作目录即时释放、OpenCode 历史会话自动修剪与低磁盘告警。
+针对 20G VPS 磁盘空间，提供任务临时工作目录释放、受控 OpenCode 缓存修剪与低磁盘告警。
 """
 
 import logging
@@ -9,15 +9,40 @@ import os
 import shutil
 import subprocess
 import time
-from typing import Dict
+from typing import Dict, List, Optional, Sequence
+
+from core.session_runner import sweep_stale_worktrees as sweep_registered_worktrees
 
 logger = logging.getLogger("onespace-guardian")
 
+DEFAULT_DATA_ROOTS = (
+    "~/.local/share/opencode",
+    "~/.cache/opencode",
+)
+DEFAULT_CACHE_SUBDIRS = ("log", "tool-output")
+LEGACY_SESSION_SUBDIR = "sessions"
+
 
 class DiskGuardian:
-    def __init__(self, opencode_dir: str = "/root/.opencode", min_free_gb: float = 2.0):
+    def __init__(
+        self,
+        opencode_dir: str = "/root/.opencode",
+        min_free_gb: float = 2.0,
+        data_roots: Optional[Sequence[str]] = None,
+        cache_retention_days: int = 7,
+        cleanup_sessions: bool = False,
+        worktree_retention_days: int = 7,
+        workspace_root: str = "/root/cloud-agent-workspaces",
+    ):
         self.opencode_dir = opencode_dir
         self.min_free_gb = min_free_gb
+        if data_roots is None:
+            data_roots = DEFAULT_DATA_ROOTS
+        self.data_roots: List[str] = [os.path.expanduser(root) for root in data_roots]
+        self.cache_retention_days = cache_retention_days
+        self.cleanup_sessions = cleanup_sessions
+        self.worktree_retention_days = worktree_retention_days
+        self.workspace_root = workspace_root
 
     def get_disk_usage(self, path: str = "/") -> Dict[str, float]:
         """获取指定路径的磁盘容量统计 (单位: GB)"""
@@ -38,7 +63,7 @@ class DiskGuardian:
             return {"total_gb": 0, "used_gb": 0, "free_gb": 0, "use_percent": 0}
 
     def cleanup_workspace(self, workspace_path: str):
-        """即时清理一次任务执行产生的临时工作空间"""
+        """即时清理一次任务执行产生的临时工作空间（任务自有 scratch，与共享 Worktree 分离）"""
         if not workspace_path or not os.path.exists(workspace_path):
             return
 
@@ -51,62 +76,69 @@ class DiskGuardian:
         except Exception as e:
             logger.warning(f"清理工作目录失败: {e}")
 
-    def cleanup_opencode_history(self, max_age_days: int = 3):
-        """修剪超过保留期的 OpenCode 会话日志与缓存"""
-        if not os.path.exists(self.opencode_dir):
+    def _cleanup_allowlisted_tree(self, target_dir: str, cutoff_time: float) -> None:
+        if os.path.islink(target_dir) or not os.path.isdir(target_dir):
             return
 
-        cutoff_time = time.time() - (max_age_days * 86400)
-        reclaimed_bytes = 0
-        deleted_count = 0
+        empty_dirs: List[str] = []
+        for root, dirs, files in os.walk(target_dir, topdown=True, followlinks=False):
+            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+            for filename in files:
+                file_path = os.path.join(root, filename)
+                try:
+                    if os.lstat(file_path).st_mtime >= cutoff_time:
+                        continue
+                    os.remove(file_path)
+                    logger.info(f"已清理过期缓存条目: {file_path}")
+                except OSError as exc:
+                    logger.warning(f"清理缓存条目失败 {file_path}: {exc}")
+            empty_dirs.append(root)
 
-        scan_subdirs = ["generated-images", "cache", "logs", "sessions"]
-        for sub in scan_subdirs:
-            target_dir = os.path.join(self.opencode_dir, sub)
-            if not os.path.exists(target_dir):
+        for directory in sorted(empty_dirs, key=len, reverse=True):
+            if os.path.abspath(directory) == os.path.abspath(target_dir):
                 continue
-            for root, dirs, files in os.walk(target_dir):
-                for f in files:
-                    file_path = os.path.join(root, f)
-                    try:
-                        mtime = os.path.getmtime(file_path)
-                        if mtime < cutoff_time:
-                            size = os.path.getsize(file_path)
-                            os.remove(file_path)
-                            reclaimed_bytes += size
-                            deleted_count += 1
-                    except Exception:
-                        pass
+            try:
+                if not os.listdir(directory):
+                    os.rmdir(directory)
+            except OSError:
+                pass
 
-        for sub in scan_subdirs:
-            target_dir = os.path.join(self.opencode_dir, sub)
-            if os.path.exists(target_dir):
-                for root, dirs, files in os.walk(target_dir, topdown=False):
-                    for d in dirs:
-                        dir_path = os.path.join(root, d)
-                        try:
-                            if not os.listdir(dir_path):
-                                os.rmdir(dir_path)
-                        except Exception:
-                            pass
+    def cleanup_cache(self) -> None:
+        """仅清理允许目录中的过期缓存；默认保留全部会话文件。"""
+        cutoff_time = time.time() - (self.cache_retention_days * 86400)
+        subdirs = list(DEFAULT_CACHE_SUBDIRS)
+        if self.cleanup_sessions:
+            subdirs.append(LEGACY_SESSION_SUBDIR)
 
-        mb_freed = round(reclaimed_bytes / (1024 * 1024), 2)
-        if deleted_count > 0:
-            logger.info(f"OpenCode 历史修剪完成: 清理 {deleted_count} 个过期文件，释放 {mb_freed} MB")
+        for data_root in self.data_roots:
+            if not os.path.isdir(data_root):
+                continue
+            for subdir in subdirs:
+                self._cleanup_allowlisted_tree(
+                    os.path.join(data_root, subdir), cutoff_time
+                )
+
+    def sweep_stale_worktrees(self) -> None:
+        """通过共享原语清理过期、干净且无会话使用的已注册 Worktree。"""
+        sweep_registered_worktrees(
+            self.workspace_root, self.worktree_retention_days
+        )
 
     def run_routine_check(self):
         """日常磁盘检查与防护逻辑"""
         usage = self.get_disk_usage("/")
         logger.info(f"磁盘巡检: 剩余 {usage['free_gb']} GB / 总计 {usage['total_gb']} GB ({usage['use_percent']}%)")
         if usage["free_gb"] < self.min_free_gb:
-            logger.warning(f"磁盘剩余空间已低于 {self.min_free_gb} GB 阈值，执行深度自动修剪...")
-            self.cleanup_opencode_history(max_age_days=1)
-            subprocess.run(["apt-get", "clean"], check=False)
-            subprocess.run(["journalctl", "--vacuum-size=50M"], check=False)
+            logger.warning(
+                f"磁盘剩余空间已低于 {self.min_free_gb} GB 阈值，执行受控缓存清理..."
+            )
+        self.cleanup_cache()
+        self.sweep_stale_worktrees()
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     guardian = DiskGuardian()
     print("磁盘状态:", guardian.get_disk_usage())
-    guardian.cleanup_opencode_history(max_age_days=3)
+    guardian.cleanup_cache()
+    guardian.sweep_stale_worktrees()
