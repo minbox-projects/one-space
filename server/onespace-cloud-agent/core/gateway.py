@@ -10,10 +10,12 @@ onespace-cloud-agent: Linux AI 网关核心组件
 5. 支持流式 SSE (Server-Sent Events) 与非流式请求转发。
 """
 
+import hmac
 import http.server
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 import urllib.error
@@ -23,46 +25,82 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("onespace-gateway")
 
+DEFAULT_AUTH_TOKEN = "sk-onespace-cloud-agent"
+DEFAULT_MAX_BODY_BYTES = 10485760
 
-class ProviderState:
-    def __init__(self, name: str, config: Dict[str, Any]):
-        self.name = name
-        self.base_url = config.get("base_url", "").rstrip("/")
-        self.api_keys: List[str] = config.get("api_keys", [])
-        self.models: Dict[str, Any] = config.get("models", {})
-        self.is_active: bool = config.get("is_active", True)
-        self.template_url: Optional[str] = config.get("template_url")
-        
-        # 轮询游标与冷却状态 {api_key: cooldown_until_timestamp}
+
+class ProviderKeyState:
+    """Shared mutable key rotation state for one provider."""
+
+    def __init__(self) -> None:
         self.key_index = 0
         self.key_cooldowns: Dict[str, float] = {}
         self.lock = threading.Lock()
 
+
+class ProviderState:
+    def __init__(self, name: str, config: Dict[str, Any], key_state: Optional[ProviderKeyState] = None):
+        self.name = name
+        self.base_url = str(config.get("base_url", "")).rstrip("/")
+        self.api_keys: List[str] = list(config.get("api_keys", []) or [])
+        models = config.get("models", {})
+        self.models: Dict[str, Any] = models if isinstance(models, dict) else {}
+        self.is_active: bool = config.get("is_active", True)
+        self.template_url: Optional[str] = config.get("template_url")
+
+        # Key rotation and cooldown state is shared across catalog generations so
+        # template synchronization never resets runtime availability.
+        self.key_state = key_state or ProviderKeyState()
+
+    def with_models(self, models: Dict[str, Any]) -> "ProviderState":
+        return ProviderState(
+            self.name,
+            {
+                "base_url": self.base_url,
+                "api_keys": self.api_keys,
+                "models": models,
+                "is_active": self.is_active,
+                "template_url": self.template_url,
+            },
+            key_state=self.key_state,
+        )
+
     def get_available_key(self) -> Optional[str]:
-        with self.lock:
+        with self.key_state.lock:
             now = time.time()
             if not self.api_keys:
                 return None
-            
+
             # 清理过期的冷却
-            self.key_cooldowns = {k: v for k, v in self.key_cooldowns.items() if v > now}
-            
-            # 尝试轮询未冷却的 key
+            self.key_state.key_cooldowns = {
+                k: v for k, v in self.key_state.key_cooldowns.items() if v > now
+            }
+
+            # 尝试轮询未冷却的 key；已冷却的 key 绝不复用
             num_keys = len(self.api_keys)
             for _ in range(num_keys):
-                candidate = self.api_keys[self.key_index % num_keys]
-                self.key_index += 1
-                if candidate not in self.key_cooldowns:
+                candidate = self.api_keys[self.key_state.key_index % num_keys]
+                self.key_state.key_index += 1
+                if candidate not in self.key_state.key_cooldowns:
                     return candidate
-            
-            # 如果全部在冷却，返回即将到期的那个或第一个
-            logger.warning(f"[{self.name}] 所有 API Key 均处于冷却中，尝试复用第一个")
-            return self.api_keys[0]
+
+            logger.warning(f"[{self.name}] 所有 API Key 均处于冷却中")
+            return None
 
     def mark_key_failed(self, key: str, cooldown_seconds: float = 60.0):
-        with self.lock:
-            self.key_cooldowns[key] = time.time() + cooldown_seconds
+        with self.key_state.lock:
+            self.key_state.key_cooldowns[key] = time.time() + cooldown_seconds
             logger.warning(f"[{self.name}] Key ...{key[-6:] if len(key) > 6 else key} 失败，冷却 {cooldown_seconds}s")
+
+
+class _Catalog:
+    """One immutable catalog generation."""
+
+    __slots__ = ("providers", "model_pools")
+
+    def __init__(self, providers: Dict[str, ProviderState], model_pools: Dict[str, Dict[str, Any]]):
+        self.providers = providers
+        self.model_pools = model_pools
 
 
 class GatewayEngine:
@@ -70,12 +108,32 @@ class GatewayEngine:
         self.config_path = config_path
         self.sync_opencode = sync_opencode
         self.opencode_config_path = opencode_config_path
-        self.providers: Dict[str, ProviderState] = {}
-        self.model_pools: Dict[str, Dict[str, Any]] = {}
+
+        self._catalog_lock = threading.Lock()
+        self._opencode_lock = threading.Lock()
+        self._catalog = _Catalog({}, {})
+
+        self.auth_require = True
+        self.auth_token = DEFAULT_AUTH_TOKEN
+        self.max_body_bytes = DEFAULT_MAX_BODY_BYTES
+
         self.global_port = 17688
         self.auto_sync_interval = 3600
         self.running = False
         self.load_config()
+
+    @property
+    def providers(self) -> Dict[str, ProviderState]:
+        return self._catalog.providers
+
+    @property
+    def model_pools(self) -> Dict[str, Dict[str, Any]]:
+        return self._catalog.model_pools
+
+    def _snapshot(self) -> Tuple[Dict[str, ProviderState], Dict[str, Dict[str, Any]]]:
+        with self._catalog_lock:
+            catalog = self._catalog
+            return catalog.providers, catalog.model_pools
 
     def load_config(self):
         if not os.path.exists(self.config_path):
@@ -86,93 +144,193 @@ class GatewayEngine:
             cfg = json.load(f)
 
         gw_cfg = cfg.get("ai_gateway", {})
+        if not isinstance(gw_cfg, dict):
+            gw_cfg = {}
+
         self.global_port = gw_cfg.get("port", 17688)
         self.auto_sync_interval = gw_cfg.get("auto_sync_interval_seconds", 3600)
 
-        # 加载服务商
-        providers_data = gw_cfg.get("providers", {})
-        new_providers = {}
-        for p_name, p_data in providers_data.items():
-            new_providers[p_name] = ProviderState(p_name, p_data)
-        self.providers = new_providers
+        auth_cfg = gw_cfg.get("auth", {})
+        if not isinstance(auth_cfg, dict):
+            auth_cfg = {}
+        self.auth_require = bool(auth_cfg.get("require", True))
+        token = auth_cfg.get("token", DEFAULT_AUTH_TOKEN)
+        self.auth_token = token if isinstance(token, str) and token else DEFAULT_AUTH_TOKEN
 
-        # 加载模型池
-        self.model_pools = gw_cfg.get("model_pools", {})
-        logger.info(f"配置加载完成: {len(self.providers)} 个服务商, {len(self.model_pools)} 个模型池, 端口 {self.global_port}")
+        max_body_bytes = gw_cfg.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES)
+        try:
+            parsed_max_body = int(max_body_bytes)
+        except (TypeError, ValueError):
+            parsed_max_body = DEFAULT_MAX_BODY_BYTES
+        self.max_body_bytes = parsed_max_body if parsed_max_body > 0 else DEFAULT_MAX_BODY_BYTES
+
+        providers_data = gw_cfg.get("providers", {})
+        if not isinstance(providers_data, dict):
+            providers_data = {}
+        new_providers: Dict[str, ProviderState] = {}
+        for p_name, p_data in providers_data.items():
+            if isinstance(p_data, dict):
+                new_providers[p_name] = ProviderState(p_name, p_data)
+
+        model_pools = gw_cfg.get("model_pools", {})
+        if not isinstance(model_pools, dict):
+            model_pools = {}
+
+        with self._catalog_lock:
+            self._catalog = _Catalog(new_providers, model_pools)
+
+        logger.info(
+            f"配置加载完成: {len(new_providers)} 个服务商, {len(model_pools)} 个模型池, 端口 {self.global_port}"
+        )
         if self.sync_opencode:
             self.sync_to_opencode_config()
+
+    @staticmethod
+    def _upstream_model(provider: ProviderState, model_name: Any) -> Any:
+        meta = provider.models.get(model_name)
+        if isinstance(meta, dict):
+            return meta.get("upstream_model", model_name)
+        return model_name
+
+    def resolve_model(self, requested_model: Any) -> Tuple[List[Tuple[str, str]], bool]:
+        """Resolve a requested model into candidates plus whether the name is known.
+
+        Only pools, active provider prefixes and explicit mappings on active
+        providers resolve. Unknown names are never broadcast to providers.
+        """
+        name = requested_model if isinstance(requested_model, str) else ""
+        if not name.strip():
+            return [], False
+
+        providers, pools = self._snapshot()
+
+        # 1. 命中模型池 (Model Pool)
+        if name in pools:
+            pool = pools[name]
+            candidates: List[Tuple[str, str]] = []
+            if isinstance(pool, dict):
+                for candidate in pool.get("candidates", []) or []:
+                    if not isinstance(candidate, dict):
+                        continue
+                    p_name = candidate.get("provider")
+                    m_name = candidate.get("model")
+                    provider = providers.get(p_name)
+                    if provider is not None and provider.is_active:
+                        candidates.append((p_name, self._upstream_model(provider, m_name)))
+            return candidates, True
+
+        # 2. 命中具体服务商的前缀格式：provider/model（如 deepseek/deepseek-chat）
+        if "/" in name:
+            p_name, m_name = name.split("/", 1)
+            if p_name and m_name:
+                provider = providers.get(p_name)
+                if provider is not None and provider.is_active:
+                    return [(p_name, self._upstream_model(provider, m_name))], True
+
+        # 3. 遍历各活跃服务商是否有直接对应的模型映射
+        candidates = []
+        known = False
+        for p_name, provider in providers.items():
+            if not provider.is_active:
+                continue
+            if name in provider.models:
+                known = True
+                candidates.append((p_name, self._upstream_model(provider, name)))
+
+        return candidates, known
 
     def resolve_candidates(self, requested_model: str) -> List[Tuple[str, str]]:
         """
         将请求的模型名称解析为一个或多个候选 (provider_name, target_model) 列表。
         按优先级排序，以便于重试和降级。
         """
-        candidates: List[Tuple[str, str]] = []
-
-        # 1. 命中模型池 (Model Pool)
-        if requested_model in self.model_pools:
-            pool = self.model_pools[requested_model]
-            pool_candidates = pool.get("candidates", [])
-            for c in pool_candidates:
-                p_name = c.get("provider")
-                m_name = c.get("model")
-                if p_name in self.providers and self.providers[p_name].is_active:
-                    provider = self.providers[p_name]
-                    upstream = provider.models.get(m_name, {}).get("upstream_model", m_name) if isinstance(provider.models.get(m_name), dict) else m_name
-                    candidates.append((p_name, upstream))
-            if candidates:
-                return candidates
-
-        # 2. 命中具体服务商的前缀格式：provider/model（如 deepseek/deepseek-chat）
-        if "/" in requested_model:
-            parts = requested_model.split("/", 1)
-            p_name, m_name = parts[0], parts[1]
-            if p_name in self.providers and self.providers[p_name].is_active:
-                provider = self.providers[p_name]
-                upstream = provider.models.get(m_name, {}).get("upstream_model", m_name) if isinstance(provider.models.get(m_name), dict) else m_name
-                return [(p_name, upstream)]
-
-        # 3. 遍历各服务商是否有直接对应的模型映射
-        for p_name, provider in self.providers.items():
-            if not provider.is_active:
-                continue
-            if requested_model in provider.models:
-                candidates.append((p_name, provider.models[requested_model].get("upstream_model", requested_model)))
-
-        # 4. 兜底回退：如果都未精确匹配，尝试在所有有效服务商中透传同名模型
-        if not candidates:
-            for p_name, provider in self.providers.items():
-                if provider.is_active:
-                    candidates.append((p_name, requested_model))
-
-        return candidates
+        return self.resolve_model(requested_model)[0]
 
     def sync_templates(self):
         """同步服务商模板中声明的在线模型"""
         logger.info("开始执行服务商模板模型自动同步...")
-        for name, provider in self.providers.items():
+        providers, _ = self._snapshot()
+        replacements: Dict[str, ProviderState] = {}
+
+        for name, provider in providers.items():
             if not provider.template_url:
                 continue
             try:
                 req = urllib.request.Request(
                     provider.template_url,
-                    headers={"User-Agent": "OneSpace-Cloud-Agent/1.0", "Accept": "application/json"}
+                    headers={"User-Agent": "OneSpace-Cloud-Agent/1.0", "Accept": "application/json"},
                 )
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     if resp.status == 200:
                         data = json.loads(resp.read().decode("utf-8"))
                         raw_models = data.get("data", []) or data.get("models", [])
+                        new_models = dict(provider.models)
                         count = 0
                         for item in raw_models:
                             m_id = item.get("id") if isinstance(item, dict) else str(item)
-                            if m_id and m_id not in provider.models:
-                                provider.models[m_id] = {"upstream_model": m_id}
+                            if m_id and m_id not in new_models:
+                                new_models[m_id] = {"upstream_model": m_id}
                                 count += 1
+                        replacements[name] = provider.with_models(new_models)
                         logger.info(f"[{name}] 模板同步成功，新增 {count} 个模型")
             except Exception as e:
                 logger.warning(f"[{name}] 模板同步失败: {e}")
+
+        if replacements:
+            with self._catalog_lock:
+                current = self._catalog
+                new_providers = dict(current.providers)
+                for name, provider in replacements.items():
+                    if name in new_providers:
+                        new_providers[name] = provider
+                self._catalog = _Catalog(new_providers, current.model_pools)
+
         if self.sync_opencode:
             self.sync_to_opencode_config()
+
+    def _build_opencode_models(
+        self,
+        providers: Dict[str, ProviderState],
+        model_pools: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        models_dict: Dict[str, Any] = {}
+
+        # 1. 优先放入虚拟模型池
+        for pool_id, pool_meta in model_pools.items():
+            models_dict[pool_id] = {
+                "name": pool_meta.get("description", pool_id) if isinstance(pool_meta, dict) else pool_id,
+                "limit": {"context": 1000000, "output": 0},
+            }
+
+        # 2. 放入各活跃服务商模型（保持纯净模型标识与显示名）
+        for p_name, provider in providers.items():
+            if not provider.is_active:
+                continue
+            for m_id, m_meta in provider.models.items():
+                if m_id in models_dict:
+                    continue
+                disp_name = m_id
+                ctx_window = 1000000
+                reasoning_efforts = []
+
+                if isinstance(m_meta, dict):
+                    disp_name = m_meta.get("display_name", m_id)
+                    ctx_window = m_meta.get("context_window", 1000000) or 1000000
+                    reasoning_efforts = m_meta.get("reasoning_efforts", [])
+
+                model_entry = {
+                    "name": disp_name,
+                    "limit": {"context": ctx_window, "output": 0},
+                }
+                if reasoning_efforts:
+                    model_entry["reasoning"] = True
+                    model_entry["variants"] = {
+                        rf: {"reasoningEffort": rf} for rf in reasoning_efforts
+                    }
+
+                models_dict[m_id] = model_entry
+
+        return models_dict
 
     def sync_to_opencode_config(self, target_file: Optional[str] = None):
         """自动将当前网关可用的模型列表注入到 OpenCode 的主配置文件中，与 OneSpace App 保持完全一致"""
@@ -180,93 +338,86 @@ class GatewayEngine:
         if not self.sync_opencode and not target_path:
             return
 
-        try:
-            if target_path:
-                opencode_cfg_file = target_path
-                os.makedirs(os.path.dirname(os.path.abspath(opencode_cfg_file)), exist_ok=True)
-            else:
-                cfg_dir = os.path.expanduser("~/.config/opencode")
-                os.makedirs(cfg_dir, exist_ok=True)
-                opencode_cfg_file = os.path.join(cfg_dir, "opencode.json")
-                jsonc_file = os.path.join(cfg_dir, "opencode.jsonc")
+        if target_path:
+            opencode_cfg_file = target_path
+        else:
+            cfg_dir = os.path.expanduser("~/.config/opencode")
+            opencode_cfg_file = os.path.join(cfg_dir, "opencode.json")
+
+        target_dir = os.path.dirname(os.path.abspath(opencode_cfg_file))
+        jsonc_file = os.path.join(target_dir, "opencode.jsonc")
+
+        # The whole read/merge/write transaction is serialized.
+        with self._opencode_lock:
+            try:
+                os.makedirs(target_dir, exist_ok=True)
 
                 if os.path.exists(jsonc_file):
+                    logger.warning(
+                        f"检测到 {jsonc_file}: OpenCode 可能优先使用 JSONC 配置，"
+                        "请手动合并或删除该文件。"
+                    )
+
+                current_cfg: Dict[str, Any] = {}
+                if os.path.exists(opencode_cfg_file):
                     try:
-                        os.remove(jsonc_file)
-                    except Exception:
-                        pass
+                        with open(opencode_cfg_file, "r", encoding="utf-8") as f:
+                            parsed = json.load(f)
+                    except Exception as e:
+                        logger.warning(f"OpenCode 配置不是有效 JSON，已保持原样: {e}")
+                        return
+                    if not isinstance(parsed, dict):
+                        logger.warning("OpenCode 配置不是 JSON 对象，已保持原样")
+                        return
+                    current_cfg = parsed
 
-            current_cfg = {}
-            if os.path.exists(opencode_cfg_file):
-                try:
-                    with open(opencode_cfg_file, "r", encoding="utf-8") as f:
-                        current_cfg = json.load(f)
-                except Exception:
-                    pass
+                providers, model_pools = self._snapshot()
+                models_dict = self._build_opencode_models(providers, model_pools)
 
-            if "$schema" not in current_cfg:
-                current_cfg["$schema"] = "https://opencode.ai/config.json"
+                if "$schema" not in current_cfg:
+                    current_cfg["$schema"] = "https://opencode.ai/config.json"
 
-            # 整理网关当前模型列表（与 OneSpace 桌面端结构完全对齐）
-            models_dict = {}
+                provider_cfg = current_cfg.get("provider")
+                if not isinstance(provider_cfg, dict):
+                    provider_cfg = {}
 
-            # 1. 优先放入虚拟模型池
-            for pool_id, pool_meta in self.model_pools.items():
-                models_dict[pool_id] = {
-                    "name": pool_meta.get("description", pool_id),
-                    "limit": {"context": 1000000, "output": 0}
-                }
-
-            # 2. 放入各活跃服务商模型（保持纯净模型标识与显示名）
-            for p_name, provider in self.providers.items():
-                if not provider.is_active:
-                    continue
-                for m_id, m_meta in provider.models.items():
-                    if m_id in models_dict:
-                        continue
-                    disp_name = m_id
-                    ctx_window = 1000000
-                    reasoning_efforts = []
-
-                    if isinstance(m_meta, dict):
-                        disp_name = m_meta.get("display_name", m_id)
-                        ctx_window = m_meta.get("context_window", 1000000) or 1000000
-                        reasoning_efforts = m_meta.get("reasoning_efforts", [])
-
-                    model_entry = {
-                        "name": disp_name,
-                        "limit": {"context": ctx_window, "output": 0}
-                    }
-                    if reasoning_efforts:
-                        model_entry["reasoning"] = True
-                        model_entry["variants"] = {
-                            rf: {"reasoningEffort": rf} for rf in reasoning_efforts
-                        }
-
-                    models_dict[m_id] = model_entry
-
-            # 与 OneSpace App 保持严格一致：只写入且仅保留一个 "Cloud Agent Gateway" 提供商
-            current_cfg["provider"] = {
-                "gateway": {
+                # 与 OneSpace App 保持严格一致：只替换 gateway 提供商
+                provider_cfg["gateway"] = {
                     "name": "Cloud Agent Gateway",
                     "npm": "@ai-sdk/openai-compatible",
                     "options": {
                         "baseURL": f"http://127.0.0.1:{self.global_port}/v1",
-                        "apiKey": "sk-onespace-cloud-agent"
+                        "apiKey": self.auth_token,
                     },
-                    "models": models_dict
+                    "models": models_dict,
                 }
-            }
+                current_cfg["provider"] = provider_cfg
 
-            if not current_cfg.get("model") and "cloud-coder" in self.model_pools:
-                current_cfg["model"] = "gateway/cloud-coder"
+                if "model" not in current_cfg and "cloud-coder" in model_pools:
+                    current_cfg["model"] = "gateway/cloud-coder"
 
-            with open(opencode_cfg_file, "w", encoding="utf-8") as f:
-                json.dump(current_cfg, f, ensure_ascii=False, indent=2)
+                fd, tmp_path = tempfile.mkstemp(
+                    prefix=".opencode.", suffix=".tmp", dir=target_dir
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(current_cfg, f, ensure_ascii=False, indent=2)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_path, opencode_cfg_file)
+                finally:
+                    if os.path.exists(tmp_path):
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            pass
 
-            logger.info(f"已按 OneSpace 规范同步 {len(models_dict)} 个模型到 OpenCode 终端配置 (单 Cloud Agent Gateway 提供商): {opencode_cfg_file}")
-        except Exception as e:
-            logger.warning(f"同步模型到 OpenCode 终端配置失败: {e}")
+                logger.info(
+                    f"已按 OneSpace 规范同步 {len(models_dict)} 个模型到 OpenCode 终端配置 "
+                    f"(单 Cloud Agent Gateway 提供商): {opencode_cfg_file}"
+                )
+            except Exception as e:
+                logger.warning(f"同步模型到 OpenCode 终端配置失败: {e}")
 
     def start_background_tasks(self):
         def _sync_loop():
@@ -287,6 +438,10 @@ class GatewayEngine:
 class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
     gateway: GatewayEngine = None
 
+    PROTECTED_GET_PATHS = ("/models", "/v1/models")
+    HEALTH_PATHS = ("/health", "/v1/health")
+    CHAT_PATHS = ("/chat/completions", "/v1/chat/completions")
+
     def log_message(self, format, *args):
         pass
 
@@ -295,48 +450,83 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
         self.wfile.write(body)
 
+    def _reject_origin(self) -> bool:
+        """Universal Origin rejection before auth, body reading or forwarding."""
+        if self.headers.get("Origin") is not None:
+            self.send_json_response(
+                403,
+                {"error": {"message": "不允许来自浏览器 Origin 的请求", "type": "forbidden"}},
+            )
+            return True
+        return False
+
+    def _is_authorized(self) -> bool:
+        if not self.gateway.auth_require:
+            return True
+        header = self.headers.get("Authorization")
+        if not header:
+            return False
+        parts = header.split(None, 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return False
+        return hmac.compare_digest(parts[1].strip(), self.gateway.auth_token)
+
+    def _require_auth(self) -> bool:
+        if self._is_authorized():
+            return True
+        self.send_json_response(
+            401,
+            {"error": {"message": "缺少或无效的 Bearer 凭据", "type": "authentication_error"}},
+        )
+        return False
+
     def do_OPTIONS(self):
+        if self._reject_origin():
+            return
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self):
+        if self._reject_origin():
+            return
+
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        if path in ("/health", "/v1/health"):
+        providers, model_pools = self.gateway._snapshot()
+
+        if path in self.HEALTH_PATHS:
             self.send_json_response(200, {
                 "status": "ok",
-                "providers_count": len(self.gateway.providers),
-                "model_pools": list(self.gateway.model_pools.keys())
+                "providers_count": len(providers),
+                "model_pools": list(model_pools.keys()),
             })
             return
 
-        if path in ("/models", "/v1/models"):
+        if path in self.PROTECTED_GET_PATHS:
+            if not self._require_auth():
+                return
             models_list = []
-            for pool_id, pool_meta in self.gateway.model_pools.items():
+            for pool_id, pool_meta in model_pools.items():
                 models_list.append({
                     "id": pool_id,
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "onespace-model-pool",
                     "description": pool_meta.get("description", "Virtual Model Pool")
+                    if isinstance(pool_meta, dict) else "Virtual Model Pool",
                 })
-            for p_name, provider in self.gateway.providers.items():
+            for p_name, provider in providers.items():
                 for m_id in provider.models.keys():
                     models_list.append({
                         "id": f"{p_name}/{m_id}",
                         "object": "model",
                         "created": int(time.time()),
-                        "owned_by": p_name
+                        "owned_by": p_name,
                     })
 
             self.send_json_response(200, {"object": "list", "data": models_list})
@@ -345,16 +535,35 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_json_response(404, {"error": {"message": f"未找到端点: {path}"}})
 
     def do_POST(self):
+        if self._reject_origin():
+            return
+
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        if path not in ("/chat/completions", "/v1/chat/completions"):
+        if path not in self.CHAT_PATHS:
             self.send_json_response(404, {"error": {"message": f"不支持的端点: {path}"}})
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        if not self._require_auth():
+            return
+
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            self.send_json_response(400, {"error": {"message": "缺少 Content-Length"}})
+            return
+
+        value = raw_length.strip()
+        if not value.isascii() or not value.isdigit():
+            self.send_json_response(400, {"error": {"message": "Content-Length 无效"}})
+            return
+
+        content_length = int(value)
         if content_length <= 0:
             self.send_json_response(400, {"error": {"message": "请求体为空"}})
+            return
+        if content_length > self.gateway.max_body_bytes:
+            self.send_json_response(413, {"error": {"message": "请求体超出大小限制"}})
             return
 
         try:
@@ -364,15 +573,29 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_json_response(400, {"error": {"message": f"请求 JSON 解析失败: {e}"}})
             return
 
+        if not isinstance(req_data, dict):
+            self.send_json_response(400, {"error": {"message": "请求 JSON 必须是对象"}})
+            return
+
         requested_model = req_data.get("model", "")
-        candidates = self.gateway.resolve_candidates(requested_model)
+        candidates, known = self.gateway.resolve_model(requested_model)
 
         if not candidates:
-            self.send_json_response(502, {
-                "error": {
-                    "message": f"没有可用的服务商为模型 '{requested_model}' 提供服务，请检查网关配置。"
-                }
-            })
+            if known:
+                self.send_json_response(502, {
+                    "error": {
+                        "message": f"模型 '{requested_model}' 已知但当前没有可用候选。",
+                        "type": "operational_unavailability",
+                    }
+                })
+            else:
+                self.send_json_response(404, {
+                    "error": {
+                        "message": f"未找到模型 '{requested_model}'。",
+                        "type": "model_not_found",
+                        "code": "model_not_found",
+                    }
+                })
             return
 
         is_stream = req_data.get("stream", False) is True
@@ -395,7 +618,10 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             if not upstream_url.startswith("http"):
                 upstream_url = "https://" + upstream_url
 
-            logger.info(f"请求转发: model={requested_model} -> [{p_name}] model={target_model} (尝试 {idx+1}/{len(candidates)})")
+            logger.info(
+                f"请求转发: model={requested_model} -> [{p_name}] model={target_model} "
+                f"(尝试 {idx+1}/{len(candidates)})"
+            )
 
             req = urllib.request.Request(
                 upstream_url,
@@ -418,7 +644,6 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                     for k, v in resp.getheaders():
                         if k.lower() in ("content-type", "cache-control", "connection"):
                             self.send_header(k, v)
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
 
                     try:
@@ -436,7 +661,6 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                     self.send_response(status_code)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Content-Length", str(len(resp_body)))
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(resp_body)
                     return

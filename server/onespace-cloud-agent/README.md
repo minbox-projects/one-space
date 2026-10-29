@@ -93,6 +93,9 @@ unset GH_PAT
 | --- | --- |
 | `port` | 网关监听端口，默认 `17688`，仅监听 `127.0.0.1`。 |
 | `auto_sync_interval_seconds` | 服务商模板自动同步间隔，默认 `3600` 秒。 |
+| `auth.token` | 受保护端点的 Bearer 凭据，默认 `sk-onespace-cloud-agent`。 |
+| `auth.require` | 是否校验 Bearer 凭据，默认 `true`；设为 `false` 只跳过凭据校验，Origin 拒绝仍然生效。 |
+| `max_body_bytes` | POST 请求体上限，默认 `10485760`（10 MiB）；超限在读取请求体前返回 413。 |
 | `providers` | 服务商字典，键为服务商名称。 |
 | `model_pools` | 虚拟模型池字典，键为对外暴露的模型名。 |
 
@@ -118,6 +121,14 @@ unset GH_PAT
 ```
 
 `candidates` 按顺序尝试，失败自动切换到下一个候选。
+
+### 网关入口规则
+
+- **Origin 拒绝优先于一切处理**：任何携带 `Origin` 请求头的请求，包括空值、`/health` 与 `OPTIONS`，都在认证、读取请求体和转发之前返回 403；不带 `Origin` 的 `OPTIONS` 返回 204；任何成功、错误或流式响应都不会下发通配符 CORS 头。
+- **Bearer 认证**：`GET /models`、`GET /v1/models`、`POST /chat/completions`、`POST /v1/chat/completions` 需要 `Authorization: Bearer <token>`，缺失或错误返回 401 JSON 且不请求上游；`GET /health`、`GET /v1/health` 无需认证。同步到 OpenCode 的 `provider.gateway.options.apiKey` 使用当前配置的 `ai_gateway.auth.token`。
+- **请求体边界**：`Content-Length` 缺失、为 0、负数或非数字时返回 400；大于 `ai_gateway.max_body_bytes` 时在读取请求体前返回 413；空请求体与非法 JSON 返回 400。
+- **严格模型解析**：只有模型池名、活跃服务商的 `provider/model` 前缀，以及活跃服务商上的显式模型映射会被解析。未知、空或纯空白模型名返回 404 且 `code` 为 `model_not_found`，不请求上游；已知模型池没有任何可用候选时返回 502；未知模型不再广播到全部活跃服务商。
+- **目录一致性**：模板同步先构建新的目录代次，再加锁发布；解析、模型列表与 OpenCode 投影各自读取一个完整代次。模板同步是加性合并，保留既有模型映射和密钥运行状态（含冷却）。
 
 ### `issue_worker`
 
@@ -181,25 +192,27 @@ ssh dmit-server "cloud-session kill <session-name>"
 网关提供 OpenAI 兼容接口：
 
 ```bash
-# 健康检查
+# 健康检查（公开）
 curl -s http://127.0.0.1:17688/health
 
-# 查看模型列表（模型池与各服务商模型）
-curl -s http://127.0.0.1:17688/v1/models
+# 查看模型列表（模型池与各服务商模型，需 Bearer 凭据）
+curl -s http://127.0.0.1:17688/v1/models \
+  -H "Authorization: Bearer sk-onespace-cloud-agent"
 
 # 对话请求：可直接使用模型池名称，或使用 provider/model 形式
 curl -s http://127.0.0.1:17688/v1/chat/completions \
+  -H "Authorization: Bearer sk-onespace-cloud-agent" \
   -H "Content-Type: application/json" \
   -d '{"model":"cloud-coder","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 支持的端点：
 
-- `GET /health`、`GET /v1/health`
-- `GET /models`、`GET /v1/models`
-- `POST /chat/completions`、`POST /v1/chat/completions`（支持流式 SSE）
+- `GET /health`、`GET /v1/health`（公开）
+- `GET /models`、`GET /v1/models`（需 Bearer 凭据）
+- `POST /chat/completions`、`POST /v1/chat/completions`（需 Bearer 凭据，支持流式 SSE）
 
-服务启动时以及每次模板同步后，网关会自动把模型池和活跃服务商模型同步到 `~/.config/opencode/opencode.json`，并统一使用单一 `Cloud Agent Gateway` 提供商：
+服务启动时以及每次模板同步后，网关会自动把模型池和活跃服务商模型同步到 `~/.config/opencode/opencode.json`，并统一使用单一 `Cloud Agent Gateway` 提供商（示例中的 `apiKey` 取自 `ai_gateway.auth.token`）：
 
 ```json
 {
@@ -215,6 +228,10 @@ curl -s http://127.0.0.1:17688/v1/chat/completions \
   }
 }
 ```
+
+同步只读取并写入 `opencode.json`：仅替换 `provider.gateway`，保留其他 provider 与所有既有顶层配置；缺少 `$schema` 或默认模型时可初始化。若同目录存在 `opencode.jsonc`，网关保持其字节不变并记录警告——OpenCode 可能优先读取 JSONC，需要手动合并或删除。写入使用同目录临时文件加 `os.replace`，整个读取/合并/写入事务串行化；既有 JSON 非法或不是对象时保持原文件不变并记录警告。
+
+> 桌面端「同步 AI 网关到云端」会用本地网关配置整体覆盖远端 `ai_gateway` 段，云端的自定义 `auth` 与 `max_body_bytes` 会被重置为默认值，需要在该操作后重新补回。
 
 ---
 
