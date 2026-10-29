@@ -17,7 +17,7 @@ AI 网关无法服务 `OpenCode Zen Free` 服务商：用自身 TLS 栈直接发
 - 内置 `opencode-zen-free` 模板声明 Zen base URL `https://opencode.ai/zen/v1`、sidecar 传输、OpenCode 图标与八个启用映射：`zen-free-big-pickle` → `big-pickle`、`zen-free-beam` → `beam-free`、`zen-free-mimo` → `mimo-v2.6-flash-free`、`zen-free-nemotron-vl` → `nemotron-3.5-super-vl-free`、`zen-free-nemotron-lightning` → `nemotron-3.5-lightning-free`、`zen-free-deepseek` → `deepseek-v4.1-flash-free`、`zen-free-glm` → `glm-5.3-flash-free` 与 `zen-free-flint-40b` → `flint-40b-free`，连同各自的显示名与推理档。
 - 配置 schema 提升到 5。首次读取更旧文件时，迁移只绑定没有模板、名称 trim 后恰为 `OpenCode Zen Free` 且归一化 base URL 恰为 `https://opencode.ai/zen/v1` 的服务商，保留 key、映射、价格与所有其他服务商，且幂等。改写前 best-effort 创建一次原始字节副本 `ai_gateway.json.bak-pre-schema5`，Unix 权限 `0600`，以 `create_new` 创建因此绝不覆盖已有备份；复制失败不阻断迁移。
 - 中继是从嵌套 crate `src-tauri/zen-relay` 构建的独立进程，该 crate 自带 workspace，并固定 `wreq = "=6.0.0-rc.31"`（启用 `socks` 与 `stream`，不带 `prefix-symbols`）。它是仅回环的 hyper 服务，从 stdin 首行读取每进程随机 token，输出 `READY <port>` 或 `ERROR <message>`，在临时端口绑定 `127.0.0.1`，请求体上限 64 MiB，只接受 `/zen` 下的 HTTPS Zen base，拼接路径时不重复 `/v1`，过滤 hop-by-hop 与 sidecar 头以及 `accept-encoding`，原样流式中继响应，日志只含方法、路径与状态。其 wreq 客户端使用被接受的 BoringSSL 密码套件列表与 `X25519:P-256:P-384` 曲线配置。
-- `src-tauri/src/ai_gateway/zen_sidecar.rs` 拥有该进程。它在首个 sidecar 尝试时惰性启动，就绪超时十秒，保持 stdin 打开用于生命周期与关闭检测，抽干 stderr，进程退出后重启，并在 `(proxy_url, read_timeout_secs)` 身份变化时重启；`stop` 幂等且两个网关关闭接缝都会调用。定位器依次检查 `ONESPACE_ZEN_RELAY_BIN`、可执行文件同目录、嵌套 debug 与 release 目标以及 `binaries/onespace-zen-relay-<triple>[.exe]`；缺失二进制时以预期路径使该次尝试失败，绝不回退直连。
+- `src-tauri/src/ai_gateway/zen_sidecar.rs` 拥有该进程。它在首个 sidecar 尝试时惰性启动，就绪超时十秒，保持 stdin 打开用于生命周期与关闭检测，抽干 stderr，进程退出后重启。其身份为全局代理 generation、由快照派生的显式 proxy URL 与读取超时：新 generation 创建新子进程，已受理的普通与 SSE 响应持有 retiring 子进程的租约，最后一个响应体结束后子进程退出；等价保存或仅检查间隔变化保持 generation 并复用当前子进程。`stop` 幂等，两个网关关闭接缝都会调用，并终止全部 current 与 retiring 子进程。定位器依次检查 `ONESPACE_ZEN_RELAY_BIN`、可执行文件同目录、嵌套 debug 与 release 目标以及 `binaries/onespace-zen-relay-<triple>[.exe]`；缺失二进制时以预期路径使该次尝试失败，绝不回退直连。
 - sidecar 转发使用专用 no-proxy 客户端与较长读取超时，保留上游路径与查询串，并在转发客户端头之后附加 `x-onespace-sidecar-token` 与 `x-onespace-upstream-base`。这两个头同时被排除在可转发的客户端头之外，因此客户端绝不能覆盖；服务商凭据、请求体改写与其他客户端头保持既有行为。
 - 构建与打包是自动的：`src-tauri/scripts/build-zen-relay.mjs` 按环境或宿主三元组构建 dev 或 release，并把发布产物复制到 binaries 目录；`tauri.conf.json` 声明该外部二进制并把脚本前置到 dev 与 build 命令；发布工作流在确保 cmake 与 ninja 后为 macOS `x86_64`/`aarch64` 与 Windows `x86_64` 构建它。
 
@@ -32,8 +32,9 @@ AI 网关无法服务 `OpenCode Zen Free` 服务商：用自身 TLS 栈直接发
 
 ## Consequences
 
-- sidecar 生命周期与安全由网关运行时拥有：进程仅回环、以经 stdin 交付的每进程 token 鉴权、就绪等待有界、在退出或身份变化后重启，并由两个关闭接缝终止，因此停止网关或应用后不留下中继进程。
+- sidecar 生命周期与安全由网关运行时拥有：进程仅回环、以经 stdin 交付的每进程 token 鉴权、就绪等待有界、在退出或身份变化后重启、由最后一个响应租约维持 retiring 子进程，并由两个关闭接缝连同全部 retiring 子进程一起终止，因此停止网关或应用后不留下中继进程。
 - 失败是显式的。缺失二进制、握手失败或中继不可达都会以带路径的错误使该次尝试失败，而不是静默改为直连重试，同时其他模型池候选与所有直连服务商照常工作；429 等上游状态原样中继，既有分类与重试因此仍然适用。
 - 回滚是配置级的：解绑服务商或改绑直连模板即恢复既有直连行为；降级应用须先恢复 `ai_gateway.json.bak-pre-schema5`，因为旧构建无法读取 schema 5 绑定；若该副本创建失败，降级不受支持。
 - 构建桌面应用除 Rust 工具链外现在还需要 cmake 与 ninja，且每个发布目标都会构建并打包该嵌套 crate。主应用仍不依赖 wreq，因此其构建与其他服务商保持不变。
 - 运行期证据保持有界：中继、生命周期、迁移、模板与转发行为由单元与行为测试覆盖，针对真实 Zen 端点的 macOS 冒烟是剩余的运行期验证，Windows 运行期冒烟未执行，Windows 证据仅有 CI 构建与跨平台 sidecar 测试。
+- Supersession：[A Single Global Network Proxy Snapshot Drives Generation-Scoped Transport and Relay Leases](2026-10-29-shared-network-proxy-lifecycle.md) 部分取代本记录的中继身份、重启与关闭陈述。全局代理 generation 与由快照派生的显式 proxy URL 现在决定子进程身份，响应租约排空 retiring 子进程，等价保存复用当前子进程。BoringSSL 进程边界、模板绑定、备选、迁移备份与已知平台缺口继续有效；本记录保留并交叉链接。

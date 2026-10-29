@@ -11087,6 +11087,12 @@
         },
         {
           "file": "src/lib/updater.ts",
+          "name": "invalidateUpdaterTransport",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/updater.ts",
           "name": "isVersionGreater",
           "kind": "function",
           "visibility": "public"
@@ -11261,6 +11267,36 @@
         },
         {
           "file": "src/test/mocks/tauri.ts",
+          "name": "APP_UPDATER_DOWNLOAD_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/tauri.ts",
+          "name": "appUpdaterCheckMock",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/tauri.ts",
+          "name": "appUpdaterDiscardMock",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/tauri.ts",
+          "name": "appUpdaterDownloadMock",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/tauri.ts",
+          "name": "appUpdaterInstallMock",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/tauri.ts",
           "name": "bleLockClearDeviceMock",
           "kind": "variable",
           "visibility": "public"
@@ -11339,6 +11375,12 @@
         },
         {
           "file": "src/test/mocks/tauri.ts",
+          "name": "emitUpdaterDownloadEvent",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/tauri.ts",
           "name": "getCurrentWindowMock",
           "kind": "variable",
           "visibility": "public"
@@ -11358,6 +11400,18 @@
         {
           "file": "src/test/mocks/tauri.ts",
           "name": "listenMock",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/tauri.ts",
+          "name": "proxyGenerationMock",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/test/mocks/tauri.ts",
+          "name": "proxyHttpRequestMock",
           "kind": "variable",
           "visibility": "public"
         },
@@ -21153,6 +21207,283 @@
         "src-tauri/src/cloud_agent/terminal.rs",
         "src-tauri/src/cloud_agent/gateway_sync.rs",
         "src-tauri/src/cloud_agent/tests.rs"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "network-proxy",
+      "name": "Unified Network Proxy",
+      "aliases": [
+        "network-proxy",
+        "global-network-proxy",
+        "application-network-proxy"
+      ],
+      "module_root": "src-tauri/src",
+      "entries": [
+        "src-tauri/src/proxy.rs",
+        "src-tauri/src/config/commands.rs",
+        "src-tauri/src/config/types.rs",
+        "src-tauri/src/app_runtime/runtime_services.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/updater.rs",
+        "src-tauri/src/ssl_certificate/acme_http.rs"
+      ],
+      "symbols": [
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "PROXY_CONFIG_UPDATED_EVENT",
+          "kind": "const",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "PROXY_MANAGER",
+          "kind": "static",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "PreparedProxy",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "ProxyManager",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "ProxySnapshot",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "ProxyStatus",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "apply_current_proxy_env_to_command",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "apply_current_proxy_to_builder",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "apply_process_proxy_env",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "apply_proxy_env_to_command",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "apply_proxy_policy",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "current_client",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "proxy_env_vars",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "proxy_generation",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/proxy.rs",
+          "name": "test_proxy_connection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/ssl_certificate/acme_http.rs",
+          "name": "AcmeHttpClient",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "APP_UPDATER_DOWNLOAD_EVENT",
+          "kind": "const",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "AppUpdateMetadata",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "AppUpdaterDownloadEvent",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "AppUpdaterState",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "app_updater_check",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "app_updater_discard",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "app_updater_download",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "app_updater_install",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/updater.rs",
+          "name": "app_updater_shutdown",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/services/ProxySettingsPanel.tsx",
+          "name": "ProxySettingsPanel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/updater.ts",
+          "name": "invalidateUpdaterTransport",
+          "kind": "function",
+          "visibility": "public"
+        }
+      ],
+      "related_files": [
+        "docs/network-proxy.md",
+        "package.json",
+        "src-tauri/Cargo.toml",
+        "src-tauri/capabilities/default.json",
+        "src-tauri/src/ai_gateway.rs",
+        "src-tauri/src/ai_gateway/auto_refresh.rs",
+        "src-tauri/src/ai_gateway/commands.rs",
+        "src-tauri/src/ai_gateway/forwarding.rs",
+        "src-tauri/src/ai_gateway/go_usage.rs",
+        "src-tauri/src/ai_gateway/migration.rs",
+        "src-tauri/src/ai_gateway/quota.rs",
+        "src-tauri/src/ai_gateway/templates/source.rs",
+        "src-tauri/src/ai_gateway/zen_sidecar.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src-tauri/src/config/storage.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/proxy/test_support.rs",
+        "src-tauri/src/ssl_certificate/acme.rs",
+        "src-tauri/tauri.conf.json",
+        "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx",
+        "src/components/settings/sections/services/ProxySettingsPanel.tsx",
+        "src/components/settings/settingsContainer/save.ts",
+        "src/lib/updater.ts",
+        "src/test/mocks/tauri.ts"
+      ],
+      "tests": [
+        "src-tauri/src/ai_gateway/tests/auto_refresh.rs",
+        "src-tauri/src/ai_gateway/tests/go_usage.rs",
+        "src-tauri/src/ai_gateway/tests/migration.rs",
+        "src-tauri/src/ai_gateway/tests/proxy_switch.rs",
+        "src-tauri/src/ai_gateway/tests/quota.rs",
+        "src-tauri/src/ai_gateway/tests/templates.rs",
+        "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
+        "src-tauri/src/proxy/tests.rs",
+        "src-tauri/src/ssl_certificate/tests.rs",
+        "src-tauri/src/updater/tests.rs",
+        "src/components/AboutModal.test.tsx",
+        "src/components/SettingsView.test.tsx",
+        "src/lib/aiGateway.test.ts",
+        "src/lib/updater.test.ts"
+      ],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "backend",
+      "responsibility": "One global proxy snapshot with atomic publication, generation-scoped transport caches and flights, draining Zen relay leases, per-request ACME transport and a native updater facade over the official SDK",
+      "read_scope": [
+        "docs/network-proxy.md",
+        "package.json",
+        "src-tauri/Cargo.toml",
+        "src-tauri/capabilities/default.json",
+        "src-tauri/src/ai_gateway.rs",
+        "src-tauri/src/ai_gateway/auto_refresh.rs",
+        "src-tauri/src/ai_gateway/commands.rs",
+        "src-tauri/src/ai_gateway/forwarding.rs",
+        "src-tauri/src/ai_gateway/go_usage.rs",
+        "src-tauri/src/ai_gateway/migration.rs",
+        "src-tauri/src/ai_gateway/quota.rs",
+        "src-tauri/src/ai_gateway/templates/source.rs",
+        "src-tauri/src/ai_gateway/tests/auto_refresh.rs",
+        "src-tauri/src/ai_gateway/tests/go_usage.rs",
+        "src-tauri/src/ai_gateway/tests/migration.rs",
+        "src-tauri/src/ai_gateway/tests/proxy_switch.rs",
+        "src-tauri/src/ai_gateway/tests/quota.rs",
+        "src-tauri/src/ai_gateway/tests/templates.rs",
+        "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
+        "src-tauri/src/ai_gateway/zen_sidecar.rs",
+        "src-tauri/src/app_runtime/run_app.rs",
+        "src-tauri/src/app_runtime/runtime_services.rs",
+        "src-tauri/src/app_runtime/shortcuts_tray.rs",
+        "src-tauri/src/config/commands.rs",
+        "src-tauri/src/config/storage.rs",
+        "src-tauri/src/config/types.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/proxy.rs",
+        "src-tauri/src/proxy/test_support.rs",
+        "src-tauri/src/proxy/tests.rs",
+        "src-tauri/src/ssl_certificate/acme.rs",
+        "src-tauri/src/ssl_certificate/acme_http.rs",
+        "src-tauri/src/ssl_certificate/tests.rs",
+        "src-tauri/src/updater.rs",
+        "src-tauri/src/updater/tests.rs",
+        "src-tauri/tauri.conf.json",
+        "src/components/AboutModal.test.tsx",
+        "src/components/SettingsView.test.tsx",
+        "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx",
+        "src/components/settings/sections/services/ProxySettingsPanel.tsx",
+        "src/components/settings/settingsContainer/save.ts",
+        "src/lib/aiGateway.test.ts",
+        "src/lib/updater.test.ts",
+        "src/lib/updater.ts",
+        "src/test/mocks/tauri.ts"
       ],
       "shared_entry": false
     }
