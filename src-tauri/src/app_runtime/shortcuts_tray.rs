@@ -248,6 +248,8 @@ pub(super) fn shutdown_runtime_services() {
     crate::server_monitor::runtime::shutdown_global();
     // Stop the process-owned webhook listener; `stop` is idempotent.
     let _ = crate::webhook_catcher::server::WebhookServerManager::global().stop();
+    // Release native updater handles and verified download bytes; idempotent.
+    crate::updater::app_updater_shutdown();
 }
 
 #[tauri::command]

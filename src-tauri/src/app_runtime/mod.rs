@@ -11,10 +11,13 @@ use runtime_services::*;
 use windows_data::*;
 
 pub(crate) use cli::get_git_command;
+#[cfg(test)] pub(crate) use cli::set_git_command_override;
 pub(crate) use oauth_open::{atomic_write_string, open_path_with_system};
 pub(crate) use runtime_services::{mark_system_resume, system_resume_grace_active};
 #[cfg(test)]
 pub(crate) use runtime_services::set_system_resume_at_for_tests;
+#[cfg(test)]
+pub(crate) use runtime_services::proxy_http_request_for_test;
 pub use run_app::run;
 pub(crate) use ssh_oauth::get_ssh_hosts;
 #[cfg(test)]

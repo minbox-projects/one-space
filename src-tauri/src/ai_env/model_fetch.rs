@@ -63,10 +63,12 @@ pub async fn service_provider_fetch_models(
         return Err("api_key is required to fetch models".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let client = crate::proxy::apply_current_proxy_to_builder(
+        reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)),
+    )
+    .map_err(|e| format!("Failed to create HTTP client: {}", e))?
+    .build()
+    .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     let models = match api_format {
         "anthropic_messages" => {

@@ -28,6 +28,19 @@ mod zen_sidecar;
 
 mod auto_refresh;
 
+/// The generation of the global network proxy currently published by the
+/// application, or `0` when no proxy manager exists yet (direct transport).
+pub(in crate::ai_gateway) fn current_proxy_generation() -> u64 {
+    crate::proxy::current_proxy_snapshot().generation
+}
+
+/// The current immutable proxy snapshot, or a direct snapshot when no proxy is
+/// active. Callers build transport from this value so a generation and its
+/// policy are read together.
+pub(in crate::ai_gateway) fn current_proxy_snapshot() -> std::sync::Arc<crate::proxy::ProxySnapshot> {
+    crate::proxy::current_proxy_snapshot()
+}
+
 pub use commands::*;
 pub use quota::ai_gateway_provider_quota;
 pub(crate) use quota::__cmd__ai_gateway_provider_quota;

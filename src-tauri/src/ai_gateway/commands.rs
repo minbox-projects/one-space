@@ -155,16 +155,45 @@ fn provider_has_gateway_marker(provider: &Value, profile: TerminalSyncProfile) -
 fn api_err_to_string(error: crate::app_store::ApiErr) -> String {
     format!("{}: {}", error.code, error.message)
 }
+/// Result of one generation-aware template sync. A stale operation fetched its
+/// body for an older network transport and must not publish or change state.
+pub(in crate::ai_gateway) enum TemplateSyncExecution {
+    Applied(ProviderTemplateView),
+    Stale,
+}
+
+/// Reason reported to callers when a template operation is abandoned because
+/// the global network proxy changed before its fetched body could be applied.
+pub(in crate::ai_gateway) const STALE_TEMPLATE_SYNC_REASON: &str =
+    "template sync was superseded by a network proxy change";
+
 /// Perform one provider-template sync with all of its production side effects:
 /// fetch the model list outside the configuration write lock, merge it under the
 /// "source fields win, untouched template fields kept" rule, record the
 /// additions-only and retirement messages after the write stands, then run the
 /// best-effort terminal refresh. Any fatal source problem (network, non-JSON,
 /// invalid structure, empty model set) leaves the configuration unchanged.
+#[allow(dead_code)]
 pub(in crate::ai_gateway) async fn execute_template_sync(
     app: Option<tauri::AppHandle>,
     template_id: &str,
 ) -> Result<ProviderTemplateView, String> {
+    let generation = super::current_proxy_generation();
+    match execute_template_sync_at_generation(app, template_id, generation).await? {
+        TemplateSyncExecution::Applied(view) => Ok(view),
+        TemplateSyncExecution::Stale => Err(STALE_TEMPLATE_SYNC_REASON.to_string()),
+    }
+}
+
+/// Apply a fetched template body only when the global proxy generation captured
+/// at operation start is still current. The check runs inside the serialized
+/// configuration mutation, so a body fetched for an older transport can never
+/// replace newer state, record messages or trigger the terminal refresh.
+pub(in crate::ai_gateway) async fn execute_template_sync_at_generation(
+    app: Option<tauri::AppHandle>,
+    template_id: &str,
+    generation: u64,
+) -> Result<TemplateSyncExecution, String> {
     // Resolve the template and fetch its model list outside the configuration
     // write lock: the lock is never held across an upstream network wait.
     let initial = read_config()?;
@@ -178,7 +207,10 @@ pub(in crate::ai_gateway) async fn execute_template_sync(
         .unwrap_or(Value::Null);
     // The read, staging and persistence all happen inside the serialized
     // mutation, so a concurrent configuration write cannot be lost.
-    let (view, tools, notices, additions) = modify_config(|config| {
+    let applied = modify_config(|config| {
+        if super::current_proxy_generation() != generation {
+            return Ok((false, None));
+        }
         let before = config.clone();
         let (view, notices) = apply_template_sync_from_body(config, template_id, &raw)?;
         let additions = template_sync_addition_notices(&before, config, template_id);
@@ -191,8 +223,11 @@ pub(in crate::ai_gateway) async fn execute_template_sync(
         } else {
             Vec::new()
         };
-        Ok((true, (view, tools, notices, additions)))
+        Ok((true, Some((view, tools, notices, additions))))
     })?;
+    let Some((view, tools, notices, additions)) = applied else {
+        return Ok(TemplateSyncExecution::Stale);
+    };
     // The additions and retirement messages are recorded only after the
     // configuration write stood; a failed write returned before this point, so
     // no message escapes. Terminal resync stays after the template sync as today.
@@ -205,7 +240,7 @@ pub(in crate::ai_gateway) async fn execute_template_sync(
             let _ = apply_terminal_sync(handle, tools, None).await;
         }
     }
-    Ok(view)
+    Ok(TemplateSyncExecution::Applied(view))
 }
 
 /// Refresh one template from its public source through the shared same-template

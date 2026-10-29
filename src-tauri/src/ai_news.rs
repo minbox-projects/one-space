@@ -240,11 +240,63 @@ fn apply_retention(
     items
 }
 
-fn build_client() -> Result<Client, String> {
-    if let Some(proxy_mgr) = crate::proxy::PROXY_MANAGER.get() {
-        return proxy_mgr.get_client();
+pub(crate) async fn fetch_sources_for_sync(
+    sources: &[config::AiNewsRssSource],
+    keywords: &[String],
+    max_results: usize,
+) -> (Vec<AiNewsItem>, Vec<AiNewsProviderSyncState>) {
+    let mut fetched = Vec::new();
+    let mut states = Vec::new();
+    for source in sources.iter().filter(|s| s.enabled && !s.url.trim().is_empty()) {
+        let client = match build_client() {
+            Ok(client) => client,
+            Err(err) => {
+                states.push(AiNewsProviderSyncState {
+                    provider: source.id.clone(),
+                    status: "error".to_string(),
+                    fetched_count: 0,
+                    added_count: 0,
+                    last_error: Some(err),
+                });
+                continue;
+            }
+        };
+        match fetch_rss_source(&client, source, keywords, max_results).await {
+            Ok(items) => {
+                states.push(AiNewsProviderSyncState {
+                    provider: source.id.clone(),
+                    status: "done".to_string(),
+                    fetched_count: items.len(),
+                    added_count: 0,
+                    last_error: None,
+                });
+                fetched.extend(items);
+            }
+            Err(err) => {
+                states.push(AiNewsProviderSyncState {
+                    provider: source.id.clone(),
+                    status: "error".to_string(),
+                    fetched_count: 0,
+                    added_count: 0,
+                    last_error: Some(err),
+                });
+            }
+        }
     }
-    Ok(Client::new())
+    if states.is_empty() {
+        states.push(AiNewsProviderSyncState {
+            provider: "rss".to_string(),
+            status: "skipped_no_source".to_string(),
+            fetched_count: 0,
+            added_count: 0,
+            last_error: None,
+        });
+    }
+    (fetched, states)
+}
+
+fn build_client() -> Result<Client, String> {
+    crate::proxy::current_client()
 }
 
 fn split_news_keywords(custom_keywords: Option<&str>) -> Vec<String> {
@@ -550,48 +602,9 @@ pub async fn ai_news_sync_now(app: tauri::AppHandle) -> Result<ApiOk<AiNewsSyncS
         .clamp(10, 100000) as usize;
     let keywords = split_news_keywords(cfg.ai_news_keywords.as_deref());
     let max_results = 20usize;
-    let client = build_client()?;
 
-    let mut provider_states: Vec<AiNewsProviderSyncState> = Vec::new();
-    let mut fetched: Vec<AiNewsItem> = Vec::new();
-
-    for source in cfg
-        .ai_news_rss_sources
-        .iter()
-        .filter(|source| source.enabled && !source.url.trim().is_empty())
-    {
-        match fetch_rss_source(&client, source, &keywords, max_results).await {
-            Ok(items) => {
-                provider_states.push(AiNewsProviderSyncState {
-                    provider: source.id.clone(),
-                    status: "done".to_string(),
-                    fetched_count: items.len(),
-                    added_count: 0,
-                    last_error: None,
-                });
-                fetched.extend(items);
-            }
-            Err(err) => {
-                provider_states.push(AiNewsProviderSyncState {
-                    provider: source.id.clone(),
-                    status: "error".to_string(),
-                    fetched_count: 0,
-                    added_count: 0,
-                    last_error: Some(err),
-                });
-            }
-        }
-    }
-
-    if provider_states.is_empty() {
-        provider_states.push(AiNewsProviderSyncState {
-            provider: "rss".to_string(),
-            status: "skipped_no_source".to_string(),
-            fetched_count: 0,
-            added_count: 0,
-            last_error: None,
-        });
-    }
+    let (mut fetched, mut provider_states) =
+        fetch_sources_for_sync(&cfg.ai_news_rss_sources, &keywords, max_results).await;
 
     let mut news_store = load_news_store()?;
     for item in &mut news_store.items {

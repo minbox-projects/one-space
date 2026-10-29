@@ -29,6 +29,7 @@ type RespBody = UnsyncBoxBody<Bytes, BoxError>;
 
 const HEADER_ARRIVAL_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_HEADER_BYTES: usize = 64 * 1024;
+const LOOPBACK_NO_PROXY: &str = "localhost,127.0.0.1,::1";
 
 #[derive(Clone)]
 struct AppState {
@@ -148,7 +149,9 @@ fn build_client(args: &Args) -> Result<wreq::Client, String> {
         .connect_timeout(Duration::from_secs(args.timeout_secs));
 
     if let Some(proxy) = args.proxy.as_deref() {
-        let proxy = wreq::Proxy::all(proxy).map_err(|_| "invalid --proxy value".to_string())?;
+        let proxy = wreq::Proxy::all(proxy)
+            .map_err(|_| "invalid --proxy value".to_string())?
+            .no_proxy(wreq::NoProxy::from_string(LOOPBACK_NO_PROXY));
         builder = builder.proxy(proxy);
     } else {
         builder = builder.no_proxy();
@@ -420,5 +423,213 @@ impl AsyncWrite for BufferedIo {
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod proxy_switch_named {
+    use super::{build_client, Args};
+    use std::ffi::OsString;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    const PROXY_ENV_KEYS: [&str; 6] = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ];
+    const NO_PROXY_ENV_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
+    const TARGET_URL: &str = "http://egress.example.test/";
+
+    /// Minimal local HTTP proxy recorder: records the request target of every
+    /// accepted connection and answers with a fixed 200 response.
+    struct Recorder {
+        url: String,
+        request_lines: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Recorder {
+        fn new() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind local relay recorder");
+            listener
+                .set_nonblocking(true)
+                .expect("set recorder nonblocking");
+            let url = format!(
+                "http://{}",
+                listener.local_addr().expect("recorder address")
+            );
+            let request_lines = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread_lines = Arc::clone(&request_lines);
+            let thread_stop = Arc::clone(&stop);
+            let handle = std::thread::spawn(move || {
+                while !thread_stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => record_connection(stream, &thread_lines),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                url,
+                request_lines,
+                stop,
+                handle: Some(handle),
+            }
+        }
+
+        fn observed(&self) -> Vec<String> {
+            self.request_lines
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+        }
+    }
+
+    impl Drop for Recorder {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn record_connection(mut stream: TcpStream, lines: &Arc<Mutex<Vec<String>>>) {
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let reader_stream = match stream.try_clone() {
+            Ok(clone) => clone,
+            Err(_) => return,
+        };
+        let mut reader = BufReader::new(reader_stream);
+        let mut request_line = String::new();
+        if reader.read_line(&mut request_line).is_err() {
+            return;
+        }
+        lines
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(request_line.trim().to_string());
+        loop {
+            let mut header = String::new();
+            match reader.read_line(&mut header) {
+                Ok(0) => break,
+                Ok(_) if header == "\r\n" || header == "\n" => break,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        );
+    }
+
+    struct EnvRestore {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvRestore {
+        fn apply(proxy_url: &str) -> Self {
+            let mut saved = Vec::new();
+            for key in PROXY_ENV_KEYS {
+                saved.push((key, std::env::var_os(key)));
+                std::env::set_var(key, proxy_url);
+            }
+            for key in NO_PROXY_ENV_KEYS {
+                saved.push((key, std::env::var_os(key)));
+                std::env::remove_var(key);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build relay test runtime")
+            .block_on(future)
+    }
+
+    /// REQ-002 / AC-002: the independent relay uses only the explicit
+    /// snapshot-derived proxy. Inherited proxy environment variables are ignored
+    /// when the relay is started in direct mode, and a malformed explicit proxy
+    /// is rejected instead of silently falling back.
+    #[test]
+    fn zen_relay_egress_uses_explicit_proxy_and_ignores_inherited_env() {
+        let recorder = Recorder::new();
+        let _env = EnvRestore::apply(&recorder.url);
+
+        let explicit = block_on(async {
+            let client = build_client(&Args {
+                proxy: Some(recorder.url.clone()),
+                timeout_secs: 3,
+            })
+            .expect("an explicit proxy must build a client");
+            client.get(TARGET_URL).send().await
+        })
+        .expect("the explicit proxy request must complete");
+        assert_eq!(explicit.status().as_u16(), 200);
+
+        let observed = recorder.observed();
+        assert_eq!(
+            observed.len(),
+            1,
+            "the explicit proxy must observe exactly one request, saw {observed:?}"
+        );
+        assert!(
+            observed[0].contains("egress.example.test"),
+            "the explicit proxy must observe the configured upstream target, saw {observed:?}"
+        );
+
+        let direct = block_on(async {
+            let client = build_client(&Args {
+                proxy: None,
+                timeout_secs: 2,
+            })
+            .expect("direct mode must build a client");
+            client.get(TARGET_URL).send().await
+        });
+        assert!(
+            direct.is_err(),
+            "direct mode must not reach a non-loopback host through the inherited proxy environment"
+        );
+        assert_eq!(
+            recorder.observed().len(),
+            1,
+            "direct mode must ignore inherited proxy environment variables"
+        );
+
+        let malformed = build_client(&Args {
+            proxy: Some("http://[::1".to_string()),
+            timeout_secs: 1,
+        });
+        assert!(
+            malformed.is_err(),
+            "a malformed explicit proxy must be rejected"
+        );
     }
 }

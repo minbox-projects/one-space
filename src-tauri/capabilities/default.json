@@ -15,7 +15,6 @@
     "autostart:default",
     "oauth:default",
     "opener:default",
-    "updater:default",
     "process:allow-restart",
     "core:window:allow-hide",
     "core:window:allow-start-dragging",

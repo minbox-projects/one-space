@@ -4,9 +4,9 @@
 //! gateway marker and the legacy field shapes. Two version gates live here: a
 //! configuration older than [`super::GATEWAY_CONFIG_SCHEMA_VERSION`] is rewritten
 //! once with its global price rows scoped, its singular `off_peak` window folded
-//! into `off_peaks`, its provider-level runtime fields cleared and each pool's
+//! into `off_peaks`, its provider-level runtime fields cleared, each pool's
 //! legacy single fallback candidate converted into the ordered gateway-model
-//! fallback list; a usage
+//! fallback list and its obsolete gateway-local proxy URL removed; a usage
 //! database older than [`USAGE_DB_VERSION`] has its legacy `cancelled` rows
 //! deleted once (version below 1), then gains the durable provider/day summary
 //! tables, the one-shot retained-row backfill and the continuity boundary
@@ -73,6 +73,11 @@ const PROTOCOL_FIELD: &str = "protocol";
 const ENABLED_FIELD: &str = "enabled";
 const MODEL_POOLS_FIELD: &str = "model_pools";
 const LOCAL_MODEL_FIELD: &str = "local_model";
+const SETTINGS_FIELD: &str = "settings";
+/// Obsolete gateway-local upstream proxy URL, superseded by the application-wide
+/// network proxy. This module is the only non-test production source that names
+/// the removed field.
+const LEGACY_GATEWAY_PROXY_URL_FIELD: &str = "proxy_url";
 /// Legacy single provider-specific fallback candidate of one model pool,
 /// superseded by the ordered `fallback_models` gateway-model list.
 const LEGACY_POOL_FALLBACK_FIELD: &str = "fallback";
@@ -544,16 +549,37 @@ fn convert_singular_off_peak(row: &mut Map<String, Value>) -> bool {
     true
 }
 
+/// Remove only the obsolete gateway-local upstream proxy URL from the raw
+/// settings object. Every other setting, provider, key, pool, price and template
+/// value is left untouched, and the obsolete URL is never copied anywhere else.
+fn remove_legacy_gateway_proxy_url(object: &mut Map<String, Value>) -> bool {
+    let Some(settings) = object.get_mut(SETTINGS_FIELD).and_then(Value::as_object_mut) else {
+        return false;
+    };
+    settings.remove(LEGACY_GATEWAY_PROXY_URL_FIELD).is_some()
+}
+
 /// Migrate a raw configuration value in place and report whether anything
 /// changed. The transformation reproduces the former per-read normalization:
 /// global rows are copied to every provider that reaches their model, scoped
 /// duplicates keep the first occurrence and rows whose provider/model is gone
 /// are dropped; the singular off-peak window becomes the first `off_peaks`
-/// entry; provider-level runtime keys are cleared. Missing fields are tolerated
-/// so a legacy shape can never fail the whole parse.
-pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value) -> bool {
+/// entry; provider-level runtime keys are cleared; the obsolete gateway-local
+/// proxy URL is removed. A schema-5 value skips every earlier gate and only
+/// drops the obsolete proxy URL. Missing fields are tolerated so a legacy shape
+/// can never fail the whole parse.
+pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value, stored_version: u32) -> bool {
     if !config.is_object() {
         return false;
+    }
+    if stored_version >= 5 {
+        // A schema-5 file already completed every earlier gate. Advancing it to
+        // schema 6 removes only the obsolete gateway-local proxy URL and never
+        // reapplies an earlier binding migration to an unbound provider.
+        let object = config
+            .as_object_mut()
+            .expect("config was checked to be an object");
+        return remove_legacy_gateway_proxy_url(object);
     }
     // The schema-3 Zen-to-Go identity migration runs first so reachability and
     // price scoping see the migrated provider bindings and mappings.
@@ -563,7 +589,8 @@ pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value) -> bool {
             .expect("config was checked to be an object");
         let changed = migrate_opencode_zen_to_go(object);
         let changed = changed | migrate_opencode_zen_free_binding(object);
-        changed | migrate_pool_fallbacks(object)
+        let changed = changed | migrate_pool_fallbacks(object);
+        changed | remove_legacy_gateway_proxy_url(object)
     };
     let reachable = reachable_provider_models(config);
     let Some(object) = config.as_object_mut() else {
@@ -1076,5 +1103,80 @@ mod tests {
         assert!(!has_legacy_gateway_marker(&json!({
             "tool_config": { "npm": "@ai-sdk/openai-compatible" }
         })));
+    }
+}
+
+#[cfg(test)]
+mod proxy_switch_named {
+    #[test]
+    fn gateway_schema_5_to_6_removes_only_gateway_proxy_url() {
+        use serde_json::json;
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "onespace-mig5to6-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let _guard = crate::config::test_home::TestHomeGuard::set(&dir);
+        let cfg = json!({
+            "schema_version": 5,
+            "enabled": true,
+            "settings": {
+                "proxy_url": "http://old-proxy.example",
+                "bind_address": "127.0.0.1",
+                "enable_cors": true
+            },
+            "providers": [
+                {
+                    "id": "unbound",
+                    "name": "Unbound",
+                    "base_url": "https://unbound.example.com/v1",
+                    "api_key": "sk-unbound",
+                    "protocol": "chat_completions",
+                    "mappings": []
+                }
+            ],
+            "keys": [{"id":"k1","label":"K","value":"v","enabled":true,"created_at":1}],
+            "default_key_id": "k1",
+            "model_pools": [],
+            "model_prices": [],
+            "templates": []
+        });
+        let password = crate::crypto::get_or_init_master_password().unwrap();
+        let encrypted = crate::crypto::encrypt(&cfg.to_string(), &password).unwrap();
+        let path = crate::ai_gateway::storage::config_path().unwrap();
+        fs::write(&path, encrypted).unwrap();
+
+        let loaded = crate::ai_gateway::storage::read_config().unwrap();
+        assert_eq!(loaded.schema_version, 6);
+        assert_eq!(loaded.providers.len(), 1);
+        assert_eq!(loaded.providers[0].id, "unbound");
+        assert!(loaded.providers[0].template_id.is_none());
+
+        // on-disk proxy_url removed
+        let on_disk = {
+            let raw = fs::read_to_string(&path).unwrap();
+            let dec = crate::crypto::decrypt(raw.trim(), &password).unwrap();
+            serde_json::from_str::<serde_json::Value>(&dec).unwrap()
+        };
+        assert!(on_disk["settings"].get("proxy_url").is_none());
+
+        // repeated read does not rewrite bytes
+        let bytes_after_first = fs::read(&path).unwrap();
+        let _ = crate::ai_gateway::storage::read_config().unwrap();
+        let bytes_after_second = fs::read(&path).unwrap();
+        assert_eq!(bytes_after_second, bytes_after_first);
+
+        // future schema number is not downgraded
+        let future = json!({"schema_version": 99, "enabled": true, "providers": [], "keys": [], "default_key_id": null, "model_pools": [], "model_prices": [], "templates": []});
+        let enc_future = crate::crypto::encrypt(&future.to_string(), &password).unwrap();
+        fs::write(&path, enc_future).unwrap();
+        let bytes_future_before = fs::read(&path).unwrap();
+        let loaded_future = crate::ai_gateway::storage::read_config().unwrap();
+        assert_eq!(loaded_future.schema_version, 99);
+        let bytes_future_after = fs::read(&path).unwrap();
+        assert_eq!(bytes_future_after, bytes_future_before);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

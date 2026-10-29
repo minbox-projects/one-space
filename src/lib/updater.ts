@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
-import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { relaunch } from '@tauri-apps/plugin-process';
 
 type UpdaterStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error';
@@ -35,11 +36,34 @@ interface UpdaterState {
   lastCheckedAt: number | null;
 }
 
+interface NativeUpdateMetadata {
+  id: string;
+  version: string;
+  currentVersion: string;
+  date?: string | null;
+  body?: string | null;
+}
+
+type NativeDownloadEvent =
+  | { event: 'Started'; data?: { contentLength?: number } }
+  | { event: 'Progress'; data?: { chunkLength?: number } }
+  | { event: 'Finished' };
+
+interface PendingUpdate {
+  id: string;
+  manifest: UpdateManifest;
+}
+
 const GITHUB_REPO = 'minbox-projects/one-space';
 const UPDATE_CHECK_THROTTLE_MS = 30_000;
+const APP_UPDATER_DOWNLOAD_EVENT = 'app-updater-download-event';
 
-let pendingUpdate: Update | null = null;
-let inFlightCheckPromise: Promise<Update | UpdateManifest | null> | null = null;
+let pendingUpdate: PendingUpdate | null = null;
+let inFlightCheckPromise: Promise<UpdateManifest | null> | null = null;
+let checkEpoch = 0;
+let downloadListener: Promise<() => void> | null = null;
+let downloadedBytes = 0;
+let totalBytes = 0;
 const subscribers = new Set<(next: UpdaterState) => void>();
 
 let state: UpdaterState = {
@@ -116,6 +140,21 @@ function classifyError(error: unknown): UpdaterErrorCode {
   return 'Unknown';
 }
 
+function httpStatusFromError(error: unknown): number | null {
+  const match = String(error ?? '').match(/HTTP\s+(\d{3})/i);
+  return match ? Number(match[1]) : null;
+}
+
+async function fetchGithubJson(path: string): Promise<unknown> {
+  const text = await invoke<string>('proxy_http_request', {
+    url: `https://api.github.com/repos/${GITHUB_REPO}${path}`,
+    method: 'GET',
+    headers: { Accept: 'application/vnd.github+json' },
+    body: null,
+  });
+  return JSON.parse(text);
+}
+
 export async function fetchCurrentVersionReleaseNotes(
   version: string,
   force = false,
@@ -139,22 +178,24 @@ export async function fetchCurrentVersionReleaseNotes(
   }
 
   const fetchTag = async (tag: string) => {
-    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}`, {
-      headers: { Accept: 'application/vnd.github+json' },
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+    try {
+      return await fetchGithubJson(`/releases/tags/${tag}`);
+    } catch (error) {
+      const status = httpStatusFromError(error);
+      if (status !== null) {
+        throw new Error(`HTTP ${status}`);
+      }
+      throw error;
     }
-    return res.json();
   };
 
   try {
     let json: { body?: string; published_at?: string; created_at?: string; html_url?: string };
     try {
-      json = await fetchTag(`v${norm}`);
+      json = (await fetchTag(`v${norm}`)) as typeof json;
     } catch (e: unknown) {
       if (e instanceof Error && e.message.includes('404')) {
-        json = await fetchTag(norm);
+        json = (await fetchTag(norm)) as typeof json;
       } else {
         throw e;
       }
@@ -195,13 +236,16 @@ export async function fetchCurrentVersionReleaseNotes(
 
 async function checkViaGithubFallback(): Promise<UpdateManifest | null> {
   const currentVersion = normalizeVersion(await getVersion());
-  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-    headers: { Accept: 'application/vnd.github+json' },
-  });
-  if (!res.ok) {
-    throw new Error(`GitHub API HTTP ${res.status}`);
+  let json: { tag_name?: string; name?: string; body?: string; published_at?: string; created_at?: string };
+  try {
+    json = (await fetchGithubJson('/releases/latest')) as typeof json;
+  } catch (error) {
+    const status = httpStatusFromError(error);
+    if (status !== null) {
+      throw new Error(`GitHub API HTTP ${status}`);
+    }
+    throw error;
   }
-  const json = await res.json();
   const latestVersion = normalizeVersion(json.tag_name || json.name || '');
   if (!latestVersion) {
     throw new Error('GitHub fallback returned empty version');
@@ -217,14 +261,41 @@ async function checkViaGithubFallback(): Promise<UpdateManifest | null> {
   };
 }
 
+function handleDownloadEvent(event: NativeDownloadEvent) {
+  if (event.event === 'Started') {
+    totalBytes = event.data?.contentLength || 0;
+  } else if (event.event === 'Progress') {
+    downloadedBytes += event.data?.chunkLength ?? 0;
+    const pct = totalBytes > 0 ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : 0;
+    emit({ downloadProgress: pct });
+  } else if (event.event === 'Finished') {
+    emit({ downloadProgress: 100 });
+  }
+}
+
+function ensureDownloadListener(): Promise<() => void> {
+  if (!downloadListener) {
+    downloadListener = listen<NativeDownloadEvent>(APP_UPDATER_DOWNLOAD_EVENT, (event) => {
+      if (event.payload) {
+        handleDownloadEvent(event.payload);
+      }
+    }).catch((error) => {
+      console.error('Failed to listen for updater download events:', error);
+      downloadListener = null;
+      return () => {};
+    });
+  }
+  return downloadListener;
+}
+
 export function checkForUpdates(
   silent = false,
   allowFallback = true,
   force = false,
-): Promise<Update | UpdateManifest | null> {
+): Promise<UpdateManifest | null> {
   if (!force && !state.checking && state.lastCheckedAt && Date.now() - state.lastCheckedAt < UPDATE_CHECK_THROTTLE_MS) {
     if (state.updateAvailable) {
-      return Promise.resolve(pendingUpdate || state.manifest);
+      return Promise.resolve(pendingUpdate?.manifest ?? state.manifest);
     }
     return Promise.resolve(null);
   }
@@ -233,8 +304,13 @@ export function checkForUpdates(
     return inFlightCheckPromise;
   }
 
-  inFlightCheckPromise = (async () => {
-    emit({
+  const epoch = checkEpoch;
+  const publish = (next: Partial<UpdaterState>) => {
+    if (epoch === checkEpoch) emit(next);
+  };
+
+  const promise = (async (): Promise<UpdateManifest | null> => {
+    publish({
       status: 'checking',
       checking: true,
       error: null,
@@ -244,16 +320,18 @@ export function checkForUpdates(
     });
 
     try {
-      const update = await check();
+      const metadata = await invoke<NativeUpdateMetadata | null>('app_updater_check');
+      if (epoch !== checkEpoch) return null;
       const lastCheckedAt = Date.now();
 
-      if (!update) {
+      if (!metadata) {
         if (allowFallback && !silent) {
           try {
             const manifest = await checkViaGithubFallback();
+            if (epoch !== checkEpoch) return null;
             if (manifest) {
               pendingUpdate = null;
-              emit({
+              publish({
                 status: 'available',
                 checking: false,
                 updateAvailable: true,
@@ -270,8 +348,9 @@ export function checkForUpdates(
           }
         }
 
+        if (epoch !== checkEpoch) return null;
         pendingUpdate = null;
-        emit({
+        publish({
           status: 'idle',
           checking: false,
           updateAvailable: false,
@@ -283,33 +362,36 @@ export function checkForUpdates(
         return null;
       }
 
-      pendingUpdate = update;
-      emit({
+      const manifest: UpdateManifest = {
+        version: normalizeVersion(metadata.version),
+        currentVersion: metadata.currentVersion,
+        date: metadata.date ?? undefined,
+        body: metadata.body ?? undefined,
+      };
+      pendingUpdate = { id: metadata.id, manifest };
+      publish({
         status: 'available',
         checking: false,
         updateAvailable: true,
         installable: true,
         source: 'tauri-updater',
-        manifest: {
-          version: normalizeVersion(update.version),
-          currentVersion: update.currentVersion,
-          date: update.date,
-          body: update.body,
-        },
+        manifest,
         lastCheckedAt,
       });
-      return update;
+      return manifest;
     } catch (e) {
+      if (epoch !== checkEpoch) return null;
       const errorCode = classifyError(e);
       console.error('Failed to check for updates:', e);
 
       if (allowFallback && (errorCode === 'EndpointInvalid' || errorCode === 'NetworkError')) {
         try {
           const manifest = await checkViaGithubFallback();
+          if (epoch !== checkEpoch) return null;
           const lastCheckedAt = Date.now();
           if (!manifest) {
             pendingUpdate = null;
-            emit({
+            publish({
               status: 'idle',
               checking: false,
               updateAvailable: false,
@@ -321,7 +403,7 @@ export function checkForUpdates(
             return null;
           }
           pendingUpdate = null;
-          emit({
+          publish({
             status: 'available',
             checking: false,
             updateAvailable: true,
@@ -334,10 +416,11 @@ export function checkForUpdates(
           return manifest;
         } catch (fallbackError) {
           console.error('Fallback check failed:', fallbackError);
+          if (epoch !== checkEpoch) return null;
         }
       }
 
-      emit({
+      publish({
         status: 'error',
         checking: false,
         error: silent ? null : (errorCode === 'RateLimitExceeded' ? 'rateLimitNotice' : String(e)),
@@ -345,32 +428,36 @@ export function checkForUpdates(
       });
       return null;
     } finally {
-      inFlightCheckPromise = null;
+      if (epoch === checkEpoch) {
+        inFlightCheckPromise = null;
+      }
     }
   })();
 
-  return inFlightCheckPromise;
+  inFlightCheckPromise = promise;
+  return promise;
+}
+
+export function invalidateUpdaterTransport() {
+  checkEpoch += 1;
+  inFlightCheckPromise = null;
+  const next: Partial<UpdaterState> = { lastCheckedAt: null };
+  if (state.checking) next.checking = false;
+  if (state.status === 'checking') next.status = 'idle';
+  emit(next);
 }
 
 export async function downloadUpdateIfAvailable(silent = false) {
   if (!pendingUpdate || !state.installable || state.status === 'downloading' || state.status === 'installing') {
     return false;
   }
+  const updateId = pendingUpdate.id;
   try {
-    let downloadedBytes = 0;
-    let totalBytes = 0;
+    downloadedBytes = 0;
+    totalBytes = 0;
     emit({ status: 'downloading', error: null, errorCode: null, downloadProgress: 0 });
-    await pendingUpdate.download((event: DownloadEvent) => {
-      if (event.event === 'Started') {
-        totalBytes = event.data.contentLength || 0;
-      } else if (event.event === 'Progress') {
-        downloadedBytes += event.data.chunkLength;
-        const pct = totalBytes > 0 ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : 0;
-        emit({ downloadProgress: pct });
-      } else if (event.event === 'Finished') {
-        emit({ downloadProgress: 100 });
-      }
-    });
+    await ensureDownloadListener();
+    await invoke('app_updater_download', { updateId });
     emit({ status: 'downloaded', downloadProgress: 100 });
     return true;
   } catch (e) {
@@ -386,9 +473,10 @@ export async function downloadUpdateIfAvailable(silent = false) {
 
 export async function installDownloadedUpdate() {
   if (!pendingUpdate || state.status !== 'downloaded') return false;
+  const updateId = pendingUpdate.id;
   try {
     emit({ status: 'installing', error: null, errorCode: null });
-    await pendingUpdate.install();
+    await invoke('app_updater_install', { updateId });
     await relaunch();
     return true;
   } catch (e) {
@@ -437,8 +525,15 @@ export function useUpdater() {
 }
 
 export function __resetUpdaterForTest() {
+  checkEpoch += 1;
   pendingUpdate = null;
   inFlightCheckPromise = null;
+  downloadedBytes = 0;
+  totalBytes = 0;
+  if (downloadListener) {
+    void downloadListener.then((off) => off()).catch(() => {});
+    downloadListener = null;
+  }
   state = {
     status: 'idle',
     checking: false,
@@ -454,4 +549,3 @@ export function __resetUpdaterForTest() {
   };
   for (const sub of subscribers) sub(state);
 }
-

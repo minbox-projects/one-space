@@ -8,11 +8,57 @@ use instant_acme::{
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use uuid::Uuid;
 
+#[path = "acme_http.rs"]
+mod acme_http;
+
+use acme_http::AcmeHttpClient;
+
 use super::dns_verifier::{cloudflare_add_txt_record, cloudflare_delete_txt_record};
 use super::storage::save_issued_certificate;
 use super::types::{SslChallengeItem, SslIssuedCertificate, SslOrderRequest, SslOrderResponse};
 
 static ACTIVE_ORDERS: Mutex<Option<HashMap<String, ActiveOrderState>>> = Mutex::new(None);
+
+#[cfg(test)]
+static TEST_DIRECTORY_URL: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) struct TestDirectoryUrlGuard(Option<String>);
+
+#[cfg(test)]
+impl Drop for TestDirectoryUrlGuard {
+    fn drop(&mut self) {
+        *TEST_DIRECTORY_URL
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = self.0.take();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_directory_url(url: impl Into<String>) -> TestDirectoryUrlGuard {
+    let mut slot = TEST_DIRECTORY_URL
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let previous = slot.replace(url.into());
+    TestDirectoryUrlGuard(previous)
+}
+
+#[cfg(test)]
+fn test_directory_url() -> Option<String> {
+    TEST_DIRECTORY_URL
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+#[cfg(test)]
+fn test_default_directory_url(use_staging: bool) -> String {
+    if use_staging {
+        LetsEncrypt::Staging.url().to_string()
+    } else {
+        LetsEncrypt::Production.url().to_string()
+    }
+}
 
 #[allow(dead_code)]
 struct ActiveOrderState {
@@ -54,6 +100,10 @@ pub async fn create_acme_order(req: SslOrderRequest) -> Result<SslOrderResponse,
     }
 
     // 1. Choose directory (Production vs Staging)
+    #[cfg(test)]
+    let directory_url =
+        test_directory_url().unwrap_or_else(|| test_default_directory_url(req.use_staging));
+    #[cfg(not(test))]
     let directory_url = if req.use_staging {
         LetsEncrypt::Staging.url().to_string()
     } else {
@@ -90,8 +140,7 @@ pub async fn create_acme_order(req: SslOrderRequest) -> Result<SslOrderResponse,
 
     let contact_refs: Vec<&str> = contact.iter().map(|s| s.as_str()).collect();
 
-    let (account, creds) = Account::builder()
-        .map_err(|e| format!("Account builder error: {}", e))?
+    let (account, creds) = Account::builder_with_http(Box::new(AcmeHttpClient::new()))
         .create(
             &NewAccount {
                 contact: &contact_refs,
@@ -194,8 +243,7 @@ pub async fn verify_and_finalize_order(order_id: &str) -> Result<SslIssuedCertif
     let creds: AccountCredentials = serde_json::from_str(&state.account_creds_json)
         .map_err(|e| format!("Invalid credentials JSON: {}", e))?;
 
-    let account = Account::builder()
-        .map_err(|e| format!("Account builder error: {}", e))?
+    let account = Account::builder_with_http(Box::new(AcmeHttpClient::new()))
         .from_credentials(creds)
         .await
         .map_err(|e| format!("Failed to restore ACME account: {}", e))?;

@@ -224,14 +224,30 @@ pub(in crate::mcp_servers) fn scoped_package_url_name(package_name: &str) -> Str
     }
 }
 
-pub(in crate::mcp_servers) async fn fetch_npm_latest_version(
-    client: &reqwest::Client,
+pub(in crate::mcp_servers) fn npm_registry_base_url() -> &'static str {
+    "https://registry.npmjs.org"
+}
+
+fn npm_update_client() -> Result<reqwest::Client, String> {
+    crate::proxy::apply_current_proxy_to_builder(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .user_agent("onespace-mcp-update-checker/1.0"),
+    )?
+    .build()
+    .map_err(|e| e.to_string())
+}
+
+pub(in crate::mcp_servers) async fn fetch_npm_latest_version_from(
+    base_url: &str,
     package_name: &str,
 ) -> Result<String, String> {
     let url = format!(
-        "https://registry.npmjs.org/{}",
+        "{}/{}",
+        base_url.trim_end_matches('/'),
         scoped_package_url_name(package_name)
     );
+    let client = npm_update_client()?;
     let res = client
         .get(url)
         .send()
@@ -249,4 +265,10 @@ pub(in crate::mcp_servers) async fn fetch_npm_latest_version(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or("missing dist-tags.latest".to_string())
+}
+
+pub(in crate::mcp_servers) async fn fetch_npm_latest_version(
+    package_name: &str,
+) -> Result<String, String> {
+    fetch_npm_latest_version_from(npm_registry_base_url(), package_name).await
 }

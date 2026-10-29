@@ -228,23 +228,7 @@ pub fn short_link_delete_token() -> Result<ShortLinkConfigStatus, ShortLinkError
 
 #[tauri::command]
 pub async fn short_link_create(url: String) -> Result<ShortLinkResult, ShortLinkError> {
-    let client = Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| {
-            ShortLinkError::new(
-                ShortLinkErrorCode::NetworkError,
-                "The TinyURL request could not be completed.",
-            )
-        })?;
-    create_with_dependencies(
-        url,
-        crate::secrets::get_tinyurl_api_token,
-        &client,
-        TINYURL_CREATE_URL,
-    )
-    .await
+    short_link_create_with_endpoint(url, TINYURL_CREATE_URL).await
 }
 
 #[cfg(test)]
@@ -650,4 +634,26 @@ mod tests {
             }
         }
     }
+}
+
+
+pub(crate) async fn short_link_create_with_endpoint(
+    url: String,
+    endpoint: &str,
+) -> Result<ShortLinkResult, ShortLinkError> {
+    let network_error = || {
+        ShortLinkError::new(
+            ShortLinkErrorCode::NetworkError,
+            "The TinyURL request could not be completed.",
+        )
+    };
+    let client = crate::proxy::apply_current_proxy_to_builder(
+        Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none()),
+    )
+    .map_err(|_| network_error())?
+    .build()
+    .map_err(|_| network_error())?;
+    create_with_dependencies(url, crate::secrets::get_tinyurl_api_token, &client, endpoint).await
 }

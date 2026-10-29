@@ -10,6 +10,7 @@ use super::types::{
     device_from_storage, shared_profile_from_storage, storage_from_device, SharedProfile,
     StorageConfig,
 };
+use tauri::Emitter;
 
 #[tauri::command]
 pub fn should_show_onboarding() -> Result<bool, String> {
@@ -103,14 +104,14 @@ pub async fn save_storage_config(
                 proxy.proxy_password = Some(crate::crypto::encrypt(pass, &master_pass)?);
             }
         }
-
-        if let Some(mgr) = crate::proxy::PROXY_MANAGER.get() {
-            mgr.update_config(proxy.clone())?;
-        }
-        crate::proxy::apply_process_proxy_env(Some(proxy))?;
-    } else {
-        crate::proxy::apply_process_proxy_env(None)?;
     }
+
+    let prepared_proxy = if let Some(manager) = crate::proxy::PROXY_MANAGER.get() {
+        Some(manager.prepare(config.proxy.clone())?)
+    } else {
+        crate::proxy::ProxyManager::new().prepare(config.proxy.clone())?;
+        None
+    };
 
     if let Some(token) = &config.http_token {
         if !token.is_empty() {
@@ -133,10 +134,37 @@ pub async fn save_storage_config(
     let device = device_from_storage(&config);
     save_device_config(&device)?;
 
+    let published_generation = if let (Some(manager), Some(prepared)) =
+        (crate::proxy::PROXY_MANAGER.get(), prepared_proxy)
+    {
+        Some(manager.publish(prepared))
+    } else {
+        None
+    };
+    crate::proxy::apply_process_proxy_env(config.proxy.as_ref())?;
+
+    if let Some(generation) = published_generation {
+        let _ = app.emit(crate::proxy::PROXY_CONFIG_UPDATED_EVENT, generation);
+    }
+
     if let Err(err) = crate::messages::cleanup_for_current_retention(app.clone()) {
         eprintln!("messages retention cleanup failed: {}", err);
     }
 
     let _ = crate::app_store::sync_enqueue(app, "save_storage_config".to_string()).await;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn save_proxy_atomically_for_test(
+    persist: impl FnOnce() -> Result<(), String>,
+    config: Option<crate::config::ProxyConfig>,
+) -> Result<(), String> {
+    let manager = crate::proxy::PROXY_MANAGER
+        .get_or_init(|| std::sync::Arc::new(crate::proxy::ProxyManager::new()));
+    let prepared = manager.prepare(config.clone())?;
+    persist()?;
+    manager.publish(prepared);
+    crate::proxy::apply_process_proxy_env(config.as_ref())?;
     Ok(())
 }

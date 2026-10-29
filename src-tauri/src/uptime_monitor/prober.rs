@@ -99,6 +99,20 @@ pub async fn probe_http(
         client_builder = client_builder.danger_accept_invalid_certs(true);
     }
 
+    let client_builder = match crate::proxy::apply_current_proxy_to_builder(client_builder) {
+        Ok(builder) => builder,
+        Err(e) => {
+            return ProbeTestResult {
+                success: false,
+                status: MonitorStatus::Down,
+                response_time_ms: start.elapsed().as_millis() as u32,
+                status_code: None,
+                message: format!("Failed to build HTTP client: {}", e),
+                ssl_days_remaining: None,
+            };
+        }
+    };
+
     let client = match client_builder.build() {
         Ok(c) => c,
         Err(e) => {
@@ -390,5 +404,46 @@ pub async fn probe_dns(target: &str, timeout_ms: u32) -> ProbeTestResult {
             message: format!("DNS resolution timed out after {}ms", timeout_ms),
             ssl_days_remaining: None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proxy::test_support::SERIAL_GUARD;
+    use crate::proxy::ProxyManager;
+
+    #[tokio::test]
+    async fn uptime_monitor_proxy_switch_probe_and_webhook() {
+        let _g = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let pa = crate::proxy::test_support::HttpProxyRecorder::new("ok").await;
+        let pb = crate::proxy::test_support::HttpProxyRecorder::new("ok").await;
+        let mgr = crate::proxy::PROXY_MANAGER
+            .get_or_init(|| std::sync::Arc::new(ProxyManager::new()));
+        let cfg = |port| crate::config::ProxyConfig {
+            proxy_enabled: true,
+            proxy_type: "http".to_string(),
+            proxy_host: "127.0.0.1".to_string(),
+            proxy_port: port,
+            proxy_username: None,
+            proxy_password: None,
+            check_interval: 15,
+        };
+        let a_cfg = cfg(pa.url().split(':').last().unwrap().parse().unwrap());
+        mgr.publish(mgr.prepare(Some(a_cfg)).unwrap());
+
+        let opts = HttpProbeOptions::default();
+        let r1 = probe_http("http://uptime.example.test/health", &opts, 5000).await;
+        assert!(r1.success);
+        assert_eq!(pa.targets(), vec!["http://uptime.example.test/health".to_string()]);
+        assert!(pb.targets().is_empty());
+
+        let b_cfg = cfg(pb.url().split(':').last().unwrap().parse().unwrap());
+        mgr.publish(mgr.prepare(Some(b_cfg)).unwrap());
+
+        let r2 = probe_http("http://uptime.example.test/health", &opts, 5000).await;
+        assert!(r2.success);
+        assert_eq!(pa.targets().len(), 1);
+        assert_eq!(pb.targets(), vec!["http://uptime.example.test/health".to_string()]);
     }
 }

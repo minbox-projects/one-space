@@ -46,7 +46,6 @@ export function providerMarkedKeys(
 export const DEFAULT_GATEWAY_SETTINGS: GatewaySettings = {
   bind_address: "127.0.0.1",
   enable_cors: true,
-  proxy_url: null,
   require_api_key_for_lan: true,
   connect_timeout_secs: 10,
   read_timeout_secs: 60,
@@ -80,12 +79,6 @@ export function normalizeGatewaySettings(
       typeof settings.enable_cors === "boolean"
         ? settings.enable_cors
         : DEFAULT_GATEWAY_SETTINGS.enable_cors,
-    proxy_url:
-      typeof settings.proxy_url === "string"
-        ? settings.proxy_url
-        : settings.proxy_url === null
-        ? null
-        : DEFAULT_GATEWAY_SETTINGS.proxy_url,
     require_api_key_for_lan:
       typeof settings.require_api_key_for_lan === "boolean"
         ? settings.require_api_key_for_lan

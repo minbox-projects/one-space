@@ -39,6 +39,7 @@ pub(in crate::subagents) fn source_branch(source: &SubagentSourceConfig) -> Stri
 
 pub(in crate::subagents) fn git_run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
     let mut cmd = crate::get_git_command();
+    crate::proxy::apply_current_proxy_env_to_command(&mut cmd);
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
@@ -315,4 +316,70 @@ pub(in crate::subagents) fn refresh_repository_metadata_from_snapshots(
         }
     }
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proxy::test_support::{SERIAL_GUARD, with_global_proxy};
+    use crate::config::ProxyConfig;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn subagents_proxy_switch_git_child_environment() {
+        let _g = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join("onespace-skills-git-test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let script = tmp.join("fakegit.sh");
+        let out_a = tmp.join("env_a.txt");
+        let out_b = tmp.join("env_b.txt");
+        fs::write(&script, "#!/bin/sh\nout=\"$GIT_ENV_OUTPUT\"\n{\n  echo \"ARGS:$*\"\n  for v in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy; do\n    eval \"val=\\$$v\"\n    echo \"$v=$val\"\n  done\n} > \"$out\"\nexit 0\n").unwrap();
+        let mut perm = fs::metadata(&script).unwrap().permissions();
+        perm.set_mode(0o755);
+        fs::set_permissions(&script, perm).unwrap();
+
+        crate::set_git_command_override(Some(script.to_string_lossy().to_string()));
+
+        let port = 8123u16;
+        let cfg_a = ProxyConfig {
+            proxy_enabled: true,
+            proxy_type: "http".to_string(),
+            proxy_host: "127.0.0.1".to_string(),
+            proxy_port: port,
+            proxy_username: Some("SAFE_FIXTURE_proxy_user".to_string()),
+            proxy_password: Some("SAFE_FIXTURE_proxy_pass".to_string()),
+            check_interval: 15,
+        };
+        // Use a recorder? port fixed not running; but env only checks URL construction. Need actual proxy port from recorder? Use with_global_proxy with cfg; proxy_url uses host/port. Fine.
+        let _guard = with_global_proxy(Some(cfg_a.clone()));
+
+        std::env::set_var("GIT_ENV_OUTPUT", out_a.to_string_lossy().to_string());
+        let _ = git_run(None, &["fetch"]);
+
+        let text_a = fs::read_to_string(&out_a).unwrap();
+        // expected url
+        let expected = "http://SAFE_FIXTURE_proxy_user:SAFE_FIXTURE_proxy_pass@127.0.0.1:8123";
+        for key in ["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy"] {
+            assert!(text_a.contains(&format!("{}={}", key, expected)), "missing {} in {}", key, text_a);
+        }
+        assert!(text_a.contains("NO_PROXY=localhost,127.0.0.1,::1"));
+        assert!(text_a.contains("no_proxy=localhost,127.0.0.1,::1"));
+
+        // disabled
+        drop(_guard);
+        let _guard2 = with_global_proxy(None);
+        std::env::set_var("GIT_ENV_OUTPUT", out_b.to_string_lossy().to_string());
+        let _ = git_run(None, &["fetch"]);
+        let text_b = fs::read_to_string(&out_b).unwrap();
+        for key in ["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy"] {
+            // should be absent or empty
+            assert!(!text_b.contains(&format!("{}=", key)) || text_b.contains(&format!("{}=\n", key)), "proxy var present in disabled: {}", text_b);
+        }
+        assert!(text_b.contains("NO_PROXY=localhost,127.0.0.1,::1"));
+        assert!(text_b.contains("no_proxy=localhost,127.0.0.1,::1"));
+
+        crate::set_git_command_override(None);
+    }
 }

@@ -403,7 +403,10 @@ pub(in crate::protocol_router) async fn forward_request(
     input: &Value,
     model: &str,
 ) -> Result<UpstreamResult, String> {
-    let client = Client::new();
+    let client = crate::proxy::apply_current_proxy_to_builder(Client::builder())
+        .map_err(|e| format!("upstream_network_error: proxy transport unavailable: {e}"))?
+        .build()
+        .map_err(|e| format!("upstream_network_error: proxy transport unavailable: {e}"))?;
     let url = upstream_url_for_route(route);
     let upstream_body = match route.wire_api {
         WireApi::OpenAiChat => anthropic_to_openai_chat(input, model),
@@ -456,4 +459,52 @@ pub(in crate::protocol_router) async fn forward_request(
         )
     })?;
     Ok(UpstreamResult::Json { status, body })
+}
+
+#[cfg(test)]
+mod proxy_switch_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn protocol_router_runtime_http_proxy_switch_upstream() {
+        let _g = crate::proxy::test_support::SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let body = r#"{"id":"x","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+        let pa = crate::proxy::test_support::HttpProxyRecorder::new(body).await;
+        let pb = crate::proxy::test_support::HttpProxyRecorder::new(body).await;
+
+        let mgr = crate::proxy::PROXY_MANAGER.get_or_init(|| std::sync::Arc::new(crate::proxy::ProxyManager::new()));
+        let a_port: u16 = pa.url().split(':').last().unwrap().parse().unwrap();
+        let b_port: u16 = pb.url().split(':').last().unwrap().parse().unwrap();
+        use crate::config::ProxyConfig;
+        let a_cfg = ProxyConfig { proxy_enabled: true, proxy_type: "http".into(), proxy_host: "127.0.0.1".into(), proxy_port: a_port, proxy_username: None, proxy_password: None, check_interval: 15 };
+        mgr.publish(mgr.prepare(Some(a_cfg)).unwrap());
+
+        let route = ProtocolRoute {
+            id: "r".into(),
+            name: "r".into(),
+            claude_provider_id: "c".into(),
+            claude_provider_name: "c".into(),
+            upstream_provider_id: "u".into(),
+            upstream_provider_name: "u".into(),
+            base_url: "http://router-upstream.example.test/v1".into(),
+            auth_header: None,
+            api_key: String::new(),
+            wire_api: WireApi::OpenAiChat,
+            default_model: None,
+            mappings: vec![],
+            enabled: true,
+        };
+        let expected = upstream_url_for_route(&route);
+        let input = serde_json::json!({"messages":[{"role":"user","content":"hi"}],"max_tokens":5});
+
+        let _ = forward_request(&route, &input, "m").await;
+        assert_eq!(pa.targets(), vec![expected.clone()]);
+
+        let b_cfg = ProxyConfig { proxy_enabled: true, proxy_type: "http".into(), proxy_host: "127.0.0.1".into(), proxy_port: b_port, proxy_username: None, proxy_password: None, check_interval: 15 };
+        mgr.publish(mgr.prepare(Some(b_cfg)).unwrap());
+
+        let _ = forward_request(&route, &input, "m").await;
+        assert_eq!(pb.targets(), vec![expected.clone()]);
+        assert_eq!(pa.hits(), 1);
+    }
 }

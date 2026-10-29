@@ -142,8 +142,8 @@ struct TemplateOp {
     tx: watch::Sender<Option<TemplateSyncResult>>,
 }
 
-fn template_ops() -> &'static Mutex<HashMap<String, Arc<TemplateOp>>> {
-    static TEMPLATE_OPS: OnceLock<Mutex<HashMap<String, Arc<TemplateOp>>>> = OnceLock::new();
+fn template_ops() -> &'static Mutex<HashMap<(String, u64), Arc<TemplateOp>>> {
+    static TEMPLATE_OPS: OnceLock<Mutex<HashMap<(String, u64), Arc<TemplateOp>>>> = OnceLock::new();
     TEMPLATE_OPS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -159,6 +159,7 @@ pub(in crate::ai_gateway) enum StartOutcome {
 /// and clears the guard entry.
 pub(in crate::ai_gateway) struct TemplateOpOwner {
     template_id: String,
+    generation: u64,
     op: Arc<TemplateOp>,
 }
 
@@ -175,12 +176,13 @@ impl TemplateOpOwner {
     /// owner can never clear a replacement operation.
     pub(in crate::ai_gateway) fn finish(self, result: TemplateSyncResult) {
         let _ = self.op.tx.send(Some(result));
+        let key = (self.template_id.clone(), self.generation);
         let mut guard = template_ops()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(existing) = guard.get(&self.template_id) {
+        if let Some(existing) = guard.get(&key) {
             if Arc::ptr_eq(existing, &self.op) {
-                guard.remove(&self.template_id);
+                guard.remove(&key);
             }
         }
     }
@@ -205,12 +207,16 @@ impl TemplateOpFollower {
     }
 }
 
-/// Begin (or join) the same-template operation for `template_id`.
+/// Begin (or join) the same-template operation for `template_id` under the
+/// current global proxy generation. A generation change starts an independent
+/// operation instead of joining the previous transport's flight.
 pub(in crate::ai_gateway) fn start_template_op(template_id: &str) -> StartOutcome {
+    let generation = super::current_proxy_generation();
+    let key = (template_id.to_string(), generation);
     let mut guard = template_ops()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if let Some(op) = guard.get(template_id) {
+    if let Some(op) = guard.get(&key) {
         return StartOutcome::Follower(TemplateOpFollower {
             rx: op.tx.subscribe(),
             _op: op.clone(),
@@ -218,9 +224,10 @@ pub(in crate::ai_gateway) fn start_template_op(template_id: &str) -> StartOutcom
     }
     let (tx, _rx) = watch::channel(None);
     let op = Arc::new(TemplateOp { tx });
-    guard.insert(template_id.to_string(), op.clone());
+    guard.insert(key, op.clone());
     StartOutcome::Owner(TemplateOpOwner {
         template_id: template_id.to_string(),
+        generation,
         op,
     })
 }
@@ -268,35 +275,74 @@ pub(in crate::ai_gateway) enum AutomaticOutcome {
 }
 
 /// Run one manual template sync through the shared same-template guard. An
-/// owner performs the operation; a follower reuses the in-flight result.
+/// owner performs the operation under the generation captured at admission; a
+/// follower reuses the in-flight result. A stale owner settles only its own
+/// flight and never records a failure.
 pub(in crate::ai_gateway) async fn sync_template_manual(
     app: Option<AppHandle>,
     template_id: &str,
 ) -> TemplateSyncResult {
     match start_template_op(template_id) {
         StartOutcome::Owner(owner) => {
-            let result = super::commands::execute_template_sync(app.clone(), template_id).await;
-            finish_owner(owner, template_id, app.as_ref(), &result);
-            result
+            let generation = owner.generation;
+            match super::commands::execute_template_sync_at_generation(
+                app.clone(),
+                template_id,
+                generation,
+            )
+            .await
+            {
+                Ok(super::commands::TemplateSyncExecution::Applied(view)) => {
+                    finish_owner(owner, template_id, app.as_ref(), &Ok(view.clone()));
+                    Ok(view)
+                }
+                Ok(super::commands::TemplateSyncExecution::Stale) => {
+                    let reason = super::commands::STALE_TEMPLATE_SYNC_REASON.to_string();
+                    owner.finish(Err(reason.clone()));
+                    Err(reason)
+                }
+                Err(error) => {
+                    finish_owner(owner, template_id, app.as_ref(), &Err(error.clone()));
+                    Err(error)
+                }
+            }
         }
         StartOutcome::Follower(follower) => follower.wait().await,
     }
 }
 
 /// Run one automatic contender through the shared same-template guard. A
-/// follower is skipped instead of waiting.
+/// follower is skipped instead of waiting. A stale owner neither records a
+/// failure nor announces a configuration update.
 pub(in crate::ai_gateway) async fn sync_template_automatic(
     app: Option<AppHandle>,
     template_id: &str,
 ) -> AutomaticOutcome {
     match start_template_op(template_id) {
         StartOutcome::Owner(owner) => {
-            let result = super::commands::execute_template_sync(app.clone(), template_id).await;
-            if result.is_ok() {
-                notify_config_updated(app.as_ref());
+            let generation = owner.generation;
+            match super::commands::execute_template_sync_at_generation(
+                app.clone(),
+                template_id,
+                generation,
+            )
+            .await
+            {
+                Ok(super::commands::TemplateSyncExecution::Applied(view)) => {
+                    notify_config_updated(app.as_ref());
+                    finish_owner(owner, template_id, app.as_ref(), &Ok(view.clone()));
+                    AutomaticOutcome::Ran(Ok(view))
+                }
+                Ok(super::commands::TemplateSyncExecution::Stale) => {
+                    let reason = super::commands::STALE_TEMPLATE_SYNC_REASON.to_string();
+                    owner.finish(Err(reason.clone()));
+                    AutomaticOutcome::Ran(Err(reason))
+                }
+                Err(error) => {
+                    finish_owner(owner, template_id, app.as_ref(), &Err(error.clone()));
+                    AutomaticOutcome::Ran(Err(error))
+                }
             }
-            finish_owner(owner, template_id, app.as_ref(), &result);
-            AutomaticOutcome::Ran(result)
         }
         StartOutcome::Follower(_) => AutomaticOutcome::Skipped,
     }
@@ -582,4 +628,302 @@ pub(in crate::ai_gateway) fn reset_auto_refresh_for_tests() {
     BATCH_IN_FLIGHT.store(false, Ordering::SeqCst);
     SCHEDULER_SHUTDOWN.store(false, Ordering::SeqCst);
     TEMPLATE_AUTO_REFRESH_EVENTS.with(|events| events.borrow_mut().clear());
+}
+
+
+#[cfg(test)]
+mod proxy_switch_named {
+    use super::{start_template_op, StartOutcome};
+    use crate::ai_gateway::commands::{
+        execute_template_sync_at_generation, TemplateSyncExecution,
+    };
+    use crate::ai_gateway::templates::ProviderTemplateView;
+    use crate::ai_gateway::types_config::{ProviderTemplate, ProviderTemplateState};
+    use crate::proxy::test_support::{HttpProxyRecorder, SERIAL_GUARD};
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const TEMPLATE_ID: &str = "proxy-generation-flight-template";
+
+    fn view(synced_at: u64) -> ProviderTemplateView {
+        ProviderTemplateView {
+            template: ProviderTemplate {
+                id: TEMPLATE_ID.to_string(),
+                name: "Proxy generation flight".to_string(),
+                ..ProviderTemplate::default()
+            },
+            synced_at: Some(synced_at),
+            source: "test".to_string(),
+            from_snapshot: false,
+        }
+    }
+
+    fn port_of(url: &str) -> u16 {
+        url.trim_start_matches("http://")
+            .split(':')
+            .nth(1)
+            .expect("recorder URL has a port")
+            .parse()
+            .expect("recorder URL port is numeric")
+    }
+
+    fn proxy_config(url: &str) -> crate::config::ProxyConfig {
+        crate::config::ProxyConfig {
+            proxy_enabled: true,
+            proxy_type: "http".to_string(),
+            proxy_host: "127.0.0.1".to_string(),
+            proxy_port: port_of(url),
+            proxy_username: None,
+            proxy_password: None,
+            check_interval: 15,
+        }
+    }
+
+    /// REQ-004 / AC-006: same-template flights are generation-scoped. A caller
+    /// admitted after a proxy switch owns a new flight, while a same-generation
+    /// caller joins the running one. A late old-generation finish settles only
+    /// its own flight and never replaces the newer generation's entry.
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_template_refresh_flight_separates_generations_and_gates_late_result() {
+        let _guard = SERIAL_GUARD.lock().unwrap_or_else(|error| error.into_inner());
+        let _home = crate::lock_test_home_env();
+        let proxy_a = HttpProxyRecorder::new("A").await;
+        let proxy_b = HttpProxyRecorder::new("B").await;
+        let manager = crate::proxy::PROXY_MANAGER
+            .get_or_init(|| Arc::new(crate::proxy::ProxyManager::new()));
+
+        manager.publish(
+            manager
+                .prepare(Some(proxy_config(&proxy_a.url())))
+                .expect("proxy A prepares"),
+        );
+        let generation_a = manager.generation();
+
+        let owner_a = match start_template_op(TEMPLATE_ID) {
+            StartOutcome::Owner(owner) => owner,
+            StartOutcome::Follower(_) => {
+                panic!("no flight should exist for the template under generation A")
+            }
+        };
+
+        manager.publish(
+            manager
+                .prepare(Some(proxy_config(&proxy_b.url())))
+                .expect("proxy B prepares"),
+        );
+        let generation_b = manager.generation();
+        assert_ne!(
+            generation_a, generation_b,
+            "publishing a different proxy endpoint must advance the generation"
+        );
+
+        let owner_b = match start_template_op(TEMPLATE_ID) {
+            StartOutcome::Owner(owner) => owner,
+            StartOutcome::Follower(_) => panic!(
+                "a new-generation template operation must own a fresh flight instead of joining the old one"
+            ),
+        };
+
+        // Same generation as B: this contender must follow B, not fetch again.
+        let follower_b = match start_template_op(TEMPLATE_ID) {
+            StartOutcome::Follower(follower) => follower,
+            StartOutcome::Owner(_) => {
+                panic!("a same-generation template contender must follow the in-flight operation")
+            }
+        };
+
+        owner_b.finish(Ok(view(2)));
+        let followed = follower_b
+            .wait()
+            .await
+            .expect("the generation B follower must observe the owner's result");
+        assert_eq!(
+            followed.synced_at,
+            Some(2),
+            "the follower must receive the generation B owner's result"
+        );
+
+        // After B finishes, a new B-generation operation owns a fresh flight.
+        let owner_b2 = match start_template_op(TEMPLATE_ID) {
+            StartOutcome::Owner(owner) => owner,
+            StartOutcome::Follower(_) => panic!(
+                "a completed flight must not be reused; the next same-generation operation must own"
+            ),
+        };
+
+        // A settles late. Its own flight is gone, but it must not clear B2.
+        owner_a.finish(Ok(view(1)));
+
+        let follower_b2 = match start_template_op(TEMPLATE_ID) {
+            StartOutcome::Follower(follower) => follower,
+            StartOutcome::Owner(_) => panic!(
+                "the late old-generation finish must not clear the newer operation's entry"
+            ),
+        };
+        owner_b2.finish(Ok(view(3)));
+        let followed_b2 = follower_b2
+            .wait()
+            .await
+            .expect("the generation B second follower must observe its owner's result");
+        assert_eq!(
+            followed_b2.synced_at,
+            Some(3),
+            "a late old-generation result must not replace the current generation's result"
+        );
+    }
+
+    struct TempHome {
+        dir: PathBuf,
+        saved_home: Option<OsString>,
+        _override: crate::config::test_home::TestHomeGuard,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let lock = crate::lock_test_home_env();
+            let dir = std::env::temp_dir().join(format!(
+                "onespace-stale-template-sync-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).expect("create stale template home");
+            let override_guard = crate::config::test_home::TestHomeGuard::set(dir.clone());
+            let saved_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", &dir);
+            Self {
+                dir,
+                saved_home,
+                _override: override_guard,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match self.saved_home.take() {
+                Some(home) => std::env::set_var("HOME", home),
+                None => std::env::remove_var("HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// REQ-004 / AC-006: the generation captured at operation start is rechecked
+    /// inside the serialized configuration mutation. A body fetched before a
+    /// proxy switch is discarded without publishing a template or changing the
+    /// persisted configuration.
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_template_sync_is_refused_and_leaves_config_unchanged() {
+        let _guard = SERIAL_GUARD.lock().unwrap_or_else(|error| error.into_inner());
+        let home = TempHome::new();
+        let template_id = "stale-generation-template";
+        let proxy_a = HttpProxyRecorder::new("A").await;
+        let proxy_b = HttpProxyRecorder::new("B").await;
+        let manager = crate::proxy::PROXY_MANAGER
+            .get_or_init(|| Arc::new(crate::proxy::ProxyManager::new()));
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind stale template source");
+        let source_url = format!(
+            "http://{}/models",
+            listener.local_addr().expect("template source address")
+        );
+        let (hit_tx, hit_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept template fetch");
+            let mut buffer = [0u8; 2048];
+            let _ = stream.read(&mut buffer).await;
+            let _ = hit_tx.send(());
+            let _ = release_rx.await;
+            let body = r#"{"data":[{"id":"m1","name":"M1"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+
+        let template = ProviderTemplate {
+            id: template_id.to_string(),
+            name: "Stale generation template".to_string(),
+            models_url: Some(source_url),
+            source: "https://template.example.test/models".to_string(),
+            ..ProviderTemplate::default()
+        };
+        let config = crate::ai_gateway::GatewayConfig {
+            provider_templates: vec![ProviderTemplateState {
+                template_id: template_id.to_string(),
+                template: Some(template),
+                synced_at: None,
+                source: None,
+            }],
+            ..crate::ai_gateway::GatewayConfig::default()
+        };
+        crate::ai_gateway::storage::write_config(&config)
+            .expect("seed the stale template configuration");
+
+        manager.publish(
+            manager
+                .prepare(Some(proxy_config(&proxy_a.url())))
+                .expect("proxy A prepares"),
+        );
+        let generation_a = manager.generation();
+
+        let owned_template_id = template_id.to_string();
+        let mut call = tokio::spawn(async move {
+            execute_template_sync_at_generation(None, &owned_template_id, generation_a).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), hit_rx)
+            .await
+            .expect("the template sync must fetch its source")
+            .expect("the template source must signal the request");
+
+        manager.publish(
+            manager
+                .prepare(Some(proxy_config(&proxy_b.url())))
+                .expect("proxy B prepares"),
+        );
+        release_tx.send(()).expect("release the template source");
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), &mut call)
+            .await
+            .expect("the stale template sync must settle")
+            .expect("the template sync task must not panic")
+            .expect("the template source must succeed");
+        assert!(
+            matches!(outcome, TemplateSyncExecution::Stale),
+            "a body fetched under an older proxy generation must be refused as stale"
+        );
+        server.await.expect("template source task must complete");
+
+        let stored = crate::ai_gateway::storage::read_config()
+            .expect("the stale sync must leave a readable configuration");
+        let state = stored
+            .provider_templates
+            .iter()
+            .find(|state| state.template_id == template_id)
+            .expect("the seeded template state must remain");
+        assert_eq!(
+            state.synced_at, None,
+            "a stale template sync must not record a successful sync time"
+        );
+        assert!(
+            state
+                .template
+                .as_ref()
+                .expect("the template remains present")
+                .models
+                .is_empty(),
+            "a stale template sync must not publish fetched models"
+        );
+
+        drop(home);
+    }
 }

@@ -95,14 +95,6 @@ mod tests {
         settings.bind_address = "192.168.1.100".to_string();
         assert!(validate_gateway_settings(&settings).is_ok());
 
-        // Proxy URL
-        settings.proxy_url = Some("ftp://proxy.local".to_string());
-        assert!(validate_gateway_settings(&settings).is_err());
-        settings.proxy_url = Some("socks5://127.0.0.1:1080".to_string());
-        assert!(validate_gateway_settings(&settings).is_ok());
-        settings.proxy_url = Some("http://proxy.corporate.net:8080".to_string());
-        assert!(validate_gateway_settings(&settings).is_ok());
-
         // Timeouts
         settings.connect_timeout_secs = 0;
         assert!(validate_gateway_settings(&settings).is_err());
@@ -143,3 +135,4 @@ mod tests {
         assert_eq!(config.settings.enable_cors, true);
     }
 }
+

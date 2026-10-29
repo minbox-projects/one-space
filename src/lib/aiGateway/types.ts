@@ -210,7 +210,6 @@ export interface GatewayTerminalSyncRecord {
 export interface GatewaySettings {
   bind_address: string;
   enable_cors: boolean;
-  proxy_url?: string | null;
   require_api_key_for_lan: boolean;
 
   connect_timeout_secs: number;

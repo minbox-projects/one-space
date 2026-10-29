@@ -1,10 +1,14 @@
 use super::anthropic::{convert_request, is_conversion_path, is_messages_path, DEFAULT_ANTHROPIC_VERSION};
 use super::openai_conversion;
 use super::{GatewayUpstreamProvider, TransportStrategy, UpstreamProtocol};
+use bytes::Bytes;
+use futures_util::Stream;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock, RwLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 /// Parsed upstream response for a non-streaming attempt.
@@ -15,70 +19,57 @@ pub(in crate::ai_gateway) struct UpstreamJsonResponse {
     pub(in crate::ai_gateway) headers: HeaderMap,
 }
 
+/// The shared gateway client cache key: caller timeouts plus the global proxy
+/// generation the client was prepared for.
 #[derive(Clone, PartialEq, Eq)]
 struct ClientConfigKey {
     connect_timeout_secs: u32,
     read_timeout_secs: u32,
-    proxy_url: Option<String>,
+    proxy_generation: u64,
 }
 
-fn get_shared_client(settings: &super::GatewaySettings) -> Arc<Client> {
-    static CACHED_CLIENT: OnceLock<RwLock<(ClientConfigKey, Arc<Client>)>> = OnceLock::new();
-    let cache = CACHED_CLIENT.get_or_init(|| {
-        let default_settings = super::GatewaySettings::default();
-        let key = ClientConfigKey {
-            connect_timeout_secs: default_settings.connect_timeout_secs,
-            read_timeout_secs: default_settings.read_timeout_secs,
-            proxy_url: default_settings.proxy_url.clone(),
-        };
-        let client = build_client_from_key(&key);
-        RwLock::new((key, Arc::new(client)))
-    });
-
+/// Return one shared client for the current global proxy generation. A request
+/// admitted under a new generation never reuses the previous transport; a
+/// preparation failure is returned instead of falling back to a direct client.
+fn get_shared_client(settings: &super::GatewaySettings) -> Result<Arc<Client>, String> {
+    static CACHED_CLIENT: OnceLock<RwLock<Option<(ClientConfigKey, Arc<Client>)>>> = OnceLock::new();
+    let cache = CACHED_CLIENT.get_or_init(|| RwLock::new(None));
+    let snapshot = super::current_proxy_snapshot();
     let current_key = ClientConfigKey {
         connect_timeout_secs: settings.connect_timeout_secs,
         read_timeout_secs: settings.read_timeout_secs,
-        proxy_url: settings.proxy_url.clone(),
+        proxy_generation: snapshot.generation,
     };
 
-    if let Ok(read) = cache.read() {
-        if read.0 == current_key {
-            return Arc::clone(&read.1);
-        }
-    }
-
-    if let Ok(mut write) = cache.write() {
-        if write.0 == current_key {
-            return Arc::clone(&write.1);
-        }
-        let new_client = Arc::new(build_client_from_key(&current_key));
-        *write = (current_key, Arc::clone(&new_client));
-        return new_client;
-    }
-
-    Arc::new(build_client_from_key(&current_key))
-}
-
-fn build_client_from_key(key: &ClientConfigKey) -> Client {
-    let mut builder = Client::builder()
-        .connect_timeout(Duration::from_secs(key.connect_timeout_secs as u64))
-        .read_timeout(Duration::from_secs(key.read_timeout_secs as u64));
-
-    if let Some(ref proxy_url) = key.proxy_url {
-        let trimmed = proxy_url.trim();
-        if !trimmed.is_empty() {
-            if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
-                builder = builder.proxy(proxy);
+    {
+        let read = cache
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((key, client)) = read.as_ref() {
+            if *key == current_key {
+                return Ok(Arc::clone(client));
             }
         }
     }
 
-    builder.build().unwrap_or_else(|_| Client::new())
+    let client = Arc::new(build_client_from_key(&current_key, &snapshot)?);
+    let mut write = cache
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *write = Some((current_key, Arc::clone(&client)));
+    Ok(client)
 }
 
-#[allow(dead_code)]
-fn shared_client() -> Arc<Client> {
-    get_shared_client(&super::GatewaySettings::default())
+fn build_client_from_key(
+    key: &ClientConfigKey,
+    snapshot: &crate::proxy::ProxySnapshot,
+) -> Result<Client, String> {
+    let builder = Client::builder()
+        .connect_timeout(Duration::from_secs(key.connect_timeout_secs as u64))
+        .read_timeout(Duration::from_secs(key.read_timeout_secs as u64));
+    crate::proxy::apply_proxy_policy(builder, snapshot)?
+        .build()
+        .map_err(|_| "failed to prepare the gateway transport".to_string())
 }
 
 /// The sidecar is a loopback process, so its client must never inherit the
@@ -164,7 +155,7 @@ async fn build_request(
     client_headers: &HashMap<String, String>,
     upstream_protocol: UpstreamProtocol,
     settings: &super::GatewaySettings,
-) -> Result<reqwest::RequestBuilder, String> {
+) -> Result<(reqwest::RequestBuilder, Option<super::zen_sidecar::StartedSidecar>), String> {
     let converted = upstream_protocol == UpstreamProtocol::AnthropicMessages
         && is_conversion_path(path);
     // A prepared model-pool candidate may declare the opposite OpenAI endpoint
@@ -208,19 +199,21 @@ async fn build_request(
     // Sidecar providers always go through the local relay and never fall back
     // to the direct upstream URL. Direct providers keep the shared client and
     // the existing URL joining.
-    let (client, url, sidecar_identity) = match provider.transport {
+    let (client, url, sidecar_identity, lease) = match provider.transport {
         TransportStrategy::OpencodeZenSidecar => {
             let started = super::zen_sidecar::ensure_started(settings).await?;
             let endpoint = started.endpoint_base.trim_end_matches('/');
             (
                 sidecar_client().clone(),
                 format!("{endpoint}{upstream_path}"),
-                Some((started.token, provider.base_url.trim().to_string())),
+                Some((started.token.clone(), provider.base_url.trim().to_string())),
+                Some(started),
             )
         }
         TransportStrategy::Direct => (
-            get_shared_client(settings).as_ref().clone(),
+            get_shared_client(settings)?.as_ref().clone(),
             join_url(&provider.base_url, upstream_path),
+            None,
             None,
         ),
     };
@@ -270,7 +263,57 @@ async fn build_request(
     {
         request = request.header("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
     }
-    Ok(request)
+    Ok((request, lease))
+}
+
+/// A streaming upstream response together with the sidecar lease that keeps a
+/// retiring relay process alive until the response body finishes.
+pub(in crate::ai_gateway) struct UpstreamStreamResponse {
+    response: reqwest::Response,
+    lease: Option<super::zen_sidecar::StartedSidecar>,
+}
+
+impl UpstreamStreamResponse {
+    pub(in crate::ai_gateway) fn status(&self) -> reqwest::StatusCode {
+        self.response.status()
+    }
+
+    pub(in crate::ai_gateway) fn headers(&self) -> &HeaderMap {
+        self.response.headers()
+    }
+
+    /// Read the complete body while retaining the response lease.
+    pub(in crate::ai_gateway) async fn bytes(self) -> Result<Bytes, reqwest::Error> {
+        let Self { response, lease } = self;
+        let result = response.bytes().await;
+        drop(lease);
+        result
+    }
+
+    /// Convert the response into a byte stream that owns the lease for as long
+    /// as the stream lives.
+    pub(in crate::ai_gateway) fn bytes_stream(self) -> UpstreamByteStream {
+        let Self { response, lease } = self;
+        UpstreamByteStream {
+            inner: Box::pin(response.bytes_stream()),
+            _lease: lease,
+        }
+    }
+}
+
+/// A response byte stream that keeps the sidecar lease alive until the stream is
+/// dropped.
+pub(in crate::ai_gateway) struct UpstreamByteStream {
+    inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+    _lease: Option<super::zen_sidecar::StartedSidecar>,
+}
+
+impl Stream for UpstreamByteStream {
+    type Item = Result<Bytes, reqwest::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().inner.as_mut().poll_next(cx)
+    }
 }
 
 /// Send a non-streaming upstream request and return status plus raw body.
@@ -283,7 +326,7 @@ pub(in crate::ai_gateway) async fn forward_non_streaming_with_protocol(
     upstream_protocol: UpstreamProtocol,
     settings: &super::GatewaySettings,
 ) -> Result<UpstreamJsonResponse, String> {
-    let request = build_request(
+    let (request, lease) = build_request(
         provider,
         path,
         body,
@@ -304,6 +347,7 @@ pub(in crate::ai_gateway) async fn forward_non_streaming_with_protocol(
         Err(_) if status >= 400 => Vec::new(),
         Err(error) => return Err(error.to_string()),
     };
+    drop(lease);
     let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).is_ok();
     Ok(UpstreamJsonResponse {
         status,
@@ -314,7 +358,8 @@ pub(in crate::ai_gateway) async fn forward_non_streaming_with_protocol(
 }
 
 /// Open an upstream streaming response. Callers stream bytes and enforce the
-/// first-byte switching boundary themselves.
+/// first-byte switching boundary themselves. The returned value owns the relay
+/// lease until the response body is consumed.
 pub(in crate::ai_gateway) async fn open_streaming_response_with_protocol(
     provider: &GatewayUpstreamProvider,
     path: &str,
@@ -323,8 +368,8 @@ pub(in crate::ai_gateway) async fn open_streaming_response_with_protocol(
     client_headers: &HashMap<String, String>,
     upstream_protocol: UpstreamProtocol,
     settings: &super::GatewaySettings,
-) -> Result<reqwest::Response, String> {
-    let request = build_request(
+) -> Result<UpstreamStreamResponse, String> {
+    let (request, lease) = build_request(
         provider,
         path,
         body,
@@ -335,7 +380,8 @@ pub(in crate::ai_gateway) async fn open_streaming_response_with_protocol(
         settings,
     )
     .await?;
-    request.send().await.map_err(|e| e.to_string())
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    Ok(UpstreamStreamResponse { response, lease })
 }
 
 #[cfg(test)]
@@ -363,4 +409,83 @@ pub(in crate::ai_gateway) async fn forward_non_streaming(
         &default_settings,
     )
     .await
+}
+
+
+#[cfg(test)]
+mod proxy_switch_named {
+    use crate::proxy::test_support::{DirectUpstream, HttpProxyRecorder, SERIAL_GUARD};
+    use std::ffi::OsString;
+
+    const PROXY_ENV_KEYS: [&str; 6] = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ];
+    const NO_PROXY_ENV_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
+
+    struct EnvRestore {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvRestore {
+        fn apply(proxy_url: &str) -> Self {
+            let mut saved = Vec::new();
+            for key in PROXY_ENV_KEYS {
+                saved.push((key, std::env::var_os(key)));
+                std::env::set_var(key, proxy_url);
+            }
+            for key in NO_PROXY_ENV_KEYS {
+                saved.push((key, std::env::var_os(key)));
+                std::env::remove_var(key);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    /// REQ-002 / AC-002: the loopback relay client is explicitly direct, so
+    /// inherited proxy environment variables never reroute local sidecar calls.
+    #[tokio::test(flavor = "current_thread")]
+    async fn zen_sidecar_local_client_ignores_inherited_proxy() {
+        let _guard = SERIAL_GUARD.lock().unwrap_or_else(|error| error.into_inner());
+        let _home = crate::lock_test_home_env();
+        let inherited_proxy = HttpProxyRecorder::new("inherited").await;
+        let upstream = DirectUpstream::new("loopback-ok").await;
+        let _env = EnvRestore::apply(&inherited_proxy.url());
+
+        let response = super::sidecar_client()
+            .get(upstream.url())
+            .send()
+            .await
+            .expect("the loopback sidecar request must complete");
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(
+            response.text().await.expect("loopback body"),
+            "loopback-ok"
+        );
+
+        assert_eq!(
+            inherited_proxy.hits(),
+            0,
+            "the sidecar local client must never send loopback traffic through an inherited proxy"
+        );
+        assert!(
+            upstream.hits() >= 1,
+            "the request must reach the loopback endpoint directly"
+        );
+    }
 }
