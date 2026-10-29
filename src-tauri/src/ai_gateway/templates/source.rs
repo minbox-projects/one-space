@@ -4,7 +4,6 @@ use super::super::types_config::{
     ProviderTemplate, ProviderTemplateModel, SyncStrategy, UpstreamProtocol,
 };
 use serde_json::Value;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Transform a raw identifier part into display words: runs of characters
@@ -594,20 +593,13 @@ fn join_commandcode_client_capabilities(
         .map_err(|error| format!("failed to encode the enriched model list: {error}"))
 }
 
-static TEMPLATE_MODELS_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-
-/// Reuse one HTTP client for template model-list requests. The policy stays the
-/// existing 15-second timeout with the default redirect handling; only the
-/// client construction is shared.
+/// Build a template model-list client for the current global proxy generation.
+/// The policy stays the existing 15-second timeout with the default redirect
+/// handling; transport is resolved anew for every model-list operation.
 fn template_models_client() -> Result<reqwest::Client, String> {
-    TEMPLATE_MODELS_CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(15))
-                .build()
-                .map_err(|error| error.to_string())
-        })
-        .clone()
+    let builder = reqwest::Client::builder().timeout(Duration::from_secs(15));
+    crate::proxy::apply_current_proxy_to_builder(builder)?
+        .build()
         .map_err(|error| format!("failed to prepare a model-list request: {error}"))
 }
 
@@ -636,4 +628,60 @@ pub(in crate::ai_gateway) async fn fetch_template_models(
         }
     })
     .await
+}
+
+#[cfg(test)]
+mod proxy_switch_named {
+    #[tokio::test]
+    async fn gateway_template_models_proxy_switch() {
+        use crate::ai_gateway::types_config::ProviderTemplate;
+        use crate::proxy::test_support::{HttpProxyRecorder, SERIAL_GUARD};
+        let _g = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let proxy_a = HttpProxyRecorder::new("[]").await;
+        let proxy_b = HttpProxyRecorder::new("[]").await;
+        fn port_of(url: &str) -> u16 {
+            url.trim_start_matches("http://").split(':').nth(1).unwrap().parse().unwrap()
+        }
+        let manager = crate::proxy::PROXY_MANAGER.get_or_init(|| std::sync::Arc::new(crate::proxy::ProxyManager::new()));
+        manager.publish(manager.prepare(Some(crate::config::ProxyConfig {
+            proxy_enabled: true,
+            proxy_type: "http".to_string(),
+            proxy_host: "127.0.0.1".to_string(),
+            proxy_port: port_of(&proxy_a.url()),
+            proxy_username: None,
+            proxy_password: None,
+            check_interval: 15,
+        })).unwrap());
+
+        let template = ProviderTemplate {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            base_url: String::new(),
+            protocol: crate::ai_gateway::UpstreamProtocol::ChatCompletions,
+            sync_strategy: Default::default(),
+            quota_strategy: Default::default(),
+            error_strategy: Default::default(),
+            transport_strategy: Default::default(),
+            icon: None,
+            source: String::new(),
+            models_url: Some("http://template.example.test/models".to_string()),
+            models: vec![],
+        };
+        let _ = super::fetch_template_models(&template).await;
+        assert_eq!(proxy_a.targets(), vec!["http://template.example.test/models".to_string()]);
+
+        manager.publish(manager.prepare(Some(crate::config::ProxyConfig {
+            proxy_enabled: true,
+            proxy_type: "http".to_string(),
+            proxy_host: "127.0.0.1".to_string(),
+            proxy_port: port_of(&proxy_b.url()),
+            proxy_username: None,
+            proxy_password: None,
+            check_interval: 15,
+        })).unwrap());
+
+        let _ = super::fetch_template_models(&template).await;
+        assert_eq!(proxy_b.targets(), vec!["http://template.example.test/models".to_string()]);
+    }
 }

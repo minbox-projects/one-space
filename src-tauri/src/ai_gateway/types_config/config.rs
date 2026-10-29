@@ -24,8 +24,10 @@ use super::terminal::TerminalSyncRecord;
 /// replaces a pool's single provider-specific `fallback` candidate with an
 /// ordered list of gateway local model ids. Version 5 adds the template-declared
 /// sidecar transport and binds the matching untemplated provider to the built-in
-/// OpenCode Zen Free template.
-pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 5;
+/// OpenCode Zen Free template. Version 6 removes the gateway's obsolete
+/// independent upstream proxy URL so the application-wide network proxy is the
+/// single routing source.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 6;
 
 /// Persisted AI Gateway configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,8 +80,8 @@ pub struct GatewayConfig {
     /// an ordinary route. Always serialized with a `serde(default)` empty list.
     #[serde(default)]
     pub model_pool_reserved_models: Vec<String>,
-    /// Global dynamic settings for the gateway (timeouts, retries, failure threshold,
-    /// proxy, CORS, session affinity, etc.).
+    /// Global dynamic settings for the gateway (timeouts, retries, failure
+    /// threshold, CORS, session affinity, etc.).
     #[serde(default)]
     pub settings: GatewaySettings,
 }

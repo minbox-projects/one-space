@@ -93,7 +93,7 @@ fn read_config_locked(path: &Path) -> Result<Option<(GatewayConfig, bool)>, Stri
     let needs_migration = stored_version < GATEWAY_CONFIG_SCHEMA_VERSION;
     if needs_migration {
         write_pre_schema5_backup(path, &raw);
-        super::migration::migrate_legacy_config(&mut value);
+        super::migration::migrate_legacy_config(&mut value, stored_version);
         if let Some(object) = value.as_object_mut() {
             object.insert(
                 "schema_version".to_string(),
@@ -631,3 +631,4 @@ pub(in crate::ai_gateway) fn touch_key_created_at(key: &mut GatewayKey) {
         key.created_at = now_ts();
     }
 }
+

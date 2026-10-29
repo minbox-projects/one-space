@@ -1966,14 +1966,14 @@ fn persisted_config_with_unknown_strategy_values_reads_with_generic_defaults() {
     );
 }
 
-/// The current configuration schema is pinned to 5 for the template-transport
+/// The current configuration schema is pinned to 6 for the template-transport
 /// and pre-schema-5 backup change.
 #[test]
-fn gateway_config_schema_version_advances_to_five() {
+fn gateway_config_schema_version_advances_to_six() {
     assert_eq!(
         crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
-        5,
-        "the template-transport/backup change must be gated by schema version 5"
+        6,
+        "the template-transport/backup change must be gated by schema version 6"
     );
 }
 
@@ -3058,7 +3058,7 @@ fn opencode_zen_sidecar_schema5_migration_red() {
     assert_eq!(target["mappings"].as_array().unwrap().len(), 1);
     let other = providers.iter().find(|p| p["id"] == "other").expect("other");
     assert!(other.get("template_id").is_none() || other["template_id"].is_null());
-    assert_eq!(on_disk["schema_version"], 5);
+    assert_eq!(on_disk["schema_version"], 6);
 
     let bytes_after = raw_config_bytes();
     read_config().expect("second read");

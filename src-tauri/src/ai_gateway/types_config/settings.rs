@@ -96,8 +96,6 @@ pub struct GatewaySettings {
     pub bind_address: String,
     #[serde(default = "default_true")]
     pub enable_cors: bool,
-    #[serde(default)]
-    pub proxy_url: Option<String>,
     #[serde(default = "default_true")]
     pub require_api_key_for_lan: bool,
 
@@ -140,7 +138,6 @@ impl Default for GatewaySettings {
         Self {
             bind_address: default_bind_address(),
             enable_cors: true,
-            proxy_url: None,
             require_api_key_for_lan: true,
             connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
             read_timeout_secs: DEFAULT_READ_TIMEOUT_SECS,
@@ -181,18 +178,6 @@ pub fn validate_gateway_settings(settings: &GatewaySettings) -> Result<(), Strin
         && bind.parse::<std::net::IpAddr>().is_err()
     {
         return Err(format!("invalid bind address '{bind}'"));
-    }
-
-    if let Some(ref proxy) = settings.proxy_url {
-        let trimmed = proxy.trim();
-        if !trimmed.is_empty()
-            && !trimmed.starts_with("http://")
-            && !trimmed.starts_with("https://")
-            && !trimmed.starts_with("socks5://")
-            && !trimmed.starts_with("socks5h://")
-        {
-            return Err("proxy URL must start with http://, https://, or socks5://".to_string());
-        }
     }
 
     if !(MIN_CONNECT_TIMEOUT_SECS..=MAX_CONNECT_TIMEOUT_SECS).contains(&settings.connect_timeout_secs) {
@@ -265,3 +250,4 @@ pub fn validate_gateway_settings(settings: &GatewaySettings) -> Result<(), Strin
 
     Ok(())
 }
+

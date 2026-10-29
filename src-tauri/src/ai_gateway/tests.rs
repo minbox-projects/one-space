@@ -51,6 +51,7 @@ mod provider_usage;
 mod output_timing;
 mod deepseek_cache;
 mod zen_sidecar;
+mod proxy_switch;
 
 fn make_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
