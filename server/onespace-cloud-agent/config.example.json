@@ -48,6 +48,9 @@
       "your-github-username/your-target-repo"
     ],
     "trigger_label": "bot:task",
+    "require_author_permission": true,
+    "permission_cache_seconds": 600,
+    "max_attempts": 3,
     "poll_interval_seconds": 180,
     "workspace_root": "/root/cloud-agent-workspaces"
   },

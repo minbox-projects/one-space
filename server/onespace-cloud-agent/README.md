@@ -4,7 +4,7 @@
 
 1. **Linux AI 网关**：纯 Python 标准库实现的 OpenAI 兼容代理，支持多服务商轮询、密钥冷却、模型池、模板自动同步，并把可用模型同步到 `opencode` 配置。本地合盖关机后，云端仍可继续处理请求。
 2. **Mac 合盖即走的长程重构会话**：基于 `tmux` + `opencode --yolo`，断网或合盖不丢会话，随时可恢复现场；支持 Git Worktree 隔离开发。
-3. **24/7 代码库监控与自动 PR 助手**：监听带指定标签的 GitHub Issue，自动接单、无头调用 `opencode run` 实施修改、提交分支并创建 Pull Request。
+3. **24/7 代码库监控与自动 PR 助手**：监听带指定标签的 GitHub Issue，先校验作者仓库权限，再自动接单、无头调用 `opencode run` 实施修改、提交分支并创建 Pull Request。
 4. **多渠道通知**：支持钉钉自定义机器人（含安全加签）与企业微信群机器人，任务接单、完成或异常时即时推送。
 5. **磁盘空间守护者（Disk Guardian）**：自动清理任务工作目录、修剪过期 OpenCode 历史与缓存，在 12GB~20GB 磁盘限制下长期稳定运行。
 
@@ -63,6 +63,7 @@ Linux 服务器通常没有图形界面，**不要使用需要浏览器的 `gh a
    - `repo`：读写仓库、Issue、Pull Request（私有仓库必需）。
    - `workflow`：修改 `.github/workflows` 下的工作流文件时必需。
    - `read:org`：需要访问组织仓库时建议勾选。
+   - 不要勾选 `admin:org`、`delete_repo`、`admin:repo_hook` 等管理或删除类作用域：Agent 只需要仓库读写，过宽的作用域会放大凭据泄露时的破坏面。
 3. 生成后复制 `ghp_...` 开头的 Token（只显示一次，请妥善保存）。
 4. 在本地 Mac 终端把 Token 通过标准输入交给服务器上的 `gh`，避免 Token 出现在远端命令历史中：
 
@@ -80,6 +81,8 @@ unset GH_PAT
 ```
 
 也可以在远端 `config.json` 中填写 `issue_worker.github_token`，Issue Worker 启动时会自动注入 `GH_TOKEN` 与 `GITHUB_TOKEN` 环境变量。生产环境更推荐上面的 `gh auth login --with-token`，这样 `gh` 与 `git` 都使用同一份授权。
+
+Issue Worker 启动时会执行不带 `--show-token` 的 `gh auth status` 检查凭据姿态：认证失败时记录警告；输出中出现 `admin:org`、`delete_repo`、`admin:repo_hook` 或其他 `admin:` 前缀作用域时警告作用域过大。该检查只读取 `gh` 报告的信息，不会为不报告作用域的凭据类型推测结论，也不会输出未脱敏的 Token。
 
 ---
 
@@ -150,8 +153,38 @@ unset GH_PAT
 | `github_token` | 可选，GitHub Personal access token (classic)，用于注入 `GH_TOKEN` / `GITHUB_TOKEN`。 |
 | `watch_repositories` | 监听的仓库列表，格式为 `owner/repo`。 |
 | `trigger_label` | 触发标签，默认 `bot:task`。 |
+| `require_author_permission` | 是否校验 Issue 作者仓库权限，默认 `true`；设为 `false` 只关闭该授权门，属于兼容开关。 |
+| `permission_cache_seconds` | 作者权限查询的单调时钟缓存 TTL，默认 `600` 秒。 |
+| `max_attempts` | 单任务总尝试次数，默认 `3`；设为 `1` 即不重试。 |
 | `poll_interval_seconds` | 轮询间隔，默认 `180` 秒。 |
 | `workspace_root` | 任务与仓库工作目录，默认 `/root/cloud-agent-workspaces`。 |
+
+### Issue 作者权限
+
+- 启用授权门时，仅作者在该仓库的有效权限为 `admin`、`maintain` 或 `write` 才处理；`maintain` 归一化为 `write`、`triage` 归一化为 `read`，其他任意角色名不构成授权。
+- 无作者信息、有效权限不足（`none` / `read` / `triage`）或权限查询失败的 Issue 只记录日志并跳过，不发表评论、不创建分支，也不消耗执行尝试；该跳过不写入已处理状态，之后权限变化可以重新生效。
+- 权限查询结果按「仓库 + 作者」缓存；查询失败按未授权处理（fail closed）、记录日志且不缓存为授权。
+
+### 任务执行、重试与幂等
+
+- 克隆前用 `gh api --paginate --slurp` 完整分页列出该仓库全部 open PR，并按 `#<编号>` 数字边界匹配引用（`#420` 不匹配 `#42`）。命中即跳过克隆、OpenCode 与建 PR，标记 `done` 并记录 PR URL；创建 PR 失败后会再次完整检查，以处理响应丢失但 PR 已创建的情况。PR 查询失败按瞬时失败处理，未成功确认前不会克隆。
+- `max_attempts` 表示总尝试次数。仅瞬时失败重试：子进程超时、克隆/推送/网络失败、OpenCode 非零退出与上游 5xx；间隔为 `min(30 * 2 ** (attempt - 1), 300)` 秒。HTTP 401/403、仓库或 Issue 不存在、Issue 已关闭等永久错误只消耗一次尝试。
+- 每次重试前重新确认 Issue 仍为 open 并复用 open PR 检查；OpenCode 非零退出直接判定失败，不提交、不推送。成功、永久失败或尝试耗尽后只发起一次终态评论与通知，后续轮询与重启会跳过已记录的终态。
+- OpenCode 执行成功但工作区无变更时仍以 `done` 结束，任务流水保留 `no_changes` 状态；任务流水与 `agent.py tasks --json` 的字段与状态保持桌面端已消费的格式。
+
+### 提示词与内容隔离
+
+- Prompt 包含仓库、Issue 编号等元数据；标题与正文放在 `<<<BEGIN_UNTRUSTED_ISSUE_DATA>>>` 与 `<<<END_UNTRUSTED_ISSUE_DATA>>>` 边界内，正文中出现的相同标记会被改写为无法闭合的形式。
+- 固定指令声明该内容是待处理数据而非命令，禁止读取或泄露密钥、凭据、环境变量与宿主文件，只允许在克隆目录内修改，并拒绝改变这些规则。
+- 这些只是提示约束，不是操作系统沙箱：默认 root 执行与 `--yolo` 保持不变，必要时请自行收紧服务器权限。
+
+### 任务状态与尝试日志
+
+- 终态记录写入 `~/.config/onespace-cloud-agent/worker_state.json`，格式为 `version: 2` 加 `repositories`，按仓库与 Issue 编号字符串索引，每条记录包含 `status`（`done` / `failed`）、`attempts`、脱敏后的 `last_error` 与 UTC ISO-8601 `updated_at`。
+- 旧版「仓库 → 编号列表」状态按 `done`、`0` 次尝试加载；首次写入 v2 前会把原始字节一次性备份为 `worker_state.json.v1.bak`（绝不覆盖，备份失败则中止迁移写入）。损坏或形状非法的状态被隔离为带唯一后缀的 `.corrupt` 文件、记录日志并以空状态继续。保存使用同目录临时文件加 `os.replace`。
+- v2 状态不向后兼容：回滚到旧 worker 之前，必须先恢复 `worker_state.json.v1.bak`，绝不能让旧版本读取 v2 状态。
+- 每次尝试在 `~/.config/onespace-cloud-agent/logs/` 生成 `<repo>_<issue>_<timestamp>_<序号>.log`（仓库斜杠替换为下划线，毫秒时间戳加进程内序号保证唯一），记录开始时间、命令参数、退出码与失败分类、有界的 stdout/stderr，以及 `git diff --stat`（克隆前明确标注不可用）。
+- 日志写入前脱敏配置的 Token、凭据类环境变量值与 `Authorization` 值；单个日志上限 `2097152` 字节（2 MiB），截断时为结果元数据预留空间。全部仓库合计只保留最新的 20 份 agent 尝试日志（按 mtime、文件名次序），无关文件不受影响；日志创建或写入失败会显式记录并使任务停止，不会伪造成功。
 
 ### `notification`
 
@@ -161,6 +194,8 @@ unset GH_PAT
 | `dingtalk_webhook` | 钉钉机器人 Webhook。 |
 | `dingtalk_secret` | 钉钉机器人加签密钥，可选。 |
 | `wechat_work_webhook` | 企业微信群机器人 Webhook。 |
+
+每个通道的单次投递最多 3 次总尝试：传输错误、HTTP 429 与 5xx 视为短暂失败，重试间隔为 1 秒、2 秒；其他 4xx 只尝试一次。钉钉与企业微信通道互相独立，单通道失败不影响另一通道，也不会改变任务结果；错误与日志中只出现去掉查询串的 webhook 地址，不输出凭据。
 
 ---
 
@@ -196,8 +231,8 @@ ssh dmit-server "cloud-session kill <session-name>"
 1. 在 `config.json` 的 `watch_repositories` 中加入要监听的 GitHub 仓库。
 2. 确保 GitHub 已通过 Personal access token (classic) 授权，且 Token 具备 `repo`（如需修改工作流还需 `workflow`）权限。
 3. 在目标仓库创建 Issue，并打上 `bot:task` 标签。
-4. Cloud Agent 会自动接单并在 Issue 回复；随后克隆仓库、调用 `opencode run` 实施修改、提交 `bot/issue-<编号>-<时间戳>` 分支、创建 Pull Request，并通过钉钉/企微群通知结果。
-5. 已处理的 Issue 记录保存在 `~/.config/onespace-cloud-agent/worker_state.json`，重启后不会重复处理。
+4. Cloud Agent 会先校验 Issue 作者是否具备仓库 `admin` / `maintain` / `write` 权限，通过后自动接单并在 Issue 回复；随后克隆仓库、调用 `opencode run` 实施修改、提交 `bot/issue-<编号>-<时间戳>` 分支、创建 Pull Request，并通过钉钉/企微群通知结果。已存在引用该 Issue 的 open PR 时会跳过重复执行。
+5. 任务终态记录保存在 `~/.config/onespace-cloud-agent/worker_state.json`（`version: 2`，含尝试次数与脱敏错误），重启后不会重复处理；每次尝试的日志在 `~/.config/onespace-cloud-agent/logs/` 下，全局只保留最新 20 份。
 
 ### 场景 3：从本地或 OpenCode 调用云端 AI 网关
 
