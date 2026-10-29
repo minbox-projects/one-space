@@ -107,7 +107,6 @@ describe("SettingsView", () => {
           settings: {
             bind_address: "127.0.0.1",
             enable_cors: true,
-            proxy_url: null,
             require_api_key_for_lan: true,
             connect_timeout_secs: 10,
             read_timeout_secs: 120,
@@ -899,6 +898,51 @@ describe("SettingsView", () => {
     // Click on Network & Services category
     await user.click(screen.getByText(/网络与服务|Network & Services/i));
     expect(await screen.findByText(/Network Proxy Settings|网络代理/i)).toBeInTheDocument();
+  });
+
+  it("renders the global Network Proxy panel with scope and next-request copy", async () => {
+    renderWithProviders(
+      <SettingsView initialTab="proxy" onBack={() => {}} />,
+    );
+
+    expect(
+      await screen.findByText("Network Proxy Settings"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /One global proxy for application-managed HTTP\(S\) requests such as AI Gateway forwarding, model lists, MCP, updates, SSL\/ACME, mail and OAuth\./,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Saved changes apply to the next admitted request or retry without restarting OneSpace\./,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Loopback destinations \(localhost, 127\.0\.0\.1, ::1\) always connect directly\. External terminals, browsers and already running processes are not retroactively changed\./,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("does not render the removed Upstream Proxy field in the AI Gateway network section", async () => {
+    renderWithProviders(
+      <SettingsView initialTab="ai-gateway" onBack={() => {}} />,
+    );
+
+    expect(
+      await screen.findByText(/Network & Access Control|网络与访问控制/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Configure listening port, network binding, LAN security, and CORS.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Upstream Proxy")).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(/socks5:\/\/127\.0\.0\.1:7890/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/upstream proxy/i)).not.toBeInTheDocument();
   });
 
   it("correctly routes legacy initialTab 'updates' to general category and updates sub-tab", async () => {

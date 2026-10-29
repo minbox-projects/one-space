@@ -847,6 +847,7 @@ proxyFailed
 proxyHost
 proxyPassword
 proxyPort
+proxyScopeNotice
 proxySettings
 proxySettingsDesc
 proxyType

@@ -20,6 +20,7 @@ import {
   type GatewaySettings,
 } from "@/lib/aiGateway";
 import { sslSaveConfig, type SslConfig } from "@/lib/sslCertificate";
+import { invalidateUpdaterTransport } from "@/lib/updater";
 import {
   normalizeServerMonitorSettings,
   serverMonitorSaveSettings,
@@ -499,6 +500,15 @@ export function createSaveCurrentTabHandler({
       const otherTabsDirtyBeforeSave = ALL_LEGACY_SECTIONS.some(
         (tab) => tab !== activeSubTab && tabDirtyMap[tab],
       );
+      let proxyGenerationBefore: number | null = null;
+      if (activeSubTab === "proxy") {
+        try {
+          const generation = await invoke<number>("proxy_generation");
+          proxyGenerationBefore = typeof generation === "number" ? generation : null;
+        } catch {
+          proxyGenerationBefore = null;
+        }
+      }
       const baseRaw = await invoke<StorageConfig>("get_storage_config");
       const baseConfig = normalizeConfigForUi(
         baseRaw,
@@ -571,6 +581,20 @@ export function createSaveCurrentTabHandler({
         },
       );
       if (saveResult === null) return;
+
+      if (activeSubTab === "proxy" && proxyGenerationBefore !== null) {
+        try {
+          const proxyGenerationAfter = await invoke<number>("proxy_generation");
+          if (
+            typeof proxyGenerationAfter === "number" &&
+            proxyGenerationAfter !== proxyGenerationBefore
+          ) {
+            invalidateUpdaterTransport();
+          }
+        } catch {
+          // Keep the update throttle unchanged when the generation cannot be read.
+        }
+      }
 
       if (activeSubTab === "general") {
         const desiredAutostart = !!payload.launch_at_login;

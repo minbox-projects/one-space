@@ -19,6 +19,15 @@ export const bleLockDeletePasswordMock = vi.fn();
 export const bleLockRequestAccessibilityMock = vi.fn();
 export const bleLockLockNowMock = vi.fn();
 
+// Application-native updater facade and global proxy bridge. The updater owns
+// resources on the Rust side, so these mocks only pin the invoke wire contract.
+export const appUpdaterCheckMock = vi.fn();
+export const appUpdaterDownloadMock = vi.fn();
+export const appUpdaterInstallMock = vi.fn();
+export const appUpdaterDiscardMock = vi.fn();
+export const proxyGenerationMock = vi.fn();
+export const proxyHttpRequestMock = vi.fn();
+
 function invokeCommandMock(command: string, args?: Record<string, unknown>) {
   switch (command) {
     case "short_link_config_status":
@@ -49,6 +58,23 @@ function invokeCommandMock(command: string, args?: Record<string, unknown>) {
       return bleLockRequestAccessibilityMock();
     case "ble_lock_lock_now":
       return bleLockLockNowMock();
+    case "app_updater_check":
+      return appUpdaterCheckMock();
+    case "app_updater_download":
+      return appUpdaterDownloadMock(args?.updateId);
+    case "app_updater_install":
+      return appUpdaterInstallMock(args?.updateId);
+    case "app_updater_discard":
+      return appUpdaterDiscardMock(args?.updateId);
+    case "proxy_generation":
+      return proxyGenerationMock();
+    case "proxy_http_request":
+      return proxyHttpRequestMock(
+        args?.url,
+        args?.method,
+        args?.headers,
+        args?.body,
+      );
     case "uptime_list_monitors":
       return Promise.resolve([]);
     case "webhook_get_server_status":
@@ -76,6 +102,23 @@ type ListenSignature = (
 ) => Promise<() => void>;
 export const listenMock = vi.fn<ListenSignature>(async () => vi.fn());
 export const emitMock = vi.fn(async () => undefined);
+
+export const APP_UPDATER_DOWNLOAD_EVENT = "app-updater-download-event";
+
+/**
+ * Deliver a native updater download event to every registered listener.
+ *
+ * The native side emits `Started`/`Progress`/`Finished` payloads; routing them
+ * through the captured `listen` handlers keeps tests on the same subscription
+ * path the application uses instead of calling internals directly.
+ */
+export function emitUpdaterDownloadEvent(payload: unknown) {
+  for (const [eventName, handler] of listenMock.mock.calls) {
+    if (eventName === APP_UPDATER_DOWNLOAD_EVENT) {
+      handler({ payload });
+    }
+  }
+}
 export const dialogOpenMock = vi.fn();
 export const dialogSaveMock = vi.fn();
 export const startDraggingMock = vi.fn(async () => undefined);
@@ -122,6 +165,18 @@ export function resetTauriMocks() {
   bleLockDeletePasswordMock.mockReset();
   bleLockRequestAccessibilityMock.mockReset();
   bleLockLockNowMock.mockReset();
+  appUpdaterCheckMock.mockReset();
+  appUpdaterCheckMock.mockResolvedValue(null);
+  appUpdaterDownloadMock.mockReset();
+  appUpdaterDownloadMock.mockResolvedValue(undefined);
+  appUpdaterInstallMock.mockReset();
+  appUpdaterInstallMock.mockResolvedValue(undefined);
+  appUpdaterDiscardMock.mockReset();
+  appUpdaterDiscardMock.mockResolvedValue(undefined);
+  proxyGenerationMock.mockReset();
+  proxyGenerationMock.mockResolvedValue(0);
+  proxyHttpRequestMock.mockReset();
+  proxyHttpRequestMock.mockResolvedValue("{}");
   invokeMock.mockImplementation(invokeCommandMock);
   listenMock.mockReset();
   listenMock.mockImplementation(async () => vi.fn());

@@ -7,14 +7,16 @@ vi.mock('@tauri-apps/api/app', () => ({
   getVersion: vi.fn(async () => '0.1.41'),
 }));
 
-vi.mock('@tauri-apps/plugin-updater', () => ({
-  check: vi.fn(async () => null),
-}));
-
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
     if (cmd === 'get_storage_config') {
       return { auto_update_enabled: true, update_check_interval_minutes: 120 };
+    }
+    if (cmd === 'app_updater_check') {
+      return null;
+    }
+    if (cmd === 'proxy_http_request') {
+      return JSON.stringify({ tag_name: 'v0.1.41' });
     }
     return {};
   }),

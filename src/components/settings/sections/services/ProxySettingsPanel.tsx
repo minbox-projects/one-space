@@ -32,7 +32,7 @@ export function ProxySettingsPanel({
       title={t("proxySettings", "Network Proxy Settings")}
       description={t(
         "proxySettingsDesc",
-        "Configure proxy for backend network requests",
+        "One global proxy for application-managed HTTP(S) requests such as AI Gateway forwarding, model lists, MCP, updates, SSL/ACME, mail and OAuth.",
       )}
     >
       {/* Proxy switch */}
@@ -44,7 +44,7 @@ export function ProxySettingsPanel({
           <p className="text-xs text-muted-foreground">
             {t(
               "proxyEnabledDesc",
-              "All backend requests will use the proxy",
+              "Saved changes apply to the next admitted request or retry without restarting OneSpace.",
             )}
           </p>
         </div>
@@ -63,6 +63,13 @@ export function ProxySettingsPanel({
           <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
         </label>
       </div>
+
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        {t(
+          "proxyScopeNotice",
+          "Loopback destinations (localhost, 127.0.0.1, ::1) always connect directly. External terminals, browsers and already running processes are not retroactively changed.",
+        )}
+      </p>
 
       {proxyConfig.proxy_enabled && (
         <>

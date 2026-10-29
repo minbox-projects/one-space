@@ -9,6 +9,7 @@ import {
   formatContextWindowDisplay,
   resolvePoolContextWindow,
   CONTEXT_WINDOW_PRESETS,
+  DEFAULT_GATEWAY_SETTINGS,
   aiGatewayConfigureTerminal,
   aiGatewayDeleteKey,
   aiGatewayDeleteProvider,
@@ -49,6 +50,7 @@ import {
   localAnthropicMessagesUrl,
   localBaseUrl,
   maskSecret,
+  normalizeGatewaySettings,
   notifyTemplateAutoRefreshIntervalChanged,
   providerMarkedKeys,
   resolveAggregatedModelName,
@@ -64,6 +66,7 @@ import {
   type GatewayKey,
   type GatewayModelPool,
   type GatewayProviderKey,
+  type GatewaySettings,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
   type ModelPrice,
@@ -271,6 +274,68 @@ describe("resolveDefaultKeyId 默认 Key 解析", () => {
   it("没有启用项时默认 Key 为空", () => {
     const keys = [key({ id: "k1", enabled: false }), key({ id: "k2", enabled: false })];
     expect(resolveDefaultKeyId(keys, "k1")).toBeNull();
+  });
+});
+
+describe("normalizeGatewaySettings 统一网络代理后的字段收敛", () => {
+  it("忽略遗留 proxy_url 并保留所有其他字段", () => {
+    const legacySettings = {
+      bind_address: "0.0.0.0",
+      enable_cors: false,
+      require_api_key_for_lan: false,
+      connect_timeout_secs: 20,
+      read_timeout_secs: 90,
+      request_budget_secs: 240,
+      max_retries_per_provider: 5,
+      retry_base_delay_ms: 1500,
+      failure_threshold: 4,
+      probe_cooldown_secs: 120,
+      key_quota_ttl_secs: 600,
+      session_affinity_timeout_secs: 900,
+      context_hold_timeout_secs: 120,
+      custom_session_headers: ["x-session-id", "x-trace-id"],
+      daily_reset_offset_hours: 0,
+      quota_cache_ttl_secs: 30,
+      debug_logging: true,
+      proxy_url: "socks5://127.0.0.1:7890",
+    } as unknown as Partial<GatewaySettings>;
+
+    const normalized = normalizeGatewaySettings(legacySettings);
+
+    expect(normalized).not.toHaveProperty("proxy_url");
+    expect(normalized).toEqual({
+      bind_address: "0.0.0.0",
+      enable_cors: false,
+      require_api_key_for_lan: false,
+      connect_timeout_secs: 20,
+      read_timeout_secs: 90,
+      request_budget_secs: 240,
+      max_retries_per_provider: 5,
+      retry_base_delay_ms: 1500,
+      failure_threshold: 4,
+      probe_cooldown_secs: 120,
+      key_quota_ttl_secs: 600,
+      session_affinity_timeout_secs: 900,
+      context_hold_timeout_secs: 120,
+      custom_session_headers: ["x-session-id", "x-trace-id"],
+      daily_reset_offset_hours: 0,
+      quota_cache_ttl_secs: 30,
+      debug_logging: true,
+    });
+  });
+
+  it("缺失或仅携带遗留 proxy_url 时回退全部默认值", () => {
+    expect(normalizeGatewaySettings(undefined)).toEqual(
+      DEFAULT_GATEWAY_SETTINGS,
+    );
+    expect(normalizeGatewaySettings(null)).toEqual(DEFAULT_GATEWAY_SETTINGS);
+
+    const onlyLegacy = normalizeGatewaySettings({
+      proxy_url: "http://127.0.0.1:8080",
+    } as unknown as Partial<GatewaySettings>);
+
+    expect(onlyLegacy).toEqual(DEFAULT_GATEWAY_SETTINGS);
+    expect(onlyLegacy).not.toHaveProperty("proxy_url");
   });
 });
 

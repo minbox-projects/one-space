@@ -43,7 +43,7 @@ export function AiGatewaySettingsPanel({
         title={t("aiGatewaySectionNetwork", "Network & Access Control")}
         description={t(
           "aiGatewaySectionNetworkDesc",
-          "Configure listening port, network binding, LAN security, CORS, and upstream proxy.",
+          "Configure listening port, network binding, LAN security, and CORS.",
         )}
       >
         <div className="space-y-4">
@@ -142,30 +142,6 @@ export function AiGatewaySettingsPanel({
               }
             />
           </div>
-
-          <hr className="border-border/50" />
-
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium">
-              {t("aiGatewayProxyUrlLabel", "Upstream Proxy")}
-            </span>
-            <input
-              type="text"
-              placeholder="socks5://127.0.0.1:7890 或 http://127.0.0.1:7890"
-              value={safeSettings.proxy_url || ""}
-              onChange={(e) => {
-                const val = e.target.value.trim();
-                setGatewaySettings?.((prev) => ({
-                  ...normalizeGatewaySettings(prev),
-                  proxy_url: val ? val : null,
-                }));
-              }}
-              className="w-full rounded-xl border bg-background px-4 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/20"
-            />
-            <p className="text-xs text-muted-foreground">
-              {t("aiGatewayProxyUrlDesc", "HTTP, HTTPS or SOCKS5 proxy URL for forward requests. Leave blank to disable.")}
-            </p>
-          </label>
         </div>
       </SettingCard>
 
