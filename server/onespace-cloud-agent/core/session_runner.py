@@ -80,12 +80,15 @@ class SessionRunner:
                 elif working_dir:
                     worktree_name = os.path.basename(working_dir.rstrip("/"))
 
+                opencode_session_id = self._resolve_opencode_session_id(working_dir)
+
                 results.append({
                     "session_name": session_name,
                     "repo_name": repo_name,
                     "branch": branch,
                     "working_dir": working_dir,
                     "worktree_name": worktree_name,
+                    "opencode_session_id": opencode_session_id,
                     "created_at": created_at,
                     "windows_count": windows_count,
                     "pane_pid": pane_pid,
@@ -94,6 +97,43 @@ class SessionRunner:
             return results
         except Exception:
             return []
+
+    def _resolve_opencode_session_id(self, working_dir: str) -> Optional[str]:
+        """尝试从 OpenCode 运行时数据库中查找对应工作目录的最新会话 ID"""
+        if not working_dir:
+            return None
+        db_candidates = [
+            os.path.expanduser("~/.local/share/opencode/opencode.db"),
+            "/root/.local/share/opencode/opencode.db",
+            os.path.expanduser("~/.opencode/opencode.db"),
+        ]
+        norm_target = os.path.realpath(working_dir)
+        for db_path in db_candidates:
+            if not os.path.exists(db_path):
+                continue
+            try:
+                import sqlite3
+                conn = sqlite3.connect(db_path, timeout=1.0)
+                cursor = conn.cursor()
+                for table in ("session_v2", "session"):
+                    try:
+                        cursor.execute(
+                            f"SELECT id, directory FROM {table} ORDER BY time_updated DESC LIMIT 50"
+                        )
+                        rows = cursor.fetchall()
+                        for row in rows:
+                            if not row or not row[0]:
+                                continue
+                            db_dir = row[1] if len(row) > 1 and row[1] else ""
+                            if db_dir and (db_dir == working_dir or os.path.realpath(db_dir) == norm_target):
+                                conn.close()
+                                return str(row[0])
+                    except Exception:
+                        pass
+                conn.close()
+            except Exception:
+                pass
+        return None
 
     def _get_last_commit(self, path: str) -> Optional[Dict[str, Any]]:
         try:

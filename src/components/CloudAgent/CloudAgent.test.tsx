@@ -65,6 +65,7 @@ describe("CloudAgent Component", () => {
             windows_count: 1,
             pane_pid: 12345,
             is_active: true,
+            opencode_session_id: "ses_opencode_999",
           },
         ];
       }
@@ -205,5 +206,42 @@ describe("CloudAgent Component", () => {
 
     expect(setSettingsTabMock).toHaveBeenCalledWith("cloud-agent");
     expect(setSettingsOpenMock).toHaveBeenCalledWith(true);
+  });
+
+  it("renders metric cards and supports quick status filters in active sessions", async () => {
+    const user = userEvent.setup();
+
+    await act(async () => {
+      renderWithProviders(<CloudAgent isVisible={true} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
+    });
+
+    // 验证 4 组核心数据指标卡存在（注意活跃会话既在 Tab 也作为指标卡渲染）
+    expect(screen.getAllByText("活跃会话").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("终端作业窗口")).toBeTruthy();
+    expect(screen.getByText("特性隔离空间")).toBeTruthy();
+    expect(screen.getByText("涉及代码仓库")).toBeTruthy();
+
+    // 验证状态快捷过滤药丸组存在
+    expect(screen.getByText("全部会话")).toBeTruthy();
+    expect(screen.getByText("活跃中")).toBeTruthy();
+    expect(screen.getByText("已离线")).toBeTruthy();
+
+    // 点击“已离线”过滤
+    const idleFilterBtn = screen.getByText("已离线");
+    await user.click(idleFilterBtn);
+
+    // 切换回“全部会话”
+    const allFilterBtn = screen.getByText("全部会话");
+    await user.click(allFilterBtn);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
+      expect(screen.getByText("ses_opencode_999")).toBeTruthy();
+      expect(screen.getByText("feat-auth-1234")).toBeTruthy();
+    });
   });
 });

@@ -75,6 +75,8 @@ pub struct CloudSession {
     pub is_active: bool,
     #[serde(default)]
     pub worktree_name: Option<String>,
+    #[serde(default)]
+    pub opencode_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -32,6 +32,7 @@ export interface CloudSession {
   pane_pid: number;
   is_active: boolean;
   worktree_name?: string;
+  opencode_session_id?: string | null;
 }
 
 export interface LastCommit {
@@ -217,4 +218,35 @@ export async function cloudAgentSyncGateway(
   host?: string
 ): Promise<GatewaySyncResult> {
   return await invoke<GatewaySyncResult>("cloud_agent_sync_gateway", { host });
+}
+
+/**
+ * 格式化工作目录路径：
+ * - 隐藏前部分超长前缀，完整显示后部目录与特性文件夹；
+ * - 当路径短于或等于 maxLen 时完整展示；
+ * - 超过 maxLen 时，在前端追加省略号“…”并保留尾部有效路径。
+ */
+export function formatWorkingDirTail(
+  path: string,
+  maxLen = 38
+): { display: string; isTruncated: boolean; fullPath: string } {
+  if (!path) {
+    return { display: "—", isTruncated: false, fullPath: "" };
+  }
+  if (path.length <= maxLen) {
+    return { display: path, isTruncated: false, fullPath: path };
+  }
+
+  const tail = path.slice(-maxLen);
+  const slashIdx = tail.indexOf("/");
+  let displayTail = tail;
+  if (slashIdx > 0 && slashIdx < tail.length - 8) {
+    displayTail = tail.slice(slashIdx);
+  }
+  const prefix = displayTail.startsWith("/") ? "…" : "…/";
+  return {
+    display: `${prefix}${displayTail}`,
+    isTruncated: true,
+    fullPath: path,
+  };
 }
