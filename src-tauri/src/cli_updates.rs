@@ -108,53 +108,47 @@ async fn fetch_npm_version(client: &reqwest::Client, url: &str) -> Result<String
     parse_npm_latest_version(&json)
 }
 
-async fn fetch_latest_version(meta: &CliToolMetadata) -> Result<LatestVersionResult, String> {
+fn build_client() -> Result<reqwest::Client, String> {
     let proxy_mgr = crate::proxy::PROXY_MANAGER
         .get()
         .ok_or("Proxy manager not initialized")?;
-    let client = proxy_mgr.get_client()?;
+    proxy_mgr
+        .apply_builder(reqwest::Client::builder())?
+        .build()
+        .map_err(|e| e.to_string())
+}
 
+async fn fetch_primary_version(meta: &CliToolMetadata) -> Result<String, String> {
+    let client = build_client()?;
     match meta.latest_source {
-        "claude_release" => {
-            let primary = fetch_claude_release_version(&client, meta.latest_url).await;
-            let fallback = if primary.is_err() {
-                meta.fallback_url
-                    .map(|fallback_url| fetch_npm_version(&client, fallback_url))
-            } else {
-                None
-            };
-            let fallback = match fallback {
-                Some(request) => Some(request.await),
-                None => None,
-            };
-            select_latest_version_result(meta, primary, fallback)
-        }
-        "npm_registry" => select_latest_version_result(
-            meta,
-            fetch_npm_version(&client, meta.latest_url).await,
-            None,
-        ),
-        // Antigravity publishes no remote version endpoint; updates come from the
-        // official installer or Homebrew cask, so there is no remote version to compare.
+        "claude_release" => fetch_claude_release_version(&client, meta.latest_url).await,
+        "npm_registry" => fetch_npm_version(&client, meta.latest_url).await,
+        "github_release" => fetch_github_version(&client, meta.latest_url).await,
         "official_installer" => {
             Err("Antigravity is updated through its official installer".to_string())
         }
-        "github_release" => {
-            let primary = fetch_github_version(&client, meta.latest_url).await;
-            let fallback = if primary.is_err() {
-                meta.fallback_url
-                    .map(|fallback_url| fetch_npm_version(&client, fallback_url))
-            } else {
-                None
-            };
-            let fallback = match fallback {
-                Some(request) => Some(request.await),
-                None => None,
-            };
-            select_latest_version_result(meta, primary, fallback)
-        }
         _ => Err("Unknown latest source".to_string()),
     }
+}
+
+async fn fetch_fallback_version(meta: &CliToolMetadata) -> Result<String, String> {
+    let fallback_url = meta
+        .fallback_url
+        .ok_or_else(|| "No fallback source configured".to_string())?;
+    let client = build_client()?;
+    fetch_npm_version(&client, fallback_url).await
+}
+
+async fn fetch_latest_version(meta: &CliToolMetadata) -> Result<LatestVersionResult, String> {
+    let primary = fetch_primary_version(meta).await;
+    let fallback = if primary.is_err()
+        && matches!(meta.latest_source, "claude_release" | "github_release")
+    {
+        Some(fetch_fallback_version(meta).await)
+    } else {
+        None
+    };
+    select_latest_version_result(meta, primary, fallback)
 }
 
 async fn fetch_claude_release_version(
@@ -219,6 +213,11 @@ fn parse_npm_latest_version(json: &serde_json::Value) -> Result<String, String> 
     let ver = json
         .get("version")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            json.get("dist-tags")
+                .and_then(|tags| tags.get("latest"))
+                .and_then(|v| v.as_str())
+        })
         .ok_or_else(|| "No version field in npm response".to_string())?;
     normalize_remote_version(ver)
 }
@@ -440,8 +439,8 @@ pub async fn apply_cli_update(tool: String) -> Result<CliUpdateApplyResult, Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_semver, get_tool_metadata, normalize_remote_version, parse_github_release_version,
-        parse_npm_latest_version, select_latest_version_result, validate_tool,
+        compare_semver, fetch_latest_version, get_tool_metadata, normalize_remote_version, parse_github_release_version,
+        parse_npm_latest_version, select_latest_version_result, validate_tool, CliToolMetadata,
     };
 
     #[test]
@@ -656,5 +655,52 @@ mod tests {
         let result = select_latest_version_result(&meta, primary, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("npm_registry"));
+    }
+
+    #[tokio::test]
+    async fn cli_updates_proxy_switch_primary_and_fallback() {
+        let _g = crate::proxy::test_support::SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let pa = crate::proxy::test_support::HttpProxyRecorder::new_with_status("", 500).await;
+        let pb = crate::proxy::test_support::HttpProxyRecorder::new("").await;
+        pb.set_response(200, r#"{"dist-tags":{"latest":"9.9.9"}}"#.to_string(), vec![]);
+
+        let mgr = crate::proxy::PROXY_MANAGER.get_or_init(|| std::sync::Arc::new(crate::proxy::ProxyManager::new()));
+        let a_port: u16 = pa.url().split(':').last().unwrap().parse().unwrap();
+        let b_port: u16 = pb.url().split(':').last().unwrap().parse().unwrap();
+        // We'll just call cfg via crate? not public. Build ProxyConfig manually.
+        use crate::config::ProxyConfig;
+        let a_cfg = ProxyConfig { proxy_enabled: true, proxy_type: "http".into(), proxy_host: "127.0.0.1".into(), proxy_port: a_port, proxy_username: None, proxy_password: None, check_interval: 15 };
+        mgr.publish(mgr.prepare(Some(a_cfg)).unwrap());
+
+        let published = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let published2 = published.clone();
+        let mgr2 = mgr.clone();
+        let b_port2 = b_port;
+        let cb: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(move || {
+            if !published2.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let b_cfg = ProxyConfig { proxy_enabled: true, proxy_type: "http".into(), proxy_host: "127.0.0.1".into(), proxy_port: b_port2, proxy_username: None, proxy_password: None, check_interval: 15 };
+                mgr2.publish(mgr2.prepare(Some(b_cfg)).unwrap());
+            }
+        });
+        pa.set_on_hit(cb);
+
+        let meta = CliToolMetadata {
+            tool: "claude",
+            cmd_name: "claude",
+            latest_source: "claude_release",
+            latest_url: "http://cli-primary.example.test/latest",
+            fallback_source: Some("npm_registry"),
+            fallback_url: Some("http://cli-fallback.example.test/latest"),
+            update_command: "x",
+        };
+        // primary body should contain semver to succeed? We want failure: pa returns 500, so primary errors.
+        // pa body empty + 500 -> error. fallback pb npm shape -> 9.9.9.
+        let result = fetch_latest_version(&meta).await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        // returned source is fallback source
+        assert_eq!(r.source, "npm_registry");
+        assert_eq!(pa.targets(), vec!["http://cli-primary.example.test/latest".to_string()]);
+        assert_eq!(pb.targets(), vec!["http://cli-fallback.example.test/latest".to_string()]);
     }
 }

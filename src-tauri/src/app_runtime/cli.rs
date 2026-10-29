@@ -5,6 +5,7 @@ mod probe;
 pub(super) use install::*;
 pub(super) use internal::*;
 pub use probe::get_git_command;
+#[cfg(test)] pub use probe::set_git_command_override;
 
 #[cfg(all(test, unix))]
 mod tests {

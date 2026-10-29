@@ -125,3 +125,13 @@ pub(super) async fn proxy_http_request(
 
     Ok(text)
 }
+
+#[cfg(test)]
+pub(crate) async fn proxy_http_request_for_test(
+    url: String,
+    method: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    body: Option<String>,
+) -> Result<String, String> {
+    proxy_http_request(url, method, headers, body).await
+}

@@ -14,17 +14,20 @@ pub async fn execute_replay(req: ReplayRequest) -> Result<ReplayResult, String> 
         return Err("Target URL must start with http:// or https://".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 3 {
-                attempt.error("too many redirects (max 3)")
-            } else {
-                attempt.follow()
-            }
-        }))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client for replay: {}", e))?;
+    let client = crate::proxy::apply_current_proxy_to_builder(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 3 {
+                    attempt.error("too many redirects (max 3)")
+                } else {
+                    attempt.follow()
+                }
+            })),
+    )
+    .map_err(|e| format!("Failed to build HTTP client for replay: {}", e))?
+    .build()
+    .map_err(|e| format!("Failed to build HTTP client for replay: {}", e))?;
 
     let method = match captured.method.to_uppercase().as_str() {
         "POST" => reqwest::Method::POST,
@@ -114,9 +117,10 @@ pub async fn forward_live_relay(captured: &CapturedWebhookRequest, target_url: &
         return;
     }
 
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
+    let client = match crate::proxy::apply_current_proxy_to_builder(
+        reqwest::Client::builder().timeout(Duration::from_secs(10)),
+    )
+    .and_then(|builder| builder.build().map_err(|e| e.to_string()))
     {
         Ok(c) => c,
         Err(_) => return,
@@ -150,4 +154,93 @@ pub async fn forward_live_relay(captured: &CapturedWebhookRequest, target_url: &
     }
 
     let _ = request_builder.send().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proxy::test_support::{SERIAL_GUARD, with_global_proxy, HttpProxyRecorder};
+
+    #[tokio::test]
+    async fn webhook_catcher_forwarder_proxy_switch_replay_and_mirror() {
+        let _g = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mirror_a = HttpProxyRecorder::new("ok").await;
+        let mirror_b = HttpProxyRecorder::new("ok").await;
+        let replay_upstream_a = HttpProxyRecorder::new("replayed").await;
+        let replay_upstream_b = HttpProxyRecorder::new("replayed").await;
+
+        // mirror
+        let captured = super::super::types::CapturedWebhookRequest {
+            id: "c1".to_string(),
+            endpoint_id: "e".to_string(),
+            endpoint_name: "e".to_string(),
+            timestamp: 0,
+            method: "POST".to_string(),
+            path: "/hook".to_string(),
+            query_params: Default::default(),
+            headers: Default::default(),
+            client_ip: "127.0.0.1".to_string(),
+            body: "body".to_string(),
+            body_format: "raw".to_string(),
+            is_truncated: false,
+            detected_signature: None,
+        };
+
+        let a_cfg = crate::config::ProxyConfig {
+            proxy_enabled: true, proxy_type: "http".to_string(), proxy_host: "127.0.0.1".to_string(),
+            proxy_port: mirror_a.url().split(':').last().unwrap().parse().unwrap(),
+            proxy_username: None, proxy_password: None, check_interval: 15,
+        };
+        let _guard = with_global_proxy(Some(a_cfg));
+        forward_live_relay(&captured, "http://mirror.example.test/hook").await;
+        assert_eq!(mirror_a.targets(), vec!["http://mirror.example.test/hook".to_string()]);
+
+        drop(_guard);
+        let b_cfg = crate::config::ProxyConfig {
+            proxy_enabled: true, proxy_type: "http".to_string(), proxy_host: "127.0.0.1".to_string(),
+            proxy_port: mirror_b.url().split(':').last().unwrap().parse().unwrap(),
+            proxy_username: None, proxy_password: None, check_interval: 15,
+        };
+        let _guard2 = with_global_proxy(Some(b_cfg));
+        forward_live_relay(&captured, "http://mirror.example.test/hook").await;
+        assert_eq!(mirror_a.targets().len(), 1);
+        assert_eq!(mirror_b.targets(), vec!["http://mirror.example.test/hook".to_string()]);
+
+        // replay
+        super::super::storage::append_captured_request(captured.clone());
+        let req = super::super::types::ReplayRequest {
+            request_id: "c1".to_string(),
+            target_url: "http://replay.example.test/hook".to_string(),
+            override_headers: None,
+            override_body: None,
+        };
+        // need proxy to replay upstream; but target is replay.example.test, proxy records target. upstream fixture returns body.
+        // Re-publish A using replay_upstream_a port? target host differs; proxy records target string. Use replay_upstream_a as proxy.
+        drop(_guard2);
+        let a_cfg2 = crate::config::ProxyConfig {
+            proxy_enabled: true, proxy_type: "http".to_string(), proxy_host: "127.0.0.1".to_string(),
+            proxy_port: replay_upstream_a.url().split(':').last().unwrap().parse().unwrap(),
+            proxy_username: None, proxy_password: None, check_interval: 15,
+        };
+        let _guard3 = with_global_proxy(Some(a_cfg2));
+        let res = execute_replay(req.clone()).await.unwrap();
+        assert_eq!(res.status_code, 200);
+        assert_eq!(res.response_body, "replayed");
+        assert_eq!(replay_upstream_a.targets(), vec!["http://replay.example.test/hook".to_string()]);
+
+        // B
+        drop(_guard3);
+        let b_cfg2 = crate::config::ProxyConfig {
+            proxy_enabled: true, proxy_type: "http".to_string(), proxy_host: "127.0.0.1".to_string(),
+            proxy_port: replay_upstream_b.url().split(':').last().unwrap().parse().unwrap(),
+            proxy_username: None, proxy_password: None, check_interval: 15,
+        };
+        let _guard4 = with_global_proxy(Some(b_cfg2));
+        // clear captured? storage already has c1; find works
+        let res2 = execute_replay(req).await.unwrap();
+        assert_eq!(res2.status_code, 200);
+        assert_eq!(replay_upstream_a.targets().len(), 1);
+        assert_eq!(replay_upstream_b.targets(), vec!["http://replay.example.test/hook".to_string()]);
+    }
 }

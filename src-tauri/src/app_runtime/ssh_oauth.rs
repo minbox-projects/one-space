@@ -144,6 +144,13 @@ pub(super) fn connect_ssh_custom(
     Ok(())
 }
 
+#[cfg(test)]
+static GOOGLE_TOKEN_BASE_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+#[cfg(test)]
+pub fn set_google_token_base_override(v: Option<String>) {
+    *GOOGLE_TOKEN_BASE_OVERRIDE.lock().unwrap() = v;
+}
+
 #[tauri::command]
 pub(super) async fn exchange_google_token(
     code: String,
@@ -155,8 +162,14 @@ pub(super) async fn exchange_google_token(
         .get()
         .ok_or("Proxy manager not initialized")?;
     let client = proxy_mgr.get_client()?;
+    let token_url = {
+        #[cfg(test)]
+        { GOOGLE_TOKEN_BASE_OVERRIDE.lock().unwrap().clone().unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()) }
+        #[cfg(not(test))]
+        { "https://oauth2.googleapis.com/token".to_string() }
+    };
     let res = client
-        .post("https://oauth2.googleapis.com/token")
+        .post(&token_url)
         .form(&[
             ("code", code.as_str()),
             ("client_id", client_id.as_str()),
@@ -180,8 +193,14 @@ pub(super) async fn refresh_google_token(
         .get()
         .ok_or("Proxy manager not initialized")?;
     let client = proxy_mgr.get_client()?;
+    let token_url = {
+        #[cfg(test)]
+        { GOOGLE_TOKEN_BASE_OVERRIDE.lock().unwrap().clone().unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()) }
+        #[cfg(not(test))]
+        { "https://oauth2.googleapis.com/token".to_string() }
+    };
     let res = client
-        .post("https://oauth2.googleapis.com/token")
+        .post(&token_url)
         .form(&[
             ("refresh_token", refresh_token.as_str()),
             ("client_id", client_id.as_str()),
@@ -192,4 +211,50 @@ pub(super) async fn refresh_google_token(
         .await
         .map_err(|e| e.to_string())?;
     res.text().await.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proxy::test_support::{SERIAL_GUARD, with_global_proxy, HttpProxyRecorder};
+
+    #[tokio::test]
+    async fn app_runtime_ssh_oauth_proxy_switch_exchange_and_refresh() {
+        let _g = SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+
+        let a = HttpProxyRecorder::new("tokA").await;
+        let b = HttpProxyRecorder::new("tokB").await;
+
+        let a_cfg = crate::config::ProxyConfig {
+            proxy_enabled: true, proxy_type: "http".to_string(), proxy_host: "127.0.0.1".to_string(),
+            proxy_port: a.url().split(':').last().unwrap().parse().unwrap(),
+            proxy_username: None, proxy_password: None, check_interval: 15,
+        };
+        let _guard = with_global_proxy(Some(a_cfg));
+        set_google_token_base_override(Some(a.url()));
+        let _ = exchange_google_token("code".into(), "cid".into(), "secret".into(), "http://cb".into()).await;
+        let _ = refresh_google_token("rt".into(), "cid".into(), "secret".into()).await;
+        // target path is token_url path "/"? recorder records first request target which is full URL path. a.url() has no path, POST to "http://host:port" -> target "/" maybe. Let's not assert exact path; assert hits.
+        assert_eq!(a.hits(), 2);
+
+        drop(_guard);
+        let b_cfg = crate::config::ProxyConfig {
+            proxy_enabled: true, proxy_type: "http".to_string(), proxy_host: "127.0.0.1".to_string(),
+            proxy_port: b.url().split(':').last().unwrap().parse().unwrap(),
+            proxy_username: None, proxy_password: None, check_interval: 15,
+        };
+        let _guard2 = with_global_proxy(Some(b_cfg));
+        set_google_token_base_override(Some(b.url()));
+        let _ = exchange_google_token("code".into(), "cid".into(), "secret".into(), "http://cb".into()).await;
+        let _ = refresh_google_token("rt".into(), "cid".into(), "secret".into()).await;
+        assert_eq!(a.hits(), 2);
+        assert_eq!(b.hits(), 2);
+
+        // body/form contains grant_type: check recorded requests
+        let reqs = a.requests();
+        assert!(reqs.iter().any(|r| r.contains("grant_type=authorization_code")));
+        assert!(reqs.iter().any(|r| r.contains("grant_type=refresh_token")));
+
+        set_google_token_base_override(None);
+    }
 }

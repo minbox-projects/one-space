@@ -161,9 +161,10 @@ async fn send_webhook(
     status_kind: &str,
     target: &MonitorTarget,
 ) {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
+    let client = match crate::proxy::apply_current_proxy_to_builder(
+        reqwest::Client::builder().timeout(Duration::from_secs(5)),
+    )
+    .and_then(|builder| builder.build().map_err(|e| e.to_string()))
     {
         Ok(c) => c,
         Err(_) => return,
@@ -213,4 +214,66 @@ async fn send_webhook(
     };
 
     let _ = client.post(url).json(&payload).send().await;
+}
+
+#[cfg(test)]
+pub(crate) async fn send_webhook_for_test(
+    url: &str,
+    title: &str,
+    body: &str,
+    status_kind: &str,
+    target: &MonitorTarget,
+) {
+    send_webhook(url, title, body, status_kind, target).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn uptime_monitor_proxy_switch_probe_and_webhook() {
+        let _g = crate::proxy::test_support::SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let pa = crate::proxy::test_support::HttpProxyRecorder::new("ok").await;
+        let pb = crate::proxy::test_support::HttpProxyRecorder::new("ok").await;
+        let mgr = crate::proxy::PROXY_MANAGER
+            .get_or_init(|| std::sync::Arc::new(crate::proxy::ProxyManager::new()));
+        let port_of = |u: &str| u.split(':').last().unwrap().parse::<u16>().unwrap();
+        let cfg = |port| crate::config::ProxyConfig {
+            proxy_enabled: true,
+            proxy_type: "http".to_string(),
+            proxy_host: "127.0.0.1".to_string(),
+            proxy_port: port,
+            proxy_username: None,
+            proxy_password: None,
+            check_interval: 15,
+        };
+        let target = MonitorTarget {
+            id: "m".into(),
+            name: "M".into(),
+            probe_type: crate::uptime_monitor::types::ProbeType::Http,
+            target: "http://x".into(),
+            interval_sec: 60,
+            timeout_ms: 5000,
+            retry_count: 0,
+            recover_count: 0,
+            is_enabled: true,
+            tags: vec![],
+            http_options: None,
+            tcp_options: None,
+            dns_options: None,
+            alert_config: crate::uptime_monitor::types::AlertConfig { system_notification: true, sound_alert: false, webhook_url: None },
+            created_at: 0,
+            updated_at: 0,
+        };
+        mgr.publish(mgr.prepare(Some(cfg(port_of(&pa.url())))).unwrap());
+        send_webhook_for_test("http://hook.example.test/alert", "t", "b", "down", &target).await;
+        assert_eq!(pa.targets(), vec!["http://hook.example.test/alert".to_string()]);
+        assert!(pb.targets().is_empty());
+
+        mgr.publish(mgr.prepare(Some(cfg(port_of(&pb.url())))).unwrap());
+        send_webhook_for_test("http://hook.example.test/alert", "t", "b", "down", &target).await;
+        assert_eq!(pa.targets().len(), 1);
+        assert_eq!(pb.targets(), vec!["http://hook.example.test/alert".to_string()]);
+    }
 }

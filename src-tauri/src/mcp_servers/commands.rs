@@ -11,7 +11,6 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::time::Duration;
 
 /// 获取所有 MCP 服务器
 #[tauri::command]
@@ -157,7 +156,6 @@ pub fn set_mcp_model_switch(
 }
 
 pub(in crate::mcp_servers) async fn build_update_info_for_server(
-    client: reqwest::Client,
     server: MCPServer,
     checked_at: u64,
 ) -> MCPUpdateInfo {
@@ -182,7 +180,7 @@ pub(in crate::mcp_servers) async fn build_update_info_for_server(
     info.package_name = Some(parsed.package_name.clone());
     info.current_version = parsed.version.clone();
 
-    let latest = match fetch_npm_latest_version(&client, &parsed.package_name).await {
+    let latest = match fetch_npm_latest_version(&parsed.package_name).await {
         Ok(v) => v,
         Err(err) => {
             info.status = MCPUpdateStatus::CheckFailed;
@@ -255,21 +253,14 @@ pub(in crate::mcp_servers) async fn run_mcp_updates_check_async(
         return Ok(Vec::new());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .user_agent("onespace-mcp-update-checker/1.0")
-        .build()
-        .map_err(|e| e.to_string())?;
-
     const MAX_CONCURRENCY: usize = 4;
     let mut items = Vec::new();
     for chunk in enabled_servers.chunks(MAX_CONCURRENCY) {
         let mut handles = Vec::new();
         for server in chunk {
-            let client = client.clone();
             let server = server.clone();
             handles.push(tauri::async_runtime::spawn(async move {
-                build_update_info_for_server(client, server, checked_at).await
+                build_update_info_for_server(server, checked_at).await
             }));
         }
         for handle in handles {
@@ -380,12 +371,7 @@ pub async fn mcp_update_apply(
             .version
             .clone()
             .ok_or("Floating package has no pinned version to upgrade".to_string())?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .user_agent("onespace-mcp-update-checker/1.0")
-            .build()
-            .map_err(|e| e.to_string())?;
-        let latest = fetch_npm_latest_version(&client, &parsed.package_name).await?;
+        let latest = fetch_npm_latest_version(&parsed.package_name).await?;
         if compare_semver_like(&current_version, &latest).is_none() {
             return Err("Unsupported semver-like format for current or latest version".to_string());
         }
@@ -448,3 +434,70 @@ pub async fn mcp_update_apply(
     api_ok(info)
 }
 
+
+#[cfg(test)]
+pub async fn mcp_npm_update_proxy_test_entry(
+    server: crate::mcp_servers::types::MCPServer,
+    registry_base_url: String,
+) -> Result<String, String> {
+    let parsed = parse_server_npm_spec(&server)
+        .ok_or("Only stdio npx MCP servers are supported".to_string())?;
+    crate::mcp_servers::updates_state::fetch_npm_latest_version_from(
+        &registry_base_url,
+        &parsed.package_name,
+    )
+    .await
+}
+
+#[cfg(test)]
+mod proxy_switch_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mcp_servers_proxy_switch_npm_update() {
+        let _g = crate::proxy::test_support::SERIAL_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let pa = crate::proxy::test_support::HttpProxyRecorder::new(r#"{"dist-tags":{"latest":"2.0.0"}}"#).await;
+        let pb = crate::proxy::test_support::HttpProxyRecorder::new(r#"{"dist-tags":{"latest":"2.0.0"}}"#).await;
+
+        let mgr = crate::proxy::PROXY_MANAGER.get_or_init(|| std::sync::Arc::new(crate::proxy::ProxyManager::new()));
+        let a_port: u16 = pa.url().split(':').last().unwrap().parse().unwrap();
+        let b_port: u16 = pb.url().split(':').last().unwrap().parse().unwrap();
+        use crate::config::ProxyConfig;
+        let a_cfg = ProxyConfig { proxy_enabled: true, proxy_type: "http".into(), proxy_host: "127.0.0.1".into(), proxy_port: a_port, proxy_username: None, proxy_password: None, check_interval: 15 };
+        mgr.publish(mgr.prepare(Some(a_cfg)).unwrap());
+
+        let server = crate::mcp_servers::types::MCPServer {
+            id: "s".into(),
+            name: "s".into(),
+            config_key: None,
+            description: None,
+            transport: crate::mcp_servers::types::MCPServerTransport::Stdio,
+            command: Some("npx".into()),
+            args: Some(vec!["@scope/pkg@1.0.0".into()]),
+            cwd: None,
+            url: None,
+            http_url: None,
+            env: None,
+            headers: None,
+            timeout: None,
+            trust: None,
+            linked_provider_ids: vec![],
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let a_base = format!("http://127.0.0.1:{}", a_port);
+        let _ = mcp_npm_update_proxy_test_entry(server.clone(), a_base).await;
+        // proxy recorded path is /@scope%2fpkg? base includes host:port, request url = base + /@scope%2fpkg
+        // recorder records full URL though. Task expects path. We'll check suffix.
+        assert!(pa.targets().iter().any(|t| t.ends_with("/@scope%2fpkg")));
+
+        let b_cfg = ProxyConfig { proxy_enabled: true, proxy_type: "http".into(), proxy_host: "127.0.0.1".into(), proxy_port: b_port, proxy_username: None, proxy_password: None, check_interval: 15 };
+        mgr.publish(mgr.prepare(Some(b_cfg)).unwrap());
+
+        let b_base = format!("http://127.0.0.1:{}", b_port);
+        let _ = mcp_npm_update_proxy_test_entry(server, b_base).await;
+        assert!(pb.targets().iter().any(|t| t.ends_with("/@scope%2fpkg")));
+        assert_eq!(pa.hits(), 1);
+    }
+}

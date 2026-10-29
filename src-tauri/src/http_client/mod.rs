@@ -31,8 +31,8 @@ pub async fn send_http_request(
     request: HttpRequestPayload,
 ) -> Result<HttpResponsePayload, String> {
     let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(30000));
-    let client = Client::builder()
-        .timeout(timeout)
+    let client = crate::proxy::apply_current_proxy_to_builder(Client::builder().timeout(timeout))
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 

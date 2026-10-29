@@ -43,8 +43,10 @@ mod app_runtime;
 #[cfg(test)]
 pub(crate) use app_runtime::lock_test_home_env;
 pub use app_runtime::run;
+#[cfg(test)] pub(crate) use app_runtime::set_git_command_override;
 pub(crate) use app_runtime::{
-    atomic_write_string, get_data_dir, get_git_command, get_hostname, get_ssh_hosts,
+    atomic_write_string, get_data_dir, get_git_command,
+    get_hostname, get_ssh_hosts,
     open_path_with_system,
 };
 // Usage statistics, request logs and retention commands. Each one is also

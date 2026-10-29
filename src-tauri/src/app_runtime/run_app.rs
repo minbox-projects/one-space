@@ -318,6 +318,7 @@ pub fn run() {
             cli_updates::apply_cli_update,
             // Proxy
             proxy::test_proxy_connection,
+            proxy::proxy_generation,
             runtime_services::proxy_http_request,
             // Protocol router
             protocol_router::protocol_router_get_config,
