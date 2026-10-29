@@ -1,7 +1,10 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Workspaces } from "@/components/Workspaces";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialogProvider";
+import { ToastProvider } from "@/components/ToastProvider";
 import { setNativeWindowVisible } from "@/lib/runtimeStatus";
 import { renderWithProviders } from "@/test/mocks/render";
 import { emitMock, invokeMock, listenMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -73,6 +76,22 @@ describe("Workspaces", () => {
     expect(screen.getByText("Workspace A")).toBeInTheDocument();
     expect(screen.queryByText("Workspace B")).not.toBeInTheDocument();
 
+    await userEvent.click(screen.getByText("Workspace A"));
+    expect(await screen.findByRole("heading", { name: /Terminal Sessions|终端会话/i })).toBeInTheDocument();
+    expect(await screen.findByText("Session A")).toBeInTheDocument();
+  });
+
+  it("opens workspace detail after a StrictMode remount", async () => {
+    render(
+      <StrictMode>
+        <ToastProvider>
+          <ConfirmDialogProvider>
+            <Workspaces isVisible />
+          </ConfirmDialogProvider>
+        </ToastProvider>
+      </StrictMode>,
+    );
+    expect(await screen.findByText("Workspace A")).toBeInTheDocument();
     await userEvent.click(screen.getByText("Workspace A"));
     expect(await screen.findByRole("heading", { name: /Terminal Sessions|终端会话/i })).toBeInTheDocument();
     expect(await screen.findByText("Session A")).toBeInTheDocument();
