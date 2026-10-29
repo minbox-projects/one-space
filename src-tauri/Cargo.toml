@@ -35,7 +35,7 @@ tauri-plugin-dialog = "2.6.0"
 tauri-plugin-shell = "2.3.5"
 dirs = "6.0.0"
 tauri-plugin-global-shortcut = "2.3.1"
-tauri-plugin-updater = "=2.3.1"
+tauri-plugin-updater = "=2.9.0"
 tauri-plugin-process = "=2.3.1"
 tauri-plugin-autostart = "2"
 tauri-plugin-oauth = "2.0.0"
@@ -57,6 +57,7 @@ tokio = { version = "1", features = ["time", "process", "io-util", "sync", "macr
 rusqlite = { version = "0.31", features = ["bundled"] }
 url = "2.5"
 bytes = "1"
+http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }

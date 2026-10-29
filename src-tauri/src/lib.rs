@@ -35,6 +35,7 @@ mod ssh_tunnels;
 mod storage;
 mod subagents;
 pub mod tunnel;
+mod updater;
 mod version_detect;
 mod workspaces;
 

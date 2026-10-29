@@ -105,6 +105,7 @@ pub fn run() {
             }
 
             crate::proxy::init_proxy_manager();
+            app.manage(crate::updater::AppUpdaterState::default());
             setup_proxy_monitor(app.handle());
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -320,6 +321,11 @@ pub fn run() {
             proxy::test_proxy_connection,
             proxy::proxy_generation,
             runtime_services::proxy_http_request,
+            // Native updater
+            crate::updater::app_updater_check,
+            crate::updater::app_updater_download,
+            crate::updater::app_updater_install,
+            crate::updater::app_updater_discard,
             // Protocol router
             protocol_router::protocol_router_get_config,
             protocol_router::protocol_router_save_config,
