@@ -427,3 +427,77 @@ async fn gmail_bridge_proxy_switch_uses_proxy_http_request() {
     .unwrap_err();
     assert_eq!(err, "HTTP 500: boom");
 }
+
+#[tokio::test]
+async fn proxy_switch_current_client_observes_published_snapshot() {
+    let _g = crate::proxy::test_support::SERIAL_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let proxy_a = crate::proxy::test_support::HttpProxyRecorder::new("A").await;
+    let proxy_b = crate::proxy::test_support::HttpProxyRecorder::new("B").await;
+
+    let mgr = ProxyManager::new();
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_a.url()))))
+            .unwrap(),
+    );
+    let a_client = crate::proxy::current_client().unwrap();
+    let _ = a_client.get("http://consumer.proxy.test/one").send().await;
+    assert_eq!(
+        proxy_a.targets(),
+        vec!["http://consumer.proxy.test/one".to_string()]
+    );
+
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_b.url()))))
+            .unwrap(),
+    );
+    let b_client = crate::proxy::current_client().unwrap();
+    let _ = b_client.get("http://consumer.proxy.test/two").send().await;
+    assert_eq!(
+        proxy_b.targets(),
+        vec!["http://consumer.proxy.test/two".to_string()]
+    );
+    assert_eq!(proxy_a.hits(), 1);
+}
+
+#[test]
+fn proxy_switch_thread_without_publish_observes_direct_snapshot() {
+    let _g = crate::proxy::test_support::SERIAL_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+
+    let mgr = ProxyManager::new();
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", 4321)))
+            .unwrap(),
+    );
+    assert!(super::current_proxy_snapshot().is_enabled());
+
+    let observed = std::thread::spawn(|| {
+        let snapshot = super::current_proxy_snapshot();
+        (snapshot.is_enabled(), snapshot.generation)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(observed, (false, 0));
+}
+
+#[test]
+fn proxy_switch_serial_guard_clears_stale_override() {
+    crate::proxy::set_test_current_snapshot(std::sync::Arc::new(ProxySnapshot {
+        generation: 7,
+        config: Some(cfg(true, "http", "127.0.0.1", 4321)),
+    }));
+    assert!(super::current_proxy_snapshot().is_enabled());
+
+    {
+        let _g = crate::proxy::test_support::SERIAL_GUARD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(!super::current_proxy_snapshot().is_enabled());
+    }
+
+    assert!(!super::current_proxy_snapshot().is_enabled());
+}

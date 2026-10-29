@@ -229,17 +229,13 @@ pub(in crate::mcp_servers) fn npm_registry_base_url() -> &'static str {
 }
 
 fn npm_update_client() -> Result<reqwest::Client, String> {
-    let proxy_mgr = crate::proxy::PROXY_MANAGER
-        .get()
-        .ok_or("Proxy manager not initialized")?;
-    proxy_mgr
-        .apply_builder(
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .user_agent("onespace-mcp-update-checker/1.0"),
-        )?
-        .build()
-        .map_err(|e| e.to_string())
+    crate::proxy::apply_current_proxy_to_builder(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .user_agent("onespace-mcp-update-checker/1.0"),
+    )?
+    .build()
+    .map_err(|e| e.to_string())
 }
 
 pub(in crate::mcp_servers) async fn fetch_npm_latest_version_from(

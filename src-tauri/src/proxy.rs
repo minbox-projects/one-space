@@ -1,5 +1,7 @@
 use reqwest::{Client, ClientBuilder, NoProxy};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::cell::RefCell;
 use std::fmt;
 use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
@@ -170,6 +172,8 @@ impl ProxyManager {
             if state.client.is_none() {
                 state.client = Some(client);
             }
+            #[cfg(test)]
+            set_test_current_snapshot(state.snapshot.clone());
             return generation;
         }
 
@@ -181,6 +185,8 @@ impl ProxyManager {
             config: snapshot.config,
         });
         state.client = Some(client);
+        #[cfg(test)]
+        set_test_current_snapshot(state.snapshot.clone());
         generation
     }
 
@@ -273,20 +279,63 @@ fn default_client_builder() -> ClientBuilder {
         .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
 }
 
+/// Build a client from the default transport policy and the current proxy
+/// snapshot. Each call resolves the snapshot again, so callers that need the
+/// latest proxy never capture a stale transport.
+pub fn current_client() -> Result<Client, String> {
+    apply_current_proxy_to_builder(default_client_builder())?
+        .build()
+        .map_err(|_| "Failed to prepare proxy transport".to_string())
+}
+
 pub fn apply_current_proxy_to_builder(builder: ClientBuilder) -> Result<ClientBuilder, String> {
     apply_proxy_policy(builder, &current_proxy_snapshot())
 }
 
-fn current_proxy_snapshot() -> Arc<ProxySnapshot> {
+fn direct_proxy_snapshot() -> Arc<ProxySnapshot> {
+    Arc::new(ProxySnapshot {
+        generation: 0,
+        config: None,
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CURRENT_SNAPSHOT: RefCell<Option<Arc<ProxySnapshot>>> = RefCell::new(None);
+}
+
+/// Test-only seam that pins the proxy snapshot observed on the calling thread.
+#[cfg(test)]
+pub fn set_test_current_snapshot(snapshot: Arc<ProxySnapshot>) {
+    TEST_CURRENT_SNAPSHOT.with(|slot| {
+        *slot.borrow_mut() = Some(snapshot);
+    });
+}
+
+/// Test-only seam that drops the thread-local snapshot override.
+#[cfg(test)]
+pub fn clear_test_current_snapshot() {
+    TEST_CURRENT_SNAPSHOT.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+}
+
+/// Under test the current snapshot is the thread-local override when present,
+/// otherwise direct. The process-global manager is never consulted so parallel
+/// tests cannot observe each other's published proxy.
+#[cfg(test)]
+pub(crate) fn current_proxy_snapshot() -> Arc<ProxySnapshot> {
+    TEST_CURRENT_SNAPSHOT
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or_else(direct_proxy_snapshot)
+}
+
+#[cfg(not(test))]
+pub(crate) fn current_proxy_snapshot() -> Arc<ProxySnapshot> {
     PROXY_MANAGER
         .get()
         .map(|manager| manager.current_snapshot())
-        .unwrap_or_else(|| {
-            Arc::new(ProxySnapshot {
-                generation: 0,
-                config: None,
-            })
-        })
+        .unwrap_or_else(direct_proxy_snapshot)
 }
 
 pub fn apply_current_proxy_env_to_command(command: &mut std::process::Command) {
@@ -423,8 +472,20 @@ fn effective_auth(config: &ProxyConfig) -> Option<(String, String)> {
     ))
 }
 
+fn looks_like_encrypted_password(password: &str) -> bool {
+    password.starts_with("v2:")
+        || (password.len() >= 16
+            && password
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')))
+}
+
 fn resolve_proxy_password(password: &str) -> String {
     if password == "********" {
+        return password.to_string();
+    }
+
+    if !looks_like_encrypted_password(password) {
         return password.to_string();
     }
 

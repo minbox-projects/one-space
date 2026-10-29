@@ -95,10 +95,7 @@ pub(super) async fn proxy_http_request(
     headers: Option<std::collections::HashMap<String, String>>,
     body: Option<String>,
 ) -> Result<String, String> {
-    let proxy_mgr = crate::proxy::PROXY_MANAGER
-        .get()
-        .ok_or("Proxy manager not initialized")?;
-    let client = proxy_mgr.get_client()?;
+    let client = crate::proxy::current_client()?;
 
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|e| format!("Invalid method: {}", e))?;

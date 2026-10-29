@@ -296,10 +296,7 @@ pub(crate) async fn fetch_sources_for_sync(
 }
 
 fn build_client() -> Result<Client, String> {
-    if let Some(proxy_mgr) = crate::proxy::PROXY_MANAGER.get() {
-        return proxy_mgr.get_client();
-    }
-    Ok(Client::new())
+    crate::proxy::current_client()
 }
 
 fn split_news_keywords(custom_keywords: Option<&str>) -> Vec<String> {

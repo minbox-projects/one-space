@@ -10,6 +10,7 @@ use super::types::{
     device_from_storage, shared_profile_from_storage, storage_from_device, SharedProfile,
     StorageConfig,
 };
+use tauri::Emitter;
 
 #[tauri::command]
 pub fn should_show_onboarding() -> Result<bool, String> {
@@ -133,12 +134,18 @@ pub async fn save_storage_config(
     let device = device_from_storage(&config);
     save_device_config(&device)?;
 
-    if let (Some(manager), Some(prepared)) =
+    let published_generation = if let (Some(manager), Some(prepared)) =
         (crate::proxy::PROXY_MANAGER.get(), prepared_proxy)
     {
-        manager.publish(prepared);
-    }
+        Some(manager.publish(prepared))
+    } else {
+        None
+    };
     crate::proxy::apply_process_proxy_env(config.proxy.as_ref())?;
+
+    if let Some(generation) = published_generation {
+        let _ = app.emit(crate::proxy::PROXY_CONFIG_UPDATED_EVENT, generation);
+    }
 
     if let Err(err) = crate::messages::cleanup_for_current_retention(app.clone()) {
         eprintln!("messages retention cleanup failed: {}", err);

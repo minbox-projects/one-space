@@ -158,10 +158,7 @@ pub(super) async fn exchange_google_token(
     client_secret: String,
     redirect_uri: String,
 ) -> Result<String, String> {
-    let proxy_mgr = crate::proxy::PROXY_MANAGER
-        .get()
-        .ok_or("Proxy manager not initialized")?;
-    let client = proxy_mgr.get_client()?;
+    let client = crate::proxy::current_client()?;
     let token_url = {
         #[cfg(test)]
         { GOOGLE_TOKEN_BASE_OVERRIDE.lock().unwrap().clone().unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()) }
@@ -189,10 +186,7 @@ pub(super) async fn refresh_google_token(
     client_id: String,
     client_secret: String,
 ) -> Result<String, String> {
-    let proxy_mgr = crate::proxy::PROXY_MANAGER
-        .get()
-        .ok_or("Proxy manager not initialized")?;
-    let client = proxy_mgr.get_client()?;
+    let client = crate::proxy::current_client()?;
     let token_url = {
         #[cfg(test)]
         { GOOGLE_TOKEN_BASE_OVERRIDE.lock().unwrap().clone().unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()) }

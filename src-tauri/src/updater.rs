@@ -147,14 +147,7 @@ fn emit_download_event(app: &AppHandle, payload: AppUpdaterDownloadEvent) {
 /// be prepared, the client stays explicitly direct instead of inheriting an
 /// automatic proxy.
 fn configure_current_transport(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    let Some(manager) = crate::proxy::PROXY_MANAGER.get() else {
-        return builder.no_proxy();
-    };
-    let snapshot = manager.current_snapshot();
-    if manager.prepare(snapshot.config.clone()).is_err() {
-        return builder.no_proxy();
-    }
-    crate::proxy::apply_proxy_policy(builder, &snapshot)
+    crate::proxy::apply_current_proxy_to_builder(builder)
         .unwrap_or_else(|_| reqwest::Client::builder().no_proxy())
 }
 

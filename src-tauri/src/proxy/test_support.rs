@@ -1,8 +1,7 @@
 use crate::config::{self, ProxyConfig};
-use crate::proxy::{ProxyManager, ProxySnapshot, PROXY_MANAGER};
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -12,7 +11,60 @@ use tokio::sync::oneshot;
 pub const SAFE_FIXTURE_USER: &str = "SAFE_FIXTURE_proxy_user";
 pub const SAFE_FIXTURE_PASS: &str = "SAFE_FIXTURE_proxy_pass";
 
-pub static SERIAL_GUARD: Mutex<()> = Mutex::new(());
+/// Process-wide serialization for tests that publish a global proxy.
+///
+/// Acquiring the lock also resets the test-only thread-local current snapshot,
+/// so a test never inherits a proxy published by an earlier test on the same
+/// thread, and dropping the guard clears it again. Other threads are never
+/// affected because the override is thread-local.
+pub struct ProxyTestGuard {
+    lock: Mutex<()>,
+}
+
+/// Held for the duration of a serialized proxy test. Dropping it clears the
+/// thread-local current snapshot override.
+pub struct ProxyTestLock<'a> {
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl Drop for ProxyTestLock<'_> {
+    fn drop(&mut self) {
+        crate::proxy::clear_test_current_snapshot();
+    }
+}
+
+/// Poison recovery that preserves the existing
+/// `SERIAL_GUARD.lock().unwrap_or_else(|error| error.into_inner())` shape.
+pub struct ProxyTestPoisonError<'a> {
+    guard: MutexGuard<'a, ()>,
+}
+
+impl<'a> ProxyTestPoisonError<'a> {
+    pub fn into_inner(self) -> ProxyTestLock<'a> {
+        ProxyTestLock {
+            _guard: self.guard,
+        }
+    }
+}
+
+impl ProxyTestGuard {
+    pub fn lock(&self) -> Result<ProxyTestLock<'_>, ProxyTestPoisonError<'_>> {
+        match self.lock.lock() {
+            Ok(guard) => {
+                crate::proxy::clear_test_current_snapshot();
+                Ok(ProxyTestLock { _guard: guard })
+            }
+            Err(error) => {
+                crate::proxy::clear_test_current_snapshot();
+                Err(ProxyTestPoisonError {
+                    guard: error.into_inner(),
+                })
+            }
+        }
+    }
+}
+
+pub static SERIAL_GUARD: ProxyTestGuard = ProxyTestGuard { lock: Mutex::new(()) };
 
 #[derive(Clone)]
 pub struct HttpResponseConfig {

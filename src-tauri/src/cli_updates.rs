@@ -109,13 +109,7 @@ async fn fetch_npm_version(client: &reqwest::Client, url: &str) -> Result<String
 }
 
 fn build_client() -> Result<reqwest::Client, String> {
-    let proxy_mgr = crate::proxy::PROXY_MANAGER
-        .get()
-        .ok_or("Proxy manager not initialized")?;
-    proxy_mgr
-        .apply_builder(reqwest::Client::builder())?
-        .build()
-        .map_err(|e| e.to_string())
+    crate::proxy::current_client()
 }
 
 async fn fetch_primary_version(meta: &CliToolMetadata) -> Result<String, String> {
