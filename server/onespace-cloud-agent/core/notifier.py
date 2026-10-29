@@ -83,6 +83,13 @@ class Notifier:
         safe_url = self._safe_url(url)
         attempt = 0
         while attempt < MAX_DELIVERY_ATTEMPTS:
+            remaining = self._remaining_budget()
+            if remaining is not None and remaining <= 0:
+                logger.warning(
+                    "剩余关闭预算不足，跳过通知投递 [%s]", safe_url
+                )
+                return False
+            timeout = 10 if remaining is None else max(0.1, min(10.0, remaining))
             attempt += 1
             try:
                 data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -92,7 +99,7 @@ class Notifier:
                     headers={"Content-Type": "application/json; charset=utf-8"},
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     status = int(getattr(resp, "status", 200))
                     result = resp.read().decode("utf-8")
                     if status == 429 or 500 <= status < 600:
@@ -175,6 +182,10 @@ class Notifier:
 
     def notify(self, title: str, markdown_content: str) -> None:
         if not self.enabled:
+            return
+        remaining = self._remaining_budget()
+        if remaining is not None and remaining <= 0:
+            logger.warning("剩余关闭预算不足，跳过通知投递: %s", title)
             return
         if self.dingtalk_url:
             self.send_dingtalk(title, markdown_content)

@@ -10,6 +10,8 @@ Environment=PATH=/root/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/u
 ExecStart=/usr/bin/python3 /root/onespace-cloud-agent/agent.py /root/onespace-cloud-agent/config.json
 Restart=always
 RestartSec=5
+KillMode=mixed
+TimeoutStopSec=infinity
 StandardOutput=journal
 StandardError=journal
 

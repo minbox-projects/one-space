@@ -15,7 +15,7 @@
 ```text
 server/onespace-cloud-agent/
 ├── agent.py                 # 主守护进程入口（管理 Gateway、Worker、Guardian）
-├── config.example.json      # 配置文件模板（网关、Issue Worker、通知、磁盘守护）
+├── config.example.json      # 配置文件模板（网关、Issue Worker、通知、运行时长与关闭、磁盘守护）
 ├── deploy.sh                # Mac 端执行的自动化远程安装/更新部署脚本
 ├── core/
 │   ├── gateway.py           # 轻量 Linux AI 网关（多 Provider 轮询、密钥冷却、模型池、模板同步）
@@ -33,8 +33,9 @@ server/onespace-cloud-agent/
 ## 环境要求
 
 - Linux 服务器（Debian/Ubuntu 等），Python 3，无需安装第三方 Python 依赖。
-- `git`、`tmux`、GitHub CLI（`gh`）。
-- `opencode` 已安装且位于服务 PATH 中；未在 PATH 找到时回退 `/root/.opencode/bin/opencode`（`deploy.sh` 会配置 PATH 与软链接）。
+- `python3`、`git`、`tmux`、GitHub CLI（`gh`）与 `opencode` 必须位于服务 PATH 中；systemd 单元固定 `PATH=/root/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`。
+- `deploy.sh` 按同一服务 PATH 预检上述五个命令，缺失即失败，不会代为安装。
+- `opencode` 不在会话 PATH 中时，`session_runner.py` 回退 `/root/.opencode/bin/opencode`；`deploy.sh` 同时维护该路径的软链接。
 - 可免密 SSH 登录目标服务器，且服务器可访问 GitHub 与各 AI 服务商 API。
 
 ---
@@ -48,11 +49,25 @@ server/onespace-cloud-agent/
 ./server/onespace-cloud-agent/deploy.sh dmit-server
 ```
 
-脚本会同步代码、初始化 `config.json`、安装 `cloud-session` / `oc` 快捷命令，并注册、启动 systemd 服务。部署完成后请填写远端 `/root/onespace-cloud-agent/config.json` 中的真实 API Key、监听仓库与通知配置，然后执行：
+脚本按固定顺序执行，任一步失败都以非零状态退出：
+
+1. 检查 SSH 免密连通性。
+2. 以服务 PATH 预检远端 `python3`、`git`、`tmux`、`gh`、`opencode`；缺失即失败，不做任何安装或升级。
+3. 把代码上传到与安装目录同一文件系统的暂存目录 `/root/onespace-cloud-agent-staging`。
+4. 选择远端配置：已存在 `/root/onespace-cloud-agent/config.json` 时复制到暂存并校验，首次部署则校验暂存中的 `config.example.json`。两种情况都执行 `python3 -m json.tool`，校验先于代码发布、启动器/服务单元改动与重启。
+5. 把当前安装复制为快照 `/root/onespace-cloud-agent-backups/<时间戳>-<pid>`（位于安装目录之外），再用暂存目录在同一文件系统内发布到 `/root/onespace-cloud-agent`；发布失败时把快照复制回原路径。首次部署不创建快照，也不会产生虚假的“首个备份”。
+6. 维护 `/usr/local/bin/cloud-session` 与 `/usr/local/bin/oc`（默认 `opencode --yolo`）、`opencode` 软链接与 `.bashrc` 别名；命令名、root 执行与默认 `--yolo` 保持不变，重复执行幂等。
+7. 安装 systemd 单元并 `daemon-reload`、`enable`、`restart`，重启成功后才把快照修剪到最新 3 份。
+
+既有 `config.json` 按字节保留，脚本绝不用示例覆盖；只有首次安装成功发布后才由 `config.example.json` 生成 `config.json`。依赖预检、JSON 校验或上传失败时，活跃安装与既有快照都不被改动。
+
+部署完成后请填写远端 `/root/onespace-cloud-agent/config.json` 中的真实 API Key、监听仓库与通知配置，然后执行：
 
 ```bash
 ssh dmit-server "systemctl restart onespace-cloud-agent"
 ```
+
+部署不做热加载：代码或配置改动都要重启服务才生效。需要回滚时，先停止服务，再从 `/root/onespace-cloud-agent-backups/` 中选择操作者确认的代码/配置快照手工恢复，并重新安装匹配的服务单元与启动器；没有自动回滚开关。
 
 ### 登录 GitHub（Personal access tokens classic）
 
@@ -197,6 +212,21 @@ Issue Worker 启动时会执行不带 `--show-token` 的 `gh auth status` 检查
 
 每个通道的单次投递最多 3 次总尝试：传输错误、HTTP 429 与 5xx 视为短暂失败，重试间隔为 1 秒、2 秒；其他 4xx 只尝试一次。钉钉与企业微信通道互相独立，单通道失败不影响另一通道，也不会改变任务结果；错误与日志中只出现去掉查询串的 webhook 地址，不输出凭据。
 
+### `runtime`
+
+| 字段 | 说明 |
+| --- | --- |
+| `runtime.disk_check_interval_seconds` | 磁盘巡检间隔，默认 `300` 秒；每个周期执行一次 `DiskGuardian.run_routine_check`，任务执行期间同样继续巡检。 |
+| `runtime.shutdown_grace_seconds` | 收到 `SIGTERM` / `SIGINT` 后的关闭宽限期，默认 `300` 秒。 |
+
+### 进程生命周期与关闭
+
+- `SIGTERM` / `SIGINT` 的处理函数只记录停止状态与一个共享的单调时钟关闭截止时间，不阻塞、不直接退出；此后不再开始新的 Issue，也不发起新的重试，当前任务在宽限期内仍可使用网关。
+- 任务提前完成时立即正常退出。到达截止时间时只终止当前任务自有的 Issue 子进程组，并写入一条 `failed` 关闭终态（`shutdown grace period expired`，带实际已消耗的尝试次数）。
+- 命令超时、退避与通知等待只消耗剩余宽限预算；预算不足时记录跳过投递，不声称已送达。状态写入失败按实记录，不伪造成成功持久化。
+- 独立于守护进程的 SSH / tmux 会话不受影响。正常信号关闭以 `0` 退出；网关线程意外退出会请求非零退出，由 systemd 按 `Restart=always` 重启。
+- systemd 单元设置 `KillMode=mixed` 与 `TimeoutStopSec=infinity`，systemd 不会以自身默认停止超时或初始信号抢占宽限期：有限宽限由守护进程自己掌握，leader 退出后由 systemd 清理残余服务进程。
+
 ### `guardian`
 
 | 字段 | 说明 |
@@ -310,6 +340,9 @@ ssh dmit-server "journalctl -u onespace-cloud-agent -f"
 ssh dmit-server "systemctl status onespace-cloud-agent"
 ssh dmit-server "systemctl restart onespace-cloud-agent"
 
+# 优雅停止：按 runtime.shutdown_grace_seconds 结束当前任务后退出
+ssh dmit-server "systemctl stop onespace-cloud-agent"
+
 # 编辑配置
 ssh dmit-server "nano /root/onespace-cloud-agent/config.json"
 
@@ -332,3 +365,5 @@ ssh dmit-server "curl -s http://127.0.0.1:17688/health && df -h /"
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+这些测试使用伪时钟、伪造线程与伪进程在本地运行，只覆盖进程内行为；真实 Linux 主机上的 systemd 启停、优雅关闭、快照保留与部署冒烟属于单独的部署检查，不能由本地测试结果替代。

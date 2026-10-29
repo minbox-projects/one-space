@@ -9,9 +9,11 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import time
+import types
 import urllib.parse
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -26,6 +28,8 @@ STATE_VERSION = 2
 MAX_LOG_BYTES = 2097152
 MAX_LOG_STREAM_BYTES = 500000
 MAX_ATTEMPT_LOGS = 20
+
+_ORIGINAL_SUBPROCESS_RUN = subprocess.run
 
 UNTRUSTED_START = "<<<BEGIN_UNTRUSTED_ISSUE_DATA>>>"
 UNTRUSTED_END = "<<<END_UNTRUSTED_ISSUE_DATA>>>"
@@ -149,6 +153,13 @@ class IssueWorker:
         self._stop_event = stop_event
         self._deadline = deadline
 
+        self.current_attempts = 0
+        self._current_issue: Optional[Dict[str, Any]] = None
+        self._current_task_id: Optional[str] = None
+        self._current_started_at: Optional[int] = None
+        self._shutdown_terminal_recorded = False
+        self._active_process: Optional[Any] = None
+
         self._check_github_auth()
         self.load_state()
         self.load_history()
@@ -189,6 +200,72 @@ class IssueWorker:
             self._sleep_override(seconds)
         else:
             time.sleep(seconds)
+
+    @staticmethod
+    def _terminate_process_group(proc: Any, sig: int = signal.SIGTERM) -> None:
+        if proc is None:
+            return
+        try:
+            if getattr(proc, "poll", lambda: 0)() is not None:
+                return
+            pid = getattr(proc, "pid", None)
+            if pid is None:
+                return
+            try:
+                os.killpg(os.getpgid(pid), sig)
+            except (ProcessLookupError, PermissionError):
+                return
+            logger.warning("已向任务自有子进程组发送终止信号 (pid=%s, sig=%s)", pid, sig)
+        except Exception as e:  # noqa: BLE001 - shutdown must stay bounded
+            logger.error("终止任务自有子进程组失败: %s", e)
+
+    def terminate_active_process_group(self) -> None:
+        """Terminate only the currently owned Issue subprocess group."""
+        proc = self._active_process
+        if proc is None:
+            logger.info("关闭宽限期到达时没有需要终止的自有任务进程")
+            return
+        self._terminate_process_group(proc)
+
+    def record_terminal_shutdown(self, attempts: Optional[int] = None) -> bool:
+        """Persist exactly one failed terminal record for a grace expiry."""
+        if self._shutdown_terminal_recorded:
+            return False
+        self._shutdown_terminal_recorded = True
+
+        issue = self._current_issue
+        if not issue:
+            logger.info("关闭宽限期到达时没有进行中的 Issue，无需写入终态")
+            return False
+
+        actual_attempts = int(
+            attempts if attempts is not None else self.current_attempts
+        )
+        repo = issue.get("repo", "")
+        issue_number = issue.get("number")
+        task_id = self._current_task_id
+        started_at = self._current_started_at
+        error_msg = "shutdown grace period expired"
+        logger.error(
+            "[%s#%s] 关闭宽限期耗尽，记录失败终态 (attempts=%s)",
+            repo, issue_number, actual_attempts,
+        )
+        if task_id is not None and started_at is not None:
+            try:
+                now = int(time.time())
+                self.record_task_update(task_id, {
+                    "status": "failed",
+                    "error_message": error_msg,
+                    "finished_at": now,
+                    "duration_seconds": now - started_at,
+                })
+            except Exception as e:  # noqa: BLE001
+                logger.error("写入关闭任务流水失败: %s", self._redact(str(e)))
+        self._record_terminal_state(
+            repo, issue_number, "failed", actual_attempts, error_msg
+        )
+        logger.info("关闭宽限期无剩余预算，跳过终态通知投递")
+        return True
 
     # ------------------------------------------------------------------
     # Credential posture
@@ -555,7 +632,12 @@ class IssueWorker:
             "last_error": self._redact(last_error or ""),
             "updated_at": _utc_now_iso(),
         }
-        self.save_state()
+        if not self.save_state():
+            logger.error(
+                "[%s#%s] 终态写入失败，后续轮询可能重复处理该 Issue",
+                repo, issue_number,
+            )
+        self._current_issue = None
 
     # ------------------------------------------------------------------
     # Task history
@@ -813,16 +895,20 @@ class IssueWorker:
             log,
             f"command[{label}]: {self._truncate_text(json.dumps(rendered, ensure_ascii=False), 4000)}",
         )
+        remaining = self._remaining_budget()
+        if remaining is not None:
+            if remaining <= 0:
+                self._log_line(log, f"exit[{label}]: shutdown deadline reached")
+                raise TaskFailure(
+                    f"{label} skipped: shutdown deadline reached", permanent=False
+                )
+            timeout = remaining if timeout is None else min(timeout, remaining)
         try:
-            res = subprocess.run(
+            res = self._execute_command(
                 cmd,
                 cwd=cwd,
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
                 timeout=timeout,
-                check=False,
             )
         except subprocess.TimeoutExpired as e:
             self._log_line(log, f"exit[{label}]: timeout after {timeout}s")
@@ -843,6 +929,57 @@ class IssueWorker:
             "stderr:\n" + self._truncate_text(self._redact(stderr), MAX_LOG_STREAM_BYTES),
         )
         return res
+
+    def _execute_command(
+        self,
+        cmd: List[str],
+        *,
+        cwd: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """Run a command, owning its process group when possible."""
+        if subprocess.run is not _ORIGINAL_SUBPROCESS_RUN:
+            # A substituted runner (for example a test double) keeps its own
+            # process semantics; the production path owns a real session.
+            return subprocess.run(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        self._active_process = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._terminate_process_group(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self._terminate_process_group(proc, signal.SIGKILL)
+                stdout, stderr = proc.communicate()
+            raise
+        finally:
+            self._active_process = None
+        return types.SimpleNamespace(
+            returncode=proc.returncode,
+            stdout=stdout or "",
+            stderr=stderr or "",
+        )
 
     def _is_permanent(self, text: str) -> bool:
         low = (text or "").lower()
@@ -962,6 +1099,15 @@ class IssueWorker:
         started_at = int(time.time())
         clean_repo_name = repo.replace("/", "_")
         task_id = f"task_{clean_repo_name}_{issue_number}_{started_at}"
+        self._current_issue = {
+            "repo": repo,
+            "number": issue_number,
+            "title": issue_title,
+        }
+        self._current_task_id = task_id
+        self._current_started_at = started_at
+        self.current_attempts = 0
+        self._shutdown_terminal_recorded = False
 
         logger.info(f"========== 开始处理任务: [{repo}] #{issue_number} {issue_title} ==========")
         self.record_task_update(task_id, {
@@ -986,6 +1132,7 @@ class IssueWorker:
                 last_error = "shutdown deadline reached before attempt"
                 break
             attempts += 1
+            self.current_attempts = attempts
             log = None
             log_path = None
             try:
@@ -1262,6 +1409,12 @@ class IssueWorker:
         attempts: int,
         last_error: str,
     ) -> None:
+        if self._shutdown_terminal_recorded:
+            logger.info(
+                "[%s#%s] 关闭失败终态已写入，跳过重复写回与通知",
+                repo, issue_number,
+            )
+            return
         error_msg = self._redact(last_error)[:1000]
         logger.error(
             "[%s#%s] 任务失败，已消耗 %s 次尝试: %s",
@@ -1282,6 +1435,39 @@ class IssueWorker:
             "duration_seconds": now - started_at,
         })
         self._record_terminal_state(repo, issue_number, "failed", attempts, error_msg)
+
+    def run_one_issue(self) -> bool:
+        """Process at most one eligible Issue; never start concurrent work."""
+        if not self.enabled or not self.watch_repositories:
+            return False
+        if self._stopped():
+            return False
+
+        for repo in self.watch_repositories:
+            repo = repo.strip()
+            if not repo:
+                continue
+            if self._stopped():
+                return False
+            logger.info(f"正在扫描仓库 [{repo}] 待处理任务 (Label: {self.trigger_label})...")
+            issues = self.scan_repo_issues(repo)
+            for issue in issues:
+                if self._stopped():
+                    return False
+                number = issue.get("number")
+                if number is None:
+                    continue
+                if self.is_issue_processed(repo, number):
+                    continue
+                if self.require_author_permission:
+                    author = issue.get("author")
+                    login = author.get("login") if isinstance(author, dict) else None
+                    if not self._author_allowed(repo, login):
+                        continue
+                self.execute_issue_task(repo, issue)
+                self.guardian.run_routine_check()
+                return True
+        return False
 
     def run_poll_cycle(self) -> None:
         """执行一次完整的轮询循环"""

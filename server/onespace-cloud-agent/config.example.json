@@ -60,6 +60,10 @@
     "dingtalk_secret": "SEC_your_secret",
     "wechat_work_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your_key"
   },
+  "runtime": {
+    "disk_check_interval_seconds": 300,
+    "shutdown_grace_seconds": 300
+  },
   "guardian": {
     "data_roots": [
       "~/.local/share/opencode",
