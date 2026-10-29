@@ -25,10 +25,6 @@ class TestNotifier(unittest.TestCase):
         self.assertIn("sign=", signed_url)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestNotifierRetry(unittest.TestCase):
     def test_transient_failure_retries_three_attempts(self):
         calls = {"n": 0}
@@ -78,3 +74,45 @@ class TestNotifierRetry(unittest.TestCase):
                 notifier.notify("t", "c")
         self.assertEqual(calls["ding"], 3)
         self.assertEqual(calls["wechat"], 1)
+
+    def test_webhook_credential_redacted_from_error_logs(self):
+        def boom(*a, **k):
+            raise urllib.error.URLError("boom")
+
+        with mock.patch("urllib.request.urlopen", side_effect=boom):
+            cfg = {"notification": {"enabled": True, "dingtalk_webhook": "https://example.com/hook?access_token=SECRET", "dingtalk_secret": None}}
+            notifier = Notifier(cfg)
+            with mock.patch("time.sleep"):
+                with self.assertLogs("onespace-notifier", level="ERROR") as cm:
+                    notifier.send_dingtalk("t", "c")
+        joined = "\n".join(cm.output)
+        self.assertNotIn("SECRET", joined)
+
+
+class TestNotifierDeadlineSkip(unittest.TestCase):
+    def test_expired_budget_skips_delivery_without_http(self):
+        calls = {"n": 0}
+
+        def responder(*a, **k):
+            calls["n"] += 1
+            return mock.MagicMock(status=200, read=lambda: b"ok")
+
+        with mock.patch("urllib.request.urlopen", side_effect=responder) as urlopen:
+            cfg = {
+                "notification": {
+                    "enabled": True,
+                    "dingtalk_webhook": "https://example.com/hook",
+                    "wechat_work_webhook": "https://example.com/wechat",
+                    "dingtalk_secret": None,
+                }
+            }
+            notifier = Notifier(cfg, clock=lambda: 100.0, deadline=lambda: 50.0)
+            with self.assertLogs("onespace-notifier", level="WARNING") as cm:
+                notifier.notify("t", "c")
+        self.assertEqual(urlopen.call_count, 0)
+        self.assertTrue(any("跳过通知投递" in m for m in cm.output))
+        self.assertEqual(calls["n"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

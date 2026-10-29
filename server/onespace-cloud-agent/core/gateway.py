@@ -3,7 +3,7 @@
 onespace-cloud-agent: Linux AI 网关核心组件
 提供轻量、高可用、低内存开销的 OpenAI 兼容代理服务。
 特性：
-1. 纯 Python 3 标准库实现，无需第三方外部依赖，常驻内存 < 35MB。
+1. 纯 Python 3 标准库实现，无需第三方外部依赖，保持轻量的运行开销。
 2. 多服务商轮询与故障转移（Failover & Key Cooldown）。
 3. 模型池（Model Pool）虚拟映射与降级机制。
 4. 服务商模板自动同步（Auto-Sync）。
@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("onespace-gateway")
 
@@ -37,14 +37,21 @@ STREAM_READ_SIZE = 65536
 class ProviderKeyState:
     """Shared mutable key rotation state for one provider."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Optional[Callable[[], float]] = None) -> None:
+        self.clock = clock
         self.key_index = 0
         self.key_cooldowns: Dict[str, float] = {}
         self.lock = threading.Lock()
 
 
 class ProviderState:
-    def __init__(self, name: str, config: Dict[str, Any], key_state: Optional[ProviderKeyState] = None):
+    def __init__(
+        self,
+        name: str,
+        config: Dict[str, Any],
+        key_state: Optional[ProviderKeyState] = None,
+        clock: Optional[Callable[[], float]] = None,
+    ):
         self.name = name
         self.base_url = str(config.get("base_url", "")).rstrip("/")
         self.api_keys: List[str] = list(config.get("api_keys", []) or [])
@@ -55,7 +62,12 @@ class ProviderState:
 
         # Key rotation and cooldown state is shared across catalog generations so
         # template synchronization never resets runtime availability.
-        self.key_state = key_state or ProviderKeyState()
+        if key_state is None:
+            key_state = ProviderKeyState(clock)
+        elif clock is not None and key_state.clock is None:
+            key_state.clock = clock
+        self.key_state = key_state
+        self.clock = self.key_state.clock
 
     def with_models(self, models: Dict[str, Any]) -> "ProviderState":
         return ProviderState(
@@ -68,7 +80,12 @@ class ProviderState:
                 "template_url": self.template_url,
             },
             key_state=self.key_state,
+            clock=self.clock,
         )
+
+    def _now(self) -> float:
+        clock = self.key_state.clock
+        return clock() if clock is not None else time.monotonic()
 
     def _prune_cooldowns(self, now: float) -> None:
         self.key_state.key_cooldowns = {
@@ -77,7 +94,7 @@ class ProviderState:
 
     def get_available_key(self) -> Optional[str]:
         with self.key_state.lock:
-            now = time.monotonic()
+            now = self._now()
             if not self.api_keys:
                 return None
 
@@ -98,7 +115,7 @@ class ProviderState:
     def get_usable_keys(self) -> List[str]:
         """Return each non-cooling key once, in rotation order, for one attempt plan."""
         with self.key_state.lock:
-            now = time.monotonic()
+            now = self._now()
             self._prune_cooldowns(now)
             num_keys = len(self.api_keys)
             if not num_keys:
@@ -121,7 +138,7 @@ class ProviderState:
     def key_availability(self) -> Tuple[bool, List[float]]:
         """Return whether any key is usable plus the remaining positive cooldowns."""
         with self.key_state.lock:
-            now = time.monotonic()
+            now = self._now()
             self._prune_cooldowns(now)
             if not self.api_keys:
                 return False, []
@@ -132,11 +149,11 @@ class ProviderState:
     def is_key_cooling(self, key: str) -> bool:
         with self.key_state.lock:
             deadline = self.key_state.key_cooldowns.get(key)
-            return deadline is not None and deadline > time.monotonic()
+            return deadline is not None and deadline > self._now()
 
     def mark_key_failed(self, key: str, cooldown_seconds: float = DEFAULT_HTTP_COOLDOWN_SECONDS):
         with self.key_state.lock:
-            self.key_state.key_cooldowns[key] = time.monotonic() + cooldown_seconds
+            self.key_state.key_cooldowns[key] = self._now() + cooldown_seconds
             logger.warning(f"[{self.name}] Key ...{key[-6:] if len(key) > 6 else key} 失败，冷却 {cooldown_seconds}s")
 
 
@@ -151,10 +168,17 @@ class _Catalog:
 
 
 class GatewayEngine:
-    def __init__(self, config_path: str, sync_opencode: bool = True, opencode_config_path: Optional[str] = None):
+    def __init__(
+        self,
+        config_path: str,
+        sync_opencode: bool = True,
+        opencode_config_path: Optional[str] = None,
+        clock: Optional[Callable[[], float]] = None,
+    ):
         self.config_path = config_path
         self.sync_opencode = sync_opencode
         self.opencode_config_path = opencode_config_path
+        self.clock = clock
 
         self._catalog_lock = threading.Lock()
         self._opencode_lock = threading.Lock()
@@ -230,7 +254,7 @@ class GatewayEngine:
         new_providers: Dict[str, ProviderState] = {}
         for p_name, p_data in providers_data.items():
             if isinstance(p_data, dict):
-                new_providers[p_name] = ProviderState(p_name, p_data)
+                new_providers[p_name] = ProviderState(p_name, p_data, clock=self.clock)
 
         model_pools = gw_cfg.get("model_pools", {})
         if not isinstance(model_pools, dict):

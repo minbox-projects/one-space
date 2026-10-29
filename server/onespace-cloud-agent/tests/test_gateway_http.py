@@ -1133,3 +1133,50 @@ class ZeroKeyProviderTests(unittest.TestCase):
         # For a model only on zero-key provider, create direct provider/model path nokey/m? prefix passthrough -> nokey provider has no key -> no candidates? resolve returns known? prefix path returns candidate if provider active regardless of keys. Then handler get_available_key None -> skip; no candidates left -> known True? resolve known True for prefix? Actually prefix path sets known? In code prefix path returns candidates, True (known). Handler candidates nonempty initially; after skip all, falls through to 502 (all candidates exhausted). So expect 502.
         st2, _ = self._post("nokey/m")
         self.assertEqual(st2, 502)
+
+
+class InjectableClockTests(unittest.TestCase):
+    def setUp(self):
+        cfg = {
+            "ai_gateway": {
+                "port": 17688,
+                "auth": {"token": "sk-test-token", "require": True},
+                "max_body_bytes": 10485760,
+                "retry": {"max_cooldown_seconds": 600},
+                "providers": {
+                    "p": {
+                        "base_url": "http://127.0.0.1:1/upstream",
+                        "api_keys": ["onlykey"],
+                        "models": {"m": {"upstream_model": "upstream-m"}},
+                        "is_active": True,
+                    }
+                },
+                "model_pools": {},
+            }
+        }
+        self.tmp = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json")
+        json.dump(cfg, self.tmp)
+        self.tmp.close()
+        self.now = {"t": 1000.0}
+        self.gateway = GatewayEngine(self.tmp.name, sync_opencode=False, clock=lambda: self.now["t"])
+
+    def tearDown(self):
+        if os.path.exists(self.tmp.name):
+            os.remove(self.tmp.name)
+
+    def test_cooldown_expiry_follows_injected_clock(self):
+        provider = self.gateway.providers["p"]
+        provider.mark_key_failed("onlykey", cooldown_seconds=30)
+        self.now["t"] = 1000.0 + 10.0
+        self.assertTrue(provider.is_key_cooling("onlykey"))
+        self.now["t"] = 1000.0 + 31.0
+        self.assertFalse(provider.is_key_cooling("onlykey"))
+
+    def test_wall_clock_changes_irrelevant(self):
+        import time as _t
+        provider = self.gateway.providers["p"]
+        provider.mark_key_failed("onlykey", cooldown_seconds=30)
+        # wall clock moves far ahead, injected clock stays inside cooldown
+        _t.sleep(0)
+        self.now["t"] = 1000.0 + 5.0
+        self.assertTrue(provider.is_key_cooling("onlykey"))

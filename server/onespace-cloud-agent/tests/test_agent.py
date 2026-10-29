@@ -24,12 +24,14 @@ Methods: .run() (blocks; returns exit code), ._handle_signal(signum, frame)
 """
 
 import json
+import logging
 import os
 import signal
 import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from agent import CloudAgentDaemon
@@ -73,12 +75,6 @@ class TestAgentLifecycle(unittest.TestCase):
         self.signals = {}
         self.maintenance_calls = []
 
-        class Guardian:
-            def run_routine_check(self):
-                self_outer.maintenance_calls.append(self.clock())
-
-        # bind outer references
-        self._guardian_holder = {"clock": self.clock, "calls": self.maintenance_calls}
         self.guardian = mock.Mock()
         self.guardian.run_routine_check.side_effect = lambda: self.maintenance_calls.append(self.clock())
 
@@ -110,28 +106,23 @@ class TestAgentLifecycle(unittest.TestCase):
 
     # 1. periodic maintenance
     def test_periodic_maintenance_runs_independently(self):
-        # before/after interval: at least two maintenance calls while a long task runs
         barrier = threading.Event()
         self.worker.run_one_issue.side_effect = lambda: barrier.wait(timeout=2)
         t = threading.Thread(target=self.daemon.run, daemon=True)
         t.start()
-        # advance fake clock past one interval
         self.clock.advance(301)
         time.sleep(0.2)
         barrier.set()
         t.join(timeout=2)
         self.assertGreaterEqual(self.guardian.run_routine_check.call_count, 2)
-        # worker never runs two concurrent issues
-        self.worker.run_one_issue.assert_called()  # at least once
+        self.worker.run_one_issue.assert_called()
 
-    # 2. gateway supervision
+    # 2. gateway supervision (legacy hook)
     def test_gateway_thread_exit_requests_nonzero_exit(self):
         self.gateway.running = False
-        # emulate unexpected exit by calling run in a thread with immediate stop
-        # We cannot easily; instead invoke internal supervision hook if present
         if hasattr(self.daemon, "_on_gateway_exit"):
             self.daemon._on_gateway_exit()
-        self.assertIn(-1, self.exit_codes) or self.assertTrue(self.exit_codes and self.exit_codes[-1] != 0)
+        self.assertTrue(self.exit_codes and self.exit_codes[-1] != 0)
 
     # 3. signal handling
     def test_sigterm_handler_only_records_state(self):
@@ -139,31 +130,280 @@ class TestAgentLifecycle(unittest.TestCase):
         self.assertIsNotNone(handler)
         before = time.time()
         handler(signal.SIGTERM, None)
-        # handler returns quickly (does not block / no sys.exit)
         self.assertLess(time.time() - before, 1.0)
         self.assertFalse(self.daemon.running)
         self.assertIsNotNone(self.daemon.shutdown_deadline)
-        # no new issue started after signal
-        calls_before = self.worker.run_one_issue.call_count if hasattr(self.worker.run_one_issue, "call_count") else 0
+        calls_before = self.worker.run_one_issue.call_count
         time.sleep(0.1)
-        calls_after = self.worker.run_one_issue.call_count if hasattr(self.worker.run_one_issue, "call_count") else 0
+        calls_after = self.worker.run_one_issue.call_count
         self.assertEqual(calls_before, calls_after)
 
-    # 4. deadline expiry
+    # 4. deadline expiry (legacy hook)
     def test_deadline_expiry_terminates_owned_group_and_writes_terminal(self):
-        # set a very short grace by reconfiguring daemon deadline already via signal
-        self.daemon.shutdown_deadline = self.clock()  # already expired
+        self.daemon.shutdown_deadline = self.clock()
         if hasattr(self.daemon, "_handle_deadline_expiry"):
             self.daemon._handle_deadline_expiry()
-        # process exits nonzero? normal signal shutdown exits zero; deadline expiry of current attempt -> failed terminal
-        # check worker recorded failed terminal once
         self.worker.record_terminal_shutdown.assert_called() if hasattr(self.worker, "record_terminal_shutdown") else True
-        # independent sessions untouched: guardian has no kill calls
         self.assertFalse(hasattr(self.guardian, "kill_session") and self.guardian.kill_session.called)
+
+
+class TestAgentRunLevel(unittest.TestCase):
+    def _sleep_factory(self, sleeps):
+        def _sleep(s):
+            sleeps.append(s)
+            time.sleep(0.001)
+        return _sleep
+
+    def test_gateway_thread_death_through_run_exits_nonzero(self):
+        tmp = tempfile.mkdtemp(prefix="test_agent_")
+        try:
+            config_path = _write_config(tmp)
+            clock = FakeClock()
+            sleeps = []
+            exit_codes = []
+            signals = {}
+            guardian = mock.Mock()
+            worker = mock.Mock()
+            worker.running = True
+
+            class FakeGateway:
+                def __init__(self):
+                    self.running = False
+                    self.global_port = 17699
+
+                def start_background_tasks(self):
+                    raise RuntimeError("gateway boom")
+
+            factory_calls = []
+
+            def factory():
+                g = FakeGateway()
+                factory_calls.append(g)
+                return g
+
+            daemon = CloudAgentDaemon(
+                config_path,
+                gateway_factory=factory,
+                worker=worker,
+                guardian=guardian,
+                notifier=mock.Mock(),
+                clock=clock,
+                sleep=self._sleep_factory(sleeps),
+                register_signal=lambda signum, handler: signals.setdefault(signum, handler),
+                exit_process=lambda code: exit_codes.append(code),
+            )
+            result = []
+
+            def target():
+                result.append(daemon.run())
+
+            t = threading.Thread(target=target, daemon=True)
+            t.start()
+            deadline = time.time() + 3
+            while time.time() < deadline and not exit_codes:
+                time.sleep(0.01)
+            t.join(timeout=3)
+            self.assertTrue(exit_codes and exit_codes[-1] != 0 or (result and result[0] != 0))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_graceful_signal_completion(self):
+        tmp = tempfile.mkdtemp(prefix="test_agent_")
+        try:
+            config_path = _write_config(tmp, grace=300)
+            clock = FakeClock()
+            sleeps = []
+            exit_codes = []
+            signals = {}
+            guardian = mock.Mock()
+            notifier = mock.Mock()
+
+            release = threading.Event()
+            counter = {"n": 0}
+
+            def run_one_issue():
+                counter["n"] += 1
+                release.wait(timeout=3)
+
+            worker = mock.Mock()
+            worker.running = True
+            worker.current_attempts = 0
+            worker.run_one_issue.side_effect = run_one_issue
+
+            daemon = CloudAgentDaemon(
+                config_path,
+                gateway=mock.Mock(running=True, global_port=17699, start_background_tasks=lambda: None),
+                worker=worker,
+                guardian=guardian,
+                notifier=notifier,
+                clock=clock,
+                sleep=self._sleep_factory(sleeps),
+                register_signal=lambda signum, handler: signals.setdefault(signum, handler),
+                exit_process=lambda code: exit_codes.append(code),
+            )
+            # prevent gateway thread start: owns_gateway False due to gateway injection
+            result = []
+
+            def target():
+                result.append(daemon.run())
+
+            t = threading.Thread(target=target, daemon=True)
+            t.start()
+            # wait for worker to start
+            deadline = time.time() + 2
+            while counter["n"] == 0 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(counter["n"], 1)
+            handler = signals.get(signal.SIGTERM)
+            self.assertIsNotNone(handler)
+            handler(signal.SIGTERM, None)
+            release.set()
+            t.join(timeout=3)
+            self.assertEqual(result[0] if result else None, 0)
+            self.assertEqual(counter["n"], 1)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_deadline_expiry_through_run(self):
+        tmp = tempfile.mkdtemp(prefix="test_agent_")
+        try:
+            config_path = _write_config(tmp, grace=0.1)
+            clock = FakeClock()
+            sleeps = []
+            exit_codes = []
+            signals = {}
+            guardian = mock.Mock()
+            notifier = mock.Mock()
+
+            release = threading.Event()
+
+            def run_one_issue():
+                release.wait(timeout=5)
+
+            worker = mock.Mock()
+            worker.running = True
+            worker.current_attempts = 3
+            worker.run_one_issue.side_effect = run_one_issue
+
+            daemon = CloudAgentDaemon(
+                config_path,
+                gateway=mock.Mock(running=True, global_port=17699, start_background_tasks=lambda: None),
+                worker=worker,
+                guardian=guardian,
+                notifier=notifier,
+                clock=clock,
+                sleep=self._sleep_factory(sleeps),
+                register_signal=lambda signum, handler: signals.setdefault(signum, handler),
+                exit_process=lambda code: exit_codes.append(code),
+            )
+            result = []
+
+            def target():
+                result.append(daemon.run())
+
+            t = threading.Thread(target=target, daemon=True)
+            t.start()
+            deadline = time.time() + 2
+            while not (worker.run_one_issue.called if hasattr(worker.run_one_issue, "called") else True) and time.time() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.1)
+            handler = signals.get(signal.SIGTERM)
+            self.assertIsNotNone(handler)
+            handler(signal.SIGTERM, None)
+            # advance clock past grace
+            time.sleep(0.05)
+            clock.advance(0.2)
+            # wait for expiry handling
+            time.sleep(0.3)
+            self.assertEqual(worker.record_terminal_shutdown.call_count, 1)
+            self.assertEqual(worker.record_terminal_shutdown.call_args, mock.call(3))
+            self.assertEqual(worker.terminate_active_process_group.call_count, 1)
+            # later poll/second expiry does not repeat
+            daemon._handle_deadline_expiry()
+            self.assertEqual(worker.record_terminal_shutdown.call_count, 1)
+            # no independent session-kill hook
+            self.assertFalse(guardian.kill_session.called)
+            release.set()
+            t.join(timeout=3)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_honest_shutdown_failure(self):
+        tmp = tempfile.mkdtemp(prefix="test_agent_")
+        try:
+            config_path = _write_config(tmp, grace=0.1)
+            clock = FakeClock()
+            sleeps = []
+            exit_codes = []
+            signals = {}
+            guardian = mock.Mock()
+            notifier = mock.Mock()
+
+            release = threading.Event()
+
+            def run_one_issue():
+                release.wait(timeout=5)
+
+            worker = mock.Mock()
+            worker.running = True
+            worker.current_attempts = 2
+            worker.run_one_issue.side_effect = run_one_issue
+            worker.record_terminal_shutdown.side_effect = RuntimeError("state write failed")
+
+            daemon = CloudAgentDaemon(
+                config_path,
+                gateway=mock.Mock(running=True, global_port=17699, start_background_tasks=lambda: None),
+                worker=worker,
+                guardian=guardian,
+                notifier=notifier,
+                clock=clock,
+                sleep=self._sleep_factory(sleeps),
+                register_signal=lambda signum, handler: signals.setdefault(signum, handler),
+                exit_process=lambda code: exit_codes.append(code),
+            )
+
+            log_messages = []
+            h = logging.Handler()
+
+            class _H(logging.Handler):
+                def emit(self, record):
+                    log_messages.append(record.getMessage())
+
+            handler = _H()
+            logger = logging.getLogger("onespace-agent")
+            logger.addHandler(handler)
+            try:
+                result = []
+
+                def target():
+                    result.append(daemon.run())
+
+                t = threading.Thread(target=target, daemon=True)
+                t.start()
+                time.sleep(0.1)
+                sig_handler = signals.get(signal.SIGTERM)
+                self.assertIsNotNone(sig_handler)
+                sig_handler(signal.SIGTERM, None)
+                time.sleep(0.05)
+                clock.advance(0.2)
+                time.sleep(0.3)
+                self.assertEqual(worker.terminate_active_process_group.call_count, 1)
+                self.assertTrue(any("写入关闭终态失败" in m or "state write failed" in m for m in log_messages))
+                release.set()
+                t.join(timeout=3)
+            finally:
+                logger.removeHandler(handler)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 class TestSystemdUnit(unittest.TestCase):
     def test_systemd_unit_uses_mixed_and_infinity(self):
-        service_path = "/Users/yuqiyu/AiHistorys/one-space/onespace-app/.worktrees/20261029-cloud-agent-hardening/server/onespace-cloud-agent/systemd/onespace-cloud-agent.service"
+        service_path = Path(__file__).resolve().parents[1] / "systemd" / "onespace-cloud-agent.service"
         with open(service_path, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("KillMode=mixed", text)

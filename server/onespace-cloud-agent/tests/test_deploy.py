@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Behavior tests for deploy.sh using fake SSH/SCP transport."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -46,7 +47,10 @@ class DeployHarness:
             elif name == "systemctl":
                 body = "#!/usr/bin/env bash\nexit 0\n"
             elif name == "curl":
-                body = "#!/usr/bin/env bash\necho '{\"status\":\"ok\"}'\nexit 0\n"
+                body = ("#!/usr/bin/env bash\n"
+                        'if [ -n "$CURL_RECORD_FILE" ]; then printf "%s\\n" "$*" >> "$CURL_RECORD_FILE"; fi\n'
+                        "echo '{\"status\":\"ok\"}'\n"
+                        "exit 0\n")
             else:
                 real = shutil.which(name)
                 if real:
@@ -334,3 +338,18 @@ class TestDeploySuccess(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDeployHealthPort(unittest.TestCase):
+    def test_health_probe_uses_remote_port(self):
+        h = DeployHarness()
+        try:
+            record = Path(h.tmp) / "curl_record.txt"
+            cfg = {"ai_gateway": {"port": 18000}}
+            proc = h.run(remote_config=json.dumps(cfg).encode(), extra_env={"CURL_RECORD_FILE": str(record)})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            text = record.read_text() if record.exists() else ""
+            self.assertIn("18000", text)
+            self.assertNotIn("17688", text)
+        finally:
+            h.cleanup()

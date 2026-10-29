@@ -170,8 +170,16 @@ EOF
 sleep 1
 ssh "${REMOTE_HOST}" <<'EOF'
 systemctl is-active onespace-cloud-agent.service || true
+GATEWAY_PORT=$(python3 -c 'import json
+try:
+    with open("/root/onespace-cloud-agent/config.json", "r", encoding="utf-8") as f:
+        port = json.load(f).get("ai_gateway", {}).get("port", 17688)
+    port = int(port)
+    print(port if port > 0 else 17688)
+except Exception:
+    print(17688)' 2>/dev/null || echo 17688)
 echo -n "AI 网关健康检查: "
-curl -s http://127.0.0.1:17688/health || echo "正在拉起中..."
+curl -s "http://127.0.0.1:${GATEWAY_PORT}/health" || echo "正在拉起中..."
 echo ""
 if ! gh auth status > /dev/null 2>&1; then
     echo ""
