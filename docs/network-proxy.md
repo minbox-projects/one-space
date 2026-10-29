@@ -18,7 +18,7 @@ The global proxy applies to application-owned HTTP(S) traffic:
 | AI Environments | Provider model-list requests |
 | AI Gateway | Ordinary forwarding and retries, CommandCode quota, OpenCode Go usage, template/model/catalog synchronization and Zen relay egress |
 | Protocol Router | HTTP upstream forwarding |
-| MCP | HTTP/SSE connection probes and npm package-version metadata |
+| MCP | npm package-version metadata |
 | HTTP tools | Short links and HTTP/cURL playground requests |
 | Webhook catcher | Replay and mirror forwarding |
 | Uptime monitor | HTTP probes and alert webhooks |
@@ -37,6 +37,7 @@ The proxy does not apply to:
 - Direct TLS certificate inspection that does not use an HTTP client.
 - Local listeners or application IPC.
 - External browsers, terminals, user-owned CLI processes or an already running Git process.
+- MCP HTTP/SSE connection probes, which external MCP CLI processes perform; only MCP npm package-version metadata requests are application-owned and covered above.
 - User Git configuration; OneSpace passes environment variables to the child it starts and does not rewrite user configuration.
 
 Loopback destinations `localhost`, `127.0.0.1` and `::1` always connect directly in every proxy state. There is no general private-network bypass.

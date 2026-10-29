@@ -501,3 +501,161 @@ fn proxy_switch_serial_guard_clears_stale_override() {
 
     assert!(!super::current_proxy_snapshot().is_enabled());
 }
+
+#[tokio::test]
+async fn ai_env_model_fetch_proxy_switch() {
+    let _g = crate::proxy::test_support::SERIAL_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let proxy_a = crate::proxy::test_support::HttpProxyRecorder::new(
+        r#"{"data":[{"id":"model-one"}]}"#,
+    )
+    .await;
+    let proxy_b = crate::proxy::test_support::HttpProxyRecorder::new(
+        r#"{"data":[{"id":"model-one"}]}"#,
+    )
+    .await;
+    let direct_upstream = crate::proxy::test_support::DirectUpstream::new("direct").await;
+
+    let mgr = ProxyManager::new();
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_a.url()))))
+            .unwrap(),
+    );
+
+    let provider = serde_json::json!({
+        "tool": "x",
+        "base_url": "http://ai-env-model.example.test/v1",
+        "api_key": "SAFE_FIXTURE_key",
+    });
+    let expected = "http://ai-env-model.example.test/v1/models".to_string();
+
+    let first = crate::ai_env::service_provider_fetch_models(provider.clone()).await;
+    assert!(first.is_ok());
+    assert_eq!(proxy_a.targets(), vec![expected.clone()]);
+    assert!(proxy_b.targets().is_empty());
+
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_b.url()))))
+            .unwrap(),
+    );
+    let second = crate::ai_env::service_provider_fetch_models(provider).await;
+    assert!(second.is_ok());
+    assert_eq!(proxy_b.targets(), vec![expected]);
+    assert_eq!(proxy_a.hits(), 1);
+    assert_eq!(direct_upstream.hits(), 0);
+}
+
+#[tokio::test]
+async fn http_client_proxy_switch_send_request() {
+    let _g = crate::proxy::test_support::SERIAL_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let proxy_a = crate::proxy::test_support::HttpProxyRecorder::new("ok").await;
+    let proxy_b = crate::proxy::test_support::HttpProxyRecorder::new("ok").await;
+
+    let mgr = ProxyManager::new();
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_a.url()))))
+            .unwrap(),
+    );
+
+    let request = || crate::http_client::HttpRequestPayload {
+        method: "GET".to_string(),
+        url: "http://http-tool.example.test/echo".to_string(),
+        headers: std::collections::HashMap::new(),
+        body: None,
+        timeout_ms: Some(5000),
+    };
+    let expected = "http://http-tool.example.test/echo".to_string();
+
+    let first = crate::http_client::send_http_request(request()).await;
+    assert!(first.is_ok());
+    assert_eq!(proxy_a.targets(), vec![expected.clone()]);
+    assert!(proxy_b.targets().is_empty());
+
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_b.url()))))
+            .unwrap(),
+    );
+    let second = crate::http_client::send_http_request(request()).await;
+    assert!(second.is_ok());
+    assert_eq!(proxy_b.targets(), vec![expected]);
+    assert_eq!(proxy_a.hits(), 1);
+}
+
+#[tokio::test]
+async fn short_link_proxy_switch_preserves_timeout_and_redirect_policy() {
+    let _g = crate::proxy::test_support::SERIAL_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let temp_home = std::env::temp_dir().join(format!(
+        "onespace-proxy-short-link-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_home).unwrap();
+    let home_guard = crate::config::test_home::TestHomeGuard::set(&temp_home);
+    let app_dir = crate::config::get_app_dir().unwrap();
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let config = format!(
+        r#"{{"storage_type":"local","local_storage_path":{}}}"#,
+        serde_json::to_string(&temp_home.join("data")).unwrap()
+    );
+    std::fs::write(app_dir.join("config.json"), config).unwrap();
+    crate::secrets::save_tinyurl_api_token("SAFE_FIXTURE_tinyurl_token".to_string()).unwrap();
+
+    let proxy_a = crate::proxy::test_support::HttpProxyRecorder::new(
+        r#"{"data":{"tiny_url":"https://tinyurl.com/proxy-switch-a"}}"#,
+    )
+    .await;
+    let proxy_b = crate::proxy::test_support::HttpProxyRecorder::new(
+        r#"{"data":{"tiny_url":"https://tinyurl.com/proxy-switch-b"}}"#,
+    )
+    .await;
+
+    let mgr = ProxyManager::new();
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_a.url()))))
+            .unwrap(),
+    );
+    let endpoint = "http://tinyurl-api.example.test/create";
+    let expected = endpoint.to_string();
+
+    let first =
+        crate::short_link::short_link_create_with_endpoint("https://example.com".into(), endpoint)
+            .await;
+    assert!(first.is_ok());
+    assert_eq!(proxy_a.targets(), vec![expected.clone()]);
+    assert!(proxy_b.targets().is_empty());
+
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_b.url()))))
+            .unwrap(),
+    );
+    let second =
+        crate::short_link::short_link_create_with_endpoint("https://example.com".into(), endpoint)
+            .await;
+    assert!(second.is_ok());
+    assert_eq!(proxy_b.targets(), vec![expected.clone()]);
+    assert_eq!(proxy_a.hits(), 1);
+
+    proxy_a.set_redirect(Some(format!("{}/redirected", proxy_b.url())));
+    mgr.publish(
+        mgr.prepare(Some(cfg(true, "http", "127.0.0.1", port_of(&proxy_a.url()))))
+            .unwrap(),
+    );
+    let redirected =
+        crate::short_link::short_link_create_with_endpoint("https://example.com".into(), endpoint)
+            .await;
+    assert!(redirected.is_err());
+    assert_eq!(proxy_a.targets(), vec![expected.clone(), expected]);
+    assert_eq!(proxy_a.hits(), 2);
+    assert_eq!(proxy_b.hits(), 1);
+
+    drop(home_guard);
+    let _ = std::fs::remove_dir_all(&temp_home);
+}

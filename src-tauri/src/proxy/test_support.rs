@@ -230,6 +230,10 @@ impl HttpProxyRecorder {
         self.config.lock().unwrap().delay_ms = ms;
     }
 
+    pub fn set_redirect(&self, location: Option<String>) {
+        self.config.lock().unwrap().redirect_to = location;
+    }
+
     pub fn url(&self) -> String {
         format!("http://{}", self.addr)
     }
