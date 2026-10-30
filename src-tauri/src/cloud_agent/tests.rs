@@ -1,5 +1,5 @@
 use super::commands::resolve_host;
-use super::gateway_sync::build_cloud_gateway_section;
+use super::gateway_sync::{build_cloud_gateway_section, build_remote_config_write};
 use super::terminal::{
     build_ssh_connect_command, clean_terminal_app_name, escape_applescript_string,
     normalize_terminal_app_key,
@@ -158,6 +158,57 @@ fn test_build_cloud_gateway_section() {
     assert_eq!(efforts[0].as_str().unwrap(), "low");
     assert_eq!(efforts[1].as_str().unwrap(), "medium");
     assert_eq!(efforts[2].as_str().unwrap(), "high");
+}
+
+#[test]
+fn test_remote_config_write_keeps_large_payload_out_of_ssh_arguments() {
+    let config_path = "/root/onespace-cloud-agent/config.json";
+    let huge_key = format!("sk-{}", "x".repeat(600_000));
+    let config = serde_json::json!({
+        "ai_gateway": {
+            "providers": {
+                "large-provider": {
+                    "api_keys": [huge_key]
+                }
+            }
+        }
+    });
+
+    let (cmd, payload) = build_remote_config_write(config_path, &config).unwrap();
+
+    assert_eq!(
+        cmd,
+        "cat > /root/onespace-cloud-agent/config.json.tmp && mv /root/onespace-cloud-agent/config.json.tmp /root/onespace-cloud-agent/config.json"
+    );
+    assert!(payload.len() > 600_000);
+    assert!(!cmd.contains(&"x".repeat(64)));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
+        config
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_run_with_stdin_streams_large_payload_to_child() {
+    let dir = std::env::temp_dir().join(format!(
+        "onespace-cloud-agent-stdin-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("payload.json");
+    let payload = format!("{{\"key\":\"{}\"}}", "x".repeat(600_000));
+
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(format!("cat > '{}'", target.display()));
+    let output = super::ssh::run_with_stdin(cmd, payload.as_bytes())
+        .await
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), payload);
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

@@ -1,4 +1,6 @@
+use std::process::{Output, Stdio};
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -7,6 +9,49 @@ use crate::cloud_agent::types::{
 };
 
 const SSH_TIMEOUT: Duration = Duration::from_secs(12);
+
+pub(super) async fn run_with_stdin(mut cmd: Command, stdin_data: &[u8]) -> Result<Output, String> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动命令失败: {}", e))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法获取命令标准输入".to_string())?;
+
+    let write_result: Result<(), String> = async {
+        stdin
+            .write_all(stdin_data)
+            .await
+            .map_err(|e| format!("写入标准输入失败: {}", e))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("关闭标准输入失败: {}", e))
+    }
+    .await;
+    drop(stdin);
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("等待命令结束失败: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("远程命令执行失败，退出码: {:?}", output.status.code())
+        } else {
+            stderr
+        });
+    }
+
+    write_result?;
+    Ok(output)
+}
 
 pub async fn run_ssh_command(host: &str, command: &str) -> Result<String, String> {
     let mut cmd = Command::new("ssh");
@@ -31,6 +76,33 @@ pub async fn run_ssh_command(host: &str, command: &str) -> Result<String, String
             stderr
         });
     }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub async fn run_ssh_command_with_stdin(
+    host: &str,
+    command: &str,
+    stdin_data: &[u8],
+) -> Result<String, String> {
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg(host)
+        .arg(command);
+
+    let output = match timeout(SSH_TIMEOUT, run_with_stdin(cmd, stdin_data)).await {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(format!(
+                "连接远程主机 {} 超时 ({}秒)",
+                host,
+                SSH_TIMEOUT.as_secs()
+            ))
+        }
+    };
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

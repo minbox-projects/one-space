@@ -1,5 +1,5 @@
 use crate::ai_gateway::GatewayConfig;
-use crate::cloud_agent::ssh::run_ssh_command;
+use crate::cloud_agent::ssh::{run_ssh_command, run_ssh_command_with_stdin};
 use crate::cloud_agent::types::GatewaySyncResult;
 
 pub fn build_cloud_gateway_section(
@@ -150,6 +150,19 @@ pub fn build_cloud_gateway_section(
     (gateway_val, synced_providers_count, synced_pools_count)
 }
 
+pub(crate) fn build_remote_config_write(
+    config_path: &str,
+    remote_full_cfg: &serde_json::Value,
+) -> Result<(String, Vec<u8>), String> {
+    let formatted_json = serde_json::to_string_pretty(remote_full_cfg)
+        .map_err(|e| format!("序列化云端配置失败: {}", e))?;
+    let write_cmd = format!(
+        "cat > {}.tmp && mv {}.tmp {}",
+        config_path, config_path, config_path
+    );
+    Ok((write_cmd, formatted_json.into_bytes()))
+}
+
 pub async fn sync_gateway_to_cloud(
     host: &str,
     remote_agent_dir: &str,
@@ -175,18 +188,10 @@ pub async fn sync_gateway_to_cloud(
     // 覆盖更新 ai_gateway 字段
     remote_full_cfg["ai_gateway"] = cloud_gateway_section;
 
-    // 格式化 JSON 并写入远端临时文件后原子替换
-    let formatted_json = serde_json::to_string_pretty(&remote_full_cfg)
-        .map_err(|e| format!("序列化云端配置失败: {}", e))?;
-
-    // 使用 base64 传输避免特殊字符/单双引号问题
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(formatted_json.as_bytes());
-    let write_cmd = format!(
-        "echo '{}' | base64 -d > {}.tmp && mv {}.tmp {}",
-        b64, config_path, config_path, config_path
-    );
-    run_ssh_command(host, &write_cmd).await?;
+    // 配置内容经 SSH 标准输入传输，避免超长参数触发远程 shell 的
+    // "Argument list too long"；远端命令本身保持恒定大小。
+    let (write_cmd, payload) = build_remote_config_write(&config_path, &remote_full_cfg)?;
+    run_ssh_command_with_stdin(host, &write_cmd, &payload).await?;
 
     // 远程触发平滑重启
     let restart_cmd = "systemctl restart onespace-cloud-agent.service || true";
