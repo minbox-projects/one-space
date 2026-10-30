@@ -23,6 +23,17 @@ from core.plan_opencode import OpenCodeClient, owned_session_ids, recommended_an
 TERMINAL_STATUSES = frozenset({"completed", "no_changes", "failed", "cancelled"})
 _SHA_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _REQUIRED_CAPABILITIES = ("/session", "/permission", "/question")
+_REQUIRED_NATIVE_ROLES = (
+    "backend",
+    "frontend",
+    "test",
+    "git-operator",
+    "file-explorer",
+    "documentation-maintainer",
+    "spec-review",
+    "standards-review",
+    "researcher",
+)
 
 
 class PlanExecutionError(Exception):
@@ -488,6 +499,37 @@ class PlanExecutor:
         proc = self._command("github", ["gh", "auth", "status"])
         if getattr(proc, "returncode", 1) != 0:
             raise PlanExecutionError("github", "GitHub authentication is unavailable")
+
+        proc = self._command("roles", ["opencode", "debug", "config"])
+        if getattr(proc, "returncode", 1) != 0:
+            raise PlanExecutionError(
+                "roles", "could not read the native role configuration"
+            )
+        try:
+            configuration = json.loads(getattr(proc, "stdout", "") or "")
+        except (TypeError, ValueError):
+            raise PlanExecutionError(
+                "roles", "the native role configuration is not valid JSON"
+            )
+        agents = configuration.get("agent") if isinstance(configuration, dict) else None
+        if not isinstance(agents, dict):
+            raise PlanExecutionError(
+                "roles", "the native role configuration has no agent mapping"
+            )
+        missing_roles = [role for role in _REQUIRED_NATIVE_ROLES if role not in agents]
+        if missing_roles:
+            raise PlanExecutionError(
+                "roles", "missing native roles: %s" % ", ".join(missing_roles)
+            )
+
+        plan_dir = context.get("plan_dir")
+        if not isinstance(plan_dir, str) or not os.path.isabs(plan_dir):
+            raise PlanExecutionError("plan", "missing absolute cloud plan directory")
+        proc = self._command(
+            "plan", ["ai-workflow", "plan", "validate", "--plan", plan_dir]
+        )
+        if getattr(proc, "returncode", 1) != 0:
+            raise PlanExecutionError("plan", "the frozen plan failed validation")
         return True
 
     # ------------------------------------------------------------------
@@ -544,6 +586,10 @@ class PlanExecutor:
             self._record_failure(job_id, "opencode", str(exc))
             raise PlanExecutionError("opencode", str(exc))
         state["server"] = server
+        process = server.get("process") if isinstance(server, dict) else None
+        server_pid = getattr(process, "pid", None)
+        if isinstance(server_pid, int) and not isinstance(server_pid, bool) and server_pid > 0:
+            self.manager.update(job_id, server_pid=server_pid)
 
         try:
             client = self._client_factory(server["url"], context["cloud_root"])
@@ -813,7 +859,11 @@ class PlanExecutor:
             pass
 
     def _is_idle(self, state, owned):
-        if state.get("idle_sessions") & set(owned):
+        """Only the job parent session determines coding idle, never children."""
+        parent = state.get("session_id")
+        if not parent:
+            return False
+        if parent in state.get("idle_sessions", ()):
             return True
         try:
             statuses = state["client"].session_status()
@@ -821,11 +871,8 @@ class PlanExecutor:
             return False
         if not isinstance(statuses, dict):
             return False
-        for session_id in owned:
-            value = statuses.get(session_id)
-            if isinstance(value, dict) and value.get("type") == "idle":
-                return True
-        return False
+        value = statuses.get(parent)
+        return isinstance(value, dict) and value.get("type") == "idle"
 
     def _set_waiting(self, state, context, unresolved):
         state["waiting"] = True
@@ -1085,11 +1132,21 @@ class PlanExecutor:
                 pass
 
 
-def execute_job(manager, job_id):
-    """Build the execution context and drive one job with the default executor."""
+def execute_job(manager, job_id, *, executor=None, poll_interval=2.0):
+    """Drive one job, continuing the same executor across waiting outcomes."""
     task = manager.inspect(job_id)
     if task is None:
         raise PlanExecutionError("not_found", "unknown plan job")
     context = build_execution_context(manager, task)
-    executor = PlanExecutor(manager)
-    return executor.execute(context)
+    if executor is None:
+        executor = PlanExecutor(manager)
+    while True:
+        result = executor.execute(context)
+        status = result.get("status") if isinstance(result, dict) else None
+        if status != "waiting_input":
+            return result
+        record = manager.inspect(job_id)
+        if record is not None:
+            if record.get("status") in TERMINAL_STATUSES:
+                return record
+        time.sleep(poll_interval)

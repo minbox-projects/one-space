@@ -267,7 +267,34 @@ class TestPlanTasks(unittest.TestCase):
         self.assertIsNotNone(mgr2.inspect(job_id))
         self.assertEqual(len(mgr2.list_tasks()), 1)
 
-    # cancel behavior
+    def test_cancel_terminates_owned_server_pid_only(self):
+        import subprocess
+        import os
+        import signal
+        env = _make_envelope(self.tmp)
+        r = self.mgr.submit(env, "req-1")
+        job_id = r["task"]["id"]
+        proc = subprocess.Popen(
+            ["sleep", "60"], start_new_session=True
+        )
+        try:
+            self.mgr.update(job_id, server_pid=proc.pid)
+            result = self.mgr.cancel(job_id)
+            self.assertTrue(result["ok"])
+            deadline = time.time() + 2
+            while time.time() < deadline and proc.poll() is None:
+                time.sleep(0.1)
+            self.assertIsNotNone(proc.poll())
+            # workspace remains
+            self.assertTrue(os.path.isdir(self.state_root))
+            # no extra kill-session? controller kill still expected; assert at least no crash
+        finally:
+            if proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
     def test_cancel_owned_only_and_repeat(self):
         env = _make_envelope(self.tmp)
         r = self.mgr.submit(env, "req-1")

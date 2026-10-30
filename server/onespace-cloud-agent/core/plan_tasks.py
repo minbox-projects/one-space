@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -828,6 +829,13 @@ class PlanTaskManager:
             session_name = record.get("controller_session")
             if session_name:
                 self._kill_session(session_name)
+            server_pid = record.get("server_pid")
+            if isinstance(server_pid, int) and not isinstance(server_pid, bool) and server_pid > 0:
+                try:
+                    os.killpg(os.getpgid(server_pid), signal.SIGTERM)
+                except OSError:
+                    pass
+                record["server_pid"] = None
             now = self._clock()
             record.update(
                 {

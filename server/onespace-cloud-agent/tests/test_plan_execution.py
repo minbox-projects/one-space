@@ -32,6 +32,7 @@ from core.plan_execution import (
     build_execution_context,
     build_execution_prompt,
     completion_evidence,
+    execute_job,
     map_command_paths,
     map_project_path,
     unmapped_paths,
@@ -41,6 +42,23 @@ from core.plan_execution import (
 BASE_SHA = "a" * 40
 FINAL_SHA = "b" * 40
 PR_URL = "https://github.com/owner/repo/pull/7"
+
+_REQUIRED_NATIVE_ROLES = (
+    "backend",
+    "frontend",
+    "test",
+    "git-operator",
+    "file-explorer",
+    "documentation-maintainer",
+    "spec-review",
+    "standards-review",
+    "researcher",
+)
+
+
+def _default_native_roles():
+    return {role: {} for role in _REQUIRED_NATIVE_ROLES}
+
 
 
 def _ctx(tmp):
@@ -215,6 +233,9 @@ class ScriptedRunner:
         opencode_rc=0,
         gh_auth_rc=0,
         skill_text="coding\n",
+        plan_validate_rc=0,
+        opencode_config_rc=0,
+        opencode_config_agents=None,
     ):
         self.base_commit = base_commit
         self.final_sha = final_sha
@@ -228,6 +249,12 @@ class ScriptedRunner:
         self.opencode_rc = opencode_rc
         self.gh_auth_rc = gh_auth_rc
         self.skill_text = skill_text
+        self.plan_validate_rc = plan_validate_rc
+        self.opencode_config_rc = opencode_config_rc
+        if opencode_config_agents is None:
+            self.opencode_config_agents = _default_native_roles()
+        else:
+            self.opencode_config_agents = opencode_config_agents
         self.calls = []
         self._list_index = 0
         self.create_attempts = 0
@@ -248,9 +275,18 @@ class ScriptedRunner:
         first = command[0] if command else ""
 
         if first == "ai-workflow":
+            if "plan" in command and "validate" in command:
+                stderr = "" if self.plan_validate_rc == 0 else "invalid plan"
+                return self._proc(self.plan_validate_rc, "plan valid\n", stderr)
             return self._proc(self.ai_workflow_rc, "ai-workflow 1.0.0\n", "" if not self.ai_workflow_rc else "missing")
         if first == "opencode":
             if "debug" in command:
+                if "config" in command:
+                    return self._proc(
+                        self.opencode_config_rc,
+                        json.dumps({"agent": self.opencode_config_agents}),
+                        "" if self.opencode_config_rc == 0 else "opencode failed",
+                    )
                 return self._proc(self.opencode_rc, self.skill_text, "" if not self.opencode_rc else "opencode failed")
             return self._proc(self.opencode_rc, "1.19.5\n", "" if not self.opencode_rc else "opencode failed")
         if first == "gh":
@@ -614,6 +650,79 @@ class TestPreflight(unittest.TestCase):
         self.assertTrue(any(call.startswith("opencode debug skill") for call in joined))
         self.assertTrue(any(call.startswith("gh auth status") for call in joined))
 
+    def test_plan_validation_runs_for_absolute_cloud_plan_dir(self):
+        ctx = _exec_ctx(self.tmp)
+        runner = ScriptedRunner()
+        executor, _manager, server, _factory_calls = self._executor(runner)
+        executor.preflight(ctx)
+        validates = [
+            call
+            for call in runner.calls
+            if call[:3] == ["ai-workflow", "plan", "validate"]
+        ]
+        self.assertEqual(len(validates), 1)
+        self.assertIn("--plan", validates[0])
+        plan_arg = validates[0][validates[0].index("--plan") + 1]
+        self.assertEqual(plan_arg, ctx["plan_dir"])
+        self.assertTrue(os.path.isabs(plan_arg))
+        self.assertEqual(server.contexts, [])
+
+    def test_plan_validation_failure_blocks_stage_plan_before_server(self):
+        ctx = _exec_ctx(self.tmp)
+        runner = ScriptedRunner(plan_validate_rc=1)
+        executor, _manager, server, factory_calls = self._executor(runner)
+        with self.assertRaises(PlanExecutionError) as raised:
+            executor.preflight(ctx)
+        self.assertEqual(raised.exception.stage, "plan")
+        self.assertEqual(server.contexts, [])
+        self.assertEqual(factory_calls, [])
+        self.assertEqual(
+            len(
+                [
+                    call
+                    for call in runner.calls
+                    if call[:3] == ["ai-workflow", "plan", "validate"]
+                ]
+            ),
+            1,
+        )
+
+    def test_native_role_probe_accepts_complete_config(self):
+        ctx = _exec_ctx(self.tmp)
+        runner = ScriptedRunner()
+        executor, _manager, server, _factory_calls = self._executor(runner)
+        executor.preflight(ctx)
+        probes = [
+            call for call in runner.calls if call == ["opencode", "debug", "config"]
+        ]
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(server.contexts, [])
+
+    def test_each_missing_native_role_blocks_stage_roles_before_server(self):
+        for role in _REQUIRED_NATIVE_ROLES:
+            with self.subTest(missing_role=role):
+                tmp = tempfile.mkdtemp(prefix="roles_")
+                ctx = _exec_ctx(tmp)
+                agents = _default_native_roles()
+                del agents[role]
+                runner = ScriptedRunner(opencode_config_agents=agents)
+                executor, _manager, server, factory_calls = self._executor(runner)
+                with self.assertRaises(PlanExecutionError) as raised:
+                    executor.preflight(ctx)
+                self.assertEqual(raised.exception.stage, "roles")
+                self.assertEqual(server.contexts, [])
+                self.assertEqual(factory_calls, [])
+
+    def test_failing_config_probe_blocks_stage_roles_before_server(self):
+        ctx = _exec_ctx(self.tmp)
+        runner = ScriptedRunner(opencode_config_rc=1)
+        executor, _manager, server, factory_calls = self._executor(runner)
+        with self.assertRaises(PlanExecutionError) as raised:
+            executor.preflight(ctx)
+        self.assertEqual(raised.exception.stage, "roles")
+        self.assertEqual(server.contexts, [])
+        self.assertEqual(factory_calls, [])
+
     def test_missing_contract_raises_distinct_stage(self):
         ctx = _exec_ctx(self.tmp, contract=False)
         runner = ScriptedRunner()
@@ -826,6 +935,34 @@ class TestManualQuestionTakeover(unittest.TestCase):
 
 
 class TestCompletionEvidenceGate(unittest.TestCase):
+    def test_child_idle_while_parent_busy_does_not_complete(self):
+        tmp = tempfile.mkdtemp(prefix="parent_busy_")
+        ctx = _exec_ctx(tmp)
+        _write_record(ctx, commit=ctx["final_sha"])
+        client = FakeClient(
+            "http://127.0.0.1:4096",
+            ctx["cloud_root"],
+            events_batches=[[_skill_event()]],
+        )
+        client.status = {
+            "ses_parent": {"type": "busy"},
+            "ses_child": {"type": "idle"},
+        }
+        manager = FakeManager(base_commit=ctx["base_commit"])
+        server = FakeServerStarter()
+        runner = ScriptedRunner(
+            base_commit=ctx["base_commit"], final_sha=ctx["final_sha"], changed=True
+        )
+        executor, _factory_calls = _make_executor(manager, client, runner, server)
+        executor.preflight(ctx)
+
+        result = executor.execute(ctx)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(_git_calls(runner, "push"), [])
+        self.assertEqual(_gh_calls(runner, "create"), [])
+        self.assertEqual(server.stops, 1)
+
     def test_idle_without_completion_evidence_never_publishes(self):
         tmp = tempfile.mkdtemp(prefix="idle_")
         ctx = _exec_ctx(tmp)
@@ -1058,6 +1195,72 @@ class TestCancellation(unittest.TestCase):
         self.assertEqual(len(factory_calls), 1)
         self.assertEqual(_git_calls(runner, "push"), [])
         self.assertEqual(_gh_calls(runner, "create"), [])
+
+
+class TestDurableWaitingContinuation(unittest.TestCase):
+    def _manager(self, statuses):
+        class M:
+            def __init__(self):
+                self._statuses = list(statuses)
+                self._index = 0
+                self.preparations = 0
+                self.record = {"id": "job-1", "status": "running", "base_commit": BASE_SHA}
+
+            def inspect(self, job_id):
+                idx = self._index
+                self._index += 1
+                if self._statuses:
+                    status = self._statuses[min(idx, len(self._statuses) - 1)]
+                    self.record["status"] = status
+                return dict(self.record)
+
+            def update(self, job_id, **fields):
+                self.record.update(fields)
+                return dict(self.record)
+
+        return M()
+
+    def test_waiting_then_terminal_calls_execute_twice_same_executor(self):
+        manager = self._manager(["running", "running"])
+        ctx = {"job_id": "job-1", "plan_dir": "/tmp/p", "cloud_root": "/tmp/c"}
+        # build_execution_context not needed; fake executor ignores context
+        waiting = {"id": "job-1", "status": "waiting_input", "session_id": "ses_parent", "session_url": "http://x"}
+        terminal = {"id": "job-1", "status": "completed", "final_commit": FINAL_SHA}
+
+        class Ex:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, context):
+                self.calls.append(context)
+                return waiting if len(self.calls) == 1 else terminal
+
+        executor = Ex()
+        result = execute_job(
+            manager, "job-1", executor=executor, poll_interval=0.01
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(executor.calls), 2)
+        self.assertEqual(executor.calls[0], executor.calls[1])
+        self.assertEqual(manager.preparations, 0)
+
+    def test_cancelled_between_iterations_returns_without_second_execute(self):
+        manager = self._manager(["running", "cancelled"])
+        ctx = {"job_id": "job-1"}
+        waiting = {"id": "job-1", "status": "waiting_input", "session_id": "ses_parent", "session_url": "http://x"}
+
+        class Ex:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, context):
+                self.calls.append(context)
+                return waiting
+
+        executor = Ex()
+        result = execute_job(manager, "job-1", executor=executor, poll_interval=0.01)
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(len(executor.calls), 1)
 
 
 if __name__ == "__main__":
