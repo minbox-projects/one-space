@@ -171,13 +171,19 @@ pub async fn cloud_agent_plan_submit(
         input.request_id.trim().to_string()
     };
 
-    let request = plan_transfer::build_plan_submit_request(
+    let mut request = plan_transfer::build_plan_submit_request(
         &input.workspace_id,
         &workspace_name,
         &root_path,
         Some(repository),
         payload,
     );
+    if let Some(envelope) = request.as_object_mut() {
+        envelope.insert(
+            "request_id".to_string(),
+            serde_json::Value::String(request_id.clone()),
+        );
+    }
     let stdin_data = serde_json::to_vec(&request)
         .map_err(|e| format!("序列化计划提交请求失败: {}", e))?;
 
