@@ -33,7 +33,7 @@ describe("CloudAgent Component", () => {
           terminal_app: "auto",
         };
       }
-      if (command === "ssh_hosts_list") {
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
         return [{ name: "dmit-server", host_name: "1.2.3.4" }];
       }
       if (command === "cloud_agent_get_status") {
@@ -267,7 +267,7 @@ describe("CloudAgent Component", () => {
           remote_agent_dir: "/root/onespace-cloud-agent",
         };
       }
-      if (command === "ssh_hosts_list") {
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
         return [{ name: "dmit-server", host_name: "1.2.3.4" }];
       }
       if (command === "cloud_agent_get_status") {
@@ -323,5 +323,176 @@ describe("CloudAgent Component", () => {
       );
     });
     dispatchSpy.mockRestore();
+  });
+
+  it("renders empty state and guides to settings when no host is configured or available", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "cloud_agent_get_settings") {
+        return {
+          default_host: "",
+          remote_workspace_root: "/root/cloud-agent-workspaces",
+          remote_agent_dir: "/root/onespace-cloud-agent",
+        };
+      }
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
+        return [];
+      }
+      return null;
+    });
+
+    await act(async () => {
+      renderWithProviders(<CloudAgent isVisible={true} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("尚未选择或配置云端主机")).toBeInTheDocument();
+      expect(screen.getAllByText("未配置云端主机").length).toBeGreaterThan(0);
+      expect(screen.getByText("前往设置")).toBeInTheDocument();
+    });
+  });
+
+  it("auto-selects first available ssh host when default_host is not configured", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") {
+        return {
+          default_host: "",
+          remote_workspace_root: "/root/cloud-agent-workspaces",
+          remote_agent_dir: "/root/onespace-cloud-agent",
+        };
+      }
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
+        return [{ name: "my-aliyun-vps", host_name: "47.1.2.3" }];
+      }
+      if (command === "cloud_agent_get_status") {
+        return {
+          service_active: true,
+          disk: { total_gb: 40, used_gb: 10, free_gb: 30, use_percent: 25 },
+          gateway: { status: "healthy", port: 17688 },
+          timestamp: 1700000000,
+        };
+      }
+      if (command === "cloud_agent_list_sessions") {
+        if (args?.host === "my-aliyun-vps") {
+          return [
+            {
+              session_name: "aliyun-ses-1",
+              repo_name: "my-aliyun-repo",
+              branch: "feat-cloud",
+              working_dir: "/root/workspaces/feat",
+              created_at: 1700000000,
+              windows_count: 1,
+              pane_pid: 9999,
+              is_active: true,
+            },
+          ];
+        }
+        return [];
+      }
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      return null;
+    });
+
+    await act(async () => {
+      renderWithProviders(<CloudAgent isVisible={true} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("my-aliyun-repo")).toBeInTheDocument();
+      expect(screen.getByText("aliyun-ses-1")).toBeInTheDocument();
+      expect(screen.getByText("守护进程运行中")).toBeInTheDocument();
+    });
+  });
+
+  it("clears old data immediately and loads new host data on settings updated event", async () => {
+    let currentConfiguredDefaultHost = "host-alpha";
+
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") {
+        return {
+          default_host: currentConfiguredDefaultHost,
+          remote_workspace_root: "/root/cloud-agent-workspaces",
+          remote_agent_dir: "/root/onespace-cloud-agent",
+        };
+      }
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
+        return [
+          { name: "host-alpha", host_name: "1.1.1.1" },
+          { name: "host-beta", host_name: "2.2.2.2" },
+        ];
+      }
+      if (command === "cloud_agent_get_status") {
+        return { service_active: true };
+      }
+      if (command === "cloud_agent_list_sessions") {
+        if (args?.host === "host-alpha") {
+          return [
+            {
+              session_name: "ses-alpha-only",
+              repo_name: "repo-alpha",
+              branch: "main",
+              working_dir: "/root/alpha",
+              created_at: 1700000000,
+              windows_count: 1,
+              pane_pid: 111,
+              is_active: true,
+            },
+          ];
+        }
+        if (args?.host === "host-beta") {
+          return [
+            {
+              session_name: "ses-beta-only",
+              repo_name: "repo-beta",
+              branch: "dev",
+              working_dir: "/root/beta",
+              created_at: 1700000000,
+              windows_count: 1,
+              pane_pid: 222,
+              is_active: true,
+            },
+          ];
+        }
+        return [];
+      }
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      return null;
+    });
+
+    await act(async () => {
+      renderWithProviders(<CloudAgent isVisible={true} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("repo-alpha")).toBeInTheDocument();
+      expect(screen.getByText("ses-alpha-only")).toBeInTheDocument();
+    });
+
+    // 模拟设置面板保存了 host-beta 并广播全局事件
+    currentConfiguredDefaultHost = "host-beta";
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("onespace:cloud-agent-settings-updated", {
+          detail: {
+            defaultHost: "host-beta",
+            remoteWorkspaceRoot: "/root/cloud-agent-workspaces",
+            remoteAgentDir: "/root/onespace-cloud-agent",
+            opencodeYoloMode: true,
+            opencodeExtraArgs: "",
+            autoRefreshIntervalSeconds: 10,
+            diskAlertThresholdPercent: 80,
+            terminalApp: "auto",
+          },
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("repo-alpha")).toBeNull();
+      expect(screen.queryByText("ses-alpha-only")).toBeNull();
+      expect(screen.getByText("repo-beta")).toBeInTheDocument();
+      expect(screen.getByText("ses-beta-only")).toBeInTheDocument();
+    });
   });
 });

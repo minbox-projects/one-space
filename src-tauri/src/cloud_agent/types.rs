@@ -21,7 +21,7 @@ pub struct CloudAgentSettings {
 }
 
 fn default_host() -> String {
-    "dmit-server".to_string()
+    String::new()
 }
 
 fn default_workspace_root() -> String {

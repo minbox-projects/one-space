@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 export const CLOUD_AGENT_SESSIONS_COUNT_EVENT =
   "onespace:cloud-agent-sessions-count";
 
+export const CLOUD_AGENT_SETTINGS_UPDATED_EVENT =
+  "onespace:cloud-agent-settings-updated";
+
 export interface CloudAgentSettings {
   defaultHost: string;
   remoteWorkspaceRoot: string;
@@ -15,7 +18,7 @@ export interface CloudAgentSettings {
 }
 
 export const DEFAULT_CLOUD_AGENT_SETTINGS: CloudAgentSettings = {
-  defaultHost: "dmit-server",
+  defaultHost: "",
   remoteWorkspaceRoot: "/root/cloud-agent-workspaces",
   remoteAgentDir: "/root/onespace-cloud-agent",
   opencodeYoloMode: true,
@@ -156,6 +159,11 @@ export async function cloudAgentSaveSettings(
       terminal_app: settings.terminalApp,
     },
   });
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent(CLOUD_AGENT_SETTINGS_UPDATED_EVENT, { detail: settings })
+    );
+  }
 }
 
 export async function cloudAgentGetStatus(

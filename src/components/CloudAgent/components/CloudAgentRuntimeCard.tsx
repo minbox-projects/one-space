@@ -58,10 +58,11 @@ export function CloudAgentRuntimeCard({
   const gatewayHealthy =
     status?.gateway?.status === "healthy" || status?.gateway?.status === "ok";
   const gatewayPort = status?.gateway?.port || 17688;
-  const gatewayHost = selectedHost || settings.defaultHost || "127.0.0.1";
-  const gatewayUrl = `http://${gatewayHost}:${gatewayPort}/v1`;
+  const gatewayHost = selectedHost || settings.defaultHost || "";
+  const gatewayUrl = gatewayHost ? `http://${gatewayHost}:${gatewayPort}/v1` : "";
 
   const handleCopyGatewayUrl = () => {
+    if (!gatewayUrl) return;
     navigator.clipboard.writeText(gatewayUrl);
     setGatewayAddressCopied(true);
     setTimeout(() => setGatewayAddressCopied(false), 2000);
@@ -109,7 +110,9 @@ export function CloudAgentRuntimeCard({
           {/* 守护进程运行状态指示灯与状态文字 */}
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="relative flex h-2.5 w-2.5">
-              {status?.service_active ? (
+              {!selectedHost ? (
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-slate-400" />
+              ) : status?.service_active ? (
                 <>
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
                   <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
@@ -120,13 +123,17 @@ export function CloudAgentRuntimeCard({
             </span>
             <span
               className={`text-xs font-semibold leading-none ${
-                status?.service_active
+                !selectedHost
+                  ? "text-muted-foreground"
+                  : status?.service_active
                   ? "text-emerald-600 dark:text-emerald-400"
                   : "text-rose-500"
               }`}
               data-testid="cloud-agent-daemon-state"
             >
-              {status?.service_active
+              {!selectedHost
+                ? t("daemonNoHost", "未配置云端主机")
+                : status?.service_active
                 ? t("daemonActive", "守护进程运行中")
                 : t("daemonInactive", "守护进程离线")}
             </span>
@@ -142,30 +149,38 @@ export function CloudAgentRuntimeCard({
             </span>
             <span
               className={`text-[11px] font-medium ${
-                gatewayHealthy
+                !selectedHost
+                  ? "text-muted-foreground"
+                  : gatewayHealthy
                   ? "text-emerald-600 dark:text-emerald-400"
                   : "text-amber-500"
               }`}
             >
-              {gatewayHealthy ? t("healthy", "健康运行中") : t("offlineOrStarting", "离线或启动中")}
+              {!selectedHost
+                ? t("daemonNoHost", "未配置云端主机")
+                : gatewayHealthy
+                ? t("healthy", "健康运行中")
+                : t("offlineOrStarting", "离线或启动中")}
             </span>
-            <button
-              type="button"
-              onClick={handleCopyGatewayUrl}
-              title={
-                gatewayAddressCopied
-                  ? t("copied", "已复制")
-                  : t("copyGatewayAddress", "复制云端网关地址")
-              }
-              aria-label={t("copyGatewayAddress", "复制云端网关地址")}
-              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
-            >
-              {gatewayAddressCopied ? (
-                <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-              ) : (
-                <Copy className="h-3 w-3" />
-              )}
-            </button>
+            {gatewayUrl && (
+              <button
+                type="button"
+                onClick={handleCopyGatewayUrl}
+                title={
+                  gatewayAddressCopied
+                    ? t("copied", "已复制")
+                    : t("copyGatewayAddress", "复制云端网关地址")
+                }
+                aria-label={t("copyGatewayAddress", "复制云端网关地址")}
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                {gatewayAddressCopied ? (
+                  <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+              </button>
+            )}
           </div>
 
           {/* 云端磁盘空间胶囊 */}

@@ -1,3 +1,4 @@
+use super::commands::resolve_host;
 use super::gateway_sync::build_cloud_gateway_section;
 use super::terminal::{
     build_ssh_connect_command, clean_terminal_app_name, escape_applescript_string,
@@ -11,7 +12,7 @@ use crate::ai_gateway::{
 #[test]
 fn test_cloud_agent_settings_defaults() {
     let s = CloudAgentSettings::default();
-    assert_eq!(s.default_host, "dmit-server");
+    assert_eq!(s.default_host, "");
     assert_eq!(s.remote_workspace_root, "/root/cloud-agent-workspaces");
     assert_eq!(s.remote_agent_dir, "/root/onespace-cloud-agent");
     assert!(s.opencode_yolo_mode);
@@ -19,6 +20,24 @@ fn test_cloud_agent_settings_defaults() {
     assert_eq!(s.auto_refresh_interval_seconds, 10);
     assert_eq!(s.disk_alert_threshold_percent, 80.0);
     assert_eq!(s.terminal_app, "auto");
+}
+
+#[test]
+fn test_resolve_host() {
+    let empty_settings = CloudAgentSettings::default();
+    assert!(resolve_host(None, &empty_settings).is_err());
+    assert!(resolve_host(Some("  ".to_string()), &empty_settings).is_err());
+
+    let mut configured_settings = CloudAgentSettings::default();
+    configured_settings.default_host = "server-a".to_string();
+    assert_eq!(
+        resolve_host(None, &configured_settings).unwrap(),
+        "server-a"
+    );
+    assert_eq!(
+        resolve_host(Some("server-b".to_string()), &configured_settings).unwrap(),
+        "server-b"
+    );
 }
 
 #[test]

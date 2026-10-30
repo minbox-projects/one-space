@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { sshHostsList } from "@/lib/sshTunnels";
 import {
   cloudAgentGetSettings,
   cloudAgentGetStatus,
@@ -10,6 +11,7 @@ import {
   cloudAgentLaunchTerminal,
   cloudAgentSyncGateway,
   CLOUD_AGENT_SESSIONS_COUNT_EVENT,
+  CLOUD_AGENT_SETTINGS_UPDATED_EVENT,
   DEFAULT_CLOUD_AGENT_SETTINGS,
   type CloudAgentSettings,
   type CloudAgentStatus,
@@ -28,34 +30,109 @@ export function useCloudAgent(
   const [settings, setSettings] = useState<CloudAgentSettings>(
     DEFAULT_CLOUD_AGENT_SETTINGS
   );
-  const [selectedHost, setSelectedHost] = useState<string>("dmit-server");
+  const [selectedHost, setSelectedHost] = useState<string>("");
   const [status, setStatus] = useState<CloudAgentStatus | null>(null);
   const [sessions, setSessions] = useState<CloudSession[]>([]);
   const [worktrees, setWorktrees] = useState<CloudWorktree[]>([]);
   const [tasks, setTasks] = useState<CloudAgentTask[]>([]);
   const [loading, setLoading] = useState(false);
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
+  const [hasInitialized, setHasInitialized] = useState(false);
 
-  // 加载初始设置
-  useEffect(() => {
-    cloudAgentGetSettings()
-      .then((s) => {
-        setSettings(s);
-        if (s.defaultHost) {
-          setSelectedHost(s.defaultHost);
-        }
-      })
-      .catch(() => {});
+  const requestIdRef = useRef<number>(0);
+  const currentHostRef = useRef<string>("");
+
+  // 手动切换选中的主机并立即清空当前显示的状态以防数据残留
+  const changeSelectedHost = useCallback((newHost: string) => {
+    setSelectedHost(newHost);
+    setStatus(null);
+    setSessions([]);
+    setWorktrees([]);
+    setTasks([]);
   }, []);
 
-  // 刷新当前主机数据
+  // 加载初始设置与 SSH 主机列表，推导首选主机
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.allSettled([
+      cloudAgentGetSettings(),
+      sshHostsList<{ name: string; host_name: string }[]>(),
+    ]).then(([settingsRes, hostsRes]) => {
+      if (cancelled) return;
+
+      const loadedSettings =
+        settingsRes.status === "fulfilled"
+          ? settingsRes.value
+          : DEFAULT_CLOUD_AGENT_SETTINGS;
+      const hosts =
+        hostsRes.status === "fulfilled" && Array.isArray(hostsRes.value)
+          ? hostsRes.value
+          : [];
+
+      setSettings(loadedSettings);
+
+      // 计算首选主机：若 settings.defaultHost 非空则优先使用；
+      // 若 defaultHost 为空但存在可用 SSH 主机，自动选择第 1 个；否则置空
+      let initialHost = "";
+      if (loadedSettings.defaultHost && loadedSettings.defaultHost.trim()) {
+        initialHost = loadedSettings.defaultHost.trim();
+      } else if (hosts.length > 0 && hosts[0].name) {
+        initialHost = hosts[0].name;
+      }
+
+      setSelectedHost(initialHost);
+      setHasInitialized(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 监听全局设置保存事件，动态感知并在保存了默认主机后实时联动更新
+  useEffect(() => {
+    const handleSettingsUpdated = (e: Event) => {
+      const customEvent = e as CustomEvent<CloudAgentSettings>;
+      if (customEvent.detail) {
+        const nextSettings = customEvent.detail;
+        setSettings(nextSettings);
+        if (nextSettings.defaultHost && nextSettings.defaultHost.trim()) {
+          changeSelectedHost(nextSettings.defaultHost.trim());
+        }
+      }
+    };
+
+    window.addEventListener(
+      CLOUD_AGENT_SETTINGS_UPDATED_EVENT,
+      handleSettingsUpdated
+    );
+    return () => {
+      window.removeEventListener(
+        CLOUD_AGENT_SETTINGS_UPDATED_EVENT,
+        handleSettingsUpdated
+      );
+    };
+  }, [changeSelectedHost]);
+
+  // 刷新当前主机数据（包含防竞态与异常时清空数据逻辑）
   const refreshAll = useCallback(
     async (hostOverride?: string) => {
-      const host = hostOverride || selectedHost;
-      if (!host) return;
+      const host = hostOverride !== undefined ? hostOverride : selectedHost;
+      if (!host || !host.trim()) {
+        setStatus(null);
+        setSessions([]);
+        setWorktrees([]);
+        setTasks([]);
+        setLoading(false);
+        return;
+      }
+
+      const reqId = ++requestIdRef.current;
+      currentHostRef.current = host;
+      setLoading(true);
 
       try {
-        setLoading(true);
         const [st, ss, wt, tk] = await Promise.allSettled([
           cloudAgentGetStatus(host),
           cloudAgentListSessions(host),
@@ -63,21 +140,48 @@ export function useCloudAgent(
           cloudAgentListTasks(host),
         ]);
 
-        if (st.status === "fulfilled") setStatus(st.value);
-        if (ss.status === "fulfilled") setSessions(ss.value);
-        if (wt.status === "fulfilled") setWorktrees(wt.value);
-        if (tk.status === "fulfilled") setTasks(tk.value);
+        // 如果在此期间主机已改变或有新的请求发起，丢弃旧数据
+        if (reqId !== requestIdRef.current || currentHostRef.current !== host) {
+          return;
+        }
+
+        if (st.status === "fulfilled") {
+          setStatus(st.value);
+        } else {
+          setStatus(null);
+        }
+
+        if (ss.status === "fulfilled") {
+          setSessions(ss.value);
+        } else {
+          setSessions([]);
+        }
+
+        if (wt.status === "fulfilled") {
+          setWorktrees(wt.value);
+        } else {
+          setWorktrees([]);
+        }
+
+        if (tk.status === "fulfilled") {
+          setTasks(tk.value);
+        } else {
+          setTasks([]);
+        }
       } finally {
-        setLoading(false);
+        if (reqId === requestIdRef.current) {
+          setLoading(false);
+        }
       }
     },
     [selectedHost]
   );
 
-  // 主机变更时刷新
+  // 主机变更时刷新（初始化完成后才触发）
   useEffect(() => {
+    if (!hasInitialized) return;
     refreshAll();
-  }, [refreshAll]);
+  }, [selectedHost, hasInitialized, refreshAll]);
 
   // 会话列表更新时，通知全局同步活跃会话总数
   useEffect(() => {
@@ -92,6 +196,8 @@ export function useCloudAgent(
   // 定时自动轮询
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   useEffect(() => {
+    if (!selectedHost || !selectedHost.trim()) return;
+
     const sec = Math.max(3, settings.autoRefreshIntervalSeconds || 10);
     pollIntervalRef.current = setInterval(() => {
       refreshAll();
@@ -100,7 +206,7 @@ export function useCloudAgent(
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
-  }, [refreshAll, settings.autoRefreshIntervalSeconds]);
+  }, [selectedHost, refreshAll, settings.autoRefreshIntervalSeconds]);
 
   // 恢复会话 / 调起终端
   const launchTerminal = useCallback(

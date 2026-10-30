@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { Terminal, GitBranch, GitPullRequest, Network } from "lucide-react";
+import { Terminal, GitBranch, GitPullRequest, Network, Server, Settings } from "lucide-react";
 import { useToast } from "../ToastProvider";
 import { CloudAgentHeader } from "./components/CloudAgentHeader";
 import { CloudAgentRuntimeCard } from "./components/CloudAgentRuntimeCard";
@@ -9,6 +9,7 @@ import { WorktreesHistoryTab } from "./components/WorktreesHistoryTab";
 import { PrPipelineTab } from "./components/PrPipelineTab";
 import { GatewayPanel } from "./components/GatewayPanel";
 import { NewSessionDialog } from "./components/NewSessionDialog";
+import { CloudEmptyState } from "./components/CloudEmptyState";
 import { useCloudAgent, type CloudAgentTab } from "./hooks/useCloudAgent";
 
 export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
@@ -165,72 +166,97 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
           })}
         </div>
 
-        {/* Tab 1: 活跃会话 */}
-        {activeTab === "sessions" && (
-          <div
-            role="tabpanel"
-            aria-label={t("activeSessionsTab", "活跃会话")}
-          >
-            <ActiveSessionsTab
-              t={t}
-              language={i18n.language}
-              sessions={sessions}
-              loading={loading}
-              onLaunchTerminal={(sName) => launchTerminal(sName)}
-              onKillSession={(sName) => killSession(sName)}
-              onOpenNewTaskModal={() => setShowNewTaskModal(true)}
+        {/* 标签页内容呈现 */}
+        {!selectedHost ? (
+          <div className="py-6">
+            <CloudEmptyState
+              icon={Server}
+              title={t("noHostSelectedTitle", "尚未选择或配置云端主机")}
+              description={t(
+                "noHostSelectedDesc",
+                "请在上方右上角选择目标云端 SSH 主机，或进入设置面板配置默认主机。"
+              )}
+              action={{
+                label: t("goToSettings", "前往设置"),
+                icon: Settings,
+                onClick: () => {
+                  const win = window as any;
+                  win.setSettingsTab?.("cloud-agent");
+                  win.setSettingsOpen?.(true);
+                },
+              }}
             />
           </div>
-        )}
+        ) : (
+          <>
+            {/* Tab 1: 活跃会话 */}
+            {activeTab === "sessions" && (
+              <div
+                role="tabpanel"
+                aria-label={t("activeSessionsTab", "活跃会话")}
+              >
+                <ActiveSessionsTab
+                  t={t}
+                  language={i18n.language}
+                  sessions={sessions}
+                  loading={loading}
+                  onLaunchTerminal={(sName) => launchTerminal(sName)}
+                  onKillSession={(sName) => killSession(sName)}
+                  onOpenNewTaskModal={() => setShowNewTaskModal(true)}
+                />
+              </div>
+            )}
 
-        {/* Tab 2: 历史工作区 */}
-        {activeTab === "worktrees" && (
-          <div
-            role="tabpanel"
-            aria-label={t("worktreesHistoryTab", "历史工作区")}
-          >
-            <WorktreesHistoryTab
-              t={t}
-              language={i18n.language}
-              worktrees={worktrees}
-              loading={loading}
-              onLaunchTerminal={(target, branch) =>
-                launchTerminal(target, branch)
-              }
-              onOpenNewTaskModal={() => setShowNewTaskModal(true)}
-            />
-          </div>
-        )}
+            {/* Tab 2: 历史工作区 */}
+            {activeTab === "worktrees" && (
+              <div
+                role="tabpanel"
+                aria-label={t("worktreesHistoryTab", "历史工作区")}
+              >
+                <WorktreesHistoryTab
+                  t={t}
+                  language={i18n.language}
+                  worktrees={worktrees}
+                  loading={loading}
+                  onLaunchTerminal={(target, branch) =>
+                    launchTerminal(target, branch)
+                  }
+                  onOpenNewTaskModal={() => setShowNewTaskModal(true)}
+                />
+              </div>
+            )}
 
-        {/* Tab 3: Issues 流水线 */}
-        {activeTab === "pipeline" && (
-          <div
-            role="tabpanel"
-            aria-label={t("prPipelineTab", "Issues 流水线")}
-          >
-            <PrPipelineTab
-              t={t}
-              language={i18n.language}
-              tasks={tasks}
-              loading={loading}
-              onRefresh={() => refreshAll()}
-            />
-          </div>
-        )}
+            {/* Tab 3: Issues 流水线 */}
+            {activeTab === "pipeline" && (
+              <div
+                role="tabpanel"
+                aria-label={t("prPipelineTab", "Issues 流水线")}
+              >
+                <PrPipelineTab
+                  t={t}
+                  language={i18n.language}
+                  tasks={tasks}
+                  loading={loading}
+                  onRefresh={() => refreshAll()}
+                />
+              </div>
+            )}
 
-        {/* Tab 4: 网关同步 */}
-        {activeTab === "gateway" && (
-          <div
-            role="tabpanel"
-            aria-label={t("cloudGatewayTab", "网关同步")}
-          >
-            <GatewayPanel
-              t={t}
-              status={status}
-              loading={loading}
-              onSyncGateway={() => syncGateway()}
-            />
-          </div>
+            {/* Tab 4: 网关同步 */}
+            {activeTab === "gateway" && (
+              <div
+                role="tabpanel"
+                aria-label={t("cloudGatewayTab", "网关同步")}
+              >
+                <GatewayPanel
+                  t={t}
+                  status={status}
+                  loading={loading}
+                  onSyncGateway={() => syncGateway()}
+                />
+              </div>
+            )}
+          </>
         )}
       </div>
 

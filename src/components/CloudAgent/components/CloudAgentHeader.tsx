@@ -56,10 +56,13 @@ export function CloudAgentHeader({
               size="sm"
               value={selectedHost}
               onChange={setSelectedHost}
+              placeholder={t("cloudAgentSelectHostPlaceholder", "请选择主机")}
               options={
                 hosts.length > 0
                   ? hosts.map((h) => ({ value: h.id, label: h.label }))
-                  : [{ value: selectedHost, label: selectedHost }]
+                  : selectedHost
+                  ? [{ value: selectedHost, label: selectedHost }]
+                  : []
               }
             />
           </div>
