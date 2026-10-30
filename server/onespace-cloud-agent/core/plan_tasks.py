@@ -642,7 +642,22 @@ class PlanTaskManager:
             )
             record["duration_seconds"] = self._duration(record, now)
             self._write_record(record)
-            return _projection(record)
+            prepared_projection = _projection(record)
+
+        try:
+            from core import plan_execution
+        except ImportError:
+            return prepared_projection
+        execute_job = getattr(plan_execution, "execute_job", None)
+        if execute_job is None:
+            return prepared_projection
+        try:
+            result = execute_job(self, job_id)
+        except Exception as exc:  # noqa: BLE001 - execution failure is projected
+            stage = getattr(exc, "stage", None) or "execution"
+            message = getattr(exc, "message", None) or str(exc) or "execution failed"
+            return self._fail(job_id, stage, message)
+        return result if result is not None else self.inspect(job_id)
 
     def _copy_plan_upload(self, job_id, plan_id, remote_root):
         source = os.path.join(self.state_root, job_id, "upload")
@@ -688,6 +703,59 @@ class PlanTaskManager:
     # ------------------------------------------------------------------
     # Projections
     # ------------------------------------------------------------------
+    def update(self, job_id, **fields):
+        """Atomically merge lifecycle fields and return the projection."""
+        if not self._safe_job_id(job_id):
+            return None
+        with self._locked():
+            record = self._read_record(job_id)
+            if record is None:
+                return None
+            record.update(fields)
+            now = self._clock()
+            record["updated_at"] = now
+            record["duration_seconds"] = self._duration(record, now)
+            self._write_record(record)
+            return _projection(record)
+
+    def get_request(self, job_id):
+        """Return the stored submit request metadata and envelope."""
+        if not self._safe_job_id(job_id):
+            return {}
+        path = self._job_path(job_id, "request.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def record_decision(self, job_id, question, answer, basis):
+        """Append one automatic decision and persist a concise summary."""
+        if not self._safe_job_id(job_id):
+            return False
+        with self._locked():
+            record = self._read_record(job_id)
+            if record is None:
+                return False
+            decisions = record.get("decisions")
+            if not isinstance(decisions, list):
+                decisions = []
+            now = self._clock()
+            entry = {
+                "question": question,
+                "answer": answer,
+                "basis": basis,
+                "recorded_at": now,
+            }
+            decisions.append(entry)
+            record["decisions"] = decisions
+            record["decision"] = entry
+            record["updated_at"] = now
+            record["duration_seconds"] = self._duration(record, now)
+            self._write_record(record)
+            return True
+
     def inspect(self, job_id):
         if not self._safe_job_id(job_id):
             return None

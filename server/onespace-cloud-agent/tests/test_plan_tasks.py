@@ -237,12 +237,13 @@ class TestPlanTasks(unittest.TestCase):
     # immutable admission bytes after run_job
     def test_immutable_after_run_job(self):
         env = _make_envelope(self.tmp)
+        # A missing local remote fails without any network access, so run_job
+        # stops before delegation while the immutable upload must remain intact.
+        env["repository"]["remote_url"] = os.path.join(self.tmp, "missing.git")
         r = self.mgr.submit(env, "req-1")
         job_id = r["task"]["id"]
         upload_file = Path(self.state_root) / job_id / "upload" / "a.txt"
         before = upload_file.read_bytes()
-        # run_job may need a real clone; use local? remote_url example.com won't clone.
-        # Call run_job; if it fails due to clone, still upload unchanged.
         try:
             self.mgr.run_job(job_id)
         except Exception:
@@ -330,6 +331,110 @@ class TestPlanTasks(unittest.TestCase):
         self.assertEqual(task["trigger_type"], "plan")
 
 
+class TestRunJobDelegates(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pt2_")
+        self.state_root = os.path.join(self.tmp, "state")
+        self.workspace_root = os.path.join(self.tmp, "ws")
+        os.makedirs(self.workspace_root)
+        # local bare repo
+        self.repo = os.path.join(self.tmp, "repo.git")
+        os.makedirs(self.repo)
+        subprocess.run(["git", "init", "-q", "--bare", self.repo], check=True)
+        # seed commit on main
+        wd = os.path.join(self.tmp, "wd")
+        os.makedirs(wd)
+        subprocess.run(["git", "clone", "-q", self.repo, wd], check=True)
+        subprocess.run(["git", "-C", wd, "config", "user.email", "t@t.com"], check=True)
+        subprocess.run(["git", "-C", wd, "config", "user.name", "t"], check=True)
+        with open(os.path.join(wd, "README.md"), "w") as f:
+            f.write("hi")
+        subprocess.run(["git", "-C", wd, "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", wd, "commit", "-q", "-m", "init"], check=True)
+        subprocess.run(["git", "-C", wd, "branch", "-M", "main"], check=True)
+        subprocess.run(["git", "-C", wd, "push", "-q", "origin", "main"], check=True)
+
+        self.gh_calls = []
+        self.tmux_calls = []
+
+        def gh_runner(cmd, *a, **k):
+            self.gh_calls.append(list(cmd))
+            return FakeProc(0, json.dumps({"nameWithOwner": "owner/repo"}), "")
+
+        def tmux_runner(cmd, *a, **k):
+            self.tmux_calls.append(list(cmd))
+            return FakeProc(0, "", "")
+
+        self.gh_runner = gh_runner
+        self.tmux_runner = tmux_runner
+        self.config = {"plan_jobs": {"workspace_root": self.workspace_root},
+                       "issue_worker": {"workspace_root": self.workspace_root}}
+        self.clock = lambda: 1000.0
+        self.mgr = PlanTaskManager(
+            self.config, state_root=self.state_root, workspace_root=self.workspace_root,
+            gh_runner=gh_runner, tmux_runner=tmux_runner, clock=self.clock,
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_run_job_delegates_to_execute_job(self):
+        env = _make_envelope(self.tmp)
+        env["repository"]["remote_url"] = self.repo
+        env["repository"]["base_branch"] = "main"
+        r = self.mgr.submit(env, "req-1")
+        self.assertTrue(r["ok"])
+        job_id = r["task"]["id"]
+        upload_file = Path(self.state_root) / job_id / "upload" / "a.txt"
+        before = upload_file.read_bytes()
+        latest = subprocess.check_output(
+            ["git", "-C", self.repo, "rev-parse", "main"]
+        ).decode().strip()
+
+        import core.plan_execution as pe
+        calls = []
+
+        def fake_execute(manager, jid):
+            calls.append((manager, jid))
+            return {"ok": True}
+
+        orig = getattr(pe, "execute_job", None)
+        pe.execute_job = fake_execute
+        try:
+            self.mgr.run_job(job_id)
+        finally:
+            if orig is not None:
+                pe.execute_job = orig
+            else:
+                delattr(pe, "execute_job")
+
+        self.assertEqual(calls, [(self.mgr, job_id)])
+        prepared = self.mgr.inspect(job_id)
+        self.assertIsNotNone(prepared["remote_root"])
+        self.assertTrue(prepared["remote_root"].startswith(self.workspace_root))
+        self.assertEqual(prepared["base_commit"], latest)
+        self.assertEqual(prepared["branch"], "ai-workflow/%s" % job_id)
+        self.assertEqual(upload_file.read_bytes(), before)
+
+    def test_atomic_update_and_get_request_and_record_decision(self):
+        env = _make_envelope(self.tmp)
+        env["repository"]["remote_url"] = self.repo
+        env["repository"]["base_branch"] = "main"
+        r = self.mgr.submit(env, "req-1")
+        job_id = r["task"]["id"]
+        # atomic update
+        updated = self.mgr.update(job_id, status="running", stage="coding")
+        self.assertEqual(updated["status"], "running")
+        self.assertEqual(self.mgr.inspect(job_id)["status"], "running")
+        # get_request
+        req = self.mgr.get_request(job_id)
+        self.assertIsInstance(req, dict)
+        # record_decision
+        self.mgr.record_decision(job_id, {"q": "x"}, ["label"], "marker")
+        rec = self.mgr._read_record(job_id)
+        self.assertIsNotNone(rec.get("decision") or rec.get("decisions"))
+
+
 if __name__ == "__main__":
     unittest.main()
-

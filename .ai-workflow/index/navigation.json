@@ -20932,6 +20932,8 @@
         "src-tauri/src/cloud_agent/terminal.rs",
         "src-tauri/src/cloud_agent/gateway_sync.rs",
         "server/onespace-cloud-agent/agent.py",
+        "server/onespace-cloud-agent/core/plan_execution.py",
+        "server/onespace-cloud-agent/core/plan_opencode.py",
         "server/onespace-cloud-agent/core/plan_tasks.py",
         "server/onespace-cloud-agent/core/plan_workspace.py"
       ],
@@ -21138,6 +21140,8 @@
         "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
         "src-tauri/src/cloud_agent/tests.rs",
+        "server/onespace-cloud-agent/tests/test_plan_execution.py",
+        "server/onespace-cloud-agent/tests/test_plan_opencode.py",
         "server/onespace-cloud-agent/tests/test_plan_tasks.py",
         "server/onespace-cloud-agent/tests/test_plan_workspace.py"
       ],
@@ -21218,9 +21222,13 @@
         "src-tauri/src/cloud_agent/terminal.rs",
         "src-tauri/src/cloud_agent/gateway_sync.rs",
         "src-tauri/src/cloud_agent/tests.rs",
+        "server/onespace-cloud-agent/tests/test_plan_execution.py",
+        "server/onespace-cloud-agent/tests/test_plan_opencode.py",
         "server/onespace-cloud-agent/tests/test_plan_tasks.py",
         "server/onespace-cloud-agent/tests/test_plan_workspace.py",
         "server/onespace-cloud-agent/agent.py",
+        "server/onespace-cloud-agent/core/plan_execution.py",
+        "server/onespace-cloud-agent/core/plan_opencode.py",
         "server/onespace-cloud-agent/core/plan_tasks.py",
         "server/onespace-cloud-agent/core/plan_workspace.py"
       ],
