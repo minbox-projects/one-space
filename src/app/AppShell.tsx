@@ -856,7 +856,13 @@ export function AppShell(props: AppController) {
         )}
 
         <main
-          className={`flex-1 overflow-y-auto ${activeTab === "settings" ? "p-0" : "p-6"}`}
+          className={`flex-1 min-h-0 ${
+            activeTab === "settings"
+              ? "overflow-hidden p-0 flex flex-col"
+              : activeTab === "more-tools"
+                ? "overflow-hidden p-6 flex flex-col"
+                : "overflow-y-auto p-6"
+          }`}
         >
           <AppTabContent
             activeTab={activeTab}

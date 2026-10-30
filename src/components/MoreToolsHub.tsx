@@ -226,7 +226,7 @@ export function MoreToolsHub({
 
     return (
       <div className="flex h-full min-h-0 flex-col gap-5">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex shrink-0 items-center justify-between gap-3">
           <button
             type="button"
             onClick={onBack}
@@ -253,14 +253,14 @@ export function MoreToolsHub({
           ) : null}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto pr-3 sm:pr-4">{toolContent}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-3 sm:pr-4 pb-12">{toolContent}</div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full flex-col gap-5">
-      <div>
+    <div className="flex h-full min-h-0 flex-col gap-5">
+      <div className="shrink-0">
         <h3 className="text-xl font-bold tracking-tight">{moreToolsLabel}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
           {i18n.language === "zh"
@@ -269,63 +269,65 @@ export function MoreToolsHub({
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {orderedTools.map((tool) => {
-          const Icon = tool.icon;
-          const isDragging = drag.draggingId === tool.id;
+      <div className="min-h-0 flex-1 overflow-y-auto pr-3 sm:pr-4 pb-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {orderedTools.map((tool) => {
+            const Icon = tool.icon;
+            const isDragging = drag.draggingId === tool.id;
 
-          return (
-            <div key={tool.id} className="relative">
-              <button
-                type="button"
-                onClick={() => onSelectTool(tool.id as MoreToolsSection)}
-                onPointerOver={() => drag.handleCardPointerOver(tool.id)}
-                data-testid={`more-tool-card-${tool.id}`}
-                className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
-                  isDragging ? "ring-2 ring-primary" : ""
-                }`}
-              >
-                <div className="flex items-start">
-                  <div
-                    className={`rounded-lg p-2 ${tool.iconClassName}`}
-                    data-testid={`more-tool-icon-${tool.id}`}
-                  >
-                    <Icon className="h-6 w-6" />
+            return (
+              <div key={tool.id} className="relative">
+                <button
+                  type="button"
+                  onClick={() => onSelectTool(tool.id as MoreToolsSection)}
+                  onPointerOver={() => drag.handleCardPointerOver(tool.id)}
+                  data-testid={`more-tool-card-${tool.id}`}
+                  className={`group flex min-h-36 w-full flex-col justify-between rounded-xl border bg-card p-4 text-left shadow-sm transition-all hover:border-primary/50 hover:shadow-md ${
+                    isDragging ? "ring-2 ring-primary" : ""
+                  }`}
+                >
+                  <div className="flex items-start">
+                    <div
+                      className={`rounded-lg p-2 ${tool.iconClassName}`}
+                      data-testid={`more-tool-icon-${tool.id}`}
+                    >
+                      <Icon className="h-6 w-6" />
+                    </div>
                   </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="font-semibold">
-                    {resolveToolboxText(tool.labelText, tool.labelKey, t)}
+                  <div className="space-y-1">
+                    <div className="font-semibold">
+                      {resolveToolboxText(tool.labelText, tool.labelKey, t)}
+                    </div>
+                    <p className="text-sm leading-6 text-muted-foreground">
+                      {resolveToolboxText(
+                        tool.descriptionText,
+                        tool.descriptionKey,
+                        t,
+                      )}
+                    </p>
                   </div>
-                  <p className="text-sm leading-6 text-muted-foreground">
-                    {resolveToolboxText(
-                      tool.descriptionText,
-                      tool.descriptionKey,
-                      t,
-                    )}
-                  </p>
-                </div>
-              </button>
-              <button
-                type="button"
-                aria-label={t(
-                  "launcherDragToReorderHint",
-                  "Drag cards to reorder",
-                )}
-                title={t(
-                  "launcherDragToReorderHint",
-                  "Drag cards to reorder",
-                )}
-                onPointerDown={(e) => drag.handlePointerDown(e, tool.id)}
-                onPointerUp={drag.handlePointerUp}
-                data-testid={`more-tool-drag-handle-${tool.id}`}
-                className="absolute right-2 top-2 cursor-grab touch-none rounded-md p-1 text-muted-foreground hover:text-foreground"
-              >
-                <GripVertical className="h-4 w-4" />
-              </button>
-            </div>
-          );
-        })}
+                </button>
+                <button
+                  type="button"
+                  aria-label={t(
+                    "launcherDragToReorderHint",
+                    "Drag cards to reorder",
+                  )}
+                  title={t(
+                    "launcherDragToReorderHint",
+                    "Drag cards to reorder",
+                  )}
+                  onPointerDown={(e) => drag.handlePointerDown(e, tool.id)}
+                  onPointerUp={drag.handlePointerUp}
+                  data-testid={`more-tool-drag-handle-${tool.id}`}
+                  className="absolute right-2 top-2 cursor-grab touch-none rounded-md p-1 text-muted-foreground hover:text-foreground"
+                >
+                  <GripVertical className="h-4 w-4" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
