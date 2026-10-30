@@ -9,7 +9,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { TFunction } from "i18next";
-import type { CloudAgentSettings } from "@/lib/cloudAgent";
+import type {
+  CloudAgentSettings,
+  CloudPlanSubmitResult,
+} from "@/lib/cloudAgent";
+import { LocalPlanForm } from "./LocalPlanForm";
+
+type NewSessionMode = "ordinary" | "plan";
 
 interface NewSessionDialogProps {
   t: TFunction;
@@ -22,6 +28,8 @@ interface NewSessionDialogProps {
     useYolo: boolean;
     extraArgs: string;
   }) => Promise<void>;
+  host?: string;
+  onPlanSubmitted?: (result: CloudPlanSubmitResult) => void;
 }
 
 export function NewSessionDialog({
@@ -30,7 +38,10 @@ export function NewSessionDialog({
   isOpen,
   onClose,
   onSubmit,
+  host,
+  onPlanSubmitted,
 }: NewSessionDialogProps) {
+  const [mode, setMode] = useState<NewSessionMode>("ordinary");
   const [repo, setRepo] = useState("");
   const [branch, setBranch] = useState("");
   const [useYolo, setUseYolo] = useState(settings.opencodeYoloMode);
@@ -41,6 +52,7 @@ export function NewSessionDialog({
   // 当弹窗打开时，根据当前设置同步重置表单状态
   useEffect(() => {
     if (isOpen) {
+      setMode("ordinary");
       setRepo("");
       setBranch("");
       setUseYolo(settings.opencodeYoloMode);
@@ -95,12 +107,57 @@ export function NewSessionDialog({
           </div>
         </DialogHeader>
 
-        {error && (
+        <div
+          className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-1"
+          role="tablist"
+          aria-label={t("newSessionModeLabel", "任务模式")}
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "ordinary"}
+            data-testid="new-session-mode-ordinary"
+            onClick={() => setMode("ordinary")}
+            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              mode === "ordinary"
+                ? "bg-background text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t("newSessionModeOrdinary", "普通会话")}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "plan"}
+            data-testid="new-session-mode-plan"
+            onClick={() => setMode("plan")}
+            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              mode === "plan"
+                ? "bg-background text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t("newSessionModePlan", "本地计划执行")}
+          </button>
+        </div>
+
+        {mode === "ordinary" && error && (
           <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive">
             {error}
           </div>
         )}
 
+        {mode === "plan" ? (
+          <LocalPlanForm
+            t={t}
+            host={host}
+            onSubmitted={(result) => {
+              onPlanSubmitted?.(result);
+              onClose();
+            }}
+          />
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4 pt-1">
           {/* 目标仓库 */}
           <div className="space-y-1.5">
@@ -191,6 +248,7 @@ export function NewSessionDialog({
             </button>
           </div>
         </form>
+        )}
       </DialogContent>
     </Dialog>
   );

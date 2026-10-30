@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { WorkspaceView } from "@/components/Workspaces/types";
 
 export const CLOUD_AGENT_SESSIONS_COUNT_EVENT =
   "onespace:cloud-agent-sessions-count";
@@ -100,7 +101,7 @@ export interface CloudAgentStatus {
 export interface CloudAgentTask {
   id: string;
   repo: string;
-  issue_number: number;
+  issue_number?: number | null;
   title: string;
   status: "running" | "completed" | "failed" | "no_changes" | string;
   started_at: number;
@@ -115,6 +116,79 @@ export interface CloudAgentTask {
   max_attempts?: number | null;
   diff_stat?: string | null;
   step?: string | null;
+  source?: "plan" | "issue" | string | null;
+  plan_id?: string | null;
+  plan_title?: string | null;
+  workspace_id?: string | null;
+  base_branch?: string | null;
+  base_commit?: string | null;
+  final_commit?: string | null;
+  session_id?: string | null;
+  session_url?: string | null;
+  stage?: string | null;
+  question?: unknown;
+  decision?: unknown;
+  remote_root?: string | null;
+  local_root?: string | null;
+  updated_at?: number | null;
+}
+
+/**
+ * Resolved Git metadata for the repository backing a saved local workspace.
+ * `repo` is accepted alongside `canonical` for older/looser fixtures.
+ */
+export interface CloudPlanRepository {
+  remote_url?: string | null;
+  canonical?: string | null;
+  repo?: string | null;
+  host?: string | null;
+  branch?: string | null;
+  base_branch?: string | null;
+  source?: string | null;
+  head_sha?: string | null;
+  dirty?: boolean | null;
+}
+
+export interface LocalPlanSummary {
+  plan_id: string;
+  title: string;
+  directory?: string;
+  valid: boolean;
+  status: string;
+  error?: string | null;
+  has_tasks?: boolean;
+}
+
+export interface LocalPlanContext {
+  workspace_id?: string;
+  workspace_name?: string;
+  root_path?: string;
+  repository?: CloudPlanRepository | null;
+  repository_error?: string | null;
+  plans?: LocalPlanSummary[];
+  plans_error?: string | null;
+}
+
+export interface CloudPlanSubmitInput {
+  workspace_id: string;
+  plan_directory: string;
+  base_branch?: string;
+  request_id?: string;
+  host?: string;
+}
+
+export interface CloudPlanSubmitResult {
+  task: CloudAgentTask;
+  reused: boolean;
+  request_id: string;
+}
+
+export interface CloudPlanCapabilities {
+  plan_submit?: boolean;
+  plan_list?: boolean;
+  plan_cancel?: boolean;
+  plan_attach?: boolean;
+  schema_version?: number;
 }
 
 export interface GatewaySyncResult {
@@ -194,6 +268,68 @@ export async function cloudAgentListTasks(
   host?: string
 ): Promise<CloudAgentTask[]> {
   return await invoke<CloudAgentTask[]>("cloud_agent_list_tasks", { host });
+}
+
+/**
+ * List saved workspaces through the typed library facade instead of UI-level
+ * invoke calls. The backend returns an ApiResp envelope whose `data` is the
+ * workspace list.
+ */
+export async function workspacesList(): Promise<WorkspaceView[]> {
+  const res = await invoke<
+    { data?: WorkspaceView[] } | WorkspaceView[] | null
+  >("workspaces_list");
+  if (Array.isArray(res)) return res;
+  return Array.isArray(res?.data) ? res.data : [];
+}
+
+export async function cloudAgentPlanContext(
+  workspaceId: string
+): Promise<LocalPlanContext> {
+  return await invoke<LocalPlanContext>("cloud_agent_plan_context", {
+    workspaceId,
+  });
+}
+
+export async function cloudAgentPlanList(
+  workspaceId: string
+): Promise<LocalPlanSummary[]> {
+  return await invoke<LocalPlanSummary[]>("cloud_agent_plan_list", {
+    workspaceId,
+  });
+}
+
+export async function cloudAgentPlanSubmit(
+  input: CloudPlanSubmitInput
+): Promise<CloudPlanSubmitResult> {
+  return await invoke<CloudPlanSubmitResult>("cloud_agent_plan_submit", {
+    input,
+  });
+}
+
+export async function cloudAgentPlanCancel(
+  jobId: string,
+  host?: string
+): Promise<CloudAgentTask> {
+  return await invoke<CloudAgentTask>("cloud_agent_plan_cancel", {
+    host,
+    jobId,
+  });
+}
+
+export async function cloudAgentPlanAttach(
+  jobId: string,
+  host?: string
+): Promise<void> {
+  await invoke("cloud_agent_plan_attach", { host, jobId });
+}
+
+export async function cloudAgentPlanCapabilities(
+  host?: string
+): Promise<CloudPlanCapabilities> {
+  return await invoke<CloudPlanCapabilities>("cloud_agent_plan_capabilities", {
+    host,
+  });
 }
 
 export interface CreateSessionParams {

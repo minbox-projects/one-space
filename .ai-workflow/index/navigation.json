@@ -20917,6 +20917,7 @@
         "src/components/CloudAgent/components/PrPipelineTab.tsx",
         "src/components/CloudAgent/components/GatewayPanel.tsx",
         "src/components/CloudAgent/components/NewSessionDialog.tsx",
+        "src/components/CloudAgent/components/LocalPlanForm.tsx",
         "src/components/CloudAgent/components/NewSessionModal.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
@@ -20959,6 +20960,12 @@
         {
           "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
           "name": "NewSessionDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/LocalPlanForm.tsx",
+          "name": "LocalPlanForm",
           "kind": "function",
           "visibility": "public"
         },
@@ -21129,6 +21136,48 @@
           "name": "cloudAgentSyncGateway",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "workspacesList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanContext",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanSubmit",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanCancel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanAttach",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanCapabilities",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "related_files": [
@@ -21137,7 +21186,10 @@
       ],
       "tests": [
         "src/components/CloudAgent/CloudAgent.test.tsx",
+        "src/lib/cloudAgent.plan.test.ts",
         "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
+        "src/components/CloudAgent/LocalPlanForm.test.tsx",
+        "src/components/CloudAgent/PlanPipeline.test.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
         "src-tauri/src/cloud_agent/tests.rs",
         "server/onespace-cloud-agent/tests/test_plan_execution.py",
@@ -21191,6 +21243,11 @@
           "kind": "imports",
           "from": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel",
           "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog",
+          "to": "src/components/CloudAgent/components/LocalPlanForm.tsx#LocalPlanForm"
         }
       ],
       "owner_role": "shared",
@@ -21202,6 +21259,7 @@
         "src/components/CloudAgent/components/PrPipelineTab.tsx",
         "src/components/CloudAgent/components/GatewayPanel.tsx",
         "src/components/CloudAgent/components/NewSessionDialog.tsx",
+        "src/components/CloudAgent/components/LocalPlanForm.tsx",
         "src/components/CloudAgent/components/NewSessionModal.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
@@ -21230,7 +21288,10 @@
         "server/onespace-cloud-agent/core/plan_execution.py",
         "server/onespace-cloud-agent/core/plan_opencode.py",
         "server/onespace-cloud-agent/core/plan_tasks.py",
-        "server/onespace-cloud-agent/core/plan_workspace.py"
+        "server/onespace-cloud-agent/core/plan_workspace.py",
+        "src/components/CloudAgent/LocalPlanForm.test.tsx",
+        "src/components/CloudAgent/PlanPipeline.test.tsx",
+        "src/lib/cloudAgent.plan.test.ts"
       ],
       "shared_entry": false
     },

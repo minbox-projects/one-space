@@ -39,6 +39,8 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
     killSession,
     syncGateway,
     createAndLaunchSession,
+    planAttach,
+    planCancel,
     showNewTaskModal,
     setShowNewTaskModal,
   } = controller;
@@ -241,6 +243,8 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
                   onLaunchTerminal={(target, branch) =>
                     launchTerminal(target, branch)
                   }
+                  onPlanAttach={planAttach}
+                  onPlanCancel={planCancel}
                 />
               </div>
             )}
@@ -270,6 +274,8 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
         isOpen={showNewTaskModal}
         onClose={() => setShowNewTaskModal(false)}
         onSubmit={createAndLaunchSession}
+        host={selectedHost}
+        onPlanSubmitted={() => void refreshAll()}
       />
     </div>
   );
