@@ -672,5 +672,58 @@ class TestInvalidConfigRefusal(unittest.TestCase):
             h.cleanup()
 
 
+class TestUserDataPreservation(unittest.TestCase):
+    def test_repeat_deployment_preserves_user_data_outside_agent_dir(self):
+        h = DeployHarness()
+        try:
+            custom = b'{"custom": true}'
+            # sentinels outside the configured agent directory
+            user_cfg_dir = h.remote / "home" / ".config" / "onespace-cloud-agent"
+            user_cfg_dir.mkdir(parents=True, exist_ok=True)
+            worker_state = user_cfg_dir / "worker_state.json"
+            worker_state.write_bytes(b'{"version":2,"state":"keep"}')
+
+            session_dir = h.remote / "sessions" / "worktrees"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            session_sentinel = session_dir / "session-1.txt"
+            session_sentinel.write_bytes(b"session data")
+
+            os_sentinel = h.remote / "os-sentinel"
+            os_sentinel.write_bytes(b"os sentinel")
+
+            def snapshot():
+                return {
+                    "worker_state": worker_state.read_bytes(),
+                    "worker_state_mtime": worker_state.stat().st_mtime,
+                    "worker_state_size": worker_state.stat().st_size,
+                    "session_bytes": session_sentinel.read_bytes(),
+                    "session_mtime": session_sentinel.stat().st_mtime,
+                    "session_files": sorted(p.name for p in session_dir.iterdir()),
+                    "os_bytes": os_sentinel.read_bytes(),
+                    "os_mtime": os_sentinel.stat().st_mtime,
+                }
+
+            before = snapshot()
+            r1 = h.run(existing_config=custom)
+            self.assertEqual(r1.returncode, 0, r1.stderr + r1.stdout)
+            r2 = h.run(existing_config=custom)
+            self.assertEqual(r2.returncode, 0, r2.stderr + r2.stdout)
+            after = snapshot()
+
+            self.assertEqual(after["worker_state"], before["worker_state"])
+            self.assertEqual(after["worker_state_mtime"], before["worker_state_mtime"])
+            self.assertEqual(after["worker_state_size"], before["worker_state_size"])
+            self.assertEqual(after["session_bytes"], before["session_bytes"])
+            self.assertEqual(after["session_mtime"], before["session_mtime"])
+            self.assertEqual(after["session_files"], before["session_files"])
+            self.assertTrue(session_dir.exists())
+            self.assertTrue(session_sentinel.exists())
+            self.assertEqual(after["os_bytes"], before["os_bytes"])
+            self.assertEqual(after["os_mtime"], before["os_mtime"])
+            self.assertEqual((h.remote_agent / "config.json").read_bytes(), custom)
+        finally:
+            h.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()
