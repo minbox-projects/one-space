@@ -21193,6 +21193,7 @@
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
         "src-tauri/src/cloud_agent/tests.rs",
         "server/onespace-cloud-agent/tests/test_plan_execution.py",
+        "server/onespace-cloud-agent/tests/test_plan_flow.py",
         "server/onespace-cloud-agent/tests/test_plan_opencode.py",
         "server/onespace-cloud-agent/tests/test_plan_tasks.py",
         "server/onespace-cloud-agent/tests/test_plan_workspace.py"
@@ -21281,6 +21282,7 @@
         "src-tauri/src/cloud_agent/gateway_sync.rs",
         "src-tauri/src/cloud_agent/tests.rs",
         "server/onespace-cloud-agent/tests/test_plan_execution.py",
+        "server/onespace-cloud-agent/tests/test_plan_flow.py",
         "server/onespace-cloud-agent/tests/test_plan_opencode.py",
         "server/onespace-cloud-agent/tests/test_plan_tasks.py",
         "server/onespace-cloud-agent/tests/test_plan_workspace.py",
