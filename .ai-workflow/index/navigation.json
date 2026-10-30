@@ -20916,6 +20916,7 @@
         "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
         "src/components/CloudAgent/components/PrPipelineTab.tsx",
         "src/components/CloudAgent/components/GatewayPanel.tsx",
+        "src/components/CloudAgent/components/NewSessionDialog.tsx",
         "src/components/CloudAgent/components/NewSessionModal.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
@@ -20926,6 +20927,8 @@
         "src-tauri/src/cloud_agent/types.rs",
         "src-tauri/src/cloud_agent/settings.rs",
         "src-tauri/src/cloud_agent/ssh.rs",
+        "src-tauri/src/cloud_agent/local_plans.rs",
+        "src-tauri/src/cloud_agent/plan_transfer.rs",
         "src-tauri/src/cloud_agent/terminal.rs",
         "src-tauri/src/cloud_agent/gateway_sync.rs"
       ],
@@ -20949,8 +20952,8 @@
           "visibility": "public"
         },
         {
-          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
-          "name": "NewSessionModal",
+          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
+          "name": "NewSessionDialog",
           "kind": "function",
           "visibility": "public"
         },
@@ -21173,7 +21176,7 @@
         {
           "kind": "imports",
           "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/NewSessionModal.tsx#NewSessionModal"
+          "to": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog"
         },
         {
           "kind": "imports",
@@ -21189,6 +21192,7 @@
         "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
         "src/components/CloudAgent/components/PrPipelineTab.tsx",
         "src/components/CloudAgent/components/GatewayPanel.tsx",
+        "src/components/CloudAgent/components/NewSessionDialog.tsx",
         "src/components/CloudAgent/components/NewSessionModal.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
@@ -21204,6 +21208,8 @@
         "src-tauri/src/cloud_agent/types.rs",
         "src-tauri/src/cloud_agent/settings.rs",
         "src-tauri/src/cloud_agent/ssh.rs",
+        "src-tauri/src/cloud_agent/local_plans.rs",
+        "src-tauri/src/cloud_agent/plan_transfer.rs",
         "src-tauri/src/cloud_agent/terminal.rs",
         "src-tauri/src/cloud_agent/gateway_sync.rs",
         "src-tauri/src/cloud_agent/tests.rs"
