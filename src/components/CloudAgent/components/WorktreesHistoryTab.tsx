@@ -208,7 +208,7 @@ export function WorktreesHistoryTab({
               onClick={() => setStatusFilter("active")}
               className={`rounded-md px-2.5 py-1 font-medium transition-all cursor-pointer ${
                 statusFilter === "active"
-                  ? "bg-background text-emerald-600 dark:text-emerald-400 font-semibold shadow-2xs"
+                  ? "bg-background text-foreground font-semibold shadow-2xs"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -285,7 +285,7 @@ export function WorktreesHistoryTab({
             return (
               <div
                 key={wt.worktree_path}
-                className="group relative rounded-xl border border-border bg-card p-4.5 shadow-2xs transition-all hover:border-border/80 hover:shadow-xs"
+                className="group relative rounded-xl border border-border bg-card p-4 shadow-2xs transition-all hover:border-border/80 hover:shadow-xs"
               >
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   {/* 左侧：工作区身份与最新提交信息 */}
@@ -317,7 +317,7 @@ export function WorktreesHistoryTab({
 
                       {/* 分支标识 */}
                       {wt.branch && (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-muted/20 px-2 py-0.5 text-[11px] font-mono text-muted-foreground">
+                        <span className="inline-flex items-center gap-1 rounded-md border border-primary/20 bg-primary/10 px-2 py-0.5 text-[11px] font-mono text-primary font-medium">
                           <GitBranch className="h-3 w-3" />
                           {wt.branch}
                         </span>
@@ -340,7 +340,7 @@ export function WorktreesHistoryTab({
                     {/* 中部：最新 Git 提交信息卡（若有） */}
                     {wt.last_commit ? (
                       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1.5 text-xs text-foreground/90">
-                        <GitCommit className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                        <GitCommit className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         {wt.last_commit.hash && (
                           <div className="flex items-center gap-1 font-mono text-[11px] text-muted-foreground">
                             <span>{wt.last_commit.hash.slice(0, 7)}</span>
@@ -353,7 +353,7 @@ export function WorktreesHistoryTab({
                                 )
                               }
                               title={t("copyHashTooltip", "复制 Commit Hash")}
-                              className="inline-flex h-3.5 w-3.5 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                              className="inline-flex h-3.5 w-3.5 items-center justify-center rounded text-muted-foreground hover:text-foreground cursor-pointer"
                             >
                               {copiedTarget === `hash-${wt.worktree_path}` ? (
                                 <Check className="h-3 w-3 text-emerald-500" />
@@ -398,7 +398,7 @@ export function WorktreesHistoryTab({
                             handleCopy(wt.worktree_path, `path-${wt.worktree_path}`)
                           }
                           title={t("copyPathTooltip", "复制完整目录路径")}
-                          className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                          className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
                         >
                           {copiedTarget === `path-${wt.worktree_path}` ? (
                             <Check className="h-3 w-3 text-emerald-500" />
@@ -427,8 +427,8 @@ export function WorktreesHistoryTab({
                       onClick={() => handleResume(wt)}
                       className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium shadow-2xs transition-all disabled:opacity-50 cursor-pointer ${
                         wt.has_active_session
-                          ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                          : "border border-border bg-background text-foreground hover:bg-muted"
+                          ? "bg-primary text-primary-foreground hover:bg-primary/90 active:scale-98"
+                          : "border border-border/80 bg-background text-foreground hover:bg-muted active:scale-98"
                       }`}
                     >
                       {isResuming ? (

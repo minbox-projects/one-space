@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import {
   Activity,
   TerminalSquare,
@@ -7,9 +7,6 @@ import {
   HardDrive,
   RefreshCw,
   Sparkles,
-  Network,
-  Copy,
-  Check,
   Cpu,
   GitBranch,
 } from "lucide-react";
@@ -49,8 +46,6 @@ export function CloudAgentRuntimeCard({
   onOpenNewTaskModal,
   onSelectTab,
 }: CloudAgentRuntimeCardProps) {
-  const [gatewayAddressCopied, setGatewayAddressCopied] = useState(false);
-
   const disk = status?.disk;
   const isDiskAlert =
     disk && disk.use_percent >= (settings.diskAlertThresholdPercent || 80);
@@ -58,15 +53,6 @@ export function CloudAgentRuntimeCard({
   const gatewayHealthy =
     status?.gateway?.status === "healthy" || status?.gateway?.status === "ok";
   const gatewayPort = status?.gateway?.port || 17688;
-  const gatewayHost = selectedHost || settings.defaultHost || "";
-  const gatewayUrl = gatewayHost ? `http://${gatewayHost}:${gatewayPort}/v1` : "";
-
-  const handleCopyGatewayUrl = () => {
-    if (!gatewayUrl) return;
-    navigator.clipboard.writeText(gatewayUrl);
-    setGatewayAddressCopied(true);
-    setTimeout(() => setGatewayAddressCopied(false), 2000);
-  };
 
   // 4 组核心统计指标计算
   const stats = useMemo(() => {
@@ -109,16 +95,16 @@ export function CloudAgentRuntimeCard({
         <div className="flex flex-wrap items-center gap-2">
           {/* 守护进程运行状态指示灯与状态文字 */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <span className="relative flex h-2.5 w-2.5">
+            <span className="relative flex h-2 w-2">
               {!selectedHost ? (
-                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-slate-400" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-muted-foreground/40" />
               ) : status?.service_active ? (
                 <>
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
                 </>
               ) : (
-                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-rose-500" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-rose-500" />
               )}
             </span>
             <span
@@ -134,58 +120,53 @@ export function CloudAgentRuntimeCard({
               {!selectedHost
                 ? t("daemonNoHost", "未配置云端主机")
                 : status?.service_active
-                ? t("daemonActive", "守护进程运行中")
-                : t("daemonInactive", "守护进程离线")}
+                ? t("daemonActive", "运行中")
+                : t("daemonInactive", "离线")}
             </span>
           </div>
 
           <span className="text-muted-foreground/30 text-xs hidden sm:inline">·</span>
 
-          {/* 云端 AI 网关协议端点胶囊 */}
+          {/* 云端 AI 网关状态胶囊 */}
           <div className="flex items-center gap-1.5 rounded-md border border-border/80 bg-muted/40 px-2 py-1 text-xs">
-            <Network className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400 border border-blue-500/20">
-              Gateway {gatewayPort}
+            <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              Cloud Gateway
             </span>
-            <span
-              className={`text-[11px] font-medium ${
-                !selectedHost
-                  ? "text-muted-foreground"
-                  : gatewayHealthy
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-amber-500"
-              }`}
-            >
-              {!selectedHost
-                ? t("daemonNoHost", "未配置云端主机")
-                : gatewayHealthy
-                ? t("healthy", "健康运行中")
-                : t("offlineOrStarting", "离线或启动中")}
-            </span>
-            {gatewayUrl && (
-              <button
-                type="button"
-                onClick={handleCopyGatewayUrl}
-                title={
-                  gatewayAddressCopied
-                    ? t("copied", "已复制")
-                    : t("copyGatewayAddress", "复制云端网关地址")
-                }
-                aria-label={t("copyGatewayAddress", "复制云端网关地址")}
-                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <span
+                className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                  !selectedHost
+                    ? "bg-muted-foreground/40"
+                    : gatewayHealthy
+                    ? "bg-emerald-500"
+                    : "bg-amber-500"
+                }`}
+              />
+              <span className="font-mono text-foreground/80">
+                Port {gatewayPort}
+              </span>
+              <span className="text-muted-foreground/30">·</span>
+              <span
+                className={`font-medium ${
+                  !selectedHost
+                    ? "text-muted-foreground"
+                    : gatewayHealthy
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-amber-500"
+                }`}
               >
-                {gatewayAddressCopied ? (
-                  <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-                ) : (
-                  <Copy className="h-3 w-3" />
-                )}
-              </button>
-            )}
+                {!selectedHost
+                  ? t("daemonNoHost", "未配置云端主机")
+                  : gatewayHealthy
+                  ? t("healthy", "在线")
+                  : t("offlineOrStarting", "离线或启动中")}
+              </span>
+            </div>
           </div>
 
           {/* 云端磁盘空间胶囊 */}
           {disk && (
-            <div className="flex items-center gap-2 rounded-md border border-border/80 bg-muted/40 px-2 py-1 text-xs">
+            <div className="flex items-center gap-2 rounded-lg border border-border/80 bg-muted/40 px-2.5 py-1 text-xs">
               <HardDrive
                 className={`h-3.5 w-3.5 ${
                   isDiskAlert ? "text-amber-500" : "text-muted-foreground"
@@ -221,17 +202,17 @@ export function CloudAgentRuntimeCard({
             title={t("refresh", "刷新")}
             aria-label={t("refresh", "刷新")}
             data-testid="cloud-agent-refresh-btn"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-border/80 bg-background text-muted-foreground shadow-2xs transition hover:bg-muted hover:text-foreground active:scale-98 disabled:opacity-50 cursor-pointer"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border/80 bg-background text-muted-foreground shadow-2xs transition hover:bg-muted hover:text-foreground active:scale-98 disabled:opacity-50 cursor-pointer"
           >
-            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
           </button>
 
           <button
             type="button"
             onClick={onOpenNewTaskModal}
-            className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-emerald-600 px-2.5 text-xs font-medium text-white shadow-2xs transition hover:bg-emerald-700 active:scale-98 cursor-pointer"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-2xs transition hover:bg-primary/90 active:scale-98 cursor-pointer"
           >
-            <Sparkles className="h-3 w-3" />
+            <Sparkles className="h-3.5 w-3.5" />
             <span>{t("newFeatureTaskBtn", "新建特性任务")}</span>
           </button>
         </div>
@@ -251,28 +232,34 @@ export function CloudAgentRuntimeCard({
               onSelectTab("sessions");
             }
           }}
-          className="group flex flex-col justify-between rounded-xl border border-border/80 bg-background/60 p-3.5 shadow-2xs transition-all hover:border-emerald-500/40 hover:bg-muted/30 hover:shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group flex flex-col justify-between rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:border-border hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-medium group-hover:text-foreground">
               {t("activeSessionsMetricTitle", "活跃会话")}
             </span>
-            <Activity className="h-4 w-4 text-emerald-500 transition-transform group-hover:scale-110" />
+            <Activity className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
           </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-2xl font-bold tracking-tight text-foreground">
+          <div className="mt-1.5 flex items-baseline gap-1.5">
+            <span className="text-lg font-bold tracking-tight text-foreground">
               {stats.activeCount}
             </span>
             <span className="text-xs text-muted-foreground">
               / {stats.totalSessions}
             </span>
           </div>
-          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-            </span>
-            <span className="truncate">{t("activeSessionsMetricDesc", "守护进程保活运行中")}</span>
+          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground truncate">
+            {stats.activeCount > 0 ? (
+              <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium truncate">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                </span>
+                <span className="truncate">{t("activeSessionsMetricDesc", "守护进程保活运行中")}</span>
+              </span>
+            ) : (
+              <span className="truncate">{t("activeSessionsMetricIdle", "暂无活跃中的开发会话")}</span>
+            )}
           </div>
         </div>
 
@@ -288,24 +275,24 @@ export function CloudAgentRuntimeCard({
               onSelectTab("sessions");
             }
           }}
-          className="group flex flex-col justify-between rounded-xl border border-border/80 bg-background/60 p-3.5 shadow-2xs transition-all hover:border-sky-500/40 hover:bg-muted/30 hover:shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group flex flex-col justify-between rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:border-border hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-medium group-hover:text-foreground">
               {t("terminalWindowsMetricTitle", "终端作业窗口")}
             </span>
-            <TerminalSquare className="h-4 w-4 text-sky-500 transition-transform group-hover:scale-110" />
+            <TerminalSquare className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
           </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-2xl font-bold tracking-tight text-foreground">
+          <div className="mt-1.5 flex items-baseline gap-1.5">
+            <span className="text-lg font-bold tracking-tight text-foreground">
               {stats.totalWindows}
             </span>
             <span className="text-xs text-muted-foreground">
               {t("windowsUnit", "个窗口")}
             </span>
           </div>
-          <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground truncate">
-            <Cpu className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+          <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground truncate">
+            <Cpu className="h-3 w-3 shrink-0 text-muted-foreground/70" />
             <span className="truncate">{t("terminalWindowsMetricDesc", "窗口协同运行中")}</span>
           </div>
         </div>
@@ -322,24 +309,24 @@ export function CloudAgentRuntimeCard({
               onSelectTab("worktrees");
             }
           }}
-          className="group flex flex-col justify-between rounded-xl border border-border/80 bg-background/60 p-3.5 shadow-2xs transition-all hover:border-indigo-500/40 hover:bg-muted/30 hover:shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group flex flex-col justify-between rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:border-border hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-medium group-hover:text-foreground">
               {t("isolatedWorktreesMetricTitle", "特性隔离空间")}
             </span>
-            <Layers className="h-4 w-4 text-indigo-500 transition-transform group-hover:scale-110" />
+            <Layers className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
           </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-2xl font-bold tracking-tight text-foreground">
+          <div className="mt-1.5 flex items-baseline gap-1.5">
+            <span className="text-lg font-bold tracking-tight text-foreground">
               {stats.worktreeCount}
             </span>
             <span className="text-xs text-muted-foreground">
               {t("worktreesUnit", "个工作区")}
             </span>
           </div>
-          <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground truncate">
-            <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+          <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground truncate">
+            <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground/70" />
             <span className="truncate">{t("isolatedWorktreesMetricDesc", "Git 独立目录隔离")}</span>
           </div>
         </div>
@@ -356,24 +343,24 @@ export function CloudAgentRuntimeCard({
               onSelectTab("worktrees");
             }
           }}
-          className="group flex flex-col justify-between rounded-xl border border-border/80 bg-background/60 p-3.5 shadow-2xs transition-all hover:border-amber-500/40 hover:bg-muted/30 hover:shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group flex flex-col justify-between rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:border-border hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-medium group-hover:text-foreground">
               {t("reposMetricTitle", "涉及代码仓库")}
             </span>
-            <FolderGit2 className="h-4 w-4 text-amber-500 transition-transform group-hover:scale-110" />
+            <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
           </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-2xl font-bold tracking-tight text-foreground">
+          <div className="mt-1.5 flex items-baseline gap-1.5">
+            <span className="text-lg font-bold tracking-tight text-foreground">
               {stats.repoCount}
             </span>
             <span className="text-xs text-muted-foreground">
               {t("reposUnit", "个项目")}
             </span>
           </div>
-          <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground truncate">
-            <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+          <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground truncate">
+            <Sparkles className="h-3 w-3 shrink-0 text-muted-foreground/70" />
             <span className="truncate">{t("reposMetricDesc", "多工程并行推进")}</span>
           </div>
         </div>

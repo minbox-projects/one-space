@@ -31,7 +31,7 @@ export function CloudAgentHeader({
     <header className="flex flex-wrap items-center justify-between gap-4">
       {/* 左侧：图标 + 标题与简要描述（对齐 AiGateway 标准） */}
       <div className="flex items-start gap-3">
-        <div className="rounded-lg p-2 bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">
+        <div className="rounded-lg p-2 bg-primary/10 text-primary">
           <CloudCog className="h-5 w-5" />
         </div>
         <div className="space-y-0.5">

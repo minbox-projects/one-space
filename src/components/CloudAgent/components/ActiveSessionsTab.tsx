@@ -186,7 +186,7 @@ export function ActiveSessionsTab({
               onClick={() => setStatusFilter("active")}
               className={`rounded-md px-2.5 py-1 text-xs font-medium transition-all cursor-pointer ${
                 statusFilter === "active"
-                  ? "bg-background text-emerald-600 dark:text-emerald-400 font-semibold shadow-2xs"
+                  ? "bg-background text-foreground font-semibold shadow-2xs"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -263,7 +263,7 @@ export function ActiveSessionsTab({
             return (
               <div
                 key={session.session_name}
-                className="group relative rounded-xl border border-border bg-card p-4.5 shadow-2xs transition-all hover:border-border/80 hover:shadow-xs"
+                className="group relative rounded-xl border border-border bg-card p-4 shadow-2xs transition-all hover:border-border/80 hover:shadow-xs"
               >
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   {/* 左侧：会话身份与元数据 */}
@@ -296,7 +296,7 @@ export function ActiveSessionsTab({
 
                       {/* 分支标识徽标 */}
                       {session.branch && (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                        <span className="inline-flex items-center gap-1 rounded-md border border-primary/20 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
                           <GitBranch className="h-3 w-3" />
                           {session.branch}
                         </span>
@@ -330,7 +330,7 @@ export function ActiveSessionsTab({
                               )
                             }
                             title={t("copyPathTooltip", "复制完整目录路径")}
-                            className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                            className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
                           >
                             {copiedTarget === `dir-${session.session_name}` ? (
                               <Check className="h-3 w-3 text-emerald-500" />
@@ -376,7 +376,7 @@ export function ActiveSessionsTab({
                       type="button"
                       disabled={isConnecting || isKilling}
                       onClick={() => handleConnect(session.session_name)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-medium text-white shadow-2xs hover:bg-emerald-700 transition-all disabled:opacity-50 cursor-pointer"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-2xs hover:bg-primary/90 active:scale-98 transition-all disabled:opacity-50 cursor-pointer"
                     >
                       {isConnecting ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />

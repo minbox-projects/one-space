@@ -136,7 +136,7 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
                 <Icon
                   className={`h-4 w-4 transition-colors ${
                     isActive
-                      ? "text-emerald-600 dark:text-emerald-400"
+                      ? "text-primary"
                       : "text-muted-foreground/70 group-hover:text-foreground"
                   }`}
                 />
@@ -145,7 +145,7 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
                   <span
                     className={`rounded-full px-2 py-0.5 text-[11px] font-semibold transition-colors ${
                       isActive
-                        ? "bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400"
+                        ? "bg-primary/10 text-primary"
                         : "bg-muted text-muted-foreground group-hover:bg-muted/80 group-hover:text-foreground"
                     }`}
                   >

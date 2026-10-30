@@ -78,7 +78,7 @@ export function NewSessionDialog({
       <DialogContent className="max-w-lg sm:max-w-lg">
         <DialogHeader>
           <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
@@ -114,7 +114,7 @@ export function NewSessionDialog({
               value={repo}
               onChange={(e) => setRepo(e.target.value)}
               placeholder="例如: one-space 或 https://github.com/user/repo.git"
-              className="w-full rounded-lg border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="w-full rounded-lg border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
 
@@ -129,7 +129,7 @@ export function NewSessionDialog({
               value={branch}
               onChange={(e) => setBranch(e.target.value)}
               placeholder="例如: feat-login 或 fix-payment"
-              className="w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
 
@@ -137,7 +137,7 @@ export function NewSessionDialog({
           <div className="rounded-lg border border-border bg-muted/30 p-3 flex items-center justify-between">
             <div className="space-y-0.5">
               <div className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                <Shield className="h-3.5 w-3.5 text-emerald-500" />
+                <Shield className="h-3.5 w-3.5 text-primary" />
                 {t("yoloModeLabel", "完全自动授权模式 (--yolo)")}
               </div>
               <p className="text-[11px] text-muted-foreground">
@@ -158,7 +158,7 @@ export function NewSessionDialog({
               value={extraArgs}
               onChange={(e) => setExtraArgs(e.target.value)}
               placeholder="例如: --model cloud-coder"
-              className="w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
 
@@ -175,7 +175,7 @@ export function NewSessionDialog({
             <button
               type="submit"
               disabled={isSubmitting}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-2xs hover:bg-emerald-700 transition-all disabled:opacity-60 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground shadow-2xs hover:bg-primary/90 active:scale-98 transition-all disabled:opacity-50 cursor-pointer"
             >
               {isSubmitting ? (
                 <>

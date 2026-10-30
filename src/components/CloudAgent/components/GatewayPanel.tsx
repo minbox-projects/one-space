@@ -137,24 +137,14 @@ export function GatewayPanel({
 
   return (
     <div className="space-y-4">
-      {/* 1. 双端拓扑交互与同步控制栏（紧凑高效） */}
-      <div className="relative overflow-hidden rounded-2xl border border-border/80 bg-gradient-to-br from-card via-card to-emerald-500/[0.04] p-4.5 shadow-xs transition-all">
-        {/* 背景轻微网格装饰点缀 */}
-        <div
-          className="pointer-events-none absolute inset-0 opacity-[0.025] dark:opacity-[0.05]"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at 1px 1px, currentColor 1px, transparent 0)",
-            backgroundSize: "20px 20px",
-          }}
-        />
-
-        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      {/* 1. 双端拓扑交互与同步控制栏 */}
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm transition-all">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           {/* 左侧：本地与云端交互流程示意 */}
           <div className="flex-1 min-w-0">
             <div className="grid grid-cols-1 items-center gap-2.5 sm:grid-cols-7">
               {/* 节点 1：本地桌面网关节点 */}
-              <div className="sm:col-span-3 flex items-center gap-2.5 rounded-xl border border-border/70 bg-background/80 p-2.5 shadow-2xs backdrop-blur-xs">
+              <div className="sm:col-span-3 flex items-center gap-2.5 rounded-lg border border-border/80 bg-muted/20 p-2.5 shadow-2xs">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-500/10 text-sky-600 dark:bg-sky-500/20 dark:text-sky-400">
                   <Laptop className="h-4.5 w-4.5" />
                 </div>
@@ -177,7 +167,7 @@ export function GatewayPanel({
               <div className="sm:col-span-1 flex flex-col items-center justify-center py-0.5">
                 <div className="flex items-center gap-1 text-muted-foreground/60">
                   <span className="h-0.5 w-2 bg-border sm:block hidden" />
-                  <div className="flex h-5 w-5 items-center justify-center rounded-full border border-border bg-muted/60 text-emerald-600 dark:text-emerald-400 shadow-2xs">
+                  <div className="flex h-5 w-5 items-center justify-center rounded-full border border-border bg-muted/60 text-primary shadow-2xs">
                     <ArrowRight className="h-3 w-3" />
                   </div>
                   <span className="h-0.5 w-2 bg-border sm:block hidden" />
@@ -189,8 +179,8 @@ export function GatewayPanel({
               </div>
 
               {/* 节点 2：云端 Linux 网关节点 */}
-              <div className="sm:col-span-3 flex items-center gap-2.5 rounded-xl border border-border/70 bg-background/80 p-2.5 shadow-2xs backdrop-blur-xs">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">
+              <div className="sm:col-span-3 flex items-center gap-2.5 rounded-lg border border-border/80 bg-muted/20 p-2.5 shadow-2xs">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                   <Cloud className="h-4.5 w-4.5" />
                 </div>
                 <div className="min-w-0 flex-1">
@@ -198,7 +188,7 @@ export function GatewayPanel({
                     <span className="text-xs font-semibold text-foreground truncate">
                       云端 Linux 网关
                     </span>
-                    <span className="rounded bg-emerald-500/10 px-1.5 py-0.2 text-[9px] font-mono text-emerald-600 dark:text-emerald-400">
+                    <span className="rounded bg-primary/10 px-1.5 py-0.2 text-[9px] font-mono text-primary">
                       Port {gatewayPort}
                     </span>
                     <span
@@ -232,7 +222,7 @@ export function GatewayPanel({
               type="button"
               disabled={isSyncing}
               onClick={handleSync}
-              className="inline-flex h-9 items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 text-xs font-semibold text-white shadow-sm hover:from-emerald-500 hover:to-teal-500 active:scale-98 transition-all disabled:opacity-50 cursor-pointer"
+              className="inline-flex h-8 items-center gap-2 rounded-lg bg-primary px-3.5 text-xs font-medium text-primary-foreground shadow-2xs hover:bg-primary/90 active:scale-98 transition-all disabled:opacity-50 cursor-pointer"
             >
               {isSyncing ? (
                 <>
@@ -252,7 +242,7 @@ export function GatewayPanel({
         {/* 同步结果反馈条 */}
         {syncResult && (
           <div
-            className={`mt-3 rounded-xl border p-2.5 text-xs transition-all animate-in fade-in slide-in-from-top-1 ${
+            className={`mt-3 rounded-lg border p-2.5 text-xs transition-all animate-in fade-in slide-in-from-top-1 ${
               syncResult.success
                 ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
                 : "border-destructive/30 bg-destructive/10 text-destructive"
@@ -279,10 +269,10 @@ export function GatewayPanel({
       </div>
 
       {/* 2. 当前生效的虚拟模型池（Model Pools） */}
-      <div className="rounded-xl border border-border bg-card p-4.5 shadow-2xs space-y-3">
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-purple-500/10 text-purple-600 dark:bg-purple-500/20 dark:text-purple-400">
+            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
               <Layers className="h-3.5 w-3.5" />
             </div>
             <h4 className="text-xs font-semibold text-foreground uppercase tracking-wider">
@@ -295,7 +285,7 @@ export function GatewayPanel({
         </div>
 
         {modelPools.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/80 bg-muted/20 p-6 text-center text-xs text-muted-foreground">
+          <div className="rounded-lg border border-dashed border-border/80 bg-muted/20 p-6 text-center text-xs text-muted-foreground">
             {t(
               "noModelPoolsSynced",
               "云端暂无模型池，请点击右上角「一键同步网关至云端」完成配置下发。"
@@ -306,10 +296,10 @@ export function GatewayPanel({
             {modelPools.map((poolName) => (
               <div
                 key={poolName}
-                className="group relative flex items-center justify-between rounded-xl border border-border/80 bg-background/60 p-3 shadow-2xs hover:border-purple-500/40 hover:bg-muted/20 hover:shadow-xs transition-all"
+                className="group relative flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 p-3 shadow-2xs hover:border-border hover:bg-muted/30 hover:shadow-xs transition-all"
               >
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-purple-500/20 bg-purple-500/10 text-purple-600 dark:text-purple-400">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background text-primary">
                     <Cpu className="h-4 w-4" />
                   </div>
                   <div className="min-w-0">
@@ -331,7 +321,7 @@ export function GatewayPanel({
       </div>
 
       {/* 3. 云端服务商与模型明细 */}
-      <div className="rounded-xl border border-border bg-card p-4.5 shadow-2xs space-y-3">
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h4 className="text-sm font-semibold text-foreground">
@@ -373,7 +363,7 @@ export function GatewayPanel({
               <button
                 type="button"
                 onClick={toggleExpandAll}
-                className="rounded-lg border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer"
+                className="rounded-lg border border-border/80 bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted transition-colors cursor-pointer shadow-2xs"
               >
                 {allExpanded ? t("collapseAll", "全部收起") : t("expandAll", "全部展开")}
               </button>
@@ -382,14 +372,14 @@ export function GatewayPanel({
         </div>
 
         {providers.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/80 bg-muted/20 p-8 text-center text-xs text-muted-foreground">
+          <div className="rounded-lg border border-dashed border-border/80 bg-muted/20 p-8 text-center text-xs text-muted-foreground">
             {t(
               "noProvidersSynced",
               "云端暂无服务商与模型映射，请点击右上角「一键同步网关至云端」完成配置下发。"
             )}
           </div>
         ) : filteredProviders.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/80 bg-muted/20 p-6 text-center text-xs text-muted-foreground">
+          <div className="rounded-lg border border-dashed border-border/80 bg-muted/20 p-6 text-center text-xs text-muted-foreground">
             {t("noMatchingResults", "未找到匹配的服务商或模型")}
           </div>
         ) : (
@@ -407,7 +397,7 @@ export function GatewayPanel({
                   {/* 服务商卡片头部（带官方品牌 Logo） */}
                   <div
                     onClick={() => toggleProviderExpand(provider.id)}
-                    className="flex items-center justify-between p-3.5 hover:bg-muted/30 transition-colors cursor-pointer select-none"
+                    className="flex items-center justify-between p-3 hover:bg-muted/30 transition-colors cursor-pointer select-none"
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       {isExpanded ? (
@@ -459,7 +449,7 @@ export function GatewayPanel({
 
                   {/* 展开的模型高保真列表 */}
                   {isExpanded && (
-                    <div className="border-t border-border/60 bg-muted/15 p-3.5 space-y-2">
+                    <div className="border-t border-border/60 bg-muted/15 p-3 space-y-2">
                       <div className="grid grid-cols-1 gap-2">
                         {(provider.models || []).map((model) => {
                           const contextLimitDisplay = formatContextWindowDisplay(
@@ -470,7 +460,7 @@ export function GatewayPanel({
                           return (
                             <div
                               key={model.id}
-                              className="group flex flex-col gap-2 rounded-xl border border-border/60 bg-card p-3 shadow-2xs sm:flex-row sm:items-center sm:justify-between text-xs transition-colors hover:border-border hover:bg-card"
+                              className="group flex flex-col gap-2 rounded-lg border border-border/60 bg-card p-2.5 shadow-2xs sm:flex-row sm:items-center sm:justify-between text-xs transition-colors hover:border-border hover:bg-card"
                             >
                               {/* 左侧：本地模型标识 ➔ 上游映射 */}
                               <div className="space-y-1.5 min-w-0 flex-1">
@@ -481,7 +471,7 @@ export function GatewayPanel({
                                       type="button"
                                       onClick={() => handleCopyModel(model.id)}
                                       title="复制模型标识"
-                                      className="inline-flex h-3.5 w-3.5 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                                      className="inline-flex h-3.5 w-3.5 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
                                     >
                                       {isCopied ? (
                                         <Check className="h-3 w-3 text-emerald-500" />
@@ -507,35 +497,45 @@ export function GatewayPanel({
                                 </div>
                               </div>
 
-                              {/* 右侧：上下文与推理强度指标 */}
-                              <div className="flex flex-wrap items-center gap-3 shrink-0 pt-1 sm:pt-0">
-                                {/* 上下文长度胶囊 */}
-                                <div className="flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2 py-0.5 text-[11px]">
-                                  <span className="text-muted-foreground">
-                                    {t("contextLimit", "上下文长度")}:
+                              {/* 右侧：上下文与推理强度指标（对齐 AI 网关模型列表界面样式） */}
+                              <div className="flex flex-wrap items-center gap-2.5 shrink-0 pt-1 sm:pt-0">
+                                {/* 上下文长度限制 tag */}
+                                {contextLimitDisplay ? (
+                                  <span
+                                    className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
+                                    title={t("contextLimit", "上下文长度")}
+                                  >
+                                    <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                                    <span>{contextLimitDisplay}</span>
                                   </span>
-                                  <span className="font-mono font-semibold text-foreground">
-                                    {contextLimitDisplay || t("unlimitedContext", "未限制")}
+                                ) : (
+                                  <span
+                                    className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400 shadow-2xs"
+                                    title={t("unlimitedContext", "未限制")}
+                                  >
+                                    <Layers className="h-2.5 w-2.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
+                                    <span>{t("unlimitedContext", "未限制")}</span>
                                   </span>
-                                </div>
+                                )}
 
-                                {/* 推理强度药丸组 */}
+                                {/* 推理强度 tag 组 */}
                                 {model.reasoning_efforts &&
                                   model.reasoning_efforts.length > 0 && (
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="text-[11px] text-muted-foreground">
+                                    <div className="flex flex-wrap items-center gap-1">
+                                      <span
+                                        title={t("reasoningEfforts", "推理强度")}
+                                        className="text-[10px] font-medium text-muted-foreground"
+                                      >
                                         {t("reasoningEfforts", "推理强度")}:
                                       </span>
-                                      <div className="flex items-center gap-1">
-                                        {model.reasoning_efforts.map((effort) => (
-                                          <span
-                                            key={effort}
-                                            className="rounded-md bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-mono font-medium text-purple-600 dark:text-purple-400 border border-purple-500/20 shadow-2xs"
-                                          >
-                                            {effort}
-                                          </span>
-                                        ))}
-                                      </div>
+                                      {model.reasoning_efforts.map((effort) => (
+                                        <span
+                                          key={effort}
+                                          className="inline-flex items-center rounded border border-border/80 bg-muted/60 px-1.5 py-0.2 font-mono text-[10px] font-medium text-foreground/85 leading-tight shadow-2xs"
+                                        >
+                                          {effort}
+                                        </span>
+                                      ))}
                                     </div>
                                   )}
                               </div>
@@ -552,9 +552,9 @@ export function GatewayPanel({
         )}
       </div>
 
-      {/* 4. 网关安全同步架构说明条（精致信息栏） */}
-      <div className="flex items-start gap-2.5 rounded-xl border-l-2 border-emerald-500 bg-muted/20 p-3.5 text-xs text-muted-foreground shadow-2xs">
-        <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-500 mt-0.5" />
+      {/* 4. 网关安全同步架构说明条 */}
+      <div className="flex items-start gap-2.5 rounded-lg border border-border/80 bg-muted/30 p-3 text-xs text-muted-foreground shadow-2xs">
+        <ShieldCheck className="h-4 w-4 shrink-0 text-primary mt-0.5" />
         <div className="space-y-0.5">
           <span className="font-semibold text-foreground">
             {t("cloudSyncArchitectureTitle", "网关安全同步机制与双端协同")}

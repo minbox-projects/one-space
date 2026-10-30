@@ -117,21 +117,21 @@ export function PrPipelineTab({
     <div className="space-y-4">
       {/* 列表头部统计与操作 */}
       <div className="flex items-center justify-between px-1">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("recentTasksHistory", "近期任务流转历史")} ({tasks.length})
         </h3>
         <button
           type="button"
           onClick={onRefresh}
-          className="inline-flex items-center gap-1.5 text-xs text-slate-500 transition-colors hover:text-slate-900 dark:hover:text-white cursor-pointer"
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
         >
           <RefreshCw className="h-3.5 w-3.5" />
           {t("refresh", "刷新")}
         </button>
       </div>
 
-      {/* 任务卡片列表：加大卡片间距为 gap-4 */}
-      <div className="grid grid-cols-1 gap-4">
+      {/* 任务卡片列表 */}
+      <div className="grid grid-cols-1 gap-3">
         {tasks.map((task, index) => {
           const startedAgo = formatDistanceToNow(parseDate(task.started_at), {
             addSuffix: true,
@@ -150,7 +150,7 @@ export function PrPipelineTab({
           return (
             <div
               key={task.id}
-              className="group/card rounded-2xl border border-border/80 bg-card p-5 sm:p-5.5 shadow-xs transition-all hover:border-border hover:shadow-md"
+              className="group/card rounded-xl border border-border/80 bg-card p-4 sm:p-4.5 shadow-2xs transition-all hover:border-border hover:shadow-xs"
             >
               <div className="flex flex-col">
                 {/* 1. 顶栏区域：状态标识与时间/耗时元数据，解耦拥挤 */}
@@ -187,14 +187,14 @@ export function PrPipelineTab({
                         href={issueUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="group/issuelink inline-flex items-center gap-1.5 rounded-lg border border-border/80 bg-muted/60 px-2.5 py-1 font-mono text-xs font-medium text-foreground transition-all hover:border-emerald-500/40 hover:bg-muted hover:text-emerald-600 dark:hover:text-emerald-400 cursor-pointer"
+                        className="group/issuelink inline-flex items-center gap-1.5 rounded-lg border border-border/80 bg-muted/60 px-2.5 py-1 font-mono text-xs font-medium text-foreground transition-all hover:border-primary/40 hover:bg-muted hover:text-primary cursor-pointer"
                         title={t("viewIssueTooltip", {
                           number: task.issue_number,
                           defaultValue: `在新窗口打开 Issue #${task.issue_number}`,
                         })}
                         data-testid="pipeline-task-issue-link"
                       >
-                        <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground group-hover/issuelink:text-emerald-500 transition-colors" />
+                        <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground group-hover/issuelink:text-primary transition-colors" />
                         <span>{task.repo}#{task.issue_number}</span>
                         <ExternalLink className="h-3 w-3 opacity-40 group-hover/issuelink:opacity-100 transition-opacity" />
                       </a>
@@ -225,14 +225,14 @@ export function PrPipelineTab({
                 </div>
 
                 {/* 2. 主体区域：居中突出任务标题（支持点击跳转）与独立的分支/PR 操作栏 */}
-                <div className="pt-3.5 pb-1 space-y-3">
+                <div className="pt-3 pb-1 space-y-2.5">
                   {/* 任务主标题：点击直接跳转至 Issue 页面 */}
                   {issueUrl ? (
                     <a
                       href={issueUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[15px] font-semibold text-foreground tracking-tight leading-snug truncate hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors inline-block max-w-full"
+                      className="text-sm font-semibold text-foreground tracking-tight leading-snug truncate hover:text-primary transition-colors inline-block max-w-full"
                       title={task.title}
                       data-testid="pipeline-task-title-link"
                     >
@@ -240,7 +240,7 @@ export function PrPipelineTab({
                     </a>
                   ) : (
                     <h4
-                      className="text-[15px] font-semibold text-foreground tracking-tight leading-snug truncate"
+                      className="text-sm font-semibold text-foreground tracking-tight leading-snug truncate"
                       title={task.title}
                     >
                       {task.title}
@@ -254,10 +254,10 @@ export function PrPipelineTab({
                       {task.branch ? (
                         <div className="flex items-center gap-2">
                           <span
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 font-mono text-xs font-medium text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/10 px-2.5 py-1 font-mono text-xs font-medium text-primary"
                             title={t("branchLabel", "分支")}
                           >
-                            <GitBranch className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                            <GitBranch className="h-3.5 w-3.5 text-primary shrink-0" />
                             <span className="max-w-[240px] truncate">{task.branch}</span>
                           </span>
                         </div>
@@ -269,9 +269,9 @@ export function PrPipelineTab({
                           href={task.pr_url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-violet-200/80 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 hover:text-violet-800 dark:border-violet-800/60 dark:bg-violet-950/40 dark:text-violet-300 dark:hover:bg-violet-900/60 shrink-0"
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3 py-1 text-xs font-medium text-foreground hover:bg-muted hover:text-primary transition-colors shadow-2xs shrink-0"
                         >
-                          <GitPullRequest className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+                          <GitPullRequest className="h-3.5 w-3.5 text-primary" />
                           <span>{t("viewPullRequest", "查看 PR")}</span>
                           <ExternalLink className="h-3 w-3 opacity-60" />
                         </a>
@@ -282,16 +282,16 @@ export function PrPipelineTab({
 
                 {/* 3. 底栏区域：错误信息单行收敛展示与悬浮完整错误浮层 */}
                 {task.error_message && (
-                  <div className="mt-3.5 pt-3 border-t border-border/60">
+                  <div className="mt-3 pt-3 border-t border-border/60">
                     <div className="relative group/error">
                       {/* 单行紧凑告警栏，内边距舒适，边界留白充足 */}
                       <div
                         tabIndex={0}
                         role="button"
                         aria-label={t("hoverToViewErrorDetail", "滑过查看完整错误")}
-                        className="flex items-center gap-2.5 rounded-xl border border-rose-200/80 bg-rose-50/70 px-3.5 py-2 text-xs text-rose-700 transition-colors hover:bg-rose-100/80 dark:border-rose-900/40 dark:bg-rose-950/30 dark:text-rose-300 dark:hover:bg-rose-950/50 cursor-pointer focus:outline-none focus:ring-1 focus:ring-rose-400/40"
+                        className="flex items-center gap-2.5 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/15 cursor-pointer focus:outline-none focus:ring-1 focus:ring-destructive/30"
                       >
-                        <AlertCircle className="h-3.5 w-3.5 shrink-0 text-rose-500" />
+                        <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
                         <span
                           className="truncate font-mono flex-1 text-left"
                           title={task.error_message}

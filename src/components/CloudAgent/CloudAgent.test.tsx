@@ -131,8 +131,10 @@ describe("CloudAgent Component", () => {
     // Verify session badge and repo name
     expect(screen.getByText("one-space")).toBeTruthy();
     await waitFor(() => {
-      expect(screen.getByText("守护进程运行中")).toBeTruthy();
+      expect(screen.getByTestId("cloud-agent-daemon-state")).toHaveTextContent("运行中");
       expect(screen.getByText(/24.5G \/ 50G/)).toBeTruthy();
+      expect(screen.getByText("Cloud Gateway")).toBeInTheDocument();
+      expect(screen.getByText(/Port 17688/)).toBeInTheDocument();
     });
   });
 
@@ -400,7 +402,7 @@ describe("CloudAgent Component", () => {
     await waitFor(() => {
       expect(screen.getByText("my-aliyun-repo")).toBeInTheDocument();
       expect(screen.getByText("aliyun-ses-1")).toBeInTheDocument();
-      expect(screen.getByText("守护进程运行中")).toBeInTheDocument();
+      expect(screen.getByTestId("cloud-agent-daemon-state")).toHaveTextContent("运行中");
     });
   });
 

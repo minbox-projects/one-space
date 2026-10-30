@@ -25,14 +25,14 @@ export function CloudEmptyState({
   const ActionIcon = action?.icon;
 
   return (
-    <div className="rounded-2xl border border-dashed border-border bg-card/60 p-12 text-center">
-      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">
-        <Icon className="h-6 w-6" />
+    <div className="rounded-xl border border-dashed border-border bg-card/60 p-10 text-center">
+      <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <Icon className="h-5 w-5" />
       </div>
-      <h3 className="text-base font-semibold text-foreground">
+      <h3 className="text-sm font-semibold text-foreground">
         {title}
       </h3>
-      <p className="mt-1 text-xs text-muted-foreground max-w-sm mx-auto leading-relaxed">
+      <p className="mt-1 text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
         {description}
       </p>
 
@@ -41,7 +41,7 @@ export function CloudEmptyState({
           type="button"
           disabled={action.disabled || action.loading}
           onClick={action.onClick}
-          className="mt-5 inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-medium text-white shadow-2xs hover:bg-emerald-700 transition-all disabled:opacity-60 cursor-pointer"
+          className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-xs font-medium text-primary-foreground shadow-2xs hover:bg-primary/90 transition-all disabled:opacity-50 cursor-pointer"
         >
           {action.loading ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
