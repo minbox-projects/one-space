@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod deployment;
 pub mod gateway_sync;
 pub mod settings;
 pub mod ssh;

@@ -20916,13 +20916,15 @@
         "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
         "src/components/CloudAgent/components/PrPipelineTab.tsx",
         "src/components/CloudAgent/components/GatewayPanel.tsx",
-        "src/components/CloudAgent/components/NewSessionModal.tsx",
+        "src/components/CloudAgent/components/NewSessionDialog.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
         "src/lib/cloudAgent.ts",
         "src-tauri/src/cloud_agent.rs",
         "src-tauri/src/cloud_agent/commands.rs",
+        "src-tauri/src/cloud_agent/deployment.rs",
+        "src-tauri/src/cloud_agent/deployment_tests.rs",
         "src-tauri/src/cloud_agent/types.rs",
         "src-tauri/src/cloud_agent/settings.rs",
         "src-tauri/src/cloud_agent/ssh.rs",
@@ -20949,8 +20951,8 @@
           "visibility": "public"
         },
         {
-          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
-          "name": "NewSessionModal",
+          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
+          "name": "NewSessionDialog",
           "kind": "function",
           "visibility": "public"
         },
@@ -21121,17 +21123,153 @@
           "name": "cloudAgentSyncGateway",
           "kind": "function",
           "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/commands.rs",
+          "name": "cloud_agent_get_installation_info",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/commands.rs",
+          "name": "cloud_agent_deploy",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "RemoteShell",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "SshRemoteShell",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "DeploymentRegistry",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "classify_payload",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "parse_install_metadata",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "parse_phase_line",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "inspect_installation",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "validate_local_payload",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "read_install_metadata",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "build_status_command",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "run_deploy_process",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "run_deploy_process_async",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentInstallationState",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentInstallationInfo",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentDeployPhase",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentDeployPhaseStatus",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentDeploymentProgress",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentDeploymentResult",
+          "kind": "struct",
+          "visibility": "public"
         }
       ],
       "related_files": [
         "src/i18n/locales/en/cloudAgent.ts",
-        "src/i18n/locales/zh/cloudAgent.ts"
+        "src/i18n/locales/zh/cloudAgent.ts",
+        "server/onespace-cloud-agent/deploy.sh",
+        "server/onespace-cloud-agent/bootstrap.sh",
+        "server/onespace-cloud-agent/VERSION",
+        "server/onespace-cloud-agent/config.default.json",
+        "server/onespace-cloud-agent/config.example.json",
+        "server/onespace-cloud-agent/agent.py",
+        "server/onespace-cloud-agent/core/__init__.py",
+        "server/onespace-cloud-agent/core/disk_guardian.py",
+        "server/onespace-cloud-agent/core/gateway.py",
+        "server/onespace-cloud-agent/core/issue_worker.py",
+        "server/onespace-cloud-agent/core/notifier.py",
+        "server/onespace-cloud-agent/core/session_runner.py",
+        "server/onespace-cloud-agent/systemd/onespace-cloud-agent.service",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/src/app_runtime/run_app.rs"
       ],
       "tests": [
         "src/components/CloudAgent/CloudAgent.test.tsx",
         "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
-        "src-tauri/src/cloud_agent/tests.rs"
+        "src-tauri/src/cloud_agent/tests.rs",
+        "src-tauri/src/cloud_agent/deployment_tests.rs"
       ],
       "depends_on": [],
       "relations": [
@@ -21173,12 +21311,27 @@
         {
           "kind": "imports",
           "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/NewSessionModal.tsx#NewSessionModal"
+          "to": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog"
         },
         {
           "kind": "imports",
           "from": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel",
           "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src-tauri/src/cloud_agent/commands.rs#cloud_agent_get_installation_info",
+          "to": "src-tauri/src/cloud_agent/deployment.rs#inspect_installation"
+        },
+        {
+          "kind": "imports",
+          "from": "src-tauri/src/cloud_agent/commands.rs#cloud_agent_deploy",
+          "to": "src-tauri/src/cloud_agent/deployment.rs#run_deploy_process_async"
+        },
+        {
+          "kind": "imports",
+          "from": "src-tauri/src/cloud_agent/ssh.rs#get_cloud_status",
+          "to": "src-tauri/src/cloud_agent/deployment.rs#build_status_command"
         }
       ],
       "owner_role": "shared",
@@ -21189,7 +21342,7 @@
         "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
         "src/components/CloudAgent/components/PrPipelineTab.tsx",
         "src/components/CloudAgent/components/GatewayPanel.tsx",
-        "src/components/CloudAgent/components/NewSessionModal.tsx",
+        "src/components/CloudAgent/components/NewSessionDialog.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
@@ -21206,7 +21359,24 @@
         "src-tauri/src/cloud_agent/ssh.rs",
         "src-tauri/src/cloud_agent/terminal.rs",
         "src-tauri/src/cloud_agent/gateway_sync.rs",
-        "src-tauri/src/cloud_agent/tests.rs"
+        "src-tauri/src/cloud_agent/tests.rs",
+        "src-tauri/src/cloud_agent/deployment.rs",
+        "src-tauri/src/cloud_agent/deployment_tests.rs",
+        "server/onespace-cloud-agent/deploy.sh",
+        "server/onespace-cloud-agent/bootstrap.sh",
+        "server/onespace-cloud-agent/VERSION",
+        "server/onespace-cloud-agent/config.default.json",
+        "server/onespace-cloud-agent/config.example.json",
+        "server/onespace-cloud-agent/agent.py",
+        "server/onespace-cloud-agent/core/__init__.py",
+        "server/onespace-cloud-agent/core/disk_guardian.py",
+        "server/onespace-cloud-agent/core/gateway.py",
+        "server/onespace-cloud-agent/core/issue_worker.py",
+        "server/onespace-cloud-agent/core/notifier.py",
+        "server/onespace-cloud-agent/core/session_runner.py",
+        "server/onespace-cloud-agent/systemd/onespace-cloud-agent.service",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/src/app_runtime/run_app.rs"
       ],
       "shared_entry": false
     },

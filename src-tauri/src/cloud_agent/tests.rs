@@ -264,3 +264,6 @@ fn test_cloud_agent_task_deserialization_backward_compatible() {
     assert_eq!(task2.diff_stat.as_deref(), Some("3 files changed, +45 -12"));
     assert_eq!(task2.step.as_deref(), Some("opencode"));
 }
+
+#[path = "deployment_tests.rs"]
+mod deployment_tests;

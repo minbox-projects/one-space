@@ -185,3 +185,76 @@ pub struct GatewaySyncResult {
     pub model_pools_synced: usize,
     pub message: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAgentInstallationState {
+    Installed,
+    Incomplete,
+    NotInstalled,
+    ProbeError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudAgentInstallationInfo {
+    pub host: String,
+    pub state: CloudAgentInstallationState,
+    pub local_latest_version: String,
+    #[serde(default)]
+    pub remote_version: Option<String>,
+    #[serde(default)]
+    pub installed_at: Option<String>,
+    #[serde(default)]
+    pub metadata_reason: Option<String>,
+    #[serde(default)]
+    pub configuration_error: Option<String>,
+    #[serde(default)]
+    pub service_active: Option<bool>,
+    #[serde(default)]
+    pub probe_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAgentDeployPhase {
+    Platform,
+    Dependencies,
+    Upload,
+    Config,
+    Publish,
+    Service,
+    Metadata,
+    Cleanup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAgentDeployPhaseStatus {
+    Start,
+    Ok,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudAgentDeploymentProgress {
+    pub host: String,
+    pub operation_id: String,
+    pub phase: CloudAgentDeployPhase,
+    pub status: CloudAgentDeployPhaseStatus,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudAgentDeploymentResult {
+    pub host: String,
+    pub operation_id: String,
+    pub success: bool,
+    pub phase: CloudAgentDeployPhase,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub remote_version: Option<String>,
+    #[serde(default)]
+    pub installed_at: Option<String>,
+}

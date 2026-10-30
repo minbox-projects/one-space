@@ -39,6 +39,21 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../server/onespace-cloud-agent/deploy.sh": "cloud-agent/deploy.sh",
+      "../server/onespace-cloud-agent/bootstrap.sh": "cloud-agent/bootstrap.sh",
+      "../server/onespace-cloud-agent/VERSION": "cloud-agent/VERSION",
+      "../server/onespace-cloud-agent/config.default.json": "cloud-agent/config.default.json",
+      "../server/onespace-cloud-agent/config.example.json": "cloud-agent/config.example.json",
+      "../server/onespace-cloud-agent/agent.py": "cloud-agent/agent.py",
+      "../server/onespace-cloud-agent/core/__init__.py": "cloud-agent/core/__init__.py",
+      "../server/onespace-cloud-agent/core/disk_guardian.py": "cloud-agent/core/disk_guardian.py",
+      "../server/onespace-cloud-agent/core/gateway.py": "cloud-agent/core/gateway.py",
+      "../server/onespace-cloud-agent/core/issue_worker.py": "cloud-agent/core/issue_worker.py",
+      "../server/onespace-cloud-agent/core/notifier.py": "cloud-agent/core/notifier.py",
+      "../server/onespace-cloud-agent/core/session_runner.py": "cloud-agent/core/session_runner.py",
+      "../server/onespace-cloud-agent/systemd/onespace-cloud-agent.service": "cloud-agent/systemd/onespace-cloud-agent.service"
+    },
     "macOS": {
       "entitlements": "Entitlements.plist"
     }

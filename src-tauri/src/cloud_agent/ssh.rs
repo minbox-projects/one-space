@@ -4,9 +4,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::cloud_agent::types::{
-    CloudAgentStatus, CloudAgentTask, CloudSession, CloudWorktree,
-};
+use crate::cloud_agent::deployment::build_status_command;
+use crate::cloud_agent::types::{CloudAgentStatus, CloudAgentTask, CloudSession, CloudWorktree};
 
 const SSH_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -111,8 +110,7 @@ pub async fn get_cloud_status(
     host: &str,
     remote_agent_dir: &str,
 ) -> Result<CloudAgentStatus, String> {
-    let agent_py = format!("{}/agent.py", remote_agent_dir.trim_end_matches('/'));
-    let cmd = format!("python3 {} status --json", agent_py);
+    let cmd = build_status_command(remote_agent_dir);
     let raw = run_ssh_command(host, &cmd).await?;
     serde_json::from_str::<CloudAgentStatus>(&raw)
         .map_err(|e| format!("解析云端状态数据失败: {} (原始输出: {})", e, raw))

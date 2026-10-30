@@ -275,6 +275,8 @@ pub fn run() {
             cloud_agent::commands::cloud_agent_kill_session,
             cloud_agent::commands::cloud_agent_launch_terminal,
             cloud_agent::commands::cloud_agent_sync_gateway,
+            cloud_agent::commands::cloud_agent_get_installation_info,
+            cloud_agent::commands::cloud_agent_deploy,
             webhook_catcher::webhook_get_server_status,
             webhook_catcher::webhook_start_server,
             webhook_catcher::webhook_list_endpoints,
