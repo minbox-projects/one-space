@@ -18,6 +18,9 @@ import {
   Tag,
   MessageSquare,
   FileDiff,
+  Hand,
+  XCircle,
+  Info,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { zhCN, enUS } from "date-fns/locale";
@@ -38,6 +41,18 @@ interface PrPipelineTabProps {
   loading: boolean;
   onRefresh: () => void;
   onLaunchTerminal?: (target: string, branch?: string) => Promise<void>;
+  onPlanAttach?: (jobId: string) => void | Promise<void>;
+  onPlanCancel?: (jobId: string) => void | Promise<void>;
+}
+
+function formatPlanDetail(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**
@@ -72,7 +87,13 @@ export function resolveIssueUrl(task: CloudAgentTask): string | null {
   return null;
 }
 
-export type StepState = "completed" | "current" | "failed" | "skipped" | "pending";
+export type StepState =
+  | "completed"
+  | "current"
+  | "failed"
+  | "skipped"
+  | "pending"
+  | "cancelled";
 
 export interface PipelineStepItem {
   id: string;
@@ -87,6 +108,78 @@ export function derivePipelineSteps(
   task: CloudAgentTask,
   t: TFunction
 ): PipelineStepItem[] {
+  if (task.source === "plan") {
+    const planSteps: PipelineStepItem[] = [
+      { id: "accepted", label: t("planStepAccepted", "接单"), state: "pending" },
+      {
+        id: "preparing",
+        label: t("planStepPreparing", "准备仓库"),
+        state: "pending",
+      },
+      {
+        id: "running",
+        label: t("planStepRunning", "实施"),
+        state: "pending",
+      },
+      {
+        id: "publishing",
+        label: t("planStepPublishing", "发布 PR"),
+        state: "pending",
+      },
+      {
+        id: "completed",
+        label: t("planStepCompleted", "完成"),
+        state: "pending",
+      },
+    ];
+
+    const status = (task.status || "").toLowerCase();
+    const stage = (task.stage || task.status || "").toLowerCase();
+    const stageIndex: Record<string, number> = {
+      accepted: 0,
+      preparing: 1,
+      running: 2,
+      waiting_input: 2,
+      publishing: 3,
+      completed: 4,
+      no_changes: 4,
+    };
+
+    if (status === "completed") {
+      return planSteps.map((step) => ({ ...step, state: "completed" }));
+    }
+
+    if (status === "no_changes") {
+      planSteps[0].state = "completed";
+      planSteps[1].state = "completed";
+      planSteps[2].state = "completed";
+      planSteps[3].state = "skipped";
+      planSteps[4].state = "completed";
+      return planSteps;
+    }
+
+    const index = Math.min(stageIndex[stage] ?? 0, planSteps.length - 1);
+
+    if (status === "failed" || status === "cancelled") {
+      for (let i = 0; i < index; i += 1) {
+        planSteps[i].state = "completed";
+      }
+      planSteps[index].state =
+        status === "cancelled" ? "cancelled" : "failed";
+      return planSteps;
+    }
+
+    for (let i = 0; i < index; i += 1) {
+      planSteps[i].state = "completed";
+    }
+    if (index < planSteps.length - 1) {
+      planSteps[index].state = "current";
+    } else {
+      planSteps[index].state = "completed";
+    }
+    return planSteps;
+  }
+
   const steps: PipelineStepItem[] = [
     { id: "pick", label: t("stepPick", "接单鉴权"), state: "completed" },
     { id: "branch", label: t("stepBranch", "创建 Worktree"), state: "pending" },
@@ -168,6 +261,8 @@ export function PrPipelineTab({
   loading,
   onRefresh,
   onLaunchTerminal,
+  onPlanAttach,
+  onPlanCancel,
 }: PrPipelineTabProps) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [expandedErrors, setExpandedErrors] = useState<Record<string, boolean>>({});
@@ -269,6 +364,20 @@ export function PrPipelineTab({
           const friendlyDuration = formatFriendlyDuration(task.duration_seconds, language);
           const pipelineSteps = derivePipelineSteps(task, t);
           const isErrorExpanded = Boolean(expandedErrors[task.id]);
+          const isPlanTask = task.source === "plan";
+          const planStatus = (task.status || "").toLowerCase();
+          const planStage = (task.stage || task.status || "").toLowerCase();
+          const planTerminal = [
+            "completed",
+            "no_changes",
+            "failed",
+            "cancelled",
+          ].includes(planStatus);
+          const planLive = ["running", "waiting_input", "publishing"].includes(
+            planStage
+          );
+          const questionText = formatPlanDetail(task.question);
+          const decisionText = formatPlanDetail(task.decision);
 
           // 触发类型显示
           const isFollowUp = task.trigger_type === "follow_up";
@@ -307,31 +416,45 @@ export function PrPipelineTab({
                       {t("pipelineStatusNoChanges", "无变更")}
                     </span>
                   )}
+                  {isPlanTask && task.status === "waiting_input" && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400 shrink-0 whitespace-nowrap">
+                      <AlertCircle className="h-3.5 w-3.5" />
+                      {t("pipelineStatusWaitingInput", "等待人工输入")}
+                    </span>
+                  )}
+                  {isPlanTask && task.status === "cancelled" && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-xs font-semibold text-muted-foreground shrink-0 whitespace-nowrap">
+                      <XCircle className="h-3.5 w-3.5" />
+                      {t("pipelineStatusCancelled", "已取消")}
+                    </span>
+                  )}
 
                   {/* 触发方式标识 */}
-                  <span
-                    className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] font-medium border shrink-0 whitespace-nowrap ${
-                      isFollowUp
-                        ? "border-purple-500/20 bg-purple-500/10 text-purple-600 dark:text-purple-400"
-                        : "border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                    }`}
-                    title={
-                      isFollowUp
-                        ? t("triggerFollowUpDesc", "协作者评论 /agent 发起的追随任务")
-                        : t("triggerFirstRunDesc", "Issue 关联标签首次接单")
-                    }
-                  >
-                    {isFollowUp ? (
-                      <MessageSquare className="h-2.5 w-2.5" />
-                    ) : (
-                      <Tag className="h-2.5 w-2.5" />
-                    )}
-                    <span>
-                      {isFollowUp
-                        ? t("triggerFollowUp", "追加指令")
-                        : t("triggerFirstRun", "标签接单")}
+                  {!isPlanTask ? (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] font-medium border shrink-0 whitespace-nowrap ${
+                        isFollowUp
+                          ? "border-purple-500/20 bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                          : "border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                      }`}
+                      title={
+                        isFollowUp
+                          ? t("triggerFollowUpDesc", "协作者评论 /agent 发起的追随任务")
+                          : t("triggerFirstRunDesc", "Issue 关联标签首次接单")
+                      }
+                    >
+                      {isFollowUp ? (
+                        <MessageSquare className="h-2.5 w-2.5" />
+                      ) : (
+                        <Tag className="h-2.5 w-2.5" />
+                      )}
+                      <span>
+                        {isFollowUp
+                          ? t("triggerFollowUp", "追加指令")
+                          : t("triggerFirstRun", "标签接单")}
+                      </span>
                     </span>
-                  </span>
+                  ) : null}
 
                   {/* 尝试轮次 */}
                   {task.attempts !== undefined && task.attempts !== null ? (
@@ -354,7 +477,28 @@ export function PrPipelineTab({
                   ) : null}
 
                   {/* 代码仓库与 Issue 标识（支持点击在新窗口打开 Issue 页面，隐藏前部分组织/URL，完整显示后部与编号） */}
-                  {issueUrl ? (
+                  {isPlanTask ? (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 font-mono text-xs font-medium text-sky-700 dark:text-sky-300 min-w-0 shrink truncate whitespace-nowrap"
+                      data-testid="plan-task-meta"
+                      title={task.plan_title || task.plan_id || task.repo}
+                    >
+                      <GitPullRequest className="h-3 w-3 shrink-0" />
+                      <span className="shrink-0">
+                        {t("planTaskSourcePlan", "本地计划")}
+                      </span>
+                      {task.plan_id ? (
+                        <span className="truncate max-w-[180px]">
+                          {t("planTaskPlanId", "计划")}: {task.plan_id}
+                        </span>
+                      ) : null}
+                      {task.workspace_id ? (
+                        <span className="truncate max-w-[150px] text-muted-foreground">
+                          {t("planTaskWorkspace", "工作区")}: {task.workspace_id}
+                        </span>
+                      ) : null}
+                    </span>
+                  ) : issueUrl ? (
                     <a
                       href={issueUrl}
                       target="_blank"
@@ -368,7 +512,7 @@ export function PrPipelineTab({
                     >
                       <FolderGit2 className="h-3 w-3 text-muted-foreground group-hover/issuelink:text-primary transition-colors shrink-0" />
                       <span className="truncate max-w-[200px]">
-                        {formatIssueLabelTail(task.repo, task.issue_number)}
+                        {formatIssueLabelTail(task.repo, task.issue_number ?? "")}
                       </span>
                       <ExternalLink className="h-2.5 w-2.5 opacity-40 group-hover/issuelink:opacity-100 transition-opacity shrink-0" />
                     </a>
@@ -376,7 +520,7 @@ export function PrPipelineTab({
                     <span className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-muted/60 px-2 py-0.5 font-mono text-xs font-medium text-foreground min-w-0 shrink truncate whitespace-nowrap">
                       <FolderGit2 className="h-3 w-3 text-muted-foreground shrink-0" />
                       <span className="truncate max-w-[200px]">
-                        {formatIssueLabelTail(task.repo, task.issue_number)}
+                        {formatIssueLabelTail(task.repo, task.issue_number ?? "")}
                       </span>
                     </span>
                   )}
@@ -406,6 +550,101 @@ export function PrPipelineTab({
                       </h4>
                     )}
                   </div>
+
+                  {isPlanTask ? (
+                    <div className="space-y-1.5 rounded-lg border border-border/50 bg-muted/20 p-2">
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                        <span
+                          className="inline-flex items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/10 px-1.5 py-0.5 font-mono font-semibold text-sky-700 dark:text-sky-300"
+                          data-testid="plan-task-stage"
+                          title={t("planTaskStage", "当前阶段")}
+                        >
+                          <Info className="h-3 w-3 shrink-0" />
+                          {task.stage || task.status}
+                        </span>
+                        {task.base_commit || task.final_commit ? (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-1.5 py-0.5 font-mono text-foreground"
+                            data-testid="plan-task-commits"
+                            title={t("planTaskCommits", "基线 / 最终提交")}
+                          >
+                            <GitBranch className="h-3 w-3 shrink-0" />
+                            <span>
+                              {task.base_commit
+                                ? task.base_commit.slice(0, 7)
+                                : "—"}
+                              {" → "}
+                              {task.final_commit
+                                ? task.final_commit.slice(0, 7)
+                                : "—"}
+                            </span>
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {questionText ? (
+                        <p
+                          className="break-words text-[10.5px] text-amber-700 dark:text-amber-300"
+                          data-testid="plan-task-question"
+                        >
+                          {t("planTaskQuestion", "待回答")}: {questionText}
+                        </p>
+                      ) : null}
+
+                      {decisionText ? (
+                        <p
+                          className="break-words text-[10.5px] text-emerald-700 dark:text-emerald-300"
+                          data-testid="plan-task-decision"
+                        >
+                          {t("planTaskDecision", "自动决策")}: {decisionText}
+                        </p>
+                      ) : null}
+
+                      {task.pr_url ? (
+                        <a
+                          href={task.pr_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex max-w-full items-center gap-1 break-all text-[10.5px] font-medium text-primary hover:underline"
+                          data-testid="plan-task-pr"
+                          title={t("planTaskPr", "计划任务 PR")}
+                        >
+                          <GitPullRequest className="h-3 w-3 shrink-0" />
+                          <span className="break-all">{task.pr_url}</span>
+                        </a>
+                      ) : null}
+
+                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                        {planLive && onPlanAttach ? (
+                          <button
+                            type="button"
+                            onClick={() => void onPlanAttach(task.id)}
+                            className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-[10.5px] font-medium text-primary transition-colors hover:bg-primary/20"
+                            data-testid="plan-task-takeover"
+                            title={t(
+                              "planTaskTakeover",
+                              "在原生终端接管该实时会话"
+                            )}
+                          >
+                            <Hand className="h-3 w-3 shrink-0" />
+                            {t("planTaskTakeoverLabel", "接管会话")}
+                          </button>
+                        ) : null}
+                        {!planTerminal && onPlanCancel ? (
+                          <button
+                            type="button"
+                            onClick={() => void onPlanCancel(task.id)}
+                            className="inline-flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10.5px] font-medium text-destructive transition-colors hover:bg-destructive/20"
+                            data-testid="plan-task-cancel"
+                            title={t("planTaskCancelTooltip", "取消该计划任务")}
+                          >
+                            <XCircle className="h-3 w-3 shrink-0" />
+                            {t("planTaskCancel", "取消任务")}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
 
                   {/* 交付成果胶囊条：PR、分支、变动量、作者（单行横向排布） */}
                   {(task.pr_url || task.branch || task.diff_stat || task.author) && (
@@ -542,6 +781,9 @@ export function PrPipelineTab({
                             {step.state === "failed" && (
                               <AlertCircle className="h-3 w-3 text-rose-500 shrink-0" />
                             )}
+                            {step.state === "cancelled" && (
+                              <XCircle className="h-3 w-3 text-muted-foreground shrink-0" />
+                            )}
                             {step.state === "skipped" && (
                               <span className="h-3 w-3 rounded-full border border-amber-500/40 bg-amber-500/20 text-[8px] font-bold text-amber-500 flex items-center justify-center shrink-0">
                                 -
@@ -560,6 +802,8 @@ export function PrPipelineTab({
                                   ? "text-sky-600 dark:text-sky-400 font-semibold"
                                   : step.state === "failed"
                                   ? "text-rose-600 dark:text-rose-400 font-semibold"
+                                  : step.state === "cancelled"
+                                  ? "text-muted-foreground line-through"
                                   : step.state === "skipped"
                                   ? "text-amber-600 dark:text-amber-400"
                                   : "text-muted-foreground/60"

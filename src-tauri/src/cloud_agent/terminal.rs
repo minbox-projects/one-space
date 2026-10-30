@@ -48,13 +48,31 @@ pub fn launch_cloud_terminal_session(
     extra_args: &str,
     terminal_override: Option<&str>,
 ) -> Result<(), String> {
+    let ssh_cmd = build_ssh_connect_command(host, target, branch, use_yolo, extra_args);
+    dispatch_ssh_command(&ssh_cmd, terminal_override)
+}
+
+/// Launch an already-built remote command in the selected local terminal.
+///
+/// Reuses the same terminal dispatch and AppleScript escaping as cloud session
+/// entry without touching the existing session functions.
+pub fn launch_cloud_remote_command(
+    host: &str,
+    remote_command: &str,
+    terminal_override: Option<&str>,
+) -> Result<(), String> {
+    let escaped = remote_command.replace('"', "\\\"");
+    let ssh_cmd = format!("ssh -t {} \"{}\"", host, escaped);
+    dispatch_ssh_command(&ssh_cmd, terminal_override)
+}
+
+fn dispatch_ssh_command(ssh_cmd: &str, terminal_override: Option<&str>) -> Result<(), String> {
     let configured_term = match terminal_override {
         Some(t) if !t.is_empty() && t != "auto" => t.to_string(),
         _ => crate::ai_sessions::resolve_terminal_app_name(),
     };
     let term_app_clean = clean_terminal_app_name(&configured_term);
     let term_key = normalize_terminal_app_key(&term_app_clean);
-    let ssh_cmd = build_ssh_connect_command(host, target, branch, use_yolo, extra_args);
 
     // 针对不同终端进行分发
     if term_key == "ghostty" {
@@ -62,7 +80,7 @@ pub fn launch_cloud_terminal_session(
             .args(["-a", "Ghostty", "-n", "--args", "-e"])
             .arg("sh")
             .arg("-c")
-            .arg(&ssh_cmd)
+            .arg(ssh_cmd)
             .spawn();
         if res.is_ok() {
             return Ok(());
@@ -72,7 +90,7 @@ pub fn launch_cloud_terminal_session(
             .args(["-a", "Alacritty", "-n", "--args", "-e"])
             .arg("sh")
             .arg("-c")
-            .arg(&ssh_cmd)
+            .arg(ssh_cmd)
             .spawn();
         if res.is_ok() {
             return Ok(());
@@ -95,8 +113,8 @@ pub fn launch_cloud_terminal_session(
                 end tell
             end try
         end tell"#,
-            escape_applescript_string(&ssh_cmd),
-            escape_applescript_string(&ssh_cmd)
+            escape_applescript_string(ssh_cmd),
+            escape_applescript_string(ssh_cmd)
         );
         let res = Command::new("osascript").arg("-e").arg(&script).spawn();
         if res.is_ok() {
@@ -110,7 +128,7 @@ pub fn launch_cloud_terminal_session(
         activate
         do script "{}"
     end tell"#,
-        escape_applescript_string(&ssh_cmd)
+        escape_applescript_string(ssh_cmd)
     );
 
     Command::new("osascript")

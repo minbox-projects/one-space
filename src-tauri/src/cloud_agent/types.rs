@@ -155,7 +155,8 @@ pub struct CloudAgentStatus {
 pub struct CloudAgentTask {
     pub id: String,
     pub repo: String,
-    pub issue_number: u64,
+    #[serde(default)]
+    pub issue_number: Option<u64>,
     pub title: String,
     pub status: String,
     pub started_at: i64,
@@ -176,6 +177,133 @@ pub struct CloudAgentTask {
     pub diff_stat: Option<String>,
     #[serde(default)]
     pub step: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub plan_id: Option<String>,
+    #[serde(default)]
+    pub plan_title: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub base_commit: Option<String>,
+    #[serde(default)]
+    pub final_commit: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub session_url: Option<String>,
+    #[serde(default)]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub decision: Option<String>,
+    #[serde(default)]
+    pub remote_root: Option<String>,
+    #[serde(default)]
+    pub local_root: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudPlanRepository {
+    pub remote_url: String,
+    pub canonical: String,
+    pub host: String,
+    pub branch: String,
+    pub base_branch: String,
+    pub source: String,
+    pub head_sha: String,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalPlanSummary {
+    pub plan_id: String,
+    pub title: String,
+    pub directory: String,
+    pub valid: bool,
+    pub error: Option<String>,
+    pub has_tasks: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalPlanContext {
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub root_path: String,
+    pub repository: Option<CloudPlanRepository>,
+    pub repository_error: Option<String>,
+    pub plans: Vec<LocalPlanSummary>,
+    pub plans_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanFilePayload {
+    pub path: String,
+    pub content_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalPlanPayload {
+    pub plan_id: String,
+    pub plan_title: String,
+    pub directory: String,
+    pub files: Vec<PlanFilePayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudPlanSubmitInput {
+    pub workspace_id: String,
+    pub plan_directory: String,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub request_id: String,
+    #[serde(default)]
+    pub host: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudPlanSubmitResult {
+    pub task: CloudAgentTask,
+    pub reused: bool,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudPlanCapabilities {
+    #[serde(default)]
+    pub plan_submit: bool,
+    #[serde(default)]
+    pub plan_list: bool,
+    #[serde(default)]
+    pub plan_cancel: bool,
+    #[serde(default)]
+    pub plan_attach: bool,
+    #[serde(default = "default_plan_schema_version")]
+    pub schema_version: u32,
+}
+
+fn default_plan_schema_version() -> u32 {
+    1
+}
+
+impl Default for CloudPlanCapabilities {
+    fn default() -> Self {
+        Self {
+            plan_submit: false,
+            plan_list: false,
+            plan_cancel: false,
+            plan_attach: false,
+            schema_version: default_plan_schema_version(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
