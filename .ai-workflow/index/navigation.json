@@ -20930,7 +20930,10 @@
         "src-tauri/src/cloud_agent/local_plans.rs",
         "src-tauri/src/cloud_agent/plan_transfer.rs",
         "src-tauri/src/cloud_agent/terminal.rs",
-        "src-tauri/src/cloud_agent/gateway_sync.rs"
+        "src-tauri/src/cloud_agent/gateway_sync.rs",
+        "server/onespace-cloud-agent/agent.py",
+        "server/onespace-cloud-agent/core/plan_tasks.py",
+        "server/onespace-cloud-agent/core/plan_workspace.py"
       ],
       "symbols": [
         {
@@ -21134,7 +21137,9 @@
         "src/components/CloudAgent/CloudAgent.test.tsx",
         "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
-        "src-tauri/src/cloud_agent/tests.rs"
+        "src-tauri/src/cloud_agent/tests.rs",
+        "server/onespace-cloud-agent/tests/test_plan_tasks.py",
+        "server/onespace-cloud-agent/tests/test_plan_workspace.py"
       ],
       "depends_on": [],
       "relations": [
@@ -21212,7 +21217,12 @@
         "src-tauri/src/cloud_agent/plan_transfer.rs",
         "src-tauri/src/cloud_agent/terminal.rs",
         "src-tauri/src/cloud_agent/gateway_sync.rs",
-        "src-tauri/src/cloud_agent/tests.rs"
+        "src-tauri/src/cloud_agent/tests.rs",
+        "server/onespace-cloud-agent/tests/test_plan_tasks.py",
+        "server/onespace-cloud-agent/tests/test_plan_workspace.py",
+        "server/onespace-cloud-agent/agent.py",
+        "server/onespace-cloud-agent/core/plan_tasks.py",
+        "server/onespace-cloud-agent/core/plan_workspace.py"
       ],
       "shared_entry": false
     },
