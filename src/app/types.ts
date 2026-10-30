@@ -88,4 +88,5 @@ export type AppCounts = {
   skills: number;
   subagents: number;
   mcpServers: number;
+  cloudAgent: number;
 };

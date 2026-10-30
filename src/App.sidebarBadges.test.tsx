@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { ThemeProvider } from "@/components/ThemeProvider";
@@ -6,6 +6,7 @@ import i18n from "@/i18n";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 import type { GatewayStatus } from "@/lib/aiGateway";
+import { CLOUD_AGENT_SESSIONS_COUNT_EVENT } from "@/lib/cloudAgent";
 
 vi.mock("@/components/Launcher", () => ({
   Launcher: () => <div data-testid="mock-launcher" />,
@@ -94,6 +95,13 @@ describe("App 侧边栏统计徽标", () => {
           cache_tokens: 0,
         };
       }
+      if (command === "cloud_agent_list_sessions") {
+        return [
+          { session_name: "s1", repo_name: "r1", is_active: true },
+          { session_name: "s2", repo_name: "r2", is_active: false },
+          { session_name: "s3", repo_name: "r3", is_active: true },
+        ];
+      }
       return undefined;
     });
   });
@@ -122,6 +130,33 @@ describe("App 侧边栏统计徽标", () => {
     });
     await waitFor(() => {
       expect(within(usageButton).getByText(expectedBadge)).toBeInTheDocument();
+    });
+  });
+
+  it("AI 云端智能体徽标显示活跃会话总数并支持事件联动实时更新", async () => {
+    renderApp();
+    await screen.findByText("OneSpace");
+
+    const cloudAgentButton = await screen.findByRole("button", {
+      name: namePattern(i18n.t("cloudAgent", "AI Cloud Agent")),
+    });
+
+    // 初始异步加载完成后的徽标（2 个 active，1 个 inactive，总计 2）
+    await waitFor(() => {
+      expect(within(cloudAgentButton).getByText("2")).toBeInTheDocument();
+    });
+
+    // 触发云端控制台同步事件，验证联动更新至 5
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(CLOUD_AGENT_SESSIONS_COUNT_EVENT, {
+          detail: { count: 5 },
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(within(cloudAgentButton).getByText("5")).toBeInTheDocument();
     });
   });
 });

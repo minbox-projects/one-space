@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export const CLOUD_AGENT_SESSIONS_COUNT_EVENT =
+  "onespace:cloud-agent-sessions-count";
+
 export interface CloudAgentSettings {
   defaultHost: string;
   remoteWorkspaceRoot: string;

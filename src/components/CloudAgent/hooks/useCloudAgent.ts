@@ -9,6 +9,7 @@ import {
   cloudAgentKillSession,
   cloudAgentLaunchTerminal,
   cloudAgentSyncGateway,
+  CLOUD_AGENT_SESSIONS_COUNT_EVENT,
   DEFAULT_CLOUD_AGENT_SETTINGS,
   type CloudAgentSettings,
   type CloudAgentStatus,
@@ -77,6 +78,16 @@ export function useCloudAgent(
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
+
+  // 会话列表更新时，通知全局同步活跃会话总数
+  useEffect(() => {
+    const activeCount = sessions.filter((s) => s.is_active !== false).length;
+    window.dispatchEvent(
+      new CustomEvent(CLOUD_AGENT_SESSIONS_COUNT_EVENT, {
+        detail: { count: activeCount },
+      })
+    );
+  }, [sessions]);
 
   // 定时自动轮询
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);

@@ -307,4 +307,21 @@ describe("CloudAgent Component", () => {
       expect(screen.getByText("刷新任务流水")).toBeInTheDocument();
     });
   });
+
+  it("dispatches active sessions count event when sessions load", async () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    await act(async () => {
+      renderWithProviders(<CloudAgent isVisible={true} />);
+    });
+
+    await waitFor(() => {
+      expect(dispatchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "onespace:cloud-agent-sessions-count",
+          detail: { count: 1 },
+        }),
+      );
+    });
+    dispatchSpy.mockRestore();
+  });
 });

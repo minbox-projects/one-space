@@ -77,6 +77,7 @@ export function useAppNavigationGroups({
             id: "cloud-agent",
             name: t("cloudAgent", "AI Cloud Agent"),
             icon: CloudCog,
+            count: counts.cloudAgent,
           },
           {
             id: "ai-gateway",

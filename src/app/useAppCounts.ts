@@ -1,8 +1,12 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getUnreadEmailCount } from "@/lib/gmail";
 import { getUnreadMessageCount } from "@/lib/messages";
 import { sessionsUsageDayStats } from "@/lib/aiUsage";
+import {
+  cloudAgentListSessions,
+  CLOUD_AGENT_SESSIONS_COUNT_EVENT,
+} from "@/lib/cloudAgent";
 import { localDateString } from "./helpers";
 import type { ApiResp, AppCounts, DashboardCounts } from "./types";
 
@@ -29,10 +33,30 @@ export function useAppCounts({
     skills: 0,
     subagents: 0,
     mcpServers: 0,
+    cloudAgent: 0,
   });
   const [usageTodayTokens, setUsageTodayTokens] = useState(0);
   const loadCountsInFlightRef = useRef<Promise<void> | null>(null);
   const countsRefreshTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const handleCountUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent<{ count: number }>;
+      if (typeof customEvent.detail?.count === "number") {
+        setCounts((prev) => ({ ...prev, cloudAgent: customEvent.detail.count }));
+      }
+    };
+    window.addEventListener(
+      CLOUD_AGENT_SESSIONS_COUNT_EVENT,
+      handleCountUpdate,
+    );
+    return () => {
+      window.removeEventListener(
+        CLOUD_AGENT_SESSIONS_COUNT_EVENT,
+        handleCountUpdate,
+      );
+    };
+  }, []);
 
   const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -73,6 +97,17 @@ export function useAppCounts({
       getUnreadEmailCount()
         .then((mailCount) => {
           setCounts((prev) => ({ ...prev, mail: mailCount }));
+        })
+        .catch(() => {});
+
+      cloudAgentListSessions()
+        .then((cloudSessions) => {
+          if (Array.isArray(cloudSessions)) {
+            const activeCount = cloudSessions.filter(
+              (s) => s.is_active !== false,
+            ).length;
+            setCounts((prev) => ({ ...prev, cloudAgent: activeCount }));
+          }
         })
         .catch(() => {});
     })();
