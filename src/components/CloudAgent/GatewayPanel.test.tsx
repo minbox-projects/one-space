@@ -191,7 +191,7 @@ describe("GatewayPanel Component", () => {
 
     expect(
       screen.getByText(
-        "云端暂无服务商与模型映射，请点击右上角「一键同步网关至云端」完成配置下发。"
+        "云端暂无服务商与模型映射，请点击右上角「同步至云端」完成配置下发。"
       )
     ).toBeInTheDocument();
   });
@@ -213,7 +213,7 @@ describe("GatewayPanel Component", () => {
       />
     );
 
-    const syncBtn = screen.getByText("一键同步网关至云端");
+    const syncBtn = screen.getByText("同步至云端");
     await user.click(syncBtn);
 
     expect(onSyncGateway).toHaveBeenCalledTimes(1);

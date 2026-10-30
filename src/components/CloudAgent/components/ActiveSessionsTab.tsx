@@ -12,7 +12,7 @@ import {
   Search,
   Filter,
   X,
-  Sparkles,
+  Plus,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { zhCN, enUS } from "date-fns/locale";
@@ -133,8 +133,8 @@ export function ActiveSessionsTab({
           "在云端创建 Git Worktree 特性隔离任务，或恢复离线的历史工作区，即可瞬间调起本地终端开展长程编程。"
         )}
         action={{
-          label: t("createNewFeatureTask", "新建云端特性任务"),
-          icon: Sparkles,
+          label: t("createNewFeatureTask", "新任务"),
+          icon: Plus,
           onClick: onOpenNewTaskModal,
         }}
       />

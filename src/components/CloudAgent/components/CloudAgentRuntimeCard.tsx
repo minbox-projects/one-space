@@ -6,6 +6,7 @@ import {
   FolderGit2,
   HardDrive,
   RefreshCw,
+  Plus,
   Sparkles,
   Cpu,
   GitBranch,
@@ -193,7 +194,7 @@ export function CloudAgentRuntimeCard({
           )}
         </div>
 
-        {/* 右侧：刷新数据与新建特性任务按钮 */}
+        {/* 右侧：刷新数据与新任务按钮 */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
@@ -212,8 +213,8 @@ export function CloudAgentRuntimeCard({
             onClick={onOpenNewTaskModal}
             className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground shadow-2xs transition hover:bg-primary/90 active:scale-98 cursor-pointer"
           >
-            <Sparkles className="h-3.5 w-3.5" />
-            <span>{t("newFeatureTaskBtn", "新建特性任务")}</span>
+            <Plus className="h-3.5 w-3.5" />
+            <span>{t("newFeatureTaskBtn", "新任务")}</span>
           </button>
         </div>
       </div>

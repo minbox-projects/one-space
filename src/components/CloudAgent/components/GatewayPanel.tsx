@@ -5,7 +5,7 @@ import {
   Layers,
   ShieldCheck,
   Loader2,
-  Sparkles,
+  CloudUpload,
   ChevronDown,
   ChevronRight,
   Cpu,
@@ -231,8 +231,8 @@ export function GatewayPanel({
                 </>
               ) : (
                 <>
-                  <Sparkles className="h-3.5 w-3.5" />
-                  <span>{t("syncGatewayToCloudBtn", "一键同步网关至云端")}</span>
+                  <CloudUpload className="h-3.5 w-3.5" />
+                  <span>{t("syncGatewayToCloudBtn", "同步至云端")}</span>
                 </>
               )}
             </button>
@@ -288,7 +288,7 @@ export function GatewayPanel({
           <div className="rounded-lg border border-dashed border-border/80 bg-muted/20 p-6 text-center text-xs text-muted-foreground">
             {t(
               "noModelPoolsSynced",
-              "云端暂无模型池，请点击右上角「一键同步网关至云端」完成配置下发。"
+              "云端暂无模型池，请点击右上角「同步至云端」完成配置下发。"
             )}
           </div>
         ) : (
@@ -375,7 +375,7 @@ export function GatewayPanel({
           <div className="rounded-lg border border-dashed border-border/80 bg-muted/20 p-8 text-center text-xs text-muted-foreground">
             {t(
               "noProvidersSynced",
-              "云端暂无服务商与模型映射，请点击右上角「一键同步网关至云端」完成配置下发。"
+              "云端暂无服务商与模型映射，请点击右上角「同步至云端」完成配置下发。"
             )}
           </div>
         ) : filteredProviders.length === 0 ? (

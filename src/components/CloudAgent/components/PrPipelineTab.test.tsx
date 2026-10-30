@@ -1,6 +1,10 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { PrPipelineTab, resolveIssueUrl } from "./PrPipelineTab";
+import {
+  PrPipelineTab,
+  resolveIssueUrl,
+  derivePipelineSteps,
+} from "./PrPipelineTab";
 import type { CloudAgentTask } from "@/lib/cloudAgent";
 
 describe("PrPipelineTab Component", () => {
@@ -24,6 +28,12 @@ describe("PrPipelineTab Component", () => {
       started_at: 1700000000,
       duration_seconds: 45,
       error_message: null,
+      author: "octocat",
+      trigger_type: "first_run",
+      attempts: 1,
+      max_attempts: 3,
+      diff_stat: "2 files changed, +45 -12",
+      step: "done",
     },
     {
       id: "task-2",
@@ -35,6 +45,11 @@ describe("PrPipelineTab Component", () => {
       started_at: 1700001000,
       duration_seconds: null,
       error_message: null,
+      author: "developer",
+      trigger_type: "follow_up",
+      attempts: 2,
+      max_attempts: 3,
+      step: "opencode",
     },
     {
       id: "task-3",
@@ -46,6 +61,7 @@ describe("PrPipelineTab Component", () => {
       started_at: 1700002000,
       duration_seconds: 12,
       error_message: null,
+      trigger_type: "first_run",
     },
     {
       id: "task-4",
@@ -58,6 +74,9 @@ describe("PrPipelineTab Component", () => {
       duration_seconds: 120,
       error_message:
         "Traceback (most recent call last):\n  File 'issue_worker.py', line 245, in execute_task\n    raise subprocess.CalledProcessError(returncode=1, cmd='opencode run')\nCalledProcessError: Command '['opencode', 'run']' returned non-zero exit status 1.",
+      attempts: 3,
+      max_attempts: 3,
+      step: "failed",
     },
   ];
 
@@ -134,6 +153,28 @@ describe("PrPipelineTab Component", () => {
     });
   });
 
+  describe("derivePipelineSteps helper", () => {
+    it("returns all completed steps for completed status", () => {
+      const steps = derivePipelineSteps(mockTasks[0], dummyT);
+      expect(steps.every((s) => s.state === "completed")).toBe(true);
+    });
+
+    it("marks skipped step for no_changes status", () => {
+      const steps = derivePipelineSteps(mockTasks[2], dummyT);
+      expect(steps[3].state).toBe("skipped");
+    });
+
+    it("marks current step for running status", () => {
+      const steps = derivePipelineSteps(mockTasks[1], dummyT);
+      expect(steps.some((s) => s.state === "current")).toBe(true);
+    });
+
+    it("marks failed step for failed status", () => {
+      const steps = derivePipelineSteps(mockTasks[3], dummyT);
+      expect(steps.some((s) => s.state === "failed")).toBe(true);
+    });
+  });
+
   it("renders empty state and responds to refresh action", () => {
     const onRefresh = vi.fn();
 
@@ -167,7 +208,7 @@ describe("PrPipelineTab Component", () => {
     expect(container.querySelector(".animate-spin")).toBeTruthy();
   });
 
-  it("renders tasks with various statuses, branch tags and PR links", () => {
+  it("renders tasks with various statuses, badges, trigger tags and PR pills", () => {
     render(
       <PrPipelineTab
         t={dummyT}
@@ -187,27 +228,42 @@ describe("PrPipelineTab Component", () => {
     expect(screen.getByText("无变更")).toBeInTheDocument();
     expect(screen.getByText("执行失败")).toBeInTheDocument();
 
-    // Repo and issue labels
+    // Trigger tags
+    expect(screen.getAllByText("标签接单").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("追加指令")).toBeInTheDocument();
+
+    // Attempt badges
+    expect(screen.getByText("尝试 1/3")).toBeInTheDocument();
+    expect(screen.getByText("尝试 2/3")).toBeInTheDocument();
+
+    // Repo and issue labels (hides front prefix, displays tail repo and #issue full)
     expect(screen.getByText("one-space#101")).toBeInTheDocument();
-    expect(screen.getByText("minbox-projects/onespace-app#102")).toBeInTheDocument();
+    expect(screen.getByText("…/onespace-app#102")).toBeInTheDocument();
 
     // Branch tags
     expect(screen.getByText("fix-ws-reconnect")).toBeInTheDocument();
     expect(screen.getByText("feat-terminal-runner")).toBeInTheDocument();
 
+    // Author and Diff Stat
+    expect(screen.getByText("@octocat")).toBeInTheDocument();
+    expect(screen.getByText("2 files changed, +45 -12")).toBeInTheDocument();
+
     // Titles
     expect(screen.getByText("Fix websocket reconnect issue")).toBeInTheDocument();
     expect(screen.getByText("Refactor terminal session runner")).toBeInTheDocument();
 
-    // PR Link
-    const prLink = screen.getByText("查看 PR").closest("a");
-    expect(prLink).toHaveAttribute(
+    // PR Pill & Link
+    const prBadges = screen.getAllByTestId("pipeline-task-pr-badge");
+    expect(prBadges.length).toBe(1);
+    expect(prBadges[0]).toHaveAttribute(
       "href",
       "https://github.com/example/one-space/pull/101"
     );
+    expect(prBadges[0]).toHaveTextContent("PR #101");
 
-    // Duration
-    expect(screen.getByText("耗时 45 秒")).toBeInTheDocument();
+    // Duration friendly
+    expect(screen.getByText("耗时 45秒")).toBeInTheDocument();
+    expect(screen.getByText("耗时 2分")).toBeInTheDocument();
   });
 
   it("links both the repo#issue tag and title to the resolved issue page", () => {
@@ -253,7 +309,7 @@ describe("PrPipelineTab Component", () => {
     expect(titleLinks[0]).toHaveTextContent("Fix websocket reconnect issue");
   });
 
-  it("handles long error message with collapsed single-line view and tooltip preview", () => {
+  it("renders pipeline steps progress bar for each task", () => {
     render(
       <PrPipelineTab
         t={dummyT}
@@ -264,28 +320,100 @@ describe("PrPipelineTab Component", () => {
       />
     );
 
-    // Collapsed single line error is present with truncate
-    const collapsedError = screen.getByTestId("pipeline-task-error-collapsed");
-    expect(collapsedError).toHaveClass("truncate");
-    expect(collapsedError.textContent).toContain("Traceback (most recent call last)");
+    const stepFlows = screen.getAllByTestId("pipeline-steps-flow");
+    expect(stepFlows.length).toBe(4);
+    expect(screen.getAllByText("接单鉴权").length).toBe(4);
+    expect(screen.getAllByText("创建 Worktree").length).toBe(4);
+    expect(screen.getAllByText("实施").length).toBe(4);
+    expect(screen.getAllByText("推送").length).toBe(4);
+    expect(screen.getAllByText("PR 创建").length).toBe(4);
+  });
 
-    // Tooltip exists in DOM with role="tooltip"
-    const tooltip = screen.getByTestId("pipeline-task-error-tooltip");
-    expect(tooltip).toHaveAttribute("role", "tooltip");
-    expect(tooltip).toHaveTextContent("错误详细信息");
-    expect(tooltip.textContent).toContain("CalledProcessError: Command '['opencode', 'run']'");
-
-    // Copy button inside tooltip
+  it("handles collapsible error box and copies error traceback", () => {
     const writeTextSpy = vi
       .spyOn(navigator.clipboard, "writeText")
       .mockResolvedValue(undefined);
-    const copyBtn = screen.getByTitle("复制完整错误");
-    expect(copyBtn).toBeInTheDocument();
 
-    fireEvent.click(copyBtn);
-    expect(writeTextSpy).toHaveBeenCalledWith(
-      mockTasks[3].error_message
+    render(
+      <PrPipelineTab
+        t={dummyT}
+        language="zh"
+        tasks={mockTasks}
+        loading={false}
+        onRefresh={vi.fn()}
+      />
     );
-    expect(screen.getByText("已复制错误信息")).toBeInTheDocument();
+
+    const errorBox = screen.getByTestId("pipeline-task-error-box");
+    expect(errorBox).toBeInTheDocument();
+    expect(errorBox).toHaveTextContent("异常");
+
+    // Initially collapsed
+    expect(screen.queryByTestId("pipeline-task-error-expanded")).not.toBeInTheDocument();
+
+    // Toggle expand
+    const expandBtn = screen.getByText("展开详情");
+    fireEvent.click(expandBtn);
+    expect(screen.getByTestId("pipeline-task-error-expanded")).toBeInTheDocument();
+    expect(screen.getByTestId("pipeline-task-error-expanded")).toHaveTextContent("Traceback");
+
+    // Copy error
+    const copyErrorBtn = screen.getByTitle("复制完整错误");
+    fireEvent.click(copyErrorBtn);
+    expect(writeTextSpy).toHaveBeenCalledWith(mockTasks[3].error_message);
+    expect(screen.getByText("已复制")).toBeInTheDocument();
+
+    // Toggle collapse
+    const collapseBtn = screen.getByText("收起");
+    fireEvent.click(collapseBtn);
+    expect(screen.queryByTestId("pipeline-task-error-expanded")).not.toBeInTheDocument();
+  });
+
+  it("copies git checkout command and launches terminal on click", async () => {
+    const writeTextSpy = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockResolvedValue(undefined);
+    const onLaunchTerminal = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <PrPipelineTab
+        t={dummyT}
+        language="zh"
+        tasks={mockTasks}
+        loading={false}
+        onRefresh={vi.fn()}
+        onLaunchTerminal={onLaunchTerminal}
+      />
+    );
+
+    // Copy checkout command
+    const copyCheckoutBtns = screen.getAllByTestId("pipeline-task-copy-checkout");
+    expect(copyCheckoutBtns.length).toBeGreaterThanOrEqual(1);
+
+    fireEvent.click(copyCheckoutBtns[0]);
+    expect(writeTextSpy).toHaveBeenCalledWith(
+      "git fetch origin fix-ws-reconnect && git checkout fix-ws-reconnect"
+    );
+
+    // Launch terminal
+    const terminalBtns = screen.getAllByTestId("pipeline-task-terminal-btn");
+    expect(terminalBtns.length).toBe(4);
+
+    // Verify terminal icon has white color
+    const terminalIcon = terminalBtns[0].querySelector("svg");
+    expect(terminalIcon).toHaveClass("text-white");
+
+    // Verify terminal button is aligned to the right while duration is in the same row
+    const rowContainer = terminalBtns[0].closest(".flex.items-center.justify-between");
+    expect(rowContainer).toBeInTheDocument();
+    expect(rowContainer).toHaveTextContent("耗时 45秒");
+
+    await act(async () => {
+      fireEvent.click(terminalBtns[0]);
+    });
+    expect(onLaunchTerminal).toHaveBeenCalledWith(
+      "one-space",
+      "fix-ws-reconnect"
+    );
   });
 });

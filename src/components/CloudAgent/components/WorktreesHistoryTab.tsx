@@ -6,7 +6,7 @@ import {
   Play,
   Clock,
   Loader2,
-  Sparkles,
+  Plus,
   Search,
   Copy,
   Check,
@@ -154,8 +154,8 @@ export function WorktreesHistoryTab({
           "在云端创建的所有特性分支隔离环境将长期保存在此，即使会话退出也可随时一键重新拉起现场。"
         )}
         action={{
-          label: t("createNewFeatureTask", "新建云端特性任务"),
-          icon: Sparkles,
+          label: t("createNewFeatureTask", "新任务"),
+          icon: Plus,
           onClick: onOpenNewTaskModal,
         }}
       />

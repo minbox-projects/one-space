@@ -109,6 +109,12 @@ export interface CloudAgentTask {
   branch?: string | null;
   pr_url?: string | null;
   error_message?: string | null;
+  author?: string | null;
+  trigger_type?: "first_run" | "follow_up" | string | null;
+  attempts?: number | null;
+  max_attempts?: number | null;
+  diff_stat?: string | null;
+  step?: string | null;
 }
 
 export interface GatewaySyncResult {
@@ -277,4 +283,88 @@ export function formatWorkingDirTail(
     isTruncated: true,
     fullPath: path,
   };
+}
+
+/**
+ * 格式化任务耗时为人性化可读字符串（如 "45秒" / "2分15秒" / "1小时10分"）
+ */
+export function formatFriendlyDuration(
+  seconds: number | null | undefined,
+  language = "zh"
+): string {
+  if (seconds === null || seconds === undefined || seconds < 0) {
+    return language === "zh" ? "0秒" : "0s";
+  }
+  const isZh = language === "zh";
+  const s = Math.floor(seconds % 60);
+  const m = Math.floor((seconds / 60) % 60);
+  const h = Math.floor(seconds / 3600);
+
+  if (h > 0) {
+    return isZh
+      ? `${h}小时${m > 0 ? `${m}分` : ""}`
+      : `${h}h${m > 0 ? ` ${m}m` : ""}`;
+  }
+  if (m > 0) {
+    return isZh
+      ? `${m}分${s > 0 ? `${s}秒` : ""}`
+      : `${m}m${s > 0 ? ` ${s}s` : ""}`;
+  }
+  return isZh ? `${s}秒` : `${s}s`;
+}
+
+/**
+ * 从 PR 链接中提取 PR 编号（如从 https://github.com/org/repo/pull/105 提取 "#105"）
+ */
+export function extractPrNumber(prUrl: string | null | undefined): string | null {
+  if (!prUrl) return null;
+  const match = prUrl.match(/\/(?:pull|merge_requests)\/(\d+)/i);
+  return match ? `#${match[1]}` : null;
+}
+
+/**
+ * 生成规范的本地 Git 检出命令
+ */
+export function formatGitCheckoutCommand(branch: string): string {
+  if (!branch) return "";
+  return `git fetch origin ${branch} && git checkout ${branch}`;
+}
+
+/**
+ * 格式化 Issue 标签显示：隐藏前部分前缀（如长 URL、组织名等），完整显示后部仓库名与 #Issue 编号
+ */
+export function formatIssueLabelTail(
+  repo: string,
+  issueNumber: number | string,
+  maxRepoLen = 18
+): string {
+  if (!repo && !issueNumber) return "";
+  const numStr = issueNumber ? `#${issueNumber}` : "";
+  if (!repo) return numStr;
+
+  const cleanRepo = repo.trim().replace(/\.git$/, "").replace(/\/+$/, "");
+
+  // 1. 如果包含斜杠路径（包括 URL、SSH 路径或 owner/repo）
+  const slashIdx = cleanRepo.lastIndexOf("/");
+  if (slashIdx !== -1) {
+    const tailRepo = cleanRepo.slice(slashIdx + 1);
+    if (tailRepo.length > maxRepoLen) {
+      return `…${tailRepo.slice(-maxRepoLen)}${numStr}`;
+    }
+    return `…/${tailRepo}${numStr}`;
+  }
+
+  // 2. 如果包含 SSH 冒号路径（如 git@github.com:repo）
+  const colonIdx = cleanRepo.lastIndexOf(":");
+  if (colonIdx !== -1) {
+    const tailRepo = cleanRepo.slice(colonIdx + 1);
+    return `…/${tailRepo}${numStr}`;
+  }
+
+  // 3. 单纯仓库名如果超长，保留尾部
+  if (cleanRepo.length > maxRepoLen) {
+    return `…${cleanRepo.slice(-maxRepoLen)}${numStr}`;
+  }
+
+  return `${cleanRepo}${numStr}`;
 }

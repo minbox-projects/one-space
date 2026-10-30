@@ -290,7 +290,7 @@ describe("CloudAgent Component", () => {
     // 活跃会话空状态与统一按钮
     await waitFor(() => {
       expect(screen.getByText("当前没有正在运行的云端开发会话")).toBeInTheDocument();
-      expect(screen.getByText("新建云端特性任务")).toBeInTheDocument();
+      expect(screen.getAllByText("新任务").length).toBeGreaterThanOrEqual(2);
     });
 
     // 切换到历史工作区 Tab 检查空状态与统一按钮
@@ -298,7 +298,7 @@ describe("CloudAgent Component", () => {
     await user.click(worktreesTab);
     await waitFor(() => {
       expect(screen.getByText("暂无 Git Worktree 历史工作区")).toBeInTheDocument();
-      expect(screen.getByText("新建云端特性任务")).toBeInTheDocument();
+      expect(screen.getAllByText("新任务").length).toBeGreaterThanOrEqual(2);
     });
 
     // 切换到 Issues 流水线 Tab 检查空状态与统一刷新按钮

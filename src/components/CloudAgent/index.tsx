@@ -238,6 +238,9 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
                   tasks={tasks}
                   loading={loading}
                   onRefresh={() => refreshAll()}
+                  onLaunchTerminal={(target, branch) =>
+                    launchTerminal(target, branch)
+                  }
                 />
               </div>
             )}

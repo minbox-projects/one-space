@@ -1581,6 +1581,9 @@ class IssueWorker:
         self.current_attempts = 0
         self._shutdown_terminal_recorded = False
 
+        author_login = self._issue_author_login(issue) or ""
+        trigger_type = "follow_up" if is_follow_up else "first_run"
+
         logger.info(f"========== 开始处理任务: [{repo}] #{issue_number} {issue_title} ==========")
         self.record_task_update(task_id, {
             "repo": repo,
@@ -1592,6 +1595,11 @@ class IssueWorker:
             "pr_url": "",
             "error_message": "",
             "duration_seconds": 0,
+            "author": author_login,
+            "trigger_type": trigger_type,
+            "attempts": 1,
+            "max_attempts": self.max_attempts,
+            "step": "cloning",
         })
 
         attempts = 0
@@ -1767,10 +1775,14 @@ class IssueWorker:
                     self._log_line(log, f"outcome: no_changes after {attempts} attempt(s)")
                     return
 
-                self._run_command(
+                diff_res = self._run_command(
                     log, "git-diff-stat",
                     ["git", "-C", task_dir, "diff", "--stat"],
                 )
+                diff_lines = (getattr(diff_res, "stdout", "") or "").strip().splitlines()
+                diff_summary = diff_lines[-1].strip() if diff_lines else ""
+                if diff_summary:
+                    self.record_task_update(task_id, {"diff_stat": diff_summary})
 
                 logger.info("代码产生有效变更，正在提交与推送到远端...")
                 add_res = self._run_command(log, "git-add", ["git", "-C", task_dir, "add", "-A"])
@@ -1869,6 +1881,8 @@ class IssueWorker:
                 now = int(time.time())
                 self.record_task_update(task_id, {
                     "status": "completed",
+                    "step": "done",
+                    "attempts": attempts,
                     "pr_url": pr_url,
                     "finished_at": now,
                     "duration_seconds": now - started_at,
@@ -1963,6 +1977,8 @@ class IssueWorker:
         now = int(time.time())
         self.record_task_update(task_id, {
             "status": "completed",
+            "step": "done",
+            "attempts": attempts,
             "pr_url": pr_url,
             "finished_at": now,
             "duration_seconds": now - started_at,
@@ -1993,6 +2009,8 @@ class IssueWorker:
         now = int(time.time())
         self.record_task_update(task_id, {
             "status": "completed",
+            "step": "done",
+            "attempts": attempts,
             "pr_url": pr_url,
             "finished_at": now,
             "duration_seconds": now - started_at,
@@ -2030,6 +2048,8 @@ class IssueWorker:
         now = int(time.time())
         self.record_task_update(task_id, {
             "status": "failed",
+            "step": "failed",
+            "attempts": attempts,
             "error_message": error_msg,
             "finished_at": now,
             "duration_seconds": now - started_at,

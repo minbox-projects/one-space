@@ -164,6 +164,18 @@ pub struct CloudAgentTask {
     pub branch: Option<String>,
     pub pr_url: Option<String>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub trigger_type: Option<String>,
+    #[serde(default)]
+    pub attempts: Option<u32>,
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
+    #[serde(default)]
+    pub diff_stat: Option<String>,
+    #[serde(default)]
+    pub step: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -159,3 +159,57 @@ fn test_build_cloud_gateway_section() {
     assert_eq!(efforts[1].as_str().unwrap(), "medium");
     assert_eq!(efforts[2].as_str().unwrap(), "high");
 }
+
+#[test]
+fn test_cloud_agent_task_deserialization_backward_compatible() {
+    use super::types::CloudAgentTask;
+
+    // 1. 测试旧格式 JSON（缺少新字段）正常反序列化为 None
+    let legacy_json = r#"{
+        "id": "task_1",
+        "repo": "minbox/onespace",
+        "issue_number": 42,
+        "title": "Fix something",
+        "status": "completed",
+        "started_at": 1700000000,
+        "finished_at": 1700000060,
+        "duration_seconds": 60,
+        "branch": "bot/issue-42",
+        "pr_url": "https://github.com/minbox/onespace/pull/42",
+        "error_message": null
+    }"#;
+
+    let task: CloudAgentTask = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(task.id, "task_1");
+    assert_eq!(task.author, None);
+    assert_eq!(task.trigger_type, None);
+    assert_eq!(task.attempts, None);
+    assert_eq!(task.max_attempts, None);
+    assert_eq!(task.diff_stat, None);
+    assert_eq!(task.step, None);
+
+    // 2. 测试带全量扩展字段的 JSON 正常反序列化
+    let rich_json = r#"{
+        "id": "task_2",
+        "repo": "minbox/onespace",
+        "issue_number": 43,
+        "title": "Add feature",
+        "status": "running",
+        "started_at": 1700000100,
+        "branch": "bot/issue-43",
+        "author": "octocat",
+        "trigger_type": "follow_up",
+        "attempts": 2,
+        "max_attempts": 3,
+        "diff_stat": "3 files changed, +45 -12",
+        "step": "opencode"
+    }"#;
+
+    let task2: CloudAgentTask = serde_json::from_str(rich_json).unwrap();
+    assert_eq!(task2.author.as_deref(), Some("octocat"));
+    assert_eq!(task2.trigger_type.as_deref(), Some("follow_up"));
+    assert_eq!(task2.attempts, Some(2));
+    assert_eq!(task2.max_attempts, Some(3));
+    assert_eq!(task2.diff_stat.as_deref(), Some("3 files changed, +45 -12"));
+    assert_eq!(task2.step.as_deref(), Some("opencode"));
+}

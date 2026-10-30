@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Sparkles, GitBranch, FolderGit2, Shield, Loader2, Terminal } from "lucide-react";
+import { Plus, GitBranch, FolderGit2, Shield, Loader2, Terminal } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -79,11 +79,11 @@ export function NewSessionDialog({
         <DialogHeader>
           <div className="flex items-center gap-2.5">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Sparkles className="h-5 w-5" />
+              <Plus className="h-5 w-5" />
             </div>
             <div>
               <DialogTitle className="text-base font-semibold">
-                {t("createNewCloudTaskTitle", "新建云端特性任务")}
+                {t("createNewCloudTaskTitle", "新任务")}
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground mt-0.5">
                 {t(
@@ -184,7 +184,7 @@ export function NewSessionDialog({
                 </>
               ) : (
                 <>
-                  <Sparkles className="h-3.5 w-3.5" />
+                  <Plus className="h-3.5 w-3.5" />
                   {t("createAndEnter", "创建并进入现场")}
                 </>
               )}

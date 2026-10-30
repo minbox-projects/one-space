@@ -10,13 +10,25 @@ import {
   GitBranch,
   Copy,
   Check,
-  Info,
   FolderGit2,
+  User,
+  Terminal,
+  ChevronDown,
+  ChevronUp,
+  Tag,
+  MessageSquare,
+  FileDiff,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { zhCN, enUS } from "date-fns/locale";
 import type { TFunction } from "i18next";
-import type { CloudAgentTask } from "@/lib/cloudAgent";
+import {
+  type CloudAgentTask,
+  formatFriendlyDuration,
+  extractPrNumber,
+  formatGitCheckoutCommand,
+  formatIssueLabelTail,
+} from "@/lib/cloudAgent";
 import { CloudEmptyState } from "./CloudEmptyState";
 
 interface PrPipelineTabProps {
@@ -25,6 +37,7 @@ interface PrPipelineTabProps {
   tasks: CloudAgentTask[];
   loading: boolean;
   onRefresh: () => void;
+  onLaunchTerminal?: (target: string, branch?: string) => Promise<void>;
 }
 
 /**
@@ -59,22 +72,132 @@ export function resolveIssueUrl(task: CloudAgentTask): string | null {
   return null;
 }
 
+export type StepState = "completed" | "current" | "failed" | "skipped" | "pending";
+
+export interface PipelineStepItem {
+  id: string;
+  label: string;
+  state: StepState;
+}
+
+/**
+ * 根据任务状态推导 5 阶段流水线节点的渲染状态
+ */
+export function derivePipelineSteps(
+  task: CloudAgentTask,
+  t: TFunction
+): PipelineStepItem[] {
+  const steps: PipelineStepItem[] = [
+    { id: "pick", label: t("stepPick", "接单鉴权"), state: "completed" },
+    { id: "branch", label: t("stepBranch", "创建 Worktree"), state: "pending" },
+    { id: "opencode", label: t("stepOpenCode", "实施"), state: "pending" },
+    { id: "diff", label: t("stepDiff", "推送"), state: "pending" },
+    { id: "pr", label: t("stepPr", "PR 创建"), state: "pending" },
+  ];
+
+  if (task.status === "completed") {
+    return steps.map((s) => ({ ...s, state: "completed" }));
+  }
+
+  if (task.status === "no_changes") {
+    steps[0].state = "completed";
+    steps[1].state = "completed";
+    steps[2].state = "completed";
+    steps[3].state = "skipped";
+    steps[4].state = "completed";
+    return steps;
+  }
+
+  if (task.status === "running") {
+    steps[0].state = "completed";
+    const curStep = task.step?.toLowerCase() || "";
+    if (curStep.includes("clone") || curStep.includes("branch")) {
+      steps[1].state = "current";
+    } else if (curStep.includes("push") || curStep.includes("commit")) {
+      steps[1].state = "completed";
+      steps[2].state = "completed";
+      steps[3].state = "current";
+    } else if (curStep.includes("pr")) {
+      steps[1].state = "completed";
+      steps[2].state = "completed";
+      steps[3].state = "completed";
+      steps[4].state = "current";
+    } else {
+      if (task.branch) {
+        steps[1].state = "completed";
+        steps[2].state = "current";
+      } else {
+        steps[1].state = "current";
+      }
+    }
+    return steps;
+  }
+
+  if (task.status === "failed") {
+    steps[0].state = "completed";
+    const curStep = task.step?.toLowerCase() || "";
+    if (curStep.includes("clone") || curStep.includes("branch")) {
+      steps[1].state = "failed";
+    } else if (curStep.includes("push") || curStep.includes("commit")) {
+      steps[1].state = "completed";
+      steps[2].state = "completed";
+      steps[3].state = "failed";
+    } else if (curStep.includes("pr")) {
+      steps[1].state = "completed";
+      steps[2].state = "completed";
+      steps[3].state = "completed";
+      steps[4].state = "failed";
+    } else {
+      if (task.branch) {
+        steps[1].state = "completed";
+        steps[2].state = "failed";
+      } else {
+        steps[1].state = "failed";
+      }
+    }
+    return steps;
+  }
+
+  return steps;
+}
+
 export function PrPipelineTab({
   t,
   language,
   tasks,
   loading,
   onRefresh,
+  onLaunchTerminal,
 }: PrPipelineTabProps) {
-  const [copiedTaskId, setCopiedTaskId] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [expandedErrors, setExpandedErrors] = useState<Record<string, boolean>>({});
+  const [resumingTaskId, setResumingTaskId] = useState<string | null>(null);
+
   const dateLocale = language === "zh" ? zhCN : enUS;
 
-  const handleCopyError = (taskId: string, text: string) => {
+  const handleCopy = (key: string, text: string) => {
     navigator.clipboard.writeText(text);
-    setCopiedTaskId(taskId);
+    setCopiedKey(key);
     setTimeout(() => {
-      setCopiedTaskId((curr) => (curr === taskId ? null : curr));
+      setCopiedKey((curr) => (curr === key ? null : curr));
     }, 2000);
+  };
+
+  const toggleErrorExpand = (taskId: string) => {
+    setExpandedErrors((prev) => ({
+      ...prev,
+      [taskId]: !prev[taskId],
+    }));
+  };
+
+  const handleLaunchTerminal = async (task: CloudAgentTask) => {
+    if (!onLaunchTerminal) return;
+    try {
+      setResumingTaskId(task.id);
+      await onLaunchTerminal(task.repo, task.branch || undefined);
+    } finally {
+      setResumingTaskId(null);
+    }
   };
 
   if (loading && tasks.length === 0) {
@@ -114,12 +237,14 @@ export function PrPipelineTab({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3.5">
       {/* 列表头部统计与操作 */}
       <div className="flex items-center justify-between px-1">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          {t("recentTasksHistory", "近期任务流转历史")} ({tasks.length})
-        </h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {t("recentTasksHistory", "近期任务流转历史")} ({tasks.length})
+          </h3>
+        </div>
         <button
           type="button"
           onClick={onRefresh}
@@ -130,225 +255,441 @@ export function PrPipelineTab({
         </button>
       </div>
 
-      {/* 任务卡片列表 */}
-      <div className="grid grid-cols-1 gap-3">
-        {tasks.map((task, index) => {
+      {/* 任务卡片列表：支持大屏/桌面端一行双卡片布局 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {tasks.map((task) => {
           const startedAgo = formatDistanceToNow(parseDate(task.started_at), {
             addSuffix: true,
             locale: dateLocale,
           });
 
-          // 如果处于靠后的任务卡片，浮层向上展开避免超出视口底部；否则向下展开
-          const isNearBottom = index >= tasks.length - 1 && tasks.length > 1;
-          const tooltipPositionClass = isNearBottom
-            ? "bottom-full mb-2.5"
-            : "top-full mt-2.5";
-
-          const hasBranchOrPr = Boolean(task.branch || task.pr_url);
           const issueUrl = resolveIssueUrl(task);
+          const prNumber = extractPrNumber(task.pr_url);
+          const checkoutCmd = task.branch ? formatGitCheckoutCommand(task.branch) : "";
+          const friendlyDuration = formatFriendlyDuration(task.duration_seconds, language);
+          const pipelineSteps = derivePipelineSteps(task, t);
+          const isErrorExpanded = Boolean(expandedErrors[task.id]);
+
+          // 触发类型显示
+          const isFollowUp = task.trigger_type === "follow_up";
+          const hasFooter = Boolean(checkoutCmd || task.pr_url);
 
           return (
             <div
               key={task.id}
-              className="group/card rounded-xl border border-border/80 bg-card p-4 sm:p-4.5 shadow-2xs transition-all hover:border-border hover:shadow-xs"
+              className="group/card flex flex-col justify-between rounded-xl border border-border/80 bg-card p-3.5 sm:p-4 shadow-2xs transition-all hover:border-border hover:shadow-xs space-y-2.5"
             >
-              <div className="flex flex-col">
-                {/* 1. 顶栏区域：状态标识与时间/耗时元数据，解耦拥挤 */}
-                <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border/40">
-                  {/* 左侧：任务状态徽章与所属仓库#Issue 标识（支持点击跳转） */}
-                  <div className="flex flex-wrap items-center gap-2.5">
-                    {task.status === "completed" && (
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        {t("pipelineStatusPrCreated", "PR 已创建")}
-                      </span>
-                    )}
-                    {task.status === "running" && (
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-500/20 bg-sky-500/10 px-2.5 py-1 text-xs font-semibold text-sky-600 animate-pulse dark:text-sky-400">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        {t("pipelineStatusRunning", "实施中")}
-                      </span>
-                    )}
-                    {task.status === "failed" && (
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-600 dark:text-rose-400">
-                        <AlertCircle className="h-3.5 w-3.5" />
-                        {t("pipelineStatusFailed", "执行失败")}
-                      </span>
-                    )}
-                    {task.status === "no_changes" && (
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-600 dark:text-amber-400">
-                        {t("pipelineStatusNoChanges", "无变更")}
-                      </span>
-                    )}
+              <div className="space-y-2.5">
+                {/* 1. 顶栏：状态标识、触发源、尝试轮次、仓库标识与 Issue 链接（单行不折行） */}
+                <div className="flex items-center gap-1.5 pb-2 border-b border-border/40 min-w-0 overflow-hidden whitespace-nowrap">
+                  {/* 状态徽标 */}
+                  {task.status === "completed" && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 shrink-0 whitespace-nowrap">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      {t("pipelineStatusPrCreated", "PR 已创建")}
+                    </span>
+                  )}
+                  {task.status === "running" && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-xs font-semibold text-sky-600 animate-pulse dark:text-sky-400 shrink-0 whitespace-nowrap">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {t("pipelineStatusRunning", "实施中")}
+                    </span>
+                  )}
+                  {task.status === "failed" && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/20 bg-rose-500/10 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:text-rose-400 shrink-0 whitespace-nowrap">
+                      <AlertCircle className="h-3.5 w-3.5" />
+                      {t("pipelineStatusFailed", "执行失败")}
+                    </span>
+                  )}
+                  {task.status === "no_changes" && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400 shrink-0 whitespace-nowrap">
+                      <AlertCircle className="h-3.5 w-3.5" />
+                      {t("pipelineStatusNoChanges", "无变更")}
+                    </span>
+                  )}
 
-                    {/* 代码仓库与 Issue 标识（支持点击在新窗口打开 Issue 页面） */}
-                    {issueUrl ? (
-                      <a
-                        href={issueUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="group/issuelink inline-flex items-center gap-1.5 rounded-lg border border-border/80 bg-muted/60 px-2.5 py-1 font-mono text-xs font-medium text-foreground transition-all hover:border-primary/40 hover:bg-muted hover:text-primary cursor-pointer"
-                        title={t("viewIssueTooltip", {
-                          number: task.issue_number,
-                          defaultValue: `在新窗口打开 Issue #${task.issue_number}`,
-                        })}
-                        data-testid="pipeline-task-issue-link"
-                      >
-                        <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground group-hover/issuelink:text-primary transition-colors" />
-                        <span>{task.repo}#{task.issue_number}</span>
-                        <ExternalLink className="h-3 w-3 opacity-40 group-hover/issuelink:opacity-100 transition-opacity" />
-                      </a>
+                  {/* 触发方式标识 */}
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] font-medium border shrink-0 whitespace-nowrap ${
+                      isFollowUp
+                        ? "border-purple-500/20 bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                        : "border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                    }`}
+                    title={
+                      isFollowUp
+                        ? t("triggerFollowUpDesc", "协作者评论 /agent 发起的追随任务")
+                        : t("triggerFirstRunDesc", "Issue 关联标签首次接单")
+                    }
+                  >
+                    {isFollowUp ? (
+                      <MessageSquare className="h-2.5 w-2.5" />
                     ) : (
-                      <span className="inline-flex items-center gap-1.5 rounded-lg border border-border/80 bg-muted/60 px-2.5 py-1 font-mono text-xs font-medium text-foreground">
-                        <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" />
-                        <span>{task.repo}#{task.issue_number}</span>
-                      </span>
+                      <Tag className="h-2.5 w-2.5" />
                     )}
-                  </div>
+                    <span>
+                      {isFollowUp
+                        ? t("triggerFollowUp", "追加指令")
+                        : t("triggerFirstRun", "标签接单")}
+                    </span>
+                  </span>
 
-                  {/* 右侧：耗时与相对启动时间 */}
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground shrink-0">
-                    {task.duration_seconds ? (
-                      <div className="flex items-center gap-1 text-foreground/80">
-                        <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                        <span>
-                          {t("taskDurationSeconds", {
-                            seconds: task.duration_seconds,
-                            defaultValue: `耗时 ${task.duration_seconds} 秒`,
-                          })}
-                        </span>
-                      </div>
-                    ) : null}
-                    {task.duration_seconds ? <span className="text-border">·</span> : null}
-                    <span>{startedAgo}</span>
-                  </div>
-                </div>
+                  {/* 尝试轮次 */}
+                  {task.attempts !== undefined && task.attempts !== null ? (
+                    <span
+                      className="inline-flex items-center rounded-md border border-border/70 bg-muted/50 px-1.5 py-0.5 text-[10.5px] font-mono text-muted-foreground shrink-0 whitespace-nowrap"
+                      title={t("attemptsTooltip", {
+                        current: task.attempts,
+                        max: task.max_attempts || 3,
+                        defaultValue: `已尝试 ${task.attempts}/${task.max_attempts || 3} 次`,
+                      })}
+                    >
+                      <span>
+                        {t("attemptBadge", {
+                          current: task.attempts,
+                          max: task.max_attempts || 3,
+                          defaultValue: `尝试 ${task.attempts}/${task.max_attempts || 3}`,
+                        })}
+                      </span>
+                    </span>
+                  ) : null}
 
-                {/* 2. 主体区域：居中突出任务标题（支持点击跳转）与独立的分支/PR 操作栏 */}
-                <div className="pt-3 pb-1 space-y-2.5">
-                  {/* 任务主标题：点击直接跳转至 Issue 页面 */}
+                  {/* 代码仓库与 Issue 标识（支持点击在新窗口打开 Issue 页面，隐藏前部分组织/URL，完整显示后部与编号） */}
                   {issueUrl ? (
                     <a
                       href={issueUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-sm font-semibold text-foreground tracking-tight leading-snug truncate hover:text-primary transition-colors inline-block max-w-full"
-                      title={task.title}
-                      data-testid="pipeline-task-title-link"
+                      className="group/issuelink inline-flex items-center gap-1 rounded-md border border-border/80 bg-muted/60 px-2 py-0.5 font-mono text-xs font-medium text-foreground transition-all hover:border-primary/40 hover:bg-muted hover:text-primary cursor-pointer min-w-0 shrink truncate whitespace-nowrap"
+                      title={t("viewIssueTooltip", {
+                        number: task.issue_number,
+                        defaultValue: `在新窗口打开 Issue #${task.issue_number} (${task.repo})`,
+                      })}
+                      data-testid="pipeline-task-issue-link"
                     >
-                      {task.title}
+                      <FolderGit2 className="h-3 w-3 text-muted-foreground group-hover/issuelink:text-primary transition-colors shrink-0" />
+                      <span className="truncate max-w-[200px]">
+                        {formatIssueLabelTail(task.repo, task.issue_number)}
+                      </span>
+                      <ExternalLink className="h-2.5 w-2.5 opacity-40 group-hover/issuelink:opacity-100 transition-opacity shrink-0" />
                     </a>
                   ) : (
-                    <h4
-                      className="text-sm font-semibold text-foreground tracking-tight leading-snug truncate"
-                      title={task.title}
-                    >
-                      {task.title}
-                    </h4>
+                    <span className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-muted/60 px-2 py-0.5 font-mono text-xs font-medium text-foreground min-w-0 shrink truncate whitespace-nowrap">
+                      <FolderGit2 className="h-3 w-3 text-muted-foreground shrink-0" />
+                      <span className="truncate max-w-[200px]">
+                        {formatIssueLabelTail(task.repo, task.issue_number)}
+                      </span>
+                    </span>
                   )}
+                </div>
 
-                  {/* 特性分支与 PR 查看按钮 */}
-                  {hasBranchOrPr && (
-                    <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
-                      {/* 特性分支标识 */}
-                      {task.branch ? (
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/10 px-2.5 py-1 font-mono text-xs font-medium text-primary"
-                            title={t("branchLabel", "分支")}
-                          >
-                            <GitBranch className="h-3.5 w-3.5 text-primary shrink-0" />
-                            <span className="max-w-[240px] truncate">{task.branch}</span>
-                          </span>
-                        </div>
-                      ) : <div />}
+                {/* 2. 主体：Issue 标题、交付成果胶囊条与时间操作行（单行截断，绝不换行） */}
+                <div className="space-y-2 min-w-0">
+                  {/* 任务主标题 */}
+                  <div className="min-w-0">
+                    {issueUrl ? (
+                      <a
+                        href={issueUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm font-semibold text-foreground tracking-tight leading-snug truncate whitespace-nowrap block hover:text-primary transition-colors max-w-full"
+                        title={task.title}
+                        data-testid="pipeline-task-title-link"
+                      >
+                        {task.title}
+                      </a>
+                    ) : (
+                      <h4
+                        className="text-sm font-semibold text-foreground tracking-tight leading-snug truncate whitespace-nowrap block"
+                        title={task.title}
+                      >
+                        {task.title}
+                      </h4>
+                    )}
+                  </div>
 
-                      {/* 查看 PR 链接按钮 */}
-                      {task.pr_url && (
+                  {/* 交付成果胶囊条：PR、分支、变动量、作者（单行横向排布） */}
+                  {(task.pr_url || task.branch || task.diff_stat || task.author) && (
+                    <div className="flex items-center gap-1.5 text-xs overflow-x-auto no-scrollbar py-0.5 whitespace-nowrap min-w-0">
+                      {/* PR 胶囊 */}
+                      {task.pr_url ? (
                         <a
                           href={task.pr_url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3 py-1 text-xs font-medium text-foreground hover:bg-muted hover:text-primary transition-colors shadow-2xs shrink-0"
+                          className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15 transition-colors shrink-0"
+                          title={t("viewPullRequest", "查看 PR")}
+                          data-testid="pipeline-task-pr-badge"
                         >
-                          <GitPullRequest className="h-3.5 w-3.5 text-primary" />
-                          <span>{t("viewPullRequest", "查看 PR")}</span>
-                          <ExternalLink className="h-3 w-3 opacity-60" />
+                          <GitPullRequest className="h-3 w-3 shrink-0" />
+                          <span>{prNumber ? `PR ${prNumber}` : t("pullRequestLabel", "Pull Request")}</span>
+                          <ExternalLink className="h-2.5 w-2.5 opacity-60 shrink-0" />
                         </a>
-                      )}
-                    </div>
-                  )}
-                </div>
+                      ) : null}
 
-                {/* 3. 底栏区域：错误信息单行收敛展示与悬浮完整错误浮层 */}
-                {task.error_message && (
-                  <div className="mt-3 pt-3 border-t border-border/60">
-                    <div className="relative group/error">
-                      {/* 单行紧凑告警栏，内边距舒适，边界留白充足 */}
-                      <div
-                        tabIndex={0}
-                        role="button"
-                        aria-label={t("hoverToViewErrorDetail", "滑过查看完整错误")}
-                        className="flex items-center gap-2.5 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/15 cursor-pointer focus:outline-none focus:ring-1 focus:ring-destructive/30"
-                      >
-                        <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
-                        <span
-                          className="truncate font-mono flex-1 text-left"
-                          title={task.error_message}
-                          data-testid="pipeline-task-error-collapsed"
+                      {/* 特性分支胶囊（支持一键复制） */}
+                      {task.branch ? (
+                        <div
+                          className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-muted/50 px-2 py-0.5 font-mono text-muted-foreground text-[11px] shrink-0"
+                          title={t("branchLabel", "特性分支")}
                         >
-                          {task.error_message}
-                        </span>
-                        <span className="shrink-0 text-[11px] font-sans opacity-75 flex items-center gap-1 select-none">
-                          <Info className="h-3 w-3" />
-                          <span>{t("hoverToViewErrorDetail", "滑过查看完整错误")}</span>
-                        </span>
-                      </div>
-
-                      {/* 悬浮展示完整错误信息的浮层 */}
-                      <div
-                        role="tooltip"
-                        data-testid="pipeline-task-error-tooltip"
-                        className={`pointer-events-auto absolute left-0 ${tooltipPositionClass} hidden group-hover/error:flex group-focus-within/error:flex flex-col gap-2.5 rounded-xl border border-slate-700/80 bg-slate-900 p-3.5 text-left text-slate-100 shadow-2xl z-50 w-full max-w-xl animate-in fade-in zoom-in-95 duration-150`}
-                      >
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                          <div className="flex items-center gap-1.5 text-xs font-semibold text-rose-400">
-                            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                            <span>{t("errorDetailTitle", "错误详细信息")}</span>
-                          </div>
+                          <GitBranch className="h-3 w-3 text-primary shrink-0" />
+                          <span className="max-w-[140px] truncate text-foreground font-medium">
+                            {task.branch}
+                          </span>
                           <button
                             type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleCopyError(task.id, task.error_message!);
-                            }}
-                            className="inline-flex items-center gap-1 rounded-lg bg-slate-800 hover:bg-slate-700 px-2 py-1 text-[11px] font-medium text-slate-300 hover:text-white transition-colors cursor-pointer"
-                            title={t("copyErrorMessage", "复制完整错误")}
+                            onClick={() => handleCopy(`${task.id}_branch`, task.branch!)}
+                            className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer ml-0.5 shrink-0"
+                            title={t("copyBranch", "复制分支名")}
+                            aria-label={t("copyBranch", "复制分支名")}
                           >
-                            {copiedTaskId === task.id ? (
-                              <>
-                                <Check className="h-3 w-3 text-emerald-400" />
-                                <span className="text-emerald-400">
-                                  {t("copiedErrorMessage", "已复制错误信息")}
-                                </span>
-                              </>
+                            {copiedKey === `${task.id}_branch` ? (
+                              <Check className="h-2.5 w-2.5 text-emerald-500" />
                             ) : (
-                              <>
-                                <Copy className="h-3 w-3" />
-                                <span>{t("copyErrorMessage", "复制完整错误")}</span>
-                              </>
+                              <Copy className="h-2.5 w-2.5" />
                             )}
                           </button>
                         </div>
+                      ) : null}
 
-                        <div className="max-h-56 overflow-y-auto rounded-lg bg-slate-950 p-3 font-mono text-xs text-slate-200 whitespace-pre-wrap break-all select-text border border-slate-800/80 leading-relaxed">
-                          {task.error_message}
+                      {/* 代码改动量统计 */}
+                      {task.diff_stat ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-1.5 py-0.5 text-muted-foreground font-mono text-[10.5px] shrink-0"
+                          title={t("codeDiffStat", "代码变动统计")}
+                        >
+                          <FileDiff className="h-3 w-3 text-muted-foreground shrink-0" />
+                          <span className="max-w-[160px] truncate">{task.diff_stat}</span>
+                        </span>
+                      ) : null}
+
+                      {/* Issue 提出人 */}
+                      {task.author ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-md border border-border/50 bg-muted/30 px-1.5 py-0.5 text-muted-foreground text-[10.5px] shrink-0"
+                          title={t("issueAuthor", "Issue 提出人")}
+                        >
+                          <User className="h-2.5 w-2.5 opacity-70 shrink-0" />
+                          <span>@{task.author}</span>
+                        </span>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {/* 耗时与相对时间（居左）+ 终端现场按钮（居右，图标白色） */}
+                  <div className="flex items-center justify-between gap-2 min-w-0 pt-0.5">
+                    {/* 左侧：耗时与相对启动时间（文字居左） */}
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground min-w-0 shrink truncate whitespace-nowrap">
+                      {task.duration_seconds !== null && task.duration_seconds !== undefined ? (
+                        <div className="flex items-center gap-1 text-foreground/80 shrink-0">
+                          <Clock className="h-3 w-3 text-muted-foreground shrink-0" />
+                          <span>
+                            {t("friendlyDuration", {
+                              duration: friendlyDuration,
+                              defaultValue: `耗时 ${friendlyDuration}`,
+                            })}
+                          </span>
                         </div>
+                      ) : null}
+                      {task.duration_seconds !== null && task.duration_seconds !== undefined ? (
+                        <span className="text-border shrink-0">·</span>
+                      ) : null}
+                      <span className="truncate">{startedAgo}</span>
+                    </div>
+
+                    {/* 右侧：终端现场按钮（按钮居右，白色 Terminal 图标） */}
+                    {onLaunchTerminal && (
+                      <button
+                        type="button"
+                        disabled={resumingTaskId === task.id}
+                        onClick={() => handleLaunchTerminal(task)}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-800/90 bg-slate-900 text-slate-100 hover:bg-slate-800 hover:text-white dark:border-emerald-500/40 dark:bg-emerald-950/70 dark:text-emerald-300 dark:hover:bg-emerald-900/80 px-2.5 py-1 text-xs font-semibold shadow-xs transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer disabled:opacity-50 shrink-0 ml-auto whitespace-nowrap"
+                        title={t("launchTerminalTooltip", "在原生终端中接入该分支或工作现场")}
+                        data-testid="pipeline-task-terminal-btn"
+                      >
+                        {resumingTaskId === task.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-white shrink-0" />
+                        ) : (
+                          <Terminal className="h-3.5 w-3.5 text-white shrink-0" />
+                        )}
+                        <span>{t("connectTerminal", "终端现场")}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* 3. 迷你流水线节点流指示条（平均分配步骤之间的空白间隔） */}
+                <div
+                  className="rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1.5"
+                  data-testid="pipeline-steps-flow"
+                >
+                  <div className="flex items-center justify-between w-full overflow-x-auto pb-0.5 sm:pb-0">
+                    {pipelineSteps.map((step, idx) => {
+                      const isLast = idx === pipelineSteps.length - 1;
+                      return (
+                        <div
+                          key={step.id}
+                          className={`flex items-center ${isLast ? "shrink-0" : "flex-1 min-w-0"}`}
+                        >
+                          <div className="flex items-center gap-1 shrink-0">
+                            {/* 节点图标 */}
+                            {step.state === "completed" && (
+                              <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />
+                            )}
+                            {step.state === "current" && (
+                              <Loader2 className="h-3 w-3 text-sky-500 animate-spin shrink-0" />
+                            )}
+                            {step.state === "failed" && (
+                              <AlertCircle className="h-3 w-3 text-rose-500 shrink-0" />
+                            )}
+                            {step.state === "skipped" && (
+                              <span className="h-3 w-3 rounded-full border border-amber-500/40 bg-amber-500/20 text-[8px] font-bold text-amber-500 flex items-center justify-center shrink-0">
+                                -
+                              </span>
+                            )}
+                            {step.state === "pending" && (
+                              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30 mx-0.5 shrink-0" />
+                            )}
+
+                            {/* 节点文字 */}
+                            <span
+                              className={`text-[10.5px] font-medium whitespace-nowrap ${
+                                step.state === "completed"
+                                  ? "text-foreground font-normal"
+                                  : step.state === "current"
+                                  ? "text-sky-600 dark:text-sky-400 font-semibold"
+                                  : step.state === "failed"
+                                  ? "text-rose-600 dark:text-rose-400 font-semibold"
+                                  : step.state === "skipped"
+                                  ? "text-amber-600 dark:text-amber-400"
+                                  : "text-muted-foreground/60"
+                              }`}
+                            >
+                              {step.label}
+                            </span>
+                          </div>
+
+                          {/* 连接线：连接各节点并在步骤之间平均分配剩余空白 */}
+                          {!isLast && (
+                            <div
+                              className={`h-[1px] flex-1 mx-2 transition-colors ${
+                                step.state === "completed"
+                                  ? "bg-emerald-500/40"
+                                  : "bg-border/60"
+                              }`}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 4. 异常诊断区域：单行不换行，支持横向平滑滚动 */}
+                {task.error_message && (
+                  <div
+                    className="rounded-lg border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive space-y-1.5 min-w-0"
+                    data-testid="pipeline-task-error-box"
+                  >
+                    <div className="flex items-center justify-between gap-1.5 min-w-0 whitespace-nowrap">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+                        <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                        <span className="font-semibold text-[11px] shrink-0 whitespace-nowrap">{t("executionError", "异常")}</span>
+                        <span className="font-mono truncate text-[11px] text-muted-foreground dark:text-destructive/80 min-w-0 flex-1 whitespace-nowrap">
+                          {task.error_message.split("\n")[0]}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(`${task.id}_error`, task.error_message!)}
+                          className="inline-flex items-center gap-1 rounded bg-destructive/10 hover:bg-destructive/20 px-1.5 py-0.5 text-[10px] font-medium text-destructive transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                          title={t("copyErrorMessage", "复制完整错误")}
+                        >
+                          {copiedKey === `${task.id}_error` ? (
+                            <>
+                              <Check className="h-2.5 w-2.5 text-emerald-500" />
+                              <span className="text-emerald-500">{t("copied", "已复制")}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-2.5 w-2.5" />
+                              <span>{t("copyError", "复制错误")}</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => toggleErrorExpand(task.id)}
+                          className="inline-flex items-center gap-0.5 rounded hover:bg-destructive/15 px-1 py-0.5 text-[10px] text-destructive transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                          aria-expanded={isErrorExpanded}
+                        >
+                          <span>{isErrorExpanded ? t("collapse", "收起") : t("expand", "展开详情")}</span>
+                          {isErrorExpanded ? (
+                            <ChevronUp className="h-2.5 w-2.5" />
+                          ) : (
+                            <ChevronDown className="h-2.5 w-2.5" />
+                          )}
+                        </button>
                       </div>
                     </div>
+
+                    {/* 展开的完整 Traceback：单行代码不软折行，支持水平滚动 */}
+                    {isErrorExpanded && (
+                      <div
+                        className="mt-1.5 max-h-48 overflow-y-auto overflow-x-auto rounded-md bg-slate-950 p-2.5 font-mono text-[10.5px] text-slate-200 whitespace-pre select-text border border-slate-800 leading-relaxed"
+                        data-testid="pipeline-task-error-expanded"
+                      >
+                        {task.error_message}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
+
+              {/* 5. 底栏：简明检出命令与查看 PR 操作（已移除重复的查看 Issue 与迁移终端现场） */}
+              {hasFooter && (
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/40 text-xs min-w-0 whitespace-nowrap">
+                  {/* 左侧：本地 Git 检出命令快速复制 */}
+                  {checkoutCmd ? (
+                    <div className="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
+                      <span className="text-muted-foreground font-mono select-none text-[10.5px] shrink-0">$</span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(`${task.id}_checkout`, checkoutCmd)}
+                        className="group/checkout flex items-center gap-1.5 rounded-md border border-border/80 bg-muted/40 hover:bg-muted px-2 py-0.5 font-mono text-[10.5px] text-muted-foreground hover:text-foreground transition-all cursor-pointer truncate max-w-full"
+                        title={t("clickToCopyCheckout", "点击复制完整本地检出命令")}
+                        data-testid="pipeline-task-copy-checkout"
+                      >
+                        <span className="truncate">git checkout {task.branch}</span>
+                        {copiedKey === `${task.id}_checkout` ? (
+                          <Check className="h-2.5 w-2.5 text-emerald-500 shrink-0" />
+                        ) : (
+                          <Copy className="h-2.5 w-2.5 opacity-60 group-hover/checkout:opacity-100 shrink-0" />
+                        )}
+                      </button>
+                    </div>
+                  ) : (
+                    <div />
+                  )}
+
+                  {/* 右侧：查看 PR 按钮 */}
+                  {task.pr_url && (
+                    <a
+                      href={task.pr_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors shadow-2xs shrink-0 whitespace-nowrap ml-auto"
+                    >
+                      <GitPullRequest className="h-3 w-3 shrink-0" />
+                      <span>{t("viewPullRequest", "查看 PR")}</span>
+                      <ExternalLink className="h-2.5 w-2.5 opacity-70 shrink-0" />
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
