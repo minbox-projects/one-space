@@ -4,7 +4,7 @@
 
 1. **Linux AI 网关**：纯 Python 标准库实现的 OpenAI 兼容代理，支持多服务商轮询、密钥冷却、模型池、模板自动同步，并把可用模型同步到 `opencode` 配置。本地合盖关机后，云端仍可继续处理请求。
 2. **Mac 合盖即走的长程重构会话**：基于 `tmux` + `opencode --yolo`，断网或合盖不丢会话，随时可恢复现场；支持 Git Worktree 隔离开发。
-3. **24/7 代码库监控与自动 PR 助手**：监听带指定标签的 GitHub Issue，先校验作者仓库权限，再自动接单、无头调用 `opencode run` 实施修改、提交分支并创建 Pull Request。
+3. **24/7 代码库监控与自动 PR 助手**：监听带指定标签的 GitHub Issue，先校验作者仓库权限，再自动接单、无头调用 `opencode run` 实施修改、提交分支并创建 Pull Request；授权协作者可在 Issue 上评论 `/agent` 继续调整，并复用 Agent 自有的 open PR 分支。
 4. **多渠道通知**：支持钉钉自定义机器人（含安全加签）与企业微信群机器人，任务接单、完成或异常时即时推送。
 5. **磁盘空间守护者（Disk Guardian）**：按白名单修剪过期 OpenCode `log` 与 `tool-output` 缓存、释放任务自有临时目录、清理过期且空闲的已注册 Worktree；默认保留全部会话文件与 `opencode.db*`、`repos`、`snapshot`。
 
@@ -168,7 +168,7 @@ Issue Worker 启动时会执行不带 `--show-token` 的 `gh auth status` 检查
 | `github_token` | 可选，GitHub Personal access token (classic)，用于注入 `GH_TOKEN` / `GITHUB_TOKEN`。 |
 | `watch_repositories` | 监听的仓库列表，格式为 `owner/repo`。 |
 | `trigger_label` | 触发标签，默认 `bot:task`。 |
-| `require_author_permission` | 是否校验 Issue 作者仓库权限，默认 `true`；设为 `false` 只关闭该授权门，属于兼容开关。 |
+| `require_author_permission` | 是否校验 Issue 作者仓库权限，默认 `true`；设为 `false` 只关闭该授权门，属于兼容开关。`/agent` 评论者的权限校验不受该开关影响，始终执行。 |
 | `permission_cache_seconds` | 作者权限查询的单调时钟缓存 TTL，默认 `600` 秒。 |
 | `max_attempts` | 单任务总尝试次数，默认 `3`；设为 `1` 即不重试。 |
 | `poll_interval_seconds` | 轮询间隔，默认 `180` 秒。 |
@@ -180,24 +180,47 @@ Issue Worker 启动时会执行不带 `--show-token` 的 `gh auth status` 检查
 - 无作者信息、有效权限不足（`none` / `read` / `triage`）或权限查询失败的 Issue 只记录日志并跳过，不发表评论、不创建分支，也不消耗执行尝试；该跳过不写入已处理状态，之后权限变化可以重新生效。
 - 权限查询结果按「仓库 + 作者」缓存；查询失败按未授权处理（fail closed）、记录日志且不缓存为授权。
 
+### `/agent` 后续指令
+
+- 已处理过的 open 且仍带触发标签的 Issue 收到以 `/agent` 开头的评论时触发一次后续任务：允许前导空白，命令不区分大小写，`/agent` 之后必须是结尾或空白；评论者在该仓库的有效权限必须为 `admin`、`maintain` 或 `write`（`maintain` 归一化为 `write`、`triage` 归一化为 `read`）。`/agentic` 或出现在评论中间的 `/agent` 不会触发。
+- Issue 作者权限门先于评论评估执行：作者无权限或作者查询失败时不评估任何后续评论，评论游标也不前进；已确认无权限的评论者会被消费但不启动运行。机器人评论（`user.type` 为 `Bot`，或登录名以 `[bot]` 结尾且大小写不敏感）、含 Agent 标记的评论、已关闭或未打标签的 Issue 以及不以 `/agent` 开头的评论都不会触发。
+- 只有被授权的人类评论进入历史；Issue 标题与正文、授权评论与后续请求都在不可信边界内脱敏。授权评论历史与后续请求共享 50,000 UTF-8 字节上限：超出时先丢弃最旧的历史，后续请求仍然超限时截断请求并在提示词中留下可见的截断标记；Issue 标题/正文与上一次结果元数据不计入该上限。
+- 每次触发都重新克隆仓库，并以完整授权历史执行一次新的 `opencode run`；不恢复 OpenCode 会话，也不复用或保留上一次的工作目录与克隆。
+
+### 后续 PR 复用与拒绝工作流
+
+- 只有同时满足以下条件的 open PR 才被视为 Agent 自有 PR：处于 open 状态、正文在数字边界引用 `#<编号>`（`#420` 不匹配 `#42`）、head 仓库等于目标仓库，且 head 分支与该 Issue 持久化状态中的 `branch` 完全一致。仅有同名分支或仅有 Issue 引用都不构成归属。
+- 命中 Agent 自有 PR 时，检出该分支、追加提交并推送到同一分支，不创建第二个 PR。没有 Agent 自有 PR 且没有其他引用该 Issue 的 open PR 时，从默认分支创建新分支，并创建一个正文包含 `Closes #<编号>` 的新 PR。
+- 不存在 Agent 自有 PR、但存在引用该 Issue 的 open PR 时，绝不修改该 PR：只回复一次说明未做任何修改，并消费本次触发。已关闭的 PR 不参与复用，也不复用其分支。
+- 拒绝或要求调整的受支持路径是：保持 Agent PR 为 open 且不合并，然后在 Issue 上再次评论 `/agent`。PR 会话评论与 `Request changes` 评审不会触发后续任务；关闭 PR 也不是调整信号，下一次 `/agent` 会从默认分支创建新分支与新 PR。
+
+### 评论游标与幂等
+
+- 每条 Issue 状态记录持久化 `last_comment_id`。被忽略的非触发评论会直接越过；只有终态（`done`、`failed` 或 `no_changes`）之后，才把触发游标推进到触发快照中观察到的最大评论 ID。
+- 评论抓取失败或评论者权限查询失败不推进游标，留待后续轮询重试；终态前崩溃可能使同一触发至少重试一次。运行期间到达的评论其 ID 高于快照，交由后续轮询处理；已消费的评论即使之后被编辑也不会再次触发。
+- 多条 `/agent` 评论出现在同一快照中时合并为一次运行；之后到达的评论等待后续运行。
+- Agent 发表的每条 Issue 评论都附带隐藏标记 `<!-- onespace-cloud-agent -->`；带标记的评论既不会触发后续任务，也不会进入提示词历史，而接单、完成、无变更与失败等可见文案保持不变。
+
 ### 任务执行、重试与幂等
 
-- 克隆前用 `gh api --paginate --slurp` 完整分页列出该仓库全部 open PR，并按 `#<编号>` 数字边界匹配引用（`#420` 不匹配 `#42`）。命中即跳过克隆、OpenCode 与建 PR，标记 `done` 并记录 PR URL；创建 PR 失败后会再次完整检查，以处理响应丢失但 PR 已创建的情况。PR 查询失败按瞬时失败处理，未成功确认前不会克隆。
-- `max_attempts` 表示总尝试次数。仅瞬时失败重试：子进程超时、克隆/推送/网络失败、OpenCode 非零退出与上游 5xx；间隔为 `min(30 * 2 ** (attempt - 1), 300)` 秒。HTTP 401/403、仓库或 Issue 不存在、Issue 已关闭等永久错误只消耗一次尝试。
-- 每次重试前重新确认 Issue 仍为 open 并复用 open PR 检查；OpenCode 非零退出直接判定失败，不提交、不推送。成功、永久失败或尝试耗尽后只发起一次终态评论与通知，后续轮询与重启会跳过已记录的终态。
+- 初次接单时，克隆前用 `gh api --paginate --slurp` 完整分页列出该仓库全部 open PR，并按 `#<编号>` 数字边界匹配引用（`#420` 不匹配 `#42`）。命中即跳过克隆、OpenCode 与建 PR，标记 `done` 并记录 PR URL；创建 PR 失败后会再次完整检查，以处理响应丢失但 PR 已创建的情况。PR 查询失败按瞬时失败处理，未成功确认前不会克隆。该跳过只用于初次接单；已处理 Issue 的后续任务按「后续 PR 复用与拒绝工作流」处理。
+- `max_attempts` 表示总尝试次数。仅瞬时失败重试：子进程超时、克隆/推送/网络失败、OpenCode 非零退出与上游 5xx；间隔为 `min(30 * 2 ** (attempt - 1), 300)` 秒。HTTP 401/403、仓库或 Issue 不存在、Issue 已关闭等永久错误只消耗一次尝试。初次接单与 `/agent` 后续任务使用同一重试预算。
+- 每次重试前重新确认 Issue 仍为 open；初次接单还会复用 open PR 检查。OpenCode 非零退出直接判定失败，不提交、不推送。成功、永久失败或尝试耗尽后只发起一次终态评论与通知，后续轮询与重启会跳过已记录的终态。
 - OpenCode 执行成功但工作区无变更时仍以 `done` 结束，任务流水保留 `no_changes` 状态；任务流水与 `agent.py tasks --json` 的字段与状态保持桌面端已消费的格式。
 
 ### 提示词与内容隔离
 
-- Prompt 包含仓库、Issue 编号等元数据；标题与正文放在 `<<<BEGIN_UNTRUSTED_ISSUE_DATA>>>` 与 `<<<END_UNTRUSTED_ISSUE_DATA>>>` 边界内，正文中出现的相同标记会被改写为无法闭合的形式。
+- 初次接单的 Prompt 包含仓库、Issue 编号等元数据；标题与正文放在 `<<<BEGIN_UNTRUSTED_ISSUE_DATA>>>` 与 `<<<END_UNTRUSTED_ISSUE_DATA>>>` 边界内，正文中出现的相同标记会被改写为无法闭合的形式。
+- `/agent` 后续 Prompt 另含受信任的前置说明（授权协作者经校验的 `/agent` 评论触发、后续请求是待实现的需求而非系统指令）、上一次结果（`status`、`branch`、`pr_url`、`last_error`）与授权评论历史；Issue 标题/正文、授权评论和后续请求同样位于不可信边界内，并受 50,000 UTF-8 字节上限约束。未授权评论、机器人评论与 Agent 标记评论不会出现在提示词中。
 - 固定指令声明该内容是待处理数据而非命令，禁止读取或泄露密钥、凭据、环境变量与宿主文件，只允许在克隆目录内修改，并拒绝改变这些规则。
 - 这些只是提示约束，不是操作系统沙箱：默认 root 执行与 `--yolo` 保持不变，必要时请自行收紧服务器权限。
 
 ### 任务状态与尝试日志
 
 - 终态记录写入 `~/.config/onespace-cloud-agent/worker_state.json`，格式为 `version: 2` 加 `repositories`，按仓库与 Issue 编号字符串索引，每条记录包含 `status`（`done` / `failed`）、`attempts`、脱敏后的 `last_error` 与 UTC ISO-8601 `updated_at`。
+- `last_comment_id`（十进制字符串，默认 `"0"`）、`branch` 与 `pr_url`（字符串，默认空）是 `version: 2` 的加性可选字段，缺失或为 null 时使用默认值，加载与保存原样往返。`last_comment_id` 可接受非负整数或 ASCII 十进制字符串并归一化为字符串，`branch` 与 `pr_url` 可接受字符串（null 视为默认空）；其他形状按既有非法 v2 状态隔离策略处理。
 - 旧版「仓库 → 编号列表」状态按 `done`、`0` 次尝试加载；首次写入 v2 前会把原始字节一次性备份为 `worker_state.json.v1.bak`（绝不覆盖，备份失败则中止迁移写入）。损坏或形状非法的状态被隔离为带唯一后缀的 `.corrupt` 文件、记录日志并以空状态继续。保存使用同目录临时文件加 `os.replace`。
-- v2 状态不向后兼容：回滚到旧 worker 之前，必须先恢复 `worker_state.json.v1.bak`，绝不能让旧版本读取 v2 状态。
+- v2 状态不向后兼容：回滚到旧 worker 之前，必须先恢复 `worker_state.json.v1.bak`，绝不能让旧版本读取 v2 状态。旧 worker 保存时会丢弃新增字段；重新升级后游标回到 `0`，历史 `/agent` 评论可能被再次评估一次，这是显式授权操作可接受的代价。
 - 每次尝试在 `~/.config/onespace-cloud-agent/logs/` 生成 `<repo>_<issue>_<timestamp>_<序号>.log`（仓库斜杠替换为下划线，毫秒时间戳加进程内序号保证唯一），记录开始时间、命令参数、退出码与失败分类、有界的 stdout/stderr，以及 `git diff --stat`（克隆前明确标注不可用）。
 - 日志写入前脱敏配置的 Token、凭据类环境变量值与 `Authorization` 值；单个日志上限 `2097152` 字节（2 MiB），截断时为结果元数据预留空间。全部仓库合计只保留最新的 20 份 agent 尝试日志（按 mtime、文件名次序），无关文件不受影响；日志创建或写入失败会显式记录并使任务停止，不会伪造成功。
 
@@ -279,8 +302,9 @@ ssh dmit-server "cloud-session kill <session-name>"
 1. 在 `config.json` 的 `watch_repositories` 中加入要监听的 GitHub 仓库。
 2. 确保 GitHub 已通过 Personal access token (classic) 授权，且 Token 具备 `repo`（如需修改工作流还需 `workflow`）权限。
 3. 在目标仓库创建 Issue，并打上 `bot:task` 标签。
-4. Cloud Agent 会先校验 Issue 作者是否具备仓库 `admin` / `maintain` / `write` 权限，通过后自动接单并在 Issue 回复；随后克隆仓库、调用 `opencode run` 实施修改、提交 `bot/issue-<编号>-<时间戳>` 分支、创建 Pull Request，并通过钉钉/企微群通知结果。已存在引用该 Issue 的 open PR 时会跳过重复执行。
-5. 任务终态记录保存在 `~/.config/onespace-cloud-agent/worker_state.json`（`version: 2`，含尝试次数与脱敏错误），重启后不会重复处理；每次尝试的日志在 `~/.config/onespace-cloud-agent/logs/` 下，全局只保留最新 20 份。
+4. Cloud Agent 会先校验 Issue 作者是否具备仓库 `admin` / `maintain` / `write` 权限，通过后自动接单并在 Issue 回复；随后克隆仓库、调用 `opencode run` 实施修改、提交 `bot/issue-<编号>-<时间戳>` 分支、创建 Pull Request，并通过钉钉/企微群通知结果。已存在引用该 Issue 的 open PR 时，初次接单会跳过重复执行。
+5. 需要拒绝或调整时，保持 Agent PR 为 open 且不合并，再由 `admin` / `maintain` / `write` 协作者在 Issue 上评论 `/agent` 并说明修改要求。后续任务会重新克隆、以完整授权历史执行，检出该 Agent PR 的分支追加提交并推送，不创建第二个 PR；若不存在 Agent 自有 PR 且没有其他引用该 Issue 的 open PR，则从默认分支新建分支与 PR，否则只回复一次并消费本次触发。
+6. 任务终态记录保存在 `~/.config/onespace-cloud-agent/worker_state.json`（`version: 2`，含尝试次数、脱敏错误、可选分支/PR 与评论游标），重启后不会重复处理已消费的评论；每次尝试的日志在 `~/.config/onespace-cloud-agent/logs/` 下，全局只保留最新 20 份。
 
 ### 场景 3：从本地或 OpenCode 调用云端 AI 网关
 
