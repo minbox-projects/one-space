@@ -11,6 +11,8 @@ import {
   cloudAgentLaunchTerminal,
   cloudAgentSyncGateway,
   cloudAgentGetInstallationInfo,
+  cloudAgentPlanAttach,
+  cloudAgentPlanCancel,
   CLOUD_AGENT_SESSIONS_COUNT_EVENT,
   CLOUD_AGENT_SETTINGS_UPDATED_EVENT,
   DEFAULT_CLOUD_AGENT_SETTINGS,
@@ -386,6 +388,34 @@ export function useCloudAgent(
     }
   }, [selectedHost, refreshAll, pushToast]);
 
+  // 接管本地计划任务的实时会话
+  const planAttach = useCallback(
+    async (jobId: string) => {
+      try {
+        await cloudAgentPlanAttach(jobId, selectedHost);
+        pushToast?.("success", `已接管计划任务 [${jobId}] 的实时会话`);
+        refreshAll();
+      } catch (err: any) {
+        pushToast?.("error", `接管计划任务失败: ${err?.message || err}`);
+      }
+    },
+    [selectedHost, refreshAll, pushToast]
+  );
+
+  // 取消本地计划任务
+  const planCancel = useCallback(
+    async (jobId: string) => {
+      try {
+        await cloudAgentPlanCancel(jobId, selectedHost);
+        pushToast?.("success", `计划任务 [${jobId}] 已取消`);
+        refreshAll();
+      } catch (err: any) {
+        pushToast?.("error", `取消计划任务失败: ${err?.message || err}`);
+      }
+    },
+    [selectedHost, refreshAll, pushToast]
+  );
+
   // 创建新会话并唤起终端
   const createAndLaunchSession = useCallback(
     async (data: {
@@ -450,6 +480,8 @@ export function useCloudAgent(
     killSession,
     syncGateway,
     createAndLaunchSession,
+    planAttach,
+    planCancel,
     showNewTaskModal,
     setShowNewTaskModal,
   };

@@ -20267,7 +20267,9 @@
         "src/lib/aiGateway/types.ts",
         "src-tauri/src/ai_gateway/provider_templates.json",
         "src-tauri/src/ai_gateway/storage.rs",
+        "src-tauri/src/ai_gateway/templates/source.rs",
         "src-tauri/src/ai_gateway/templates/state.rs",
+        "src-tauri/src/ai_gateway/types_config/config.rs",
         "src-tauri/src/ai_gateway/types_config/protocol.rs",
         "src-tauri/src/ai_gateway/types_config/provider.rs",
         "src-tauri/zen-relay/Cargo.toml",
@@ -20285,7 +20287,7 @@
       "depends_on": [],
       "relations": [],
       "owner_role": "backend",
-      "responsibility": "Template-bound OpenCode Zen Free transport through an isolated BoringSSL loopback relay with a one-time schema-5 binding",
+      "responsibility": "Template-bound OpenCode Zen Free transport through an isolated BoringSSL loopback relay with a one-time schema-5 binding, schema-7 saved-template transport repair, schema-8 canonical models_url repair and a free-only upstream model-list sync",
       "read_scope": [
         ".github/workflows/release.yml",
         "src-tauri/scripts/build-zen-relay.mjs",
@@ -20293,10 +20295,12 @@
         "src-tauri/src/ai_gateway/migration.rs",
         "src-tauri/src/ai_gateway/provider_templates.json",
         "src-tauri/src/ai_gateway/storage.rs",
+        "src-tauri/src/ai_gateway/templates/source.rs",
         "src-tauri/src/ai_gateway/templates/state.rs",
         "src-tauri/src/ai_gateway/tests/migration.rs",
         "src-tauri/src/ai_gateway/tests/templates.rs",
         "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
+        "src-tauri/src/ai_gateway/types_config/config.rs",
         "src-tauri/src/ai_gateway/types_config/protocol.rs",
         "src-tauri/src/ai_gateway/types_config/provider.rs",
         "src-tauri/src/ai_gateway/types_config/template.rs",
@@ -20918,6 +20922,8 @@
         "src/components/CloudAgent/components/GatewayPanel.tsx",
         "src/components/CloudAgent/components/NewSessionDialog.tsx",
         "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+        "src/components/CloudAgent/components/LocalPlanForm.tsx",
+        "src/components/CloudAgent/components/NewSessionModal.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
@@ -20929,8 +20935,15 @@
         "src-tauri/src/cloud_agent/types.rs",
         "src-tauri/src/cloud_agent/settings.rs",
         "src-tauri/src/cloud_agent/ssh.rs",
+        "src-tauri/src/cloud_agent/local_plans.rs",
+        "src-tauri/src/cloud_agent/plan_transfer.rs",
         "src-tauri/src/cloud_agent/terminal.rs",
-        "src-tauri/src/cloud_agent/gateway_sync.rs"
+        "src-tauri/src/cloud_agent/gateway_sync.rs",
+        "server/onespace-cloud-agent/agent.py",
+        "server/onespace-cloud-agent/core/plan_execution.py",
+        "server/onespace-cloud-agent/core/plan_opencode.py",
+        "server/onespace-cloud-agent/core/plan_tasks.py",
+        "server/onespace-cloud-agent/core/plan_workspace.py"
       ],
       "symbols": [
         {
@@ -20954,6 +20967,12 @@
         {
           "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
           "name": "NewSessionDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/LocalPlanForm.tsx",
+          "name": "LocalPlanForm",
           "kind": "function",
           "visibility": "public"
         },
@@ -21253,6 +21272,12 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
+          "name": "workspacesList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
           "name": "CLOUD_AGENT_DEPLOY_PROGRESS_EVENT",
           "kind": "variable",
           "visibility": "public"
@@ -21301,13 +21326,31 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanContext",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
           "name": "cloudAgentDeploy",
           "kind": "function",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
           "name": "mapDeploymentProgress",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanSubmit",
           "kind": "function",
           "visibility": "public"
         },
@@ -21325,7 +21368,19 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanCancel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
           "name": "compareSemver",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanAttach",
           "kind": "function",
           "visibility": "public"
         },
@@ -21344,6 +21399,12 @@
         {
           "file": "src/lib/cloudAgent.ts",
           "name": "formatInstalledAt",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanCapabilities",
           "kind": "function",
           "visibility": "public"
         }
@@ -21371,10 +21432,18 @@
         "src/components/CloudAgent/CloudAgent.test.tsx",
         "src/components/CloudAgent/CloudAgentDeploymentDialog.test.tsx",
         "src/lib/cloudAgent.test.ts",
+        "src/lib/cloudAgent.plan.test.ts",
         "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
+        "src/components/CloudAgent/LocalPlanForm.test.tsx",
+        "src/components/CloudAgent/PlanPipeline.test.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
         "src-tauri/src/cloud_agent/tests.rs",
-        "src-tauri/src/cloud_agent/deployment_tests.rs"
+        "src-tauri/src/cloud_agent/deployment_tests.rs",
+        "server/onespace-cloud-agent/tests/test_plan_execution.py",
+        "server/onespace-cloud-agent/tests/test_plan_flow.py",
+        "server/onespace-cloud-agent/tests/test_plan_opencode.py",
+        "server/onespace-cloud-agent/tests/test_plan_tasks.py",
+        "server/onespace-cloud-agent/tests/test_plan_workspace.py"
       ],
       "depends_on": [],
       "relations": [
@@ -21462,10 +21531,15 @@
           "kind": "imports",
           "from": "src-tauri/src/cloud_agent/ssh.rs#get_cloud_status",
           "to": "src-tauri/src/cloud_agent/deployment.rs#build_status_command"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog",
+          "to": "src/components/CloudAgent/components/LocalPlanForm.tsx#LocalPlanForm"
         }
       ],
       "owner_role": "shared",
-      "responsibility": "OneSpace桌面端与OneSpace Cloud Agent深度协同管理套件，包括云端长程编程会话看板、macOS本地原生终端一键直连、AI网关安全双端同步、24/7自动PR流水线监控、OpenCode yolo授权配置，以及一键安装检查与部署交接",
+      "responsibility": "OneSpace桌面端与OneSpace Cloud Agent深度协同管理套件，包括云端长程编程会话看板、macOS本地原生终端一键直连、AI网关安全双端同步、24/7自动PR流水线监控、OpenCode yolo授权配置、本地冻结计划提交与云端计划执行及接管，以及一键安装检查与部署交接",
       "read_scope": [
         "src/components/CloudAgent/index.tsx",
         "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
@@ -21473,6 +21547,8 @@
         "src/components/CloudAgent/components/PrPipelineTab.tsx",
         "src/components/CloudAgent/components/GatewayPanel.tsx",
         "src/components/CloudAgent/components/NewSessionDialog.tsx",
+        "src/components/CloudAgent/components/LocalPlanForm.tsx",
+        "src/components/CloudAgent/components/NewSessionModal.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
         "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
@@ -21490,6 +21566,8 @@
         "src-tauri/src/cloud_agent/types.rs",
         "src-tauri/src/cloud_agent/settings.rs",
         "src-tauri/src/cloud_agent/ssh.rs",
+        "src-tauri/src/cloud_agent/local_plans.rs",
+        "src-tauri/src/cloud_agent/plan_transfer.rs",
         "src-tauri/src/cloud_agent/terminal.rs",
         "src-tauri/src/cloud_agent/gateway_sync.rs",
         "src-tauri/src/cloud_agent/tests.rs",
@@ -21509,7 +21587,19 @@
         "server/onespace-cloud-agent/core/session_runner.py",
         "server/onespace-cloud-agent/systemd/onespace-cloud-agent.service",
         "src-tauri/tauri.conf.json",
-        "src-tauri/src/app_runtime/run_app.rs"
+        "src-tauri/src/app_runtime/run_app.rs",
+        "server/onespace-cloud-agent/tests/test_plan_execution.py",
+        "server/onespace-cloud-agent/tests/test_plan_flow.py",
+        "server/onespace-cloud-agent/tests/test_plan_opencode.py",
+        "server/onespace-cloud-agent/tests/test_plan_tasks.py",
+        "server/onespace-cloud-agent/tests/test_plan_workspace.py",
+        "server/onespace-cloud-agent/core/plan_execution.py",
+        "server/onespace-cloud-agent/core/plan_opencode.py",
+        "server/onespace-cloud-agent/core/plan_tasks.py",
+        "server/onespace-cloud-agent/core/plan_workspace.py",
+        "src/components/CloudAgent/LocalPlanForm.test.tsx",
+        "src/components/CloudAgent/PlanPipeline.test.tsx",
+        "src/lib/cloudAgent.plan.test.ts"
       ],
       "shared_entry": false
     },

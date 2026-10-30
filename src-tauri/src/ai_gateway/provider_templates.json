@@ -65,6 +65,7 @@
     "error_strategy": "generic",
     "transport_strategy": "opencode_zen_sidecar",
     "source": "https://opencode.ai/zen/v1/models",
+    "models_url": "https://opencode.ai/zen/v1/models",
     "models": [
       { "upstream_model": "big-pickle", "local_model": "zen-free-big-pickle", "display_name": "Zen Big Pickle", "enabled": true, "reasoning_efforts": [] },
       { "upstream_model": "beam-free", "local_model": "zen-free-beam", "display_name": "Zen Beam Free", "enabled": true, "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"] },

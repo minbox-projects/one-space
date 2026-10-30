@@ -410,6 +410,72 @@ class TestSystemdUnit(unittest.TestCase):
         self.assertIn("TimeoutStopSec=infinity", text)
 
 
+import os
+import subprocess
+import sys
+import tempfile
+import shutil
+
+# (existing imports remain)
+
+class TestAgentTasksAggregateCLI(unittest.TestCase):
+    def test_tasks_json_includes_issue_and_plan_row(self):
+        tmp = tempfile.mkdtemp(prefix="agent_tasks_")
+        try:
+            home = os.path.join(tmp, "home")
+            os.makedirs(home)
+            cfg_dir = os.path.join(home, ".config", "onespace-cloud-agent")
+            os.makedirs(cfg_dir, exist_ok=True)
+            # issue history fixture
+            issue_history = [{"id": "i1", "source": "issue", "repo": "o/r", "issue_number": 1, "title": "Issue", "status": "completed"}]
+            with open(os.path.join(cfg_dir, "task_history.json"), "w") as f:
+                json.dump(issue_history, f)
+            config_path = os.path.join(tmp, "config.json")
+            with open(config_path, "w") as f:
+                json.dump({"ai_gateway": {"port": 17699}}, f)
+            env = dict(os.environ)
+            env["HOME"] = home
+            # create a plan task in the default state root if product module exists
+            try:
+                import base64
+                from core.plan_tasks import PlanTaskManager
+                state_root = os.path.join(cfg_dir, "plan-tasks")
+                os.makedirs(state_root, exist_ok=True)
+                def gh_runner(cmd, *a, **k):
+                    return type("P", (), {"returncode": 0, "stdout": '{"nameWithOwner": "o/r"}', "stderr": ""})()
+                def tmux_runner(cmd, *a, **k):
+                    return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+                mgr = PlanTaskManager(
+                    {"plan_jobs": {"workspace_root": os.path.join(tmp, "ws")}},
+                    state_root=state_root, workspace_root=os.path.join(tmp, "ws"),
+                    gh_runner=gh_runner, tmux_runner=tmux_runner,
+                )
+                env_obj = {
+                    "schema_version": 1, "request_id": "req-1",
+                    "workspace": {"id": "w1", "name": "ws", "root_path": "/tmp/ws"},
+                    "repository": {"remote_url": "https://example.com/o/r.git", "canonical": None, "host": "github.com", "branch": "main", "base_branch": "main", "source": "git", "head_sha": "abc", "dirty": False},
+                    "plan": {"plan_id": "p1", "title": "Plan", "directory": "plan", "files": [{"path": "a.txt", "content_base64": base64.b64encode(b"hi").decode()}]},
+                    "policy": {"auto_permission_once": True, "auto_recommended_questions": True, "auto_merge": False},
+                }
+                mgr.submit(env_obj, "req-1")
+            except Exception:
+                pass
+            proc = subprocess.run(
+                [sys.executable, "agent.py", "tasks", "--json", "--config", config_path],
+                cwd=os.path.dirname(os.path.abspath(__file__)) + "/..",
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            tasks = data if isinstance(data, list) else data.get("tasks", [])
+            self.assertTrue(any(t.get("source") != "plan" and t.get("issue_number") == 1 for t in tasks))
+            plan_rows = [t for t in tasks if t.get("source") == "plan"]
+            self.assertTrue(plan_rows, "expected a plan row")
+            self.assertIsNone(plan_rows[0].get("issue_number"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
 

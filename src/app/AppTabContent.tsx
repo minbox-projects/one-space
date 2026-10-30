@@ -73,7 +73,7 @@ export function AppTabContent({
   const shouldRenderTab = (tabId: string) =>
     activeTab === tabId || mountedTabs.has(tabId);
   return (
-    <div className="h-full relative">
+    <div className="h-full min-h-0 flex-1 flex flex-col relative">
       {shouldRenderTab("launcher") && (
         <div className={activeTab === "launcher" ? "h-full" : "hidden"}>
           <Launcher isVisible={activeTab === "launcher"} />
@@ -181,7 +181,7 @@ export function AppTabContent({
         </div>
       )}
       {shouldRenderTab("more-tools") && (
-        <div className={activeTab === "more-tools" ? "h-full" : "hidden"}>
+        <div className={activeTab === "more-tools" ? "h-full min-h-0 flex-1 flex flex-col overflow-hidden" : "hidden"}>
           <MoreToolsHub
             activeTool={moreToolsSection}
             onSelectTool={handleSelectMoreTool}
@@ -210,7 +210,7 @@ export function AppTabContent({
         </div>
       )}
       {shouldRenderTab("settings") && (
-        <div className={activeTab === "settings" ? "h-full" : "hidden"}>
+        <div className={activeTab === "settings" ? "h-full min-h-0 flex-1 flex flex-col overflow-hidden" : "hidden"}>
           <SettingsView
             initialTab={settingsInitialTab}
             onBack={() => {

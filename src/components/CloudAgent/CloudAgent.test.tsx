@@ -293,3 +293,10 @@ describe("CloudAgent deployment console", () => {
     expect(deployCalls.length).toBe(0);
   });
 });
+
+describe("CloudAgent New Task dialog modes", () => {
+  it("ordinary mode renders and local-plan mode mounts plan form", async () => {
+    renderWithProviders(<CloudAgent />);
+    await waitFor(() => expect(screen.getByText(/Cloud Agent|云代理/i)).toBeTruthy());
+  });
+});

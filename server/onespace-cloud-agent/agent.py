@@ -18,6 +18,7 @@ from core.disk_guardian import DiskGuardian
 from core.gateway import GatewayEngine, GatewayRequestHandler
 from core.issue_worker import IssueWorker
 from core.notifier import Notifier
+from core.plan_tasks import PlanError, PlanTaskManager, SCHEMA_VERSION
 
 logging.basicConfig(
     level=logging.INFO,
@@ -423,35 +424,190 @@ def get_status_report(config_path: str = "config.json") -> dict:
     }
 
 
-if __name__ == "__main__":
-    args = sys.argv[1:]
+PLAN_CAPABILITIES = {
+    "plan_submit": True,
+    "plan_list": True,
+    "plan_cancel": True,
+    "plan_attach": True,
+}
+
+
+def _extract_config(args):
+    """Remove ``--config <path>`` / ``--config=<path>`` and return the rest."""
+    remaining = []
+    config_path = None
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value == "--config":
+            if index + 1 < len(args):
+                config_path = args[index + 1]
+                index += 2
+                continue
+            index += 1
+            continue
+        if value.startswith("--config="):
+            config_path = value.split("=", 1)[1]
+            index += 1
+            continue
+        remaining.append(value)
+        index += 1
+    return remaining, config_path
+
+
+def _load_config(config_path):
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, dict):
+                return data
+        except Exception as exc:  # noqa: BLE001 - defaults remain usable
+            logger.warning("读取配置失败 %s: %s", config_path, exc)
+    return {}
+
+
+def _emit_json(payload, stdout):
+    stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    try:
+        stdout.flush()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _read_stdin_bytes(stdin):
+    buffer = getattr(stdin, "buffer", None)
+    data = buffer.read() if buffer is not None else stdin.read()
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return data
+
+
+def _handle_plan(args, stdin, stdout):
+    remaining, config_arg = _extract_config(args)
+    subcommand = remaining[0] if remaining else ""
+    positional = [value for value in remaining[1:] if not value.startswith("-")]
+    config_path = config_arg or (
+        "config.json" if os.path.exists("config.json") else None
+    )
+    manager = PlanTaskManager(_load_config(config_path), config_path=config_path)
+
+    if subcommand == "capabilities":
+        result = {
+            "ok": True,
+            "schema_version": SCHEMA_VERSION,
+            "capabilities": dict(PLAN_CAPABILITIES),
+        }
+    elif subcommand == "submit":
+        result = manager.submit(_read_stdin_bytes(stdin), None)
+    elif subcommand == "list":
+        result = {"ok": True, "tasks": manager.list_tasks()}
+    elif subcommand == "inspect":
+        job_id = positional[0] if positional else None
+        task = manager.inspect(job_id) if job_id else None
+        if task is None:
+            result = {"ok": False, "code": "not_found", "error": "unknown plan job"}
+        else:
+            result = {"ok": True, "task": task}
+    elif subcommand == "cancel":
+        if positional:
+            result = manager.cancel(positional[0])
+        else:
+            result = {"ok": False, "code": "not_found", "error": "unknown plan job"}
+    elif subcommand == "run":
+        if not positional:
+            result = {"ok": False, "code": "not_found", "error": "unknown plan job"}
+        else:
+            try:
+                result = {"ok": True, "task": manager.run_job(positional[0])}
+            except PlanError as exc:
+                result = {"ok": False, "code": exc.code, "error": exc.message}
+            except Exception as exc:  # noqa: BLE001 - only internal errors are nonzero
+                logger.exception("plan run failed")
+                result = {"ok": False, "code": "internal_error", "error": str(exc)}
+                _emit_json(result, stdout)
+                return 1
+    else:
+        result = {
+            "ok": False,
+            "code": "unknown_command",
+            "error": "unknown plan command",
+        }
+
+    _emit_json(result, stdout)
+    return 0
+
+
+def _collect_tasks(config_path):
+    tasks = IssueWorker.read_task_history_file()
+    try:
+        manager = PlanTaskManager(_load_config(config_path), config_path=config_path)
+        tasks = manager.aggregate_tasks(tasks)
+    except Exception as exc:  # noqa: BLE001 - Issue history remains available
+        logger.warning("读取 Plan 任务失败: %s", exc)
+    return tasks
+
+
+def main(argv=None, stdin=None, stdout=None):
+    """Run one CLI command without starting the daemon for command families."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
     is_json = "--json" in args
 
     if args and args[0] == "status":
-        cfg = "config.json"
-        for a in args[1:]:
-            if not a.startswith("-"):
-                cfg = a
-                break
+        remaining, config_arg = _extract_config(args[1:])
+        cfg = config_arg or next(
+            (value for value in remaining if not value.startswith("-")),
+            "config.json",
+        )
         report = get_status_report(cfg)
         if is_json:
-            print(json.dumps(report, ensure_ascii=False, indent=2))
+            stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         else:
-            print(f"Service Active: {report['service_active']}")
-            print(f"Disk: {report['disk']['used_gb']}G / {report['disk']['total_gb']}G ({report['disk']['use_percent']}%)")
-            print(f"Gateway: {report['gateway'].get('status', 'unknown')}")
-        sys.exit(0)
+            stdout.write(f"Service Active: {report['service_active']}\n")
+            stdout.write(
+                f"Disk: {report['disk']['used_gb']}G / "
+                f"{report['disk']['total_gb']}G "
+                f"({report['disk']['use_percent']}%)\n"
+            )
+            stdout.write(f"Gateway: {report['gateway'].get('status', 'unknown')}\n")
+        return 0
 
     if args and args[0] == "tasks":
-        tasks = IssueWorker.read_task_history_file()
+        remaining, config_arg = _extract_config(args[1:])
+        config_path = config_arg or (
+            "config.json" if os.path.exists("config.json") else None
+        )
+        tasks = _collect_tasks(config_path)
         if is_json:
-            print(json.dumps(tasks, ensure_ascii=False, indent=2))
+            stdout.write(json.dumps(tasks, ensure_ascii=False, indent=2) + "\n")
         else:
-            print(f"Total Tasks: {len(tasks)}")
-            for t in tasks:
-                print(f"  - [{t.get('status')}] {t.get('repo')}#{t.get('issue_number')} {t.get('title')}")
-        sys.exit(0)
+            stdout.write(f"Total Tasks: {len(tasks)}\n")
+            for task in tasks:
+                if task.get("issue_number") is None:
+                    reference = f"[{task.get('source', 'plan')}]"
+                else:
+                    reference = f"#{task.get('issue_number')}"
+                stdout.write(
+                    f"  - [{task.get('status')}] {task.get('repo')}"
+                    f"{reference} {task.get('title')}\n"
+                )
+        return 0
 
-    cfg_file = args[0] if args and not args[0].startswith("-") else "config.json"
+    if args and args[0] == "plan":
+        return _handle_plan(args[1:], stdin, stdout)
+
+    remaining, config_arg = _extract_config(args)
+    if config_arg:
+        cfg_file = config_arg
+    elif remaining and not remaining[0].startswith("-"):
+        cfg_file = remaining[0]
+    else:
+        cfg_file = "config.json"
     daemon = CloudAgentDaemon(cfg_file)
-    sys.exit(daemon.run())
+    return daemon.run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

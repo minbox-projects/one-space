@@ -225,7 +225,7 @@ fn builtin_templates_declare_their_model_list_urls() {
 
     assert_eq!(zen_free.base_url, "https://opencode.ai/zen/v1");
     assert_eq!(zen_free.source, "https://opencode.ai/zen/v1/models");
-    assert_eq!(zen_free.models_url, None);
+    assert_eq!(zen_free.models_url, Some("https://opencode.ai/zen/v1/models".to_string()));
     assert_eq!(zen_free.icon.as_deref(), Some("opencode"));
     assert_eq!(
         zen_free.transport_strategy,
@@ -6098,4 +6098,106 @@ async fn the_commandcode_join_preserves_the_ordinary_context_metadata() {
         Some(256000),
         "the ordinary list's declared context window must survive the capability join"
     );
+}
+
+#[test]
+fn zen_free_model_list_builtin_declares_models_url() {
+    let templates = builtin_templates().expect("built-in templates must parse");
+    let zen_free = templates
+        .iter()
+        .find(|template| template.id == "opencode-zen-free")
+        .expect("the opencode-zen-free template must exist");
+    assert_eq!(
+        zen_free.models_url.as_deref(),
+        Some("https://opencode.ai/zen/v1/models")
+    );
+}
+
+#[test]
+fn zen_free_model_list_sync_keeps_only_free_models() {
+    use crate::ai_gateway::types_config::TransportStrategy;
+
+    let previous_models = vec![
+        ("big-pickle", "zen-free-big-pickle"),
+        ("beam-free", "zen-free-beam"),
+        ("mimo-v2.6-flash-free", "zen-free-mimo"),
+        ("nemotron-3.5-super-vl-free", "zen-free-nemotron-vl"),
+        ("nemotron-3.5-lightning-free", "zen-free-nemotron-lightning"),
+        ("deepseek-v4.1-flash-free", "zen-free-deepseek"),
+        ("glm-5.3-flash-free", "zen-free-glm"),
+        ("flint-40b-free", "zen-free-flint-40b"),
+    ];
+
+    let mut template = crate::ai_gateway::types_config::ProviderTemplate {
+        id: "opencode-zen-free".to_string(),
+        name: "OpenCode Zen Free".to_string(),
+        description: String::new(),
+        base_url: "https://opencode.ai/zen/v1".to_string(),
+        protocol: crate::ai_gateway::types_config::UpstreamProtocol::ChatCompletions,
+        source: "https://opencode.ai/zen/v1/models".to_string(),
+        models_url: Some("https://opencode.ai/zen/v1/models".to_string()),
+        transport_strategy: TransportStrategy::OpencodeZenSidecar,
+        models: previous_models
+            .iter()
+            .map(|(upstream, local)| {
+                let mut m = template_model(upstream, Some("Name"), None, true);
+                m.local_model = Some(local.to_string());
+                m.reasoning_efforts = vec!["low".to_string()];
+                m.context_window = Some(128000);
+                m
+            })
+            .collect(),
+        icon: Some("opencode".to_string()),
+        ..crate::ai_gateway::types_config::ProviderTemplate::default()
+    };
+
+    let mut config = crate::ai_gateway::types_config::GatewayConfig::default();
+    config.provider_templates.push(crate::ai_gateway::types_config::ProviderTemplateState {
+        template_id: template.id.clone(),
+        template: Some(template),
+        synced_at: Some(1),
+        source: Some("https://opencode.ai/zen/v1/models".to_string()),
+    });
+
+    let mut provider = bound_provider("p", "opencode-zen-free");
+    provider.mappings = vec![model_mapping("zen-free-beam")];
+    config.providers.push(provider);
+
+    let body = serde_json::json!({
+        "data": [
+            {"id": "beam-free", "name": "Beam Free", "cost": {"text": {"input": {"price": 0.0, "cache": {"read": 0.0, "write": 0.0}}, "output": {"price": 0.0}}}},
+            {"id": "glm-5.3-flash-free", "name": "GLM Free", "cost": {"text": {"input": {"price": 0.0, "cache": {"read": 0.0}}, "output": {"price": 0.0}}}},
+            {"id": "new-model-free", "name": "New Model Free", "cost": {"text": {"input": {"price": 0.0, "cache": {"read": 0.0, "write": 0.0}}, "output": {"price": 0.0}}}},
+            {"id": "glm-5.3", "name": "GLM Paid", "cost": {"text": {"input": {"price": 1.0, "cache": {"read": 0.0, "write": 0.0}}, "output": {"price": 2.0}}}}
+        ]
+    })
+    .to_string();
+
+    let view = apply_template_sync_with(&mut config, "opencode-zen-free", |_t| Ok(body.clone()), |_n| Ok(()))
+        .expect("the payload must parse");
+
+    let upstreams: Vec<&str> = view
+        .template
+        .models
+        .iter()
+        .map(|m| m.upstream_model.as_str())
+        .collect();
+    assert_eq!(upstreams.len(), 3, "only free models remain");
+    assert!(upstreams.contains(&"beam-free"));
+    assert!(upstreams.contains(&"glm-5.3-flash-free"));
+    assert!(upstreams.contains(&"new-model-free"));
+    assert!(!upstreams.contains(&"glm-5.3"), "paid entry must be absent");
+
+    let beam = view.template.models.iter().find(|m| m.upstream_model == "beam-free").unwrap();
+    assert_eq!(beam.local_model.as_deref(), Some("zen-free-beam"));
+
+    let glm = view.template.models.iter().find(|m| m.upstream_model == "glm-5.3-flash-free").unwrap();
+    assert_eq!(glm.local_model.as_deref(), Some("zen-free-glm"));
+
+    let newm = view.template.models.iter().find(|m| m.upstream_model == "new-model-free").unwrap();
+    assert_eq!(newm.local_model.as_deref(), Some("zen-free-new-model"));
+
+    // no paid mapping/template model
+    let provider = config.providers.iter().find(|p| p.id == "p").unwrap();
+    assert!(provider.mappings.iter().all(|m| m.upstream_model != "glm-5.3"));
 }

@@ -115,6 +115,62 @@ const COMMANDCODE_CLIENT_URL: &str = "https://api.commandcode.ai/provider/v1/mod
 /// control that must never be exported as an upstream effort.
 const COMMANDCODE_PROVIDER_API_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
+/// Canonical OpenCode Zen Free template id. Its model-list sync is the only one
+/// that filters by upstream pricing, because a free provider must never import a
+/// paid model just because it appears in the shared model list.
+const OPENCODE_ZEN_FREE_TEMPLATE_ID: &str = "opencode-zen-free";
+
+/// Whether a declared price field is present and exactly zero.
+fn declared_price_is_zero(value: Option<&Value>) -> bool {
+    matches!(value.and_then(Value::as_f64), Some(price) if price == 0.0)
+}
+
+/// Whether an optional cache price is absent or exactly zero.
+fn declared_cache_price_is_free(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => true,
+        value => declared_price_is_zero(value),
+    }
+}
+
+/// Whether an object entry's real upstream `cost.text` shape proves the model is
+/// free. Both input and output prices must be present and zero, and a present
+/// `input.cache` must not declare a positive read or write price. Any missing or
+/// malformed field, a non-object input/output/cache, or a positive price
+/// excludes the entry.
+fn zen_free_entry_is_free(object: &serde_json::Map<String, Value>) -> bool {
+    let Some(text) = object.get("cost").and_then(|cost| cost.get("text")) else {
+        return false;
+    };
+    let Some(input) = text.get("input").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(output) = text.get("output").and_then(Value::as_object) else {
+        return false;
+    };
+    if !declared_price_is_zero(input.get("price")) || !declared_price_is_zero(output.get("price")) {
+        return false;
+    }
+    match input.get("cache") {
+        None | Some(Value::Null) => true,
+        Some(Value::Object(cache)) => {
+            declared_cache_price_is_free(cache.get("read"))
+                && declared_cache_price_is_free(cache.get("write"))
+        }
+        Some(_) => false,
+    }
+}
+
+/// Derive the local alias of a newly imported free model: `zen-free-` followed
+/// by the upstream id with a trailing `-free` removed.
+fn zen_free_alias(identifier: &str) -> String {
+    let base = identifier
+        .strip_suffix("-free")
+        .filter(|base| !base.is_empty())
+        .unwrap_or(identifier);
+    format!("zen-free-{base}")
+}
+
 /// Normalize an explicitly declared reasoning-effort value: `null` and an empty
 /// array clear the set; an array of strings is trimmed, blank-dropped and
 /// deduplicated in source order; any other shape is malformed.
@@ -279,8 +335,14 @@ pub(super) fn parse_model_list_source(
         };
 
     let mut merged: Vec<ProviderTemplateModel> = Vec::with_capacity(entries.len());
+    let restrict_to_free = previous.id == OPENCODE_ZEN_FREE_TEMPLATE_ID;
     for entry in entries {
         if let Some(raw_identifier) = entry.as_str() {
+            if restrict_to_free {
+                // A bare string carries no cost shape, so it can never prove the
+                // model is free and is never imported.
+                continue;
+            }
             let identifier = raw_identifier.trim();
             if identifier.is_empty() {
                 return Err(
@@ -320,6 +382,11 @@ pub(super) fn parse_model_list_source(
             "response contains a model entry without an identifier".to_string()
         })?;
         if source_entry_is_hidden(object) {
+            continue;
+        }
+        if restrict_to_free && !zen_free_entry_is_free(object) {
+            // Only an entry whose real upstream pricing proves it is free may
+            // join the free template.
             continue;
         }
         let declared_efforts = declared_reasoning_efforts(object)?;
@@ -372,6 +439,26 @@ pub(super) fn parse_model_list_source(
             .models
             .iter()
             .find(|model| model.upstream_model == identifier);
+        let local_model = match previous_model {
+            Some(model) => model.local_model.clone(),
+            None if restrict_to_free => {
+                let candidate = zen_free_alias(&identifier);
+                let collides = previous
+                    .models
+                    .iter()
+                    .chain(merged.iter())
+                    .any(|model| {
+                        model.upstream_model != identifier
+                            && model.local_model.as_deref() == Some(candidate.as_str())
+                    });
+                Some(if collides {
+                    identifier.clone()
+                } else {
+                    candidate
+                })
+            }
+            None => None,
+        };
         let source_name = object
             .get("name")
             .and_then(Value::as_str)
@@ -391,7 +478,7 @@ pub(super) fn parse_model_list_source(
             resolve_source_context_window(object, &identifier, previous_model)?;
         merged.push(ProviderTemplateModel {
             upstream_model: identifier,
-            local_model: previous_model.and_then(|model| model.local_model.clone()),
+            local_model,
             display_name,
             protocol: protocol.or_else(|| previous_model.and_then(|model| model.protocol)),
             enabled: previous_model.map(|model| model.enabled).unwrap_or(true),
