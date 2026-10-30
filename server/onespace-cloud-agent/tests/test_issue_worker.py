@@ -833,6 +833,30 @@ class TestIssueWorkerHardening(unittest.TestCase):
         cmd = lookup_cmds[0]
         self.assertTrue("--paginate" in cmd or ("--limit" in cmd and int(cmd[cmd.index("--limit") + 1]) >= len(prs)))
 
+    def test_pr_lookup_parses_concatenated_pages_without_slurp(self):
+        self._setup_allowed_issue(42)
+        pr_url = "https://github.com/test/repo/pull/12"
+        self._pr_list_stdout = (
+            json.dumps([{"number": 1, "url": "https://github.com/test/repo/pull/1", "body": "unrelated"}])
+            + "\n"
+            + json.dumps([{"number": 12, "url": pr_url, "body": "Closes #42"}])
+        )
+        self.run_calls.clear()
+        self.sleeps.clear()
+        with self.assertLogs("onespace-worker", level="INFO") as cm:
+            self.worker.execute_issue_task("test/repo", {"number": 42, "title": "T", "body": "B", "author": {"login": "alice"}})
+        self.assertFalse(self._clone_calls())
+        self.assertFalse(self._opencode_calls())
+        self.assertFalse(self._pr_create_calls())
+        rec = self._state_record(42)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.get("status"), "done")
+        self.assertTrue(any(pr_url in m for m in cm.output))
+        lookup_cmds = [c for c, _ in self.run_calls if "api" in c and any("pulls" in str(x) for x in c) and not any("permission" in str(x) for x in c)]
+        self.assertTrue(lookup_cmds)
+        self.assertIn("--paginate", lookup_cmds[0])
+        self.assertNotIn("--slurp", lookup_cmds[0])
+
     def test_numeric_boundary_does_not_match(self):
         self._setup_allowed_issue(42)
         self._pr_list_pages = [json.dumps([{"number": 9, "url": "https://github.com/test/repo/pull/9", "body": "Closes #420"}])]
@@ -1369,6 +1393,23 @@ class TestIssueWorkerFollowUpComments(unittest.TestCase):
         self.worker.run_poll_cycle()
         self.assertEqual(len(self._opencode_calls()), 1)
         self.assertEqual(self._cursor(1), "12")
+
+    def test_comment_lookup_parses_concatenated_pages_without_slurp(self):
+        self._mark_processed(1, last_comment_id="0")
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._comments_pages = [
+            json.dumps([{"id": 1, "body": "plain", "user": {"login": "alice", "type": "User"}}])
+            + "\n"
+            + json.dumps([{"id": 2, "body": "/agent", "user": {"login": "alice", "type": "User"}}])
+        ]
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        self.assertEqual(len(self._opencode_calls()), 1)
+        calls = self._comment_api_calls()
+        self.assertTrue(calls)
+        self.assertIn("--paginate", calls[0])
+        self.assertNotIn("--slurp", calls[0])
 
     def test_bot_marker_advance(self):
         comments = [

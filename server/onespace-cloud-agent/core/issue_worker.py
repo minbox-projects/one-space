@@ -1124,6 +1124,20 @@ class IssueWorker:
     # Idempotency and eligibility
     # ------------------------------------------------------------------
     @staticmethod
+    def _parse_paginated_json(raw: str) -> List[Any]:
+        """Parse the concatenated JSON documents printed by `gh api --paginate`."""
+        decoder = json.JSONDecoder()
+        values: List[Any] = []
+        text = raw.strip()
+        pos = 0
+        while pos < len(text):
+            value, pos = decoder.raw_decode(text, pos)
+            values.append(value)
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+        return values
+
+    @staticmethod
     def _flatten_prs(data: Any) -> List[Dict[str, Any]]:
         if isinstance(data, dict):
             for key in ("items", "pulls", "data"):
@@ -1175,7 +1189,7 @@ class IssueWorker:
         res = self._run_command(
             log,
             "pr-list",
-            ["gh", "api", "--paginate", "--slurp", endpoint],
+            ["gh", "api", "--paginate", endpoint],
         )
         if getattr(res, "returncode", 1) != 0:
             detail = (getattr(res, "stderr", "") or getattr(res, "stdout", "") or "").strip()
@@ -1185,7 +1199,7 @@ class IssueWorker:
             self._log_line(log, "open PRs: []")
             return []
         try:
-            data = json.loads(raw)
+            data = self._parse_paginated_json(raw)
         except Exception as e:  # noqa: BLE001
             raise TaskFailure(f"open PR lookup returned invalid JSON: {e}", permanent=False) from e
         return self._flatten_prs(data)
@@ -1311,7 +1325,7 @@ class IssueWorker:
         endpoint = f"repos/{repo}/issues/{issue_number}/comments?per_page=100"
         try:
             res = subprocess.run(
-                ["gh", "api", "--paginate", "--slurp", endpoint],
+                ["gh", "api", "--paginate", endpoint],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1339,7 +1353,7 @@ class IssueWorker:
             if not raw:
                 return []
             try:
-                data = json.loads(raw)
+                data = self._parse_paginated_json(raw)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[%s#%s] Issue 评论响应无法解析: %s",
