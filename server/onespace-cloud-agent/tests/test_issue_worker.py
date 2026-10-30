@@ -647,7 +647,7 @@ class TestIssueWorkerHardening(unittest.TestCase):
         # the supplied marker text cannot terminate the untrusted boundary
         self.assertEqual(prompt.count("<<<END_UNTRUSTED_ISSUE_DATA>>>"), 1)
 
-    # New behavior tests (Step 3)
+    # Follow-up comment, prompt and state behavior tests
     def _setup_allowed_issue(self, number=99):
         self.cfg["issue_worker"]["require_author_permission"] = False
         self._rebuild_worker()
@@ -1896,3 +1896,34 @@ class TestIssueWorkerFollowUpComments(unittest.TestCase):
         rec = self._state_record(42)
         self.assertIsNotNone(rec)
         self.assertEqual(rec.get("status"), "done")
+
+
+    def test_follow_up_prompt_keeps_consumed_authorized_history(self):
+        self._mark_processed(1, last_comment_id="2", branch="bot/issue-1-111", pr_url="https://example.com/pr/7")
+        pr = {"number": 7, "url": "https://example.com/pr/7", "state": "open", "body": "Closes #1",
+              "head": {"ref": "bot/issue-1-111", "repo": {"full_name": "test/repo"}}}
+        self._pr_list_stdout = json.dumps([pr])
+        self._git_status = "M foo.py"
+        comments = [
+            {"id": 1, "body": "/agent first round", "user": {"login": "alice", "type": "User"}},
+            {"id": 2, "body": "earlier authorized context", "user": {"login": "alice", "type": "User"}},
+            {"id": 3, "body": "/agent third round request", "user": {"login": "alice", "type": "User"}},
+        ]
+        self._comments_pages = [comments]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        oc = self._opencode_calls()
+        self.assertEqual(len(oc), 1)
+        prompt = oc[0][-1]
+        self.assertIn("first round", prompt)
+        self.assertIn("earlier authorized context", prompt)
+        self.assertIn("third round request", prompt)
+        self.assertEqual(self._cursor(1), "3")
+
+        self._comments_call_index = 0
+        self._comments_pages = [[]]
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        self.assertEqual(len(self._opencode_calls()), 0)

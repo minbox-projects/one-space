@@ -1414,7 +1414,9 @@ class IssueWorker:
         observed_max = max(comment["id"] for comment in new_comments)
         history: List[str] = []
         triggers: List[str] = []
-        for comment in new_comments:
+        for comment in comments:
+            if comment["id"] > observed_max:
+                continue
             body = comment["body"]
             if self._is_bot_comment(comment) or COMMENT_MARKER in body:
                 continue
@@ -1425,7 +1427,7 @@ class IssueWorker:
                 return False
             if not allowed:
                 continue
-            if self._is_trigger_comment(body):
+            if comment["id"] > cursor and self._is_trigger_comment(body):
                 triggers.append(self._follow_up_request(body))
             else:
                 history.append(body)
