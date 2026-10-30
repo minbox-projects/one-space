@@ -412,8 +412,8 @@ def get_status_report(config_path: str = "config.json") -> dict:
         )
         service_active = (res.stdout.strip() == "active")
     except Exception:
-        # 非 systemd 环境或本地测试
-        service_active = True
+        # 无法确认 systemd 服务状态时不得报告为活动
+        service_active = False
 
     return {
         "service_active": service_active,

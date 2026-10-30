@@ -412,3 +412,47 @@ class TestSystemdUnit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAgentStatusReporting(unittest.TestCase):
+    def test_gateway_uses_supplied_config_port(self):
+        import agent
+        tmp = tempfile.mkdtemp(prefix="status_")
+        cfg_path = os.path.join(tmp, "config.json")
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump({"ai_gateway": {"port": 18000}}, f)
+        with mock.patch("agent.subprocess.run") as run_mock:
+            run_mock.return_value = mock.Mock(stdout="active\n", stderr="", returncode=0)
+            with mock.patch("agent.urllib.request.urlopen") as open_mock:
+                resp = mock.Mock()
+                resp.status = 200
+                resp.read.return_value = b'{"status":"ok"}'
+                open_mock.return_value.__enter__.return_value = resp
+                report = agent.get_status_report(cfg_path)
+        self.assertTrue(open_mock.called)
+        open_mock.assert_called()
+        args = open_mock.call_args[0][0] if open_mock.call_args[0] else open_mock.call_args.args[0]
+        self.assertIn("18000", getattr(args, "full_url", str(args)))
+
+    def test_inactive_systemd_yields_false(self):
+        import agent
+        tmp = tempfile.mkdtemp(prefix="status_")
+        cfg_path = os.path.join(tmp, "config.json")
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump({"ai_gateway": {"port": 17688}}, f)
+        with mock.patch("agent.subprocess.run") as run_mock:
+            run_mock.return_value = mock.Mock(stdout="inactive\n", stderr="", returncode=3)
+            with mock.patch("agent.urllib.request.urlopen", side_effect=Exception("down")):
+                report = agent.get_status_report(cfg_path)
+        self.assertFalse(report["service_active"])
+
+    def test_systemctl_exception_yields_false(self):
+        import agent
+        tmp = tempfile.mkdtemp(prefix="status_")
+        cfg_path = os.path.join(tmp, "config.json")
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump({"ai_gateway": {"port": 17688}}, f)
+        with mock.patch("agent.subprocess.run", side_effect=OSError("no systemctl")):
+            with mock.patch("agent.urllib.request.urlopen", side_effect=Exception("down")):
+                report = agent.get_status_report(cfg_path)
+        self.assertFalse(report["service_active"])

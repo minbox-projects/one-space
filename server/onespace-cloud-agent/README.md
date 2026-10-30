@@ -15,7 +15,10 @@
 ```text
 server/onespace-cloud-agent/
 ├── agent.py                 # 主守护进程入口（管理 Gateway、Worker、Guardian）
-├── config.example.json      # 配置文件模板（网关、Issue Worker、通知、运行时长与关闭、磁盘守护）
+├── bootstrap.sh             # 远端平台检查与缺失运行依赖安装
+├── VERSION                  # 服务包版本（安装记录与上传载荷共用）
+├── config.default.json      # 首次安装的运行时配置种子（无凭据、自动任务关闭）
+├── config.example.json      # 带占位凭据的配置示例，仅供人工参考
 ├── deploy.sh                # Mac 端执行的自动化远程安装/更新部署脚本
 ├── core/
 │   ├── gateway.py           # 轻量 Linux AI 网关（多 Provider 轮询、密钥冷却、模型池、模板同步）
@@ -25,49 +28,88 @@ server/onespace-cloud-agent/
 │   └── notifier.py          # 钉钉 / 企业微信群通知推送
 ├── systemd/
 │   └── onespace-cloud-agent.service  # Linux 开机自启服务配置
-└── tests/                   # 单元测试集
+└── tests/                   # 单元测试与伪 SSH/SCP 部署行为测试
 ```
 
 ---
 
 ## 环境要求
 
-- Linux 服务器（Debian/Ubuntu 等），Python 3，无需安装第三方 Python 依赖。
-- `python3`、`git`、`tmux`、GitHub CLI（`gh`）与 `opencode` 必须位于服务 PATH 中；systemd 单元固定 `PATH=/root/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`。
-- `deploy.sh` 按同一服务 PATH 预检上述五个命令，缺失即失败，不会代为安装。
-- `opencode` 不在会话 PATH 中时，`session_runner.py` 回退 `/root/.opencode/bin/opencode`；`deploy.sh` 同时维护该路径的软链接。
-- 可免密 SSH 登录目标服务器，且服务器可访问 GitHub 与各 AI 服务商 API。
+- Linux 服务器，以 `root` 执行，systemd 可用（`systemctl` 存在且能正常报告版本），CPU 架构为 amd64/x86_64 或 arm64/aarch64。
+- 运行依赖 `python3`、`git`、`tmux`、GitHub CLI（`gh`）与 `opencode`。`deploy.sh` 只安装缺失项，已存在且可执行的命令绝不被升级或替换。
+- 缺失依赖时只接受 Ubuntu 22.04/24.04 LTS 与 Debian 12，并通过官方 apt 源与官方安装脚本补齐。当五个依赖都已存在时，其他满足上述平台条件的发行版同样可以部署，且不安装或升级任何软件包。
+- 可免密 SSH 登录目标服务器；`deploy.sh` 以非交互模式（`BatchMode=yes`、10 秒连接超时）连接，不会提示输入密码或确认主机指纹。服务器需能访问官方软件源、`opencode.ai` 与 GitHub。
+- GitHub 登录与模型密钥不是安装或服务在线的前提：首次安装生成的配置不含任何凭据，Issue Worker 与通知默认关闭。
+- systemd 单元固定 `PATH=/root/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`；`session_runner.py` 在会话 PATH 中找不到 `opencode` 时回退 `/root/.opencode/bin/opencode`。
 
 ---
 
 ## 快速部署
 
-在 Mac 本地终端运行一键部署脚本：
+在 Mac 本地终端运行部署脚本，两个参数均可省略：
 
 ```bash
-# 默认部署到 ~/.ssh/config 中配置的 dmit-server
-./server/onespace-cloud-agent/deploy.sh dmit-server
+./server/onespace-cloud-agent/deploy.sh [host] [remote_agent_dir]
 ```
 
-脚本按固定顺序执行，任一步失败都以非零状态退出：
+- `host`：`~/.ssh/config` 中的主机别名，默认 `dmit-server`。
+- `remote_agent_dir`：远端 Agent 安装目录，默认 `/root/onespace-cloud-agent`。该目录在服务单元、`cloud-session`、`oc` 启动器与状态检查中都按字面使用，允许包含空格；暂存与备份目录分别是 `<remote_agent_dir>-staging` 与 `<remote_agent_dir>-backups`。
+- 空主机名或安装目录 `/` 会在任何远端操作前被拒绝；本机 `VERSION` 缺失或为空时同样会在远端操作前失败。
 
-1. 检查 SSH 免密连通性。
-2. 以服务 PATH 预检远端 `python3`、`git`、`tmux`、`gh`、`opencode`；缺失即失败，不做任何安装或升级。
-3. 把代码上传到与安装目录同一文件系统的暂存目录 `/root/onespace-cloud-agent-staging`。
-4. 选择远端配置：已存在 `/root/onespace-cloud-agent/config.json` 时复制到暂存并校验，首次部署则校验暂存中的 `config.example.json`。两种情况都执行 `python3 -m json.tool`，校验先于代码发布、启动器/服务单元改动与重启。
-5. 把当前安装复制为快照 `/root/onespace-cloud-agent-backups/<时间戳>-<pid>`（位于安装目录之外），再用暂存目录在同一文件系统内发布到 `/root/onespace-cloud-agent`；发布失败时把快照复制回原路径。首次部署不创建快照，也不会产生虚假的“首个备份”。
-6. 维护 `/usr/local/bin/cloud-session` 与 `/usr/local/bin/oc`（默认 `opencode --yolo`）、`opencode` 软链接与 `.bashrc` 别名；命令名、root 执行与默认 `--yolo` 保持不变，重复执行幂等。
-7. 安装 systemd 单元并 `daemon-reload`、`enable`、`restart`，重启成功后才把快照修剪到最新 3 份。
+```bash
+# 默认主机与默认目录
+./server/onespace-cloud-agent/deploy.sh
 
-既有 `config.json` 按字节保留，脚本绝不用示例覆盖；只有首次安装成功发布后才由 `config.example.json` 生成 `config.json`。依赖预检、JSON 校验或上传失败时，活跃安装与既有快照都不被改动。
+# 指定主机与含空格的安装目录
+./server/onespace-cloud-agent/deploy.sh dmit-server "/root/my agent dir"
+```
 
-部署完成后请填写远端 `/root/onespace-cloud-agent/config.json` 中的真实 API Key、监听仓库与通知配置，然后执行：
+脚本按固定阶段顺序执行，任一阶段失败都以非零状态退出：
+
+1. **platform**：确认 Linux、root、可用 systemd 与受支持的架构；只有运行依赖缺失时才进一步检查发行版。非 root、无 systemd、架构不受支持，或缺失依赖且发行版不在支持列表时，在安装软件包与上传载荷之前失败。
+2. **dependencies**：只补齐缺失项。`python3`、`git`、`tmux` 缺失时经 apt 安装，并确保 `curl`、`ca-certificates`、`tar` 可用；`gh` 缺失时仅从其官方 apt 源安装；`opencode` 缺失时用官方安装脚本安装固定版本 `1.19.5` 并传 `--no-modify-path`。已存在的可执行文件（包括 `/root/.opencode/bin/opencode` 等路径上的 OpenCode）保持不变。此阶段不检查 GitHub 登录。
+3. **upload**：用非交互 SCP 把受管载荷上传到与安装目录同一文件系统的 `<remote_agent_dir>-staging`。
+4. **config**：远端已有 `config.json` 时先用 `python3 -m json.tool` 校验，再原样复制进暂存目录；首次安装则由 `config.default.json` 生成。非法 JSON 在任何发布、启动器或服务单元改动之前失败。
+5. **publish**：存在既有安装时先把它复制为 `<remote_agent_dir>-backups/<时间戳>-<pid>` 快照，再用暂存目录发布到 `<remote_agent_dir>`；同一文件系统内的提升失败时把快照复制回原路径。随后写入 systemd 单元与 `/usr/local/bin/cloud-session`、`/usr/local/bin/oc` 启动器。
+6. **service**：`daemon-reload`、`enable`、`restart`，并确认 `systemctl is-active` 实际返回 `active`；仅启动命令成功不足以判定成功。
+7. **metadata**：服务确认活跃后，原子写入安装记录 `install-info.json`。
+8. **cleanup**：把快照修剪到最新 3 份。修剪是尽力而为，失败不会使已经成功的部署失败。
+
+上传的载荷为 `deploy.sh`、`bootstrap.sh`、`VERSION`、`config.default.json`、`config.example.json`、`agent.py`、`core/` 下 6 个 Python 文件与 `systemd/onespace-cloud-agent.service`；本机 `config.json`、`.env` 与测试文件不会上传。
+
+### 阶段输出
+
+脚本为每个阶段输出固定格式的行，便于桌面端与本机工具解析：
+
+```text
+ONESPACE_DEPLOY_PHASE phase=<phase> status=start
+ONESPACE_DEPLOY_PHASE phase=<phase> status=ok
+ONESPACE_DEPLOY_PHASE phase=<phase> status=error reason=<reason>
+```
+
+阶段名为 `platform`、`dependencies`、`upload`、`config`、`publish`、`service`、`metadata`、`cleanup`；`reason` 使用稳定标识（如 `platform_root_required`、`dependency_install_failed`、`config_invalid`、`promotion_failed`、`service_inactive`、`metadata_write_failed`）。输出不包含配置内容或密钥。
+
+### 版本与安装记录
+
+- `VERSION` 是服务包版本（当前 `0.1.0`），随载荷上传，也是安装记录中的版本来源。
+- `install-info.json` 只在代码、启动器与服务单元发布完成且服务确认活跃后写入，内容为 `{"version": "...", "installed_at": "<UTC ISO-8601>"}`；失败的部署不会新增或替换该记录。
+- 首次安装由 `config.default.json` 生成 `config.json`：网关监听回环地址、服务商与模型池为空、监听仓库为空、Issue Worker 与通知关闭，且不含任何示例上游或 GitHub 凭据。既有 `config.json` 在重试与重新部署中按字节保留；非法 JSON 会拒绝发布。
+
+部署完成后请填写远端 `config.json` 中的真实 API Key、监听仓库与通知配置，然后执行：
 
 ```bash
 ssh dmit-server "systemctl restart onespace-cloud-agent"
 ```
 
-部署不做热加载：代码或配置改动都要重启服务才生效。需要回滚时，先停止服务，再从 `/root/onespace-cloud-agent-backups/` 中选择操作者确认的代码/配置快照手工恢复，并重新安装匹配的服务单元与启动器；没有自动回滚开关。若目标版本是旧 worker，恢复后还必须先把 `~/.config/onespace-cloud-agent/worker_state.json.v1.bak` 还原为 `worker_state.json`，绝不能让旧版本读取 v2 状态；不存在该备份时按预装/空状态恢复，不伪造备份。恢复后依次确认未认证的 `/health`、携带 Bearer 凭据的模型列表与一次已知模型请求。默认清理不删除会话数据；被应急清理删除的会话文件只能依赖操作者事先的数据备份恢复，回退代码无法找回。
+部署不做热加载：代码或配置改动都要重启服务才生效。
+
+### 失败与恢复
+
+- 依赖安装阶段失败不会回滚已经装好的系统软件包，也不会发布载荷；重试会重新检查并只补充仍然缺失的部分。
+- SSH/SCP 超时或连接中断时，远端可能已执行了部分操作，脚本的退出状态不代表远端已回滚；重试或手工处理前应先检查实际远端状态（目录内容、`install-info.json` 与服务状态）。
+- 载荷已发布但服务启动失败时不会自动回滚代码，需要操作者按快照手工恢复，并重新安装匹配的服务单元与启动器。
+- 既有配置与用户数据（worker 状态、tmux 会话、Worktree 与会话文件）在部署中保留，部署不会删除它们。
+- 需要回滚时，先停止服务，再从 `<remote_agent_dir>-backups/` 中选择操作者确认的代码/配置快照手工恢复，并重新安装匹配的服务单元与启动器；没有自动回滚开关。若目标版本是旧 worker，恢复后还必须先把 `~/.config/onespace-cloud-agent/worker_state.json.v1.bak` 还原为 `worker_state.json`，绝不能让旧版本读取 v2 状态；不存在该备份时按预装/空状态恢复，不伪造备份。恢复后依次确认未认证的 `/health`、携带 Bearer 凭据的模型列表与一次已知模型请求。默认清理不删除会话数据；被应急清理删除的会话文件只能依赖操作者事先的数据备份恢复，回退代码无法找回。
 
 ### 登录 GitHub（Personal access tokens classic）
 
@@ -103,7 +145,7 @@ Issue Worker 启动时会执行不带 `--show-token` 的 `gh auth status` 检查
 
 ## 配置说明
 
-配置模板见 `config.example.json`。
+首次安装以 `config.default.json` 生成运行时配置；`config.example.json` 是带占位凭据的完整示例，仅供人工参考，`deploy.sh` 不会用 `config.example.json` 覆盖已有配置。
 
 ### `ai_gateway`
 
@@ -111,8 +153,8 @@ Issue Worker 启动时会执行不带 `--show-token` 的 `gh auth status` 检查
 | --- | --- |
 | `port` | 网关监听端口，默认 `17688`，仅监听 `127.0.0.1`。 |
 | `auto_sync_interval_seconds` | 服务商模板自动同步间隔，默认 `3600` 秒。 |
-| `auth.token` | 受保护端点的 Bearer 凭据，默认 `sk-onespace-cloud-agent`。 |
-| `auth.require` | 是否校验 Bearer 凭据，默认 `true`；设为 `false` 只跳过凭据校验，Origin 拒绝仍然生效。 |
+| `auth.token` | 受保护端点的 Bearer 凭据；字段缺失时回退 `sk-onespace-cloud-agent`，`config.default.json` 不写入该字段。 |
+| `auth.require` | 是否校验 Bearer 凭据；字段缺失时默认 `true`，首次安装生成的配置显式设为 `false`。设为 `false` 只跳过凭据校验，Origin 拒绝仍然生效。 |
 | `max_body_bytes` | POST 请求体上限，默认 `10485760`（10 MiB）；超限在读取请求体前返回 413。 |
 | `retry.max_cooldown_seconds` | 上游 `Retry-After` 触发的密钥冷却上限，默认 `600` 秒。 |
 | `providers` | 服务商字典，键为服务商名称。 |
@@ -331,9 +373,9 @@ curl -s http://127.0.0.1:17688/v1/chat/completions \
 - `GET /models`、`GET /v1/models`（需 Bearer 凭据）
 - `POST /chat/completions`、`POST /v1/chat/completions`（需 Bearer 凭据，支持流式 SSE）
 
-示例使用默认凭据；配置了自定义 `ai_gateway.auth.token` 时请替换为对应值。
+首次安装生成的配置显式关闭凭据校验；启用 `ai_gateway.auth.require` 后请使用配置的 token，未写入时回退 `sk-onespace-cloud-agent`。
 
-服务启动时以及每次模板同步后，网关会自动把模型池和活跃服务商模型同步到 `~/.config/opencode/opencode.json`，并统一使用单一 `Cloud Agent Gateway` 提供商（示例中的 `apiKey` 取自 `ai_gateway.auth.token`）：
+服务启动时以及每次模板同步后，网关会自动把模型池和活跃服务商模型同步到 `~/.config/opencode/opencode.json`，并统一使用单一 `Cloud Agent Gateway` 提供商（示例中的 `apiKey` 取自 `ai_gateway.auth.token`，未写入时为其回退值）：
 
 ```json
 {
@@ -382,6 +424,14 @@ ssh dmit-server "cloud-session list"
 ssh dmit-server "curl -s http://127.0.0.1:17688/health && df -h /"
 ```
 
+状态自检直接调用已安装的 `agent.py`，并用配置中的 `ai_gateway.port` 请求回环 `/health`：
+
+```bash
+ssh dmit-server "/usr/bin/python3 /root/onespace-cloud-agent/agent.py status /root/onespace-cloud-agent/config.json --json"
+```
+
+`service_active` 只有在 `systemctl is-active` 返回 `active` 时才为 `true`；systemd 不可用、命令异常或服务非活跃都会报告 `false`，不会因为无法确认而回退为在线。安装目录不同时请替换路径。
+
 ---
 
 ## 运行测试
@@ -392,4 +442,4 @@ ssh dmit-server "curl -s http://127.0.0.1:17688/health && df -h /"
 python3 -m unittest discover -s tests -v
 ```
 
-这些测试使用伪时钟、伪造线程与伪进程在本地运行，只覆盖进程内行为；真实 Linux 主机上的 systemd 启停、优雅关闭、快照保留与部署冒烟属于单独的部署检查，不能由本地测试结果替代。
+这些测试使用伪时钟、伪造线程与伪进程在本地运行；`tests/test_deploy.py` 以伪 SSH/SCP、伪 apt/curl 与伪 systemd 执行真实脚本，覆盖前置检查边界、缺失依赖安装、已安装依赖复用、含空格路径、配置按字节保留、快照恢复、激活/记录失败边界与上传载荷清单，但不连接任何真实服务器。真实 Linux 主机上的 systemd 启停、优雅关闭与部署冒烟仍需在单独授权的目标上执行，不能由本地测试结果替代。
