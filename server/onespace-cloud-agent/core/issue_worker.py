@@ -1140,7 +1140,37 @@ class IssueWorker:
             return flattened
         return []
 
-    def _find_existing_pr(self, repo: str, issue_number: Any, log: Any) -> Optional[str]:
+    @staticmethod
+    def _issue_reference_pattern(issue_number: Any) -> Any:
+        return re.compile(r"(?<!\d)#%d(?!\d)" % int(issue_number))
+
+    @staticmethod
+    def _pr_url(pr: Dict[str, Any]) -> str:
+        return str(pr.get("url") or pr.get("html_url") or "")
+
+    @staticmethod
+    def _pr_head_branch(pr: Dict[str, Any]) -> str:
+        head = pr.get("head")
+        if not isinstance(head, dict):
+            return ""
+        return str(head.get("ref") or "")
+
+    @staticmethod
+    def _pr_head_repo(pr: Dict[str, Any]) -> str:
+        head = pr.get("head")
+        if not isinstance(head, dict):
+            return ""
+        head_repo = head.get("repo")
+        if not isinstance(head_repo, dict):
+            return ""
+        return str(head_repo.get("full_name") or "")
+
+    @staticmethod
+    def _pr_is_open(pr: Dict[str, Any]) -> bool:
+        state = pr.get("state")
+        return state is None or str(state).strip().lower() == "open"
+
+    def _list_open_prs(self, repo: str, log: Any) -> List[Dict[str, Any]]:
         endpoint = f"repos/{repo}/pulls?state=open&per_page=100"
         res = self._run_command(
             log,
@@ -1153,20 +1183,82 @@ class IssueWorker:
         raw = (getattr(res, "stdout", "") or "").strip()
         if not raw:
             self._log_line(log, "open PRs: []")
-            return None
+            return []
         try:
             data = json.loads(raw)
         except Exception as e:  # noqa: BLE001
             raise TaskFailure(f"open PR lookup returned invalid JSON: {e}", permanent=False) from e
-        pattern = re.compile(r"(?<!\d)#%d(?!\d)" % int(issue_number))
-        for pr in self._flatten_prs(data):
-            body = str(pr.get("body") or "")
-            if pattern.search(body):
-                url = str(pr.get("url") or pr.get("html_url") or "")
+        return self._flatten_prs(data)
+
+    def _find_existing_pr(self, repo: str, issue_number: Any, log: Any) -> Optional[str]:
+        pattern = self._issue_reference_pattern(issue_number)
+        for pr in self._list_open_prs(repo, log):
+            if pattern.search(str(pr.get("body") or "")):
+                url = self._pr_url(pr)
                 self._log_line(log, f"existing PR matched: {url}")
                 return url
         self._log_line(log, "open PRs: none matched")
         return None
+
+    def _find_agent_owned_pr(
+        self,
+        prs: List[Dict[str, Any]],
+        issue_number: Any,
+        repo: str,
+        branch: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not branch:
+            return None
+        pattern = self._issue_reference_pattern(issue_number)
+        for pr in prs:
+            if not self._pr_is_open(pr):
+                continue
+            if not pattern.search(str(pr.get("body") or "")):
+                continue
+            if self._pr_head_repo(pr) != repo:
+                continue
+            if self._pr_head_branch(pr) != branch:
+                continue
+            return pr
+        return None
+
+    def _find_referencing_pr(
+        self,
+        prs: List[Dict[str, Any]],
+        issue_number: Any,
+    ) -> Optional[Dict[str, Any]]:
+        pattern = self._issue_reference_pattern(issue_number)
+        for pr in prs:
+            if not self._pr_is_open(pr):
+                continue
+            if pattern.search(str(pr.get("body") or "")):
+                return pr
+        return None
+
+    def _find_pr_by_head(
+        self,
+        prs: List[Dict[str, Any]],
+        branch: str,
+        repo: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not branch:
+            return None
+        for pr in prs:
+            if not self._pr_is_open(pr):
+                continue
+            if self._pr_head_branch(pr) != branch:
+                continue
+            if self._pr_head_repo(pr) != repo:
+                continue
+            return pr
+        return None
+
+    def _stored_branch(self, repo: str, issue_number: Any) -> str:
+        records = self._ensure_repo_records(repo)
+        record = records.get(str(issue_number))
+        if isinstance(record, dict):
+            return str(record.get("branch") or "")
+        return ""
 
     def _assert_issue_eligible(self, repo: str, issue_number: Any, log: Any) -> None:
         cmd = [
@@ -1504,6 +1596,9 @@ class IssueWorker:
         last_error = ""
         started_comment_sent = False
         task_dir: Optional[str] = None
+        follow_up_agent_pr_url = ""
+        follow_up_branch: Optional[str] = None
+        follow_up_prs_loaded = False
 
         while attempts < self.max_attempts:
             if self._stopped():
@@ -1515,6 +1610,42 @@ class IssueWorker:
             log_path = None
             try:
                 log, log_path = self._open_attempt_log(repo, issue_number, attempts)
+
+                if is_follow_up and not follow_up_prs_loaded:
+                    open_prs = self._list_open_prs(repo, log)
+                    follow_up_prs_loaded = True
+                    stored_branch = self._stored_branch(repo, issue_number)
+                    agent_pr = self._find_agent_owned_pr(
+                        open_prs, issue_number, repo, stored_branch
+                    )
+                    if agent_pr is not None:
+                        follow_up_branch = stored_branch
+                        follow_up_agent_pr_url = self._pr_url(agent_pr)
+                    elif self._find_referencing_pr(open_prs, issue_number) is not None:
+                        logger.info(
+                            "[%s#%s] 关联的开放 PR 不属于 Agent，跳过修改",
+                            repo, issue_number,
+                        )
+                        self.comment_issue(
+                            repo, issue_number,
+                            "⚠️ **执行反馈**: 检测到关联本 Issue 的开放 Pull Request "
+                            "并非由 OneSpace Cloud Agent 创建。为避免误改他人的分支，"
+                            "本次未对代码库做任何修改。",
+                        )
+                        now = int(time.time())
+                        self.record_task_update(task_id, {
+                            "status": "no_changes",
+                            "finished_at": now,
+                            "duration_seconds": now - started_at,
+                        })
+                        self._record_terminal_state(
+                            repo, issue_number, "done", attempts, "",
+                        )
+                        self._log_line(
+                            log,
+                            "outcome: referenced open PR is not Agent-owned; nothing modified",
+                        )
+                        return
 
                 if not is_follow_up:
                     existing_pr = self._find_existing_pr(repo, issue_number, log)
@@ -1556,12 +1687,29 @@ class IssueWorker:
                     ["git", "-C", task_dir, "config", "user.email", "bot@onespace.local"],
                 )
 
-                branch_name = f"bot/issue-{issue_number}-{started_at}"
-                logger.info(f"创建分支: {branch_name}")
-                checkout_res = self._run_command(
-                    log, "git-checkout",
-                    ["git", "-C", task_dir, "checkout", "-b", branch_name],
-                )
+                if is_follow_up and follow_up_branch:
+                    branch_name = follow_up_branch
+                    logger.info(f"复用 Agent PR 分支: {branch_name}")
+                    fetch_res = self._run_command(
+                        log, "git-fetch",
+                        ["git", "-C", task_dir, "fetch", "origin"],
+                    )
+                    if getattr(fetch_res, "returncode", 1) != 0:
+                        raise self._command_failure("拉取远端分支失败", fetch_res)
+                    checkout_res = self._run_command(
+                        log, "git-checkout",
+                        [
+                            "git", "-C", task_dir, "checkout", "-B",
+                            branch_name, f"origin/{branch_name}",
+                        ],
+                    )
+                else:
+                    branch_name = f"bot/issue-{issue_number}-{started_at}"
+                    logger.info(f"创建分支: {branch_name}")
+                    checkout_res = self._run_command(
+                        log, "git-checkout",
+                        ["git", "-C", task_dir, "checkout", "-b", branch_name],
+                    )
                 if getattr(checkout_res, "returncode", 1) != 0:
                     raise self._command_failure("创建分支失败", checkout_res)
                 self.record_task_update(task_id, {"branch": branch_name})
@@ -1604,7 +1752,16 @@ class IssueWorker:
                         "finished_at": now,
                         "duration_seconds": now - started_at,
                     })
-                    self._record_terminal_state(repo, issue_number, "done", attempts, "")
+                    if is_follow_up:
+                        self._record_terminal_state(
+                            repo, issue_number, "done", attempts, "",
+                            branch=branch_name,
+                            pr_url=follow_up_agent_pr_url,
+                        )
+                    else:
+                        self._record_terminal_state(
+                            repo, issue_number, "done", attempts, "",
+                        )
                     self._log_line(log, f"outcome: no_changes after {attempts} attempt(s)")
                     return
 
@@ -1630,6 +1787,13 @@ class IssueWorker:
                 )
                 if getattr(push_res, "returncode", 1) != 0:
                     raise self._command_failure("推送代码失败", push_res)
+
+                if is_follow_up and follow_up_agent_pr_url:
+                    self._complete_follow_up(
+                        repo, issue_number, issue_title, task_id, started_at,
+                        attempts, branch_name, follow_up_agent_pr_url, log,
+                    )
+                    return
 
                 if not is_follow_up:
                     existing_pr = self._find_existing_pr(repo, issue_number, log)
@@ -1662,16 +1826,31 @@ class IssueWorker:
                 )
                 if getattr(pr_res, "returncode", 1) != 0:
                     # A lost response may still have created the PR. Re-check first.
-                    try:
-                        existing_pr = self._find_existing_pr(repo, issue_number, log)
-                    except TaskFailure:
-                        existing_pr = None
-                    if existing_pr:
-                        self._complete_with_existing_pr(
-                            repo, issue_number, issue_title, task_id, started_at,
-                            attempts, existing_pr, log,
-                        )
-                        return
+                    if is_follow_up:
+                        try:
+                            open_prs = self._list_open_prs(repo, log)
+                            recovered_pr = self._find_pr_by_head(
+                                open_prs, branch_name, repo
+                            )
+                        except TaskFailure:
+                            recovered_pr = None
+                        if recovered_pr is not None:
+                            self._complete_follow_up(
+                                repo, issue_number, issue_title, task_id, started_at,
+                                attempts, branch_name, self._pr_url(recovered_pr), log,
+                            )
+                            return
+                    else:
+                        try:
+                            existing_pr = self._find_existing_pr(repo, issue_number, log)
+                        except TaskFailure:
+                            existing_pr = None
+                        if existing_pr:
+                            self._complete_with_existing_pr(
+                                repo, issue_number, issue_title, task_id, started_at,
+                                attempts, existing_pr, log,
+                            )
+                            return
                     raise self._command_failure("创建 PR 失败", pr_res)
 
                 pr_url = (getattr(pr_res, "stdout", "") or "").strip()
@@ -1692,7 +1871,10 @@ class IssueWorker:
                     "finished_at": now,
                     "duration_seconds": now - started_at,
                 })
-                self._record_terminal_state(repo, issue_number, "done", attempts, "")
+                self._record_terminal_state(
+                    repo, issue_number, "done", attempts, "",
+                    branch=branch_name, pr_url=pr_url,
+                )
                 self._log_line(log, f"outcome: completed after {attempts} attempt(s)")
                 return
 
@@ -1754,6 +1936,40 @@ class IssueWorker:
             repo, issue_number, issue_title, task_id,
             started_at, attempts, last_error or "task stopped before completion",
         )
+
+    def _complete_follow_up(
+        self,
+        repo: str,
+        issue_number: Any,
+        issue_title: str,
+        task_id: str,
+        started_at: int,
+        attempts: int,
+        branch_name: str,
+        pr_url: str,
+        log: Any,
+    ) -> None:
+        logger.info(f"Pull Request 更新完成: {pr_url}")
+        self.comment_issue(
+            repo, issue_number,
+            "🎉 **需求已实施完毕！**\n\n"
+            f"- **关联分支**: `{branch_name}`\n"
+            f"- **Pull Request**: [点击查看代码改动并评审]({pr_url})\n\n"
+            "请核对功能并进行代码合并。",
+        )
+        self.notifier.notify_task_completed(repo, issue_number, issue_title, pr_url)
+        now = int(time.time())
+        self.record_task_update(task_id, {
+            "status": "completed",
+            "pr_url": pr_url,
+            "finished_at": now,
+            "duration_seconds": now - started_at,
+        })
+        self._record_terminal_state(
+            repo, issue_number, "done", attempts, "",
+            branch=branch_name, pr_url=pr_url,
+        )
+        self._log_line(log, f"outcome: follow-up completed after {attempts} attempt(s)")
 
     def _complete_with_existing_pr(
         self,

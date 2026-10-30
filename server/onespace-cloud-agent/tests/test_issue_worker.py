@@ -1318,9 +1318,9 @@ class TestIssueWorkerFollowUpComments(unittest.TestCase):
         if os.path.exists(self.tmp_dir):
             shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
-    def _mark_processed(self, number=1, last_comment_id="0"):
+    def _mark_processed(self, number=1, last_comment_id="0", branch="b", pr_url="https://example.com/pr/1"):
         rec = {"status": "done", "attempts": 1, "last_error": "", "updated_at": "2026-01-01T00:00:00Z",
-               "last_comment_id": last_comment_id, "branch": "b", "pr_url": "https://example.com/pr/1"}
+               "last_comment_id": last_comment_id, "branch": branch, "pr_url": pr_url}
         self.worker.processed_issues = {"test/repo": {str(number): rec}}
         self.worker.save_state()
 
@@ -1694,3 +1694,205 @@ class TestIssueWorkerFollowUpComments(unittest.TestCase):
         self.worker.run_poll_cycle()
         self.assertEqual(len(self._opencode_calls()), 1)
         self.assertEqual(self._cursor(1), "3")
+
+    def _clone_calls(self):
+        return [c for c, _ in self.run_calls if len(c) >= 3 and c[0] == "gh" and c[1] == "repo" and c[2] == "clone"]
+
+    def _checkout_calls(self):
+        return [c for c, _ in self.run_calls if c and c[0] == "git" and "checkout" in c]
+
+    def _push_calls(self):
+        return [c for c, _ in self.run_calls if c and "push" in c]
+
+    def _pr_create_calls(self):
+        return [c for c, _ in self.run_calls if len(c) >= 3 and c[0] == "gh" and c[1] == "pr" and c[2] == "create"]
+
+    def _state_record(self, number=1):
+        import json as _j
+        with open(self.worker.state_file, "r", encoding="utf-8") as f:
+            data = _j.load(f)
+        return data.get("repositories", {}).get("test/repo", {}).get(str(number))
+
+    def test_follow_up_reuses_agent_pr_branch(self):
+        self._mark_processed(1, last_comment_id="0", branch="bot/issue-1-111", pr_url="https://example.com/pr/7")
+        pr = {"number": 7, "url": "https://example.com/pr/7", "state": "open", "body": "Closes #1",
+              "head": {"ref": "bot/issue-1-111", "repo": {"full_name": "test/repo"}}}
+        self._pr_list_stdout = json.dumps([pr])
+        self._git_status = "M foo.py"
+        self._comments_pages = [[{"id": 1, "body": "/agent adjust layout", "user": {"login": "alice", "type": "User"}}]]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        co = [c for c in self._checkout_calls() if "bot/issue-1-111" in c]
+        self.assertTrue(co)
+        pu = [c for c in self._push_calls() if "bot/issue-1-111" in c]
+        self.assertTrue(pu)
+        self.assertEqual(len(self._pr_create_calls()), 0)
+        posted = [" ".join(str(x) for x in c) for c in self._comment_calls()]
+        pr_url_comments = [b for b in posted if "https://example.com/pr/7" in b]
+        self.assertEqual(len(pr_url_comments), 1)
+        for b in posted:
+            self.assertIn("<!-- onespace-cloud-agent -->", b)
+        rec = self._state_record(1)
+        self.assertEqual(rec.get("branch"), "bot/issue-1-111")
+        self.assertEqual(rec.get("pr_url"), "https://example.com/pr/7")
+        self.assertEqual(rec.get("last_comment_id"), "1")
+
+    def test_follow_up_creates_new_pr_when_none(self):
+        self._mark_processed(1, last_comment_id="0", branch="bot/issue-1-old", pr_url="")
+        self._pr_list_stdout = "[]"
+        self._git_status = "M foo.py"
+        self._comments_pages = [[{"id": 1, "body": "/agent", "user": {"login": "alice", "type": "User"}}]]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        co_b = [c for c in self._checkout_calls() if "-b" in c]
+        self.assertEqual(len(co_b), 1)
+        new_branch = co_b[0][co_b[0].index("-b") + 1]
+        self.assertTrue(new_branch.startswith("bot/issue-1-"))
+        pc = self._pr_create_calls()
+        self.assertEqual(len(pc), 1)
+        cmd = pc[0]
+        self.assertIn("--head", cmd)
+        self.assertEqual(cmd[cmd.index("--head") + 1], new_branch)
+        body = " ".join(cmd)
+        self.assertIn("Closes #1", body)
+        rec = self._state_record(1)
+        self.assertEqual(rec.get("branch"), new_branch)
+        self.assertEqual(rec.get("pr_url"), "https://example.com/pr/1")
+        self.assertEqual(rec.get("last_comment_id"), "1")
+
+    def test_follow_up_non_agent_pr_reply_and_consume(self):
+        self._mark_processed(1, last_comment_id="0", branch="bot/issue-1-111", pr_url="https://example.com/pr/9")
+        pr = {"number": 2, "url": "https://example.com/pr/2", "state": "open", "body": "Closes #1",
+              "head": {"ref": "human/feature", "repo": {"full_name": "test/repo"}}}
+        self._pr_list_stdout = json.dumps([pr])
+        self._comments_pages = [[{"id": 1, "body": "/agent", "user": {"login": "alice", "type": "User"}}]]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        self.assertEqual(len(self._clone_calls()), 0)
+        self.assertEqual(len(self._opencode_calls()), 0)
+        self.assertEqual(len(self._pr_create_calls()), 0)
+        posted = self._comment_calls()
+        self.assertEqual(len(posted), 1)
+        self.assertIn("<!-- onespace-cloud-agent -->", " ".join(str(x) for x in posted[0]))
+        self.assertEqual(self._cursor(1), "1")
+        rec = self._state_record(1)
+        self.assertEqual(rec.get("branch"), "bot/issue-1-111")
+        self.assertEqual(rec.get("pr_url"), "https://example.com/pr/9")
+
+    def test_follow_up_fork_pr_not_owned(self):
+        self._mark_processed(1, last_comment_id="0", branch="bot/issue-1-111", pr_url="https://example.com/pr/9")
+        pr = {"number": 3, "url": "https://example.com/pr/3", "state": "open", "body": "Closes #1",
+               "head": {"ref": "bot/issue-1-111", "repo": {"full_name": "fork/repo"}}}
+        self._pr_list_stdout = json.dumps([pr])
+        self._comments_pages = [[{"id": 1, "body": "/agent", "user": {"login": "alice", "type": "User"}}]]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        self.assertEqual(len(self._clone_calls()), 0)
+        self.assertEqual(len(self._opencode_calls()), 0)
+        self.assertEqual(len(self._pr_create_calls()), 0)
+        self.assertEqual(len(self._comment_calls()), 1)
+        self.assertEqual(self._cursor(1), "1")
+
+    def test_follow_up_mismatched_branch_not_owned(self):
+        self._mark_processed(1, last_comment_id="0", branch="bot/issue-1-111", pr_url="https://example.com/pr/9")
+        pr = {"number": 4, "url": "https://example.com/pr/4", "state": "open", "body": "Closes #1",
+               "head": {"ref": "bot/issue-1-other", "repo": {"full_name": "test/repo"}}}
+        self._pr_list_stdout = json.dumps([pr])
+        self._comments_pages = [[{"id": 1, "body": "/agent", "user": {"login": "alice", "type": "User"}}]]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        self.assertEqual(len(self._clone_calls()), 0)
+        self.assertEqual(len(self._opencode_calls()), 0)
+        self.assertEqual(len(self._pr_create_calls()), 0)
+        self.assertEqual(len(self._comment_calls()), 1)
+        self.assertEqual(self._cursor(1), "1")
+
+    def test_follow_up_closed_pr_starts_new(self):
+        self._mark_processed(1, last_comment_id="0", branch="bot/issue-1-111", pr_url="https://example.com/pr/7")
+        pr = {"number": 7, "url": "https://example.com/pr/7", "state": "closed", "body": "Closes #1",
+              "head": {"ref": "bot/issue-1-111", "repo": {"full_name": "test/repo"}}}
+        self._pr_list_stdout = json.dumps([pr])
+        self._git_status = "M foo.py"
+        self._comments_pages = [[{"id": 1, "body": "/agent", "user": {"login": "alice", "type": "User"}}]]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        self.assertEqual(len(self._pr_create_calls()), 1)
+        co_b = [c for c in self._checkout_calls() if "-b" in c]
+        self.assertEqual(len(co_b), 1)
+        self.assertEqual(self._cursor(1), "1")
+
+    def test_follow_up_failure_preserves_branch_and_advances_cursor(self):
+        self.cfg["issue_worker"]["max_attempts"] = 1
+        state_path = self.worker.state_file
+        history_path = self.worker.history_file
+        self.worker = IssueWorker(self.cfg, self.guardian, self.notifier)
+        self.worker.state_file = state_path
+        self.worker.history_file = history_path
+        self.worker.load_state()
+        self.worker.load_history()
+        self._mark_processed(1, last_comment_id="0", branch="bot/issue-1-111", pr_url="https://example.com/pr/7")
+        pr = {"number": 7, "url": "https://example.com/pr/7", "state": "open", "body": "Closes #1",
+              "head": {"ref": "bot/issue-1-111", "repo": {"full_name": "test/repo"}}}
+        self._pr_list_stdout = json.dumps([pr])
+        self._opencode_rc = 1
+        self._git_status = "M foo.py"
+        self._comments_pages = [[{"id": 1, "body": "/agent", "user": {"login": "alice", "type": "User"}}]]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        rec = self._state_record(1)
+        self.assertEqual(rec.get("status"), "failed")
+        self.assertEqual(rec.get("branch"), "bot/issue-1-111")
+        self.assertEqual(rec.get("pr_url"), "https://example.com/pr/7")
+        self.assertEqual(rec.get("last_comment_id"), "1")
+        posted = [" ".join(str(x) for x in c) for c in self._comment_calls()]
+        self.assertTrue(any("任务执行异常" in b and "<!-- onespace-cloud-agent -->" in b for b in posted))
+
+    def test_follow_up_no_changes_posts_comment_and_advances_cursor(self):
+        self._mark_processed(1, last_comment_id="0", branch="bot/issue-1-111", pr_url="https://example.com/pr/7")
+        pr = {"number": 7, "url": "https://example.com/pr/7", "state": "open", "body": "Closes #1",
+              "head": {"ref": "bot/issue-1-111", "repo": {"full_name": "test/repo"}}}
+        self._pr_list_stdout = json.dumps([pr])
+        self._git_status = ""
+        self._comments_pages = [[{"id": 1, "body": "/agent", "user": {"login": "alice", "type": "User"}}]]
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._issues_stdout = json.dumps([{"number": 1, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        rec = self._state_record(1)
+        self.assertEqual(rec.get("branch"), "bot/issue-1-111")
+        self.assertEqual(rec.get("pr_url"), "https://example.com/pr/7")
+        self.assertEqual(rec.get("last_comment_id"), "1")
+        posted = [" ".join(str(x) for x in c) for c in self._comment_calls()]
+        self.assertTrue(any("未产生任何代码修改" in b and "<!-- onespace-cloud-agent -->" in b for b in posted))
+
+    def test_initial_run_still_skips_open_pr(self):
+        self.worker.processed_issues = {}
+        self.worker.save_state()
+        pr = {"number": 7, "url": "https://example.com/pr/7", "state": "open", "body": "Closes #42",
+              "head": {"ref": "human/feature", "repo": {"full_name": "fork/repo"}}}
+        self._issues_stdout = json.dumps([{"number": 42, "title": "T", "body": "B", "author": {"login": "alice"}}])
+        self._pr_list_stdout = json.dumps([pr])
+        self._perm_by_login = {"alice": (0, '{"permission":"write"}')}
+        self._comments_pages = [[]]
+        self.run_calls.clear()
+        self.worker.run_poll_cycle()
+        self.assertEqual(len(self._clone_calls()), 0)
+        self.assertEqual(len(self._opencode_calls()), 0)
+        self.assertEqual(len(self._pr_create_calls()), 0)
+        rec = self._state_record(42)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.get("status"), "done")
