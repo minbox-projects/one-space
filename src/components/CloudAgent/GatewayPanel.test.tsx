@@ -76,7 +76,8 @@ describe("GatewayPanel Component", () => {
     timestamp: 1700000000,
   };
 
-  it("renders cloud providers and models with context limits and reasoning efforts", () => {
+  it("renders cloud providers collapsed by default and expands on click", async () => {
+    const user = userEvent.setup();
     const onSyncGateway = vi.fn().mockResolvedValue(undefined);
 
     render(
@@ -92,7 +93,15 @@ describe("GatewayPanel Component", () => {
     expect(screen.getByText("DeepSeek Provider")).toBeInTheDocument();
     expect(screen.getByText("Anthropic Claude")).toBeInTheDocument();
 
-    // 验证模型标识与显示名称
+    // 初始状态：模型全部折叠不展开
+    expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
+    expect(screen.queryByText("claude-3-7-sonnet")).not.toBeInTheDocument();
+
+    // 点击全部展开按钮
+    const expandAllBtn = screen.getByText("全部展开");
+    await user.click(expandAllBtn);
+
+    // 展开后验证模型标识与显示名称
     expect(screen.getByText("deepseek-chat")).toBeInTheDocument();
     expect(screen.getByText("DeepSeek V3 Chat")).toBeInTheDocument();
     expect(screen.getByText("deepseek-chat-v3")).toBeInTheDocument();
@@ -111,6 +120,11 @@ describe("GatewayPanel Component", () => {
     expect(screen.getByText("medium")).toBeInTheDocument();
     expect(screen.getAllByText("high").length).toBe(2);
     expect(screen.getByText("max")).toBeInTheDocument();
+
+    // 点击全部收起按钮
+    const collapseAllBtn = screen.getByText("全部收起");
+    await user.click(collapseAllBtn);
+    expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
   });
 
   it("toggles provider section collapse on header click", async () => {
@@ -123,18 +137,19 @@ describe("GatewayPanel Component", () => {
       />
     );
 
-    expect(screen.getByText("deepseek-chat")).toBeInTheDocument();
+    // 默认折叠：模型不显示
+    expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
 
-    // 点击 DeepSeek 服务商头部折叠
+    // 点击 DeepSeek 服务商头部展开
     const providerHeader = screen.getByText("DeepSeek Provider");
     await user.click(providerHeader);
 
-    // 折叠后模型隐藏
-    expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
-
-    // 再次点击展开
-    await user.click(providerHeader);
+    // 展开后模型显示
     expect(screen.getByText("deepseek-chat")).toBeInTheDocument();
+
+    // 再次点击折叠收起
+    await user.click(providerHeader);
+    expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
   });
 
   it("filters models and providers by search query", async () => {

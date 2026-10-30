@@ -3,6 +3,7 @@ import { formatDistanceToNow } from "date-fns";
 import { zhCN, enUS } from "date-fns/locale";
 import type { TFunction } from "i18next";
 import type { CloudAgentTask } from "@/lib/cloudAgent";
+import { CloudEmptyState } from "./CloudEmptyState";
 
 interface PrPipelineTabProps {
   t: TFunction;
@@ -31,20 +32,20 @@ export function PrPipelineTab({
 
   if (tasks.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 bg-white/50 dark:bg-slate-900/40 p-12 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 mb-4">
-          <GitPullRequest className="h-6 w-6" />
-        </div>
-        <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200">
-          {t("noPipelineTasksTitle", "暂无 Issues 自动流水线任务记录")}
-        </h3>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-          {t(
-            "noPipelineTasksDesc",
-            "当监控的 GitHub 仓库被打上任务触发标签（如 bot:task）时，AI 云端智能体将自动接单、无头实施、创建 PR 并闭环记录流水。"
-          )}
-        </p>
-      </div>
+      <CloudEmptyState
+        icon={GitPullRequest}
+        title={t("noPipelineTasksTitle", "暂无 Issues 自动流水线任务记录")}
+        description={t(
+          "noPipelineTasksDesc",
+          "当监控的 GitHub 仓库被打上任务触发标签（如 bot:task）时，AI 云端智能体将自动接单、无头实施、创建 PR 并闭环记录流水。"
+        )}
+        action={{
+          label: t("refreshPipelineTasks", "刷新任务流水"),
+          icon: RefreshCw,
+          onClick: onRefresh,
+          loading,
+        }}
+      />
     );
   }
 

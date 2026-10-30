@@ -244,4 +244,67 @@ describe("CloudAgent Component", () => {
       expect(screen.getByText("feat-auth-1234")).toBeTruthy();
     });
   });
+
+  it("does not render sync gateway button in header", async () => {
+    await act(async () => {
+      renderWithProviders(<CloudAgent isVisible={true} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
+    });
+
+    // 验证顶部快捷操作栏中不存在“同步网关”按钮
+    expect(screen.queryByText("同步网关")).toBeNull();
+  });
+
+  it("renders consistent empty state with action buttons when data is empty", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "cloud_agent_get_settings") {
+        return {
+          default_host: "dmit-server",
+          remote_workspace_root: "/root/cloud-agent-workspaces",
+          remote_agent_dir: "/root/onespace-cloud-agent",
+        };
+      }
+      if (command === "ssh_hosts_list") {
+        return [{ name: "dmit-server", host_name: "1.2.3.4" }];
+      }
+      if (command === "cloud_agent_get_status") {
+        return { service_active: true };
+      }
+      if (command === "cloud_agent_list_sessions") return [];
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      return null;
+    });
+
+    const user = userEvent.setup();
+
+    await act(async () => {
+      renderWithProviders(<CloudAgent isVisible={true} />);
+    });
+
+    // 活跃会话空状态与统一按钮
+    await waitFor(() => {
+      expect(screen.getByText("当前没有正在运行的云端开发会话")).toBeInTheDocument();
+      expect(screen.getByText("新建云端特性任务")).toBeInTheDocument();
+    });
+
+    // 切换到历史工作区 Tab 检查空状态与统一按钮
+    const worktreesTab = screen.getByText("历史工作区");
+    await user.click(worktreesTab);
+    await waitFor(() => {
+      expect(screen.getByText("暂无 Git Worktree 历史工作区")).toBeInTheDocument();
+      expect(screen.getByText("新建云端特性任务")).toBeInTheDocument();
+    });
+
+    // 切换到 Issues 流水线 Tab 检查空状态与统一刷新按钮
+    const pipelineTab = screen.getByText("Issues 流水线");
+    await user.click(pipelineTab);
+    await waitFor(() => {
+      expect(screen.getByText("暂无 Issues 自动流水线任务记录")).toBeInTheDocument();
+      expect(screen.getByText("刷新任务流水")).toBeInTheDocument();
+    });
+  });
 });

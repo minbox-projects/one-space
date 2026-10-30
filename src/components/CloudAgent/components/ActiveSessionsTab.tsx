@@ -15,11 +15,13 @@ import {
   Copy,
   Check,
   Terminal,
+  Filter,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { zhCN, enUS } from "date-fns/locale";
 import type { TFunction } from "i18next";
 import { formatWorkingDirTail, type CloudSession } from "@/lib/cloudAgent";
+import { CloudEmptyState } from "./CloudEmptyState";
 
 interface ActiveSessionsTabProps {
   t: TFunction;
@@ -132,28 +134,19 @@ export function ActiveSessionsTab({
 
   if (sessions.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 bg-white/50 dark:bg-slate-900/40 p-12 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 mb-4">
-          <Layers className="h-6 w-6" />
-        </div>
-        <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200">
-          {t("noActiveSessionsTitle", "当前没有正在运行的云端开发会话")}
-        </h3>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-          {t(
-            "noActiveSessionsDesc",
-            "在云端创建 Git Worktree 特性隔离任务，或恢复离线的历史工作区，即可瞬间调起本地终端开展长程编程。"
-          )}
-        </p>
-        <button
-          type="button"
-          onClick={onOpenNewTaskModal}
-          className="mt-5 inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 transition-all"
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-          {t("createNewFeatureTask", "新建云端特性任务")}
-        </button>
-      </div>
+      <CloudEmptyState
+        icon={Layers}
+        title={t("noActiveSessionsTitle", "当前没有正在运行的云端开发会话")}
+        description={t(
+          "noActiveSessionsDesc",
+          "在云端创建 Git Worktree 特性隔离任务，或恢复离线的历史工作区，即可瞬间调起本地终端开展长程编程。"
+        )}
+        action={{
+          label: t("createNewFeatureTask", "新建云端特性任务"),
+          icon: Sparkles,
+          onClick: onOpenNewTaskModal,
+        }}
+      />
     );
   }
 
@@ -331,8 +324,26 @@ export function ActiveSessionsTab({
       </div>
 
       {/* 3. 三段式大留白会话卡片网格系统 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-        {filteredSessions.map((session) => {
+      {filteredSessions.length === 0 ? (
+        <div className="rounded-2xl border border-slate-200 bg-white/50 dark:border-slate-800 dark:bg-slate-900/40 p-10 text-center">
+          <Filter className="mx-auto h-8 w-8 text-slate-400 mb-2 opacity-60" />
+          <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+            {t("noMatchingSessions", "未找到符合条件的会话")}
+          </h4>
+          <p className="mt-1 text-xs text-slate-400">
+            {t("tryAdjustingFilter", "请尝试调整状态过滤标签。")}
+          </p>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("all")}
+            className="mt-3 text-xs text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+          >
+            {t("resetFilters", "重置所有筛选")}
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {filteredSessions.map((session) => {
           const isConnecting = connectingSession === session.session_name;
           const isKilling = killingSession === session.session_name;
           const startedAgo = formatDistanceToNow(parseDate(session.created_at), {
@@ -554,7 +565,8 @@ export function ActiveSessionsTab({
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -20,6 +20,7 @@ import { formatDistanceToNow } from "date-fns";
 import { zhCN, enUS } from "date-fns/locale";
 import type { TFunction } from "i18next";
 import type { CloudWorktree } from "@/lib/cloudAgent";
+import { CloudEmptyState } from "./CloudEmptyState";
 
 interface WorktreesHistoryTabProps {
   t: TFunction;
@@ -155,28 +156,19 @@ export function WorktreesHistoryTab({
 
   if (worktrees.length === 0) {
     return (
-      <div className="rounded-3xl border border-dashed border-slate-300 dark:border-slate-800 bg-white/60 dark:bg-slate-900/40 p-12 text-center backdrop-blur-sm">
-        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 mb-4 shadow-inner">
-          <Layers className="h-7 w-7" />
-        </div>
-        <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-          {t("noWorktreesTitle", "暂无 Git Worktree 历史工作区")}
-        </h3>
-        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
-          {t(
-            "noWorktreesDesc",
-            "在云端创建的所有特性分支隔离环境将长期保存在此，即使会话退出也可随时一键重新拉起现场。"
-          )}
-        </p>
-        <button
-          type="button"
-          onClick={onOpenNewTaskModal}
-          className="mt-6 inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 transition-all hover:scale-[1.02] active:scale-[0.98]"
-        >
-          <Sparkles className="h-4 w-4" />
-          {t("createNewFeatureTask", "新建云端特性任务")}
-        </button>
-      </div>
+      <CloudEmptyState
+        icon={Layers}
+        title={t("noWorktreesTitle", "暂无 Git Worktree 历史工作区")}
+        description={t(
+          "noWorktreesDesc",
+          "在云端创建的所有特性分支隔离环境将长期保存在此，即使会话退出也可随时一键重新拉起现场。"
+        )}
+        action={{
+          label: t("createNewFeatureTask", "新建云端特性任务"),
+          icon: Sparkles,
+          onClick: onOpenNewTaskModal,
+        }}
+      />
     );
   }
 

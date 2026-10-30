@@ -20,6 +20,7 @@ import type {
   CloudGatewayProvider,
 } from "@/lib/cloudAgent";
 import { formatContextWindowDisplay } from "@/lib/aiGateway/context";
+import { CloudEmptyState } from "./CloudEmptyState";
 
 interface GatewayPanelProps {
   t: TFunction;
@@ -36,7 +37,7 @@ export function GatewayPanel({
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<GatewaySyncResult | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
+  const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
 
   const handleSync = async () => {
     try {
@@ -50,11 +51,16 @@ export function GatewayPanel({
     }
   };
 
-  const toggleProviderCollapse = (providerId: string) => {
-    setCollapsedProviders((prev) => ({
-      ...prev,
-      [providerId]: !prev[providerId],
-    }));
+  const toggleProviderExpand = (providerId: string) => {
+    setExpandedProviders((prev) => {
+      const current = searchQuery.trim()
+        ? (prev[providerId] ?? true)
+        : Boolean(prev[providerId]);
+      return {
+        ...prev,
+        [providerId]: !current,
+      };
+    });
   };
 
   const isHealthy =
@@ -191,29 +197,58 @@ export function GatewayPanel({
           </div>
 
           {providers.length > 0 && (
-            <div className="relative w-full sm:w-56">
-              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t("searchPlaceholder", "搜索服务商或模型...")}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50/70 py-1.5 pl-8 pr-3 text-xs text-slate-800 placeholder-slate-400 transition-colors focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-200 dark:placeholder-slate-500 dark:focus:border-emerald-500 dark:focus:bg-slate-900"
-              />
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  const allExpanded = providers.every((p) =>
+                    Boolean(expandedProviders[p.id])
+                  );
+                  const next: Record<string, boolean> = {};
+                  providers.forEach((p) => {
+                    next[p.id] = !allExpanded;
+                  });
+                  setExpandedProviders(next);
+                }}
+                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/50 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-700 transition-colors whitespace-nowrap cursor-pointer shadow-2xs"
+              >
+                {providers.every((p) => Boolean(expandedProviders[p.id]))
+                  ? t("collapseAll", "全部收起")
+                  : t("expandAll", "全部展开")}
+              </button>
+
+              <div className="relative flex-1 sm:w-56">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={t("searchPlaceholder", "搜索服务商或模型...")}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50/70 py-1.5 pl-8 pr-3 text-xs text-slate-800 placeholder-slate-400 transition-colors focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-200 dark:placeholder-slate-500 dark:focus:border-emerald-500 dark:focus:bg-slate-900"
+                />
+              </div>
             </div>
           )}
         </div>
 
         {providers.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center dark:border-slate-800">
-            <Cpu className="mx-auto h-8 w-8 text-slate-300 dark:text-slate-600 mb-2" />
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              {t(
-                "noProvidersSynced",
-                "云端暂无服务商与模型映射，请点击右上角「一键同步网关至云端」完成配置下发。"
-              )}
-            </p>
-          </div>
+          <CloudEmptyState
+            icon={Cpu}
+            title={t("cloudGatewayProvidersTitle", "云端服务商与模型映射")}
+            description={t(
+              "noProvidersSynced",
+              "云端暂无服务商与模型映射，请点击右上角「一键同步网关至云端」完成配置下发。"
+            )}
+            action={{
+              label: isSyncing
+                ? t("syncingGateway", "正在同步网关...")
+                : t("syncGatewayToCloudBtn", "一键同步网关至云端"),
+              icon: Sparkles,
+              onClick: handleSync,
+              loading: isSyncing,
+              disabled: isSyncing,
+            }}
+          />
         ) : filteredProviders.length === 0 ? (
           <p className="text-xs text-slate-400 py-3 text-center">
             {t("noMatchingModelsFound", "未找到匹配的服务商或模型")}
@@ -221,7 +256,10 @@ export function GatewayPanel({
         ) : (
           <div className="space-y-4">
             {filteredProviders.map((provider) => {
-              const isCollapsed = Boolean(collapsedProviders[provider.id]);
+              const isExpanded = searchQuery.trim()
+                ? (expandedProviders[provider.id] ?? true)
+                : Boolean(expandedProviders[provider.id]);
+              const isCollapsed = !isExpanded;
               const models = provider.models || [];
 
               return (
@@ -231,7 +269,7 @@ export function GatewayPanel({
                 >
                   {/* 服务商头部 */}
                   <div
-                    onClick={() => toggleProviderCollapse(provider.id)}
+                    onClick={() => toggleProviderExpand(provider.id)}
                     className="flex items-center justify-between px-4 py-3 cursor-pointer select-none hover:bg-slate-100/50 dark:hover:bg-slate-800/60 transition-colors"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">

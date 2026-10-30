@@ -59,7 +59,6 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
         loading={loading}
         onRefresh={() => refreshAll()}
         onOpenNewTaskModal={() => setShowNewTaskModal(true)}
-        onSyncGateway={() => syncGateway()}
       />
 
       {/* 主工作区 */}
