@@ -7,14 +7,12 @@ import {
   Clock,
   Loader2,
   Sparkles,
-  Layers,
   Search,
   Copy,
   Check,
-  FolderGit2,
-  Terminal,
   Filter,
   X,
+  User,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { zhCN, enUS } from "date-fns/locale";
@@ -110,46 +108,38 @@ export function WorktreesHistoryTab({
     return isNaN(d.getTime()) ? new Date() : d;
   };
 
-  // 过滤后的列表
+  // 复合过滤工作区
   const filteredWorktrees = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     return worktrees.filter((wt) => {
-      // 状态过滤
       if (statusFilter === "active" && !wt.has_active_session) return false;
       if (statusFilter === "idle" && wt.has_active_session) return false;
-
-      // 仓库过滤
       if (selectedRepo !== "all" && wt.repo_name !== selectedRepo) return false;
 
-      // 关键字搜索过滤
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const wtName = extractWorktreeName(wt).toLowerCase();
-        const repo = (wt.repo_name || "").toLowerCase();
-        const branch = (wt.branch || "").toLowerCase();
-        const path = (wt.worktree_path || "").toLowerCase();
-        const sessionName = (wt.session_name || "").toLowerCase();
-        const commitMsg = (wt.last_commit?.message || "").toLowerCase();
-        const commitHash = (wt.last_commit?.hash || "").toLowerCase();
-
+      if (q) {
+        const matchesRepo = (wt.repo_name || "").toLowerCase().includes(q);
+        const matchesBranch = (wt.branch || "").toLowerCase().includes(q);
+        const matchesPath = (wt.worktree_path || "").toLowerCase().includes(q);
+        const matchesCommit = (wt.last_commit?.message || "").toLowerCase().includes(q);
+        const matchesAuthor = (wt.last_commit?.author || "").toLowerCase().includes(q);
+        const matchesHash = (wt.last_commit?.hash || "").toLowerCase().includes(q);
         return (
-          wtName.includes(q) ||
-          repo.includes(q) ||
-          branch.includes(q) ||
-          path.includes(q) ||
-          sessionName.includes(q) ||
-          commitMsg.includes(q) ||
-          commitHash.includes(q)
+          matchesRepo ||
+          matchesBranch ||
+          matchesPath ||
+          matchesCommit ||
+          matchesAuthor ||
+          matchesHash
         );
       }
-
       return true;
     });
   }, [worktrees, statusFilter, selectedRepo, searchQuery]);
 
   if (loading && worktrees.length === 0) {
     return (
-      <div className="flex h-72 items-center justify-center">
-        <Loader2 className="h-7 w-7 animate-spin text-emerald-500" />
+      <div className="flex h-64 items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-emerald-500" />
       </div>
     );
   }
@@ -157,7 +147,7 @@ export function WorktreesHistoryTab({
   if (worktrees.length === 0) {
     return (
       <CloudEmptyState
-        icon={Layers}
+        icon={GitBranch}
         title={t("noWorktreesTitle", "暂无 Git Worktree 历史工作区")}
         description={t(
           "noWorktreesDesc",
@@ -174,109 +164,99 @@ export function WorktreesHistoryTab({
 
   return (
     <div className="space-y-4">
-      {/* 顶部统计与多功能筛选控制栏 */}
-      <div className="rounded-2xl border border-slate-200/80 bg-white/80 p-3.5 shadow-sm backdrop-blur-sm dark:border-slate-800/80 dark:bg-slate-900/80 flex flex-wrap items-center justify-between gap-3">
-        {/* 左侧：统计指示胶囊 */}
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-            <Layers className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
-            <span>{t("allWorktreesCount", "全部工作区")}</span>
-            <span className="rounded-md bg-white dark:bg-slate-700 px-1.5 py-0.2 text-[11px] font-bold text-slate-800 dark:text-slate-200">
-              {stats.total}
-            </span>
-          </span>
-
-          <button
-            type="button"
-            onClick={() => setStatusFilter(statusFilter === "active" ? "all" : "active")}
-            className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1 text-xs font-medium transition-all ${
-              statusFilter === "active"
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:bg-emerald-500/20 dark:text-emerald-300"
-            }`}
-          >
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>{t("activeSessionsCount", "活跃运行")}</span>
-            <span className="font-bold ml-0.5">{stats.active}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setStatusFilter(statusFilter === "idle" ? "all" : "idle")}
-            className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1 text-xs font-medium transition-all ${
-              statusFilter === "idle"
-                ? "bg-slate-700 text-white shadow-sm dark:bg-slate-300 dark:text-slate-900"
-                : "bg-slate-100 text-slate-600 hover:bg-slate-200/80 dark:bg-slate-800 dark:text-slate-400"
-            }`}
-          >
-            <span className="h-2 w-2 rounded-full bg-slate-400" />
-            <span>{t("idleWorktreesCount", "已离线")}</span>
-            <span className="font-bold ml-0.5">{stats.idle}</span>
-          </button>
-        </div>
-
-        {/* 右侧：搜索过滤与新建入口 */}
-        <div className="flex flex-1 sm:flex-initial items-center gap-2 min-w-[280px]">
-          {/* 仓库下拉筛选（如果有多仓库） */}
-          {repoOptions.length > 1 && (
-            <div className="relative">
-              <select
-                value={selectedRepo}
-                onChange={(e) => setSelectedRepo(e.target.value)}
-                aria-label={t("filterByRepo", "按代码仓库筛选")}
-                className="h-8 rounded-xl border border-slate-200 bg-slate-50/70 pl-2.5 pr-7 text-xs font-medium text-slate-700 focus:border-emerald-500 focus:bg-white focus:outline-none dark:border-slate-800 dark:bg-slate-800/70 dark:text-slate-300"
-              >
-                <option value="all">{t("allRepositories", "所有代码仓库")}</option>
-                {repoOptions.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* 实时搜索框 */}
-          <div className="relative flex-1 sm:w-48">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+      {/* 顶部操作过滤与统计工具栏 */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3 shadow-2xs">
+        {/* 左侧：搜索框与状态筛选药丸组 */}
+        <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[280px]">
+          {/* 搜索框 */}
+          <div className="relative min-w-[200px] max-w-sm flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={t("searchWorktreesPlaceholder", "搜索分支 / 特性 / Commit...")}
-              className="h-8 w-full rounded-xl border border-slate-200 bg-slate-50/70 pl-8 pr-7 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500/20 dark:border-slate-800 dark:bg-slate-800/70 dark:text-slate-200"
+              className="w-full rounded-lg border border-input bg-background pl-8 pr-7 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery("")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
                 <X className="h-3 w-3" />
               </button>
             )}
           </div>
 
-          {/* 新建特性任务主按钮 */}
-          <button
-            type="button"
-            onClick={onOpenNewTaskModal}
-            className="h-8 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 transition-all shrink-0"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{t("createNewTaskBtn", "新建特性任务")}</span>
-          </button>
+          {/* 状态统计与筛选药丸组 */}
+          <div className="flex items-center gap-1 rounded-lg border border-border/70 bg-muted/30 p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => setStatusFilter("all")}
+              className={`rounded-md px-2.5 py-1 font-medium transition-all cursor-pointer ${
+                statusFilter === "all"
+                  ? "bg-background text-foreground font-semibold shadow-2xs"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <span>{t("allWorktreesCount", "全部工作区")}</span>
+              <span className="ml-1.5 font-semibold">{stats.total}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("active")}
+              className={`rounded-md px-2.5 py-1 font-medium transition-all cursor-pointer ${
+                statusFilter === "active"
+                  ? "bg-background text-emerald-600 dark:text-emerald-400 font-semibold shadow-2xs"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <span>{t("activeSessionsCount", "活跃运行")}</span>
+              <span className="ml-1.5 font-semibold text-emerald-600 dark:text-emerald-400">{stats.active}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("idle")}
+              className={`rounded-md px-2.5 py-1 font-medium transition-all cursor-pointer ${
+                statusFilter === "idle"
+                  ? "bg-background text-foreground font-semibold shadow-2xs"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <span>{t("idleWorktreesCount", "已离线")}</span>
+              <span className="ml-1.5 font-semibold text-muted-foreground">{stats.idle}</span>
+            </button>
+          </div>
         </div>
+
+        {/* 右侧：代码仓库筛选下拉 */}
+        {repoOptions.length > 1 && (
+          <div className="flex items-center gap-2">
+            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+            <select
+              value={selectedRepo}
+              onChange={(e) => setSelectedRepo(e.target.value)}
+              className="rounded-lg border border-input bg-background px-2.5 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <option value="all">{t("allRepositories", "所有代码仓库")}</option>
+              {repoOptions.map((repo) => (
+                <option key={repo} value={repo}>
+                  {repo}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
-      {/* 搜索无结果提示 */}
-      {filteredWorktrees.length === 0 && (
-        <div className="rounded-2xl border border-slate-200 bg-white/50 dark:border-slate-800 dark:bg-slate-900/40 p-10 text-center">
-          <Filter className="mx-auto h-8 w-8 text-slate-400 mb-2 opacity-60" />
-          <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+      {/* 无匹配状态 */}
+      {filteredWorktrees.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/50 p-10 text-center">
+          <p className="text-sm font-medium text-foreground">
             {t("noMatchingWorktrees", "未找到符合条件的工作区")}
-          </h4>
-          <p className="mt-1 text-xs text-slate-400">
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
             {t("tryAdjustingFilter", "请尝试调整关键词或筛选状态")}
           </p>
           <button
@@ -286,190 +266,189 @@ export function WorktreesHistoryTab({
               setStatusFilter("all");
               setSelectedRepo("all");
             }}
-            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:underline dark:text-emerald-400"
+            className="mt-3 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
           >
             {t("resetFilters", "重置筛选条件")}
           </button>
         </div>
-      )}
+      ) : (
+        /* 工作区卡片列表 */
+        <div className="grid grid-cols-1 gap-3">
+          {filteredWorktrees.map((wt) => {
+            const isResuming = resumingTarget === wt.worktree_path;
+            const wtName = extractWorktreeName(wt);
+            const modifiedAgo = formatDistanceToNow(parseDate(wt.last_modified), {
+              addSuffix: true,
+              locale: dateLocale,
+            });
 
-      {/* 卡片网格系统 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredWorktrees.map((wt) => {
-          const isResuming = resumingTarget === wt.worktree_path;
-          const updatedAgo = formatDistanceToNow(parseDate(wt.last_modified), {
-            addSuffix: true,
-            locale: dateLocale,
-          });
-          const worktreeName = extractWorktreeName(wt);
-          const isPathCopied = copiedTarget === `path:${wt.worktree_path}`;
-          const isHashCopied = copiedTarget === `hash:${wt.last_commit?.hash}`;
+            return (
+              <div
+                key={wt.worktree_path}
+                className="group relative rounded-xl border border-border bg-card p-4.5 shadow-2xs transition-all hover:border-border/80 hover:shadow-xs"
+              >
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  {/* 左侧：工作区身份与最新提交信息 */}
+                  <div className="min-w-0 flex-1 space-y-2">
+                    {/* 头部：状态灯 + 分支/Worktree名称 + 仓库徽标 */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="relative flex h-2 w-2">
+                        {wt.has_active_session ? (
+                          <>
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                          </>
+                        ) : (
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-muted-foreground/40" />
+                        )}
+                      </span>
 
-          return (
-            <div
-              key={wt.worktree_path}
-              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition-all hover:shadow-md hover:border-emerald-500/30 dark:border-slate-800 dark:bg-slate-900 flex flex-col justify-between group"
-            >
-              <div>
-                {/* 顶栏：代码仓库与运行状态 */}
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 shrink-0">
-                      <FolderGit2 className="h-3.5 w-3.5" />
-                    </span>
-                    <span
-                      className="truncate text-xs font-bold text-slate-900 dark:text-white"
-                      title={wt.repo_name}
-                    >
-                      {wt.repo_name}
-                    </span>
-                  </div>
+                      <h4 className="font-mono text-sm font-semibold tracking-tight text-foreground truncate">
+                        {wtName}
+                      </h4>
 
-                  {wt.has_active_session ? (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 shrink-0">
-                      <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                      {t("statusRunning", "活跃运行中")}
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400 shrink-0">
-                      <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
-                      {t("statusIdle", "已离线 / 空闲")}
-                    </span>
-                  )}
-                </div>
+                      {/* 仓库名称徽标 */}
+                      {wt.repo_name && (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-foreground">
+                          <Folder className="h-3 w-3 text-muted-foreground" />
+                          {wt.repo_name}
+                        </span>
+                      )}
 
-                {/* 分支名称 (独占一行，长分支名折行完整呈现，支持选中复制) */}
-                {wt.branch && (
-                  <div className="mb-2.5 flex items-start gap-2 rounded-xl bg-emerald-500/10 dark:bg-emerald-500/20 px-3 py-1.5 text-xs font-mono font-medium text-emerald-700 dark:text-emerald-300 border border-emerald-500/20">
-                    <GitBranch className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[10px] uppercase tracking-wider text-emerald-800/80 dark:text-emerald-200/80 font-semibold mb-0.5">
-                        {t("branchLabel", "分支")}
+                      {/* 分支标识 */}
+                      {wt.branch && (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-muted/20 px-2 py-0.5 text-[11px] font-mono text-muted-foreground">
+                          <GitBranch className="h-3 w-3" />
+                          {wt.branch}
+                        </span>
+                      )}
+
+                      {/* 状态徽标 */}
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          wt.has_active_session
+                            ? "bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400"
+                            : "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {wt.has_active_session
+                          ? t("statusRunning", "活跃运行中")
+                          : t("statusIdle", "已离线 / 空闲")}
+                      </span>
+                    </div>
+
+                    {/* 中部：最新 Git 提交信息卡（若有） */}
+                    {wt.last_commit ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1.5 text-xs text-foreground/90">
+                        <GitCommit className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                        {wt.last_commit.hash && (
+                          <div className="flex items-center gap-1 font-mono text-[11px] text-muted-foreground">
+                            <span>{wt.last_commit.hash.slice(0, 7)}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleCopy(
+                                  wt.last_commit!.hash,
+                                  `hash-${wt.worktree_path}`
+                                )
+                              }
+                              title={t("copyHashTooltip", "复制 Commit Hash")}
+                              className="inline-flex h-3.5 w-3.5 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                            >
+                              {copiedTarget === `hash-${wt.worktree_path}` ? (
+                                <Check className="h-3 w-3 text-emerald-500" />
+                              ) : (
+                                <Copy className="h-3 w-3" />
+                              )}
+                            </button>
+                          </div>
+                        )}
+                        <span className="text-muted-foreground/40">·</span>
+                        <span className="font-medium truncate max-w-md">
+                          {wt.last_commit.message}
+                        </span>
+                        {wt.last_commit.author && (
+                          <>
+                            <span className="text-muted-foreground/40">·</span>
+                            <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                              <User className="h-3 w-3" />
+                              {wt.last_commit.author}
+                            </span>
+                          </>
+                        )}
                       </div>
-                      <div className="break-all select-all leading-snug font-semibold">
-                        {wt.branch}
+                    ) : (
+                      <div className="text-[11px] text-muted-foreground italic">
+                        {t("noCommitHistory", "暂无最新 Git 提交记录")}
                       </div>
-                    </div>
-                  </div>
-                )}
+                    )}
 
-                {/* Worktree 专属名称 (独立高亮显示) */}
-                <div className="mb-2.5 flex items-start gap-2 rounded-xl bg-slate-50 dark:bg-slate-800/60 px-3 py-1.5 text-xs font-mono text-slate-700 dark:text-slate-300 border border-slate-200/70 dark:border-slate-800/80">
-                  <Layers className="h-3.5 w-3.5 shrink-0 text-slate-500 dark:text-slate-400 mt-0.5" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold mb-0.5">
-                      Worktree
-                    </div>
-                    <div className="break-all select-all font-semibold leading-snug text-slate-900 dark:text-slate-100">
-                      {worktreeName}
-                    </div>
-                  </div>
-                </div>
-
-                {/* 最新 Commit 摘要区块 */}
-                {wt.last_commit ? (
-                  <div className="mb-3 rounded-xl bg-slate-50/70 dark:bg-slate-800/40 p-2.5 border border-slate-100 dark:border-slate-800/80 space-y-1">
-                    <div className="flex items-center justify-between gap-1 text-[11px]">
-                      <div className="flex items-center gap-1.5 min-w-0 font-mono">
-                        <GitCommit className="h-3 w-3 text-slate-400 shrink-0" />
+                    {/* 底部属性：路径 + 最后修改时间 */}
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-1 font-mono text-[11px]">
+                        <span
+                          title={wt.worktree_path}
+                          className="text-foreground/80 hover:text-foreground select-all truncate max-w-sm"
+                        >
+                          {wt.worktree_path}
+                        </span>
                         <button
                           type="button"
                           onClick={() =>
-                            handleCopy(wt.last_commit!.hash, `hash:${wt.last_commit!.hash}`)
+                            handleCopy(wt.worktree_path, `path-${wt.worktree_path}`)
                           }
-                          title={t("copyHashTooltip", "复制 Commit Hash")}
-                          className="font-semibold text-emerald-700 dark:text-emerald-400 hover:underline inline-flex items-center gap-1"
+                          title={t("copyPathTooltip", "复制完整目录路径")}
+                          className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
                         >
-                          <span>{wt.last_commit.hash}</span>
-                          {isHashCopied ? (
-                            <Check className="h-2.5 w-2.5 text-emerald-500" />
+                          {copiedTarget === `path-${wt.worktree_path}` ? (
+                            <Check className="h-3 w-3 text-emerald-500" />
                           ) : (
-                            <Copy className="h-2.5 w-2.5 text-slate-400 opacity-60" />
+                            <Copy className="h-3 w-3" />
                           )}
                         </button>
                       </div>
-                      <span className="truncate text-slate-400 text-[10px]">
-                        {wt.last_commit.author}
-                      </span>
-                    </div>
 
-                    <p
-                      className="text-xs text-slate-600 dark:text-slate-300 truncate leading-relaxed"
-                      title={wt.last_commit.message}
-                    >
-                      {wt.last_commit.message}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="mb-3 rounded-xl bg-slate-50/40 dark:bg-slate-800/30 px-3 py-2 border border-dashed border-slate-200/80 dark:border-slate-800/60 text-[11px] text-slate-400 italic">
-                    {t("noCommitHistory", "暂无最新 Git 提交记录")}
-                  </div>
-                )}
+                      <span className="text-muted-foreground/30">·</span>
 
-                {/* 工作区路径与最后更新 */}
-                <div className="space-y-1.5 text-xs text-slate-500 dark:text-slate-400 mb-4">
-                  <div className="flex items-center justify-between gap-1 min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                      <Folder className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                      <span
-                        className="font-mono text-[11px] truncate flex-1 min-w-0"
-                        style={{ direction: "rtl", textAlign: "left", unicodeBidi: "plaintext" }}
-                        title={wt.worktree_path}
-                      >
-                        {wt.worktree_path}
-                      </span>
+                      <div className="flex items-center gap-1 text-[11px]">
+                        <Clock className="h-3 w-3 text-muted-foreground/70" />
+                        <span>
+                          {t("lastModifiedAt", "最后修改")}: {modifiedAgo}
+                        </span>
+                      </div>
                     </div>
+                  </div>
+
+                  {/* 右侧：进入现场 / 重新拉起动作 */}
+                  <div className="flex items-center gap-2 shrink-0 pt-2 md:pt-0">
                     <button
                       type="button"
-                      onClick={() => handleCopy(wt.worktree_path, `path:${wt.worktree_path}`)}
-                      title={t("copyPathTooltip", "复制完整目录路径")}
-                      className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-md transition-colors"
+                      disabled={isResuming}
+                      onClick={() => handleResume(wt)}
+                      className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium shadow-2xs transition-all disabled:opacity-50 cursor-pointer ${
+                        wt.has_active_session
+                          ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                          : "border border-border bg-background text-foreground hover:bg-muted"
+                      }`}
                     >
-                      {isPathCopied ? (
-                        <Check className="h-3 w-3 text-emerald-500" />
+                      {isResuming ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : (
-                        <Copy className="h-3 w-3" />
+                        <Play className="h-3.5 w-3.5 fill-current" />
                       )}
+                      <span>
+                        {wt.has_active_session
+                          ? t("resumeLiveSession", "进入运行现场 (直连终端)")
+                          : t("reviveWorktreeSession", "重新拉起现场 (直连终端)")}
+                      </span>
                     </button>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                    <Clock className="h-3 w-3 shrink-0" />
-                    <span>
-                      {t("lastModifiedAt", "最后修改")}: {updatedAgo}
-                    </span>
                   </div>
                 </div>
               </div>
-
-              {/* 底部操作栏 */}
-              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  disabled={isResuming}
-                  onClick={() => handleResume(wt)}
-                  className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-medium text-white shadow-sm transition-all disabled:opacity-60 ${
-                    wt.has_active_session
-                      ? "bg-emerald-600 hover:bg-emerald-700"
-                      : "bg-slate-800 hover:bg-slate-900 dark:bg-emerald-700 dark:hover:bg-emerald-600"
-                  }`}
-                >
-                  {isResuming ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : wt.has_active_session ? (
-                    <Play className="h-3.5 w-3.5 fill-current" />
-                  ) : (
-                    <Terminal className="h-3.5 w-3.5" />
-                  )}
-                  {wt.has_active_session
-                    ? t("resumeLiveSession", "进入运行现场 (直连终端)")
-                    : t("reviveWorktreeSession", "重新拉起现场 (直连终端)")}
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
