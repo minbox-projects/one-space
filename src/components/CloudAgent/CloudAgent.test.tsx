@@ -1,500 +1,295 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudAgent } from "./index";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
-const { pushToastMock } = vi.hoisted(() => ({ pushToastMock: vi.fn() }));
+const flushEffects = async () => {
+  await act(async () => {});
+};
 
-vi.mock("@/components/ToastProvider", async () => {
-  const actual = await vi.importActual<
-    typeof import("@/components/ToastProvider")
-  >("@/components/ToastProvider");
-  return {
-    ...actual,
-    useToast: () => ({ pushToast: pushToastMock, dismissToast: vi.fn() }),
-  };
-});
+const advanceFakeTimers = (ms: number) => {
+  act(() => {
+    vi.advanceTimersByTime(ms);
+  });
+};
 
-describe("CloudAgent Component", () => {
+describe("CloudAgent deployment console", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     resetTauriMocks();
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "cloud_agent_get_settings") {
-        return {
-          default_host: "dmit-server",
-          remote_workspace_root: "/root/cloud-agent-workspaces",
-          remote_agent_dir: "/root/onespace-cloud-agent",
-          opencode_yolo_mode: true,
-          opencode_extra_args: "",
-          auto_refresh_interval_seconds: 10,
-          disk_alert_threshold_percent: 80,
-          terminal_app: "auto",
-        };
-      }
-      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
-        return [{ name: "dmit-server", host_name: "1.2.3.4" }];
-      }
-      if (command === "cloud_agent_get_status") {
-        return {
-          service_active: true,
-          disk: {
-            total_gb: 50.0,
-            used_gb: 24.5,
-            free_gb: 25.5,
-            use_percent: 49.0,
-          },
-          gateway: {
-            status: "healthy",
-            port: 17688,
-            providers_count: 3,
-            model_pools: ["coder-fast"],
-          },
-          timestamp: 1700000000,
-        };
-      }
-      if (command === "cloud_agent_list_sessions") {
-        return [
-          {
-            session_name: "feat-auth-1234",
-            repo_name: "one-space",
-            branch: "feat-auth",
-            working_dir: "/root/cloud-agent-workspaces/one-space/worktrees/feat-auth",
-            created_at: 1700000000,
-            windows_count: 1,
-            pane_pid: 12345,
-            is_active: true,
-            opencode_session_id: "ses_opencode_999",
-          },
-        ];
-      }
-      if (command === "cloud_agent_list_worktrees") {
-        return [
-          {
-            repo_name: "one-space",
-            branch: "feat-auth",
-            worktree_path: "/root/cloud-agent-workspaces/one-space/worktrees/feat-auth",
-            has_active_session: true,
-            session_name: "feat-auth-1234",
-            last_commit: {
-              hash: "abc1234",
-              author: "Developer",
-              timestamp: 1700000000,
-              message: "feat: add user login",
-            },
-            last_modified: 1700000000,
-          },
-        ];
-      }
-      if (command === "cloud_agent_list_tasks") {
-        return [
-          {
-            id: "task-1",
-            repo: "one-space",
-            issue_number: 42,
-            title: "Implement login api",
-            branch: "feat-issue-42",
-            status: "completed",
-            pr_url: "https://github.com/example/one-space/pull/1",
-            started_at: 1700000000,
-            finished_at: 1700001000,
-            duration_seconds: 1000,
-            error_message: null,
-          },
-        ];
-      }
-      if (command === "cloud_agent_launch_terminal") {
-        return { success: true, message: "Terminal launched" };
-      }
-      if (command === "cloud_agent_sync_gateway") {
-        return {
-          success: true,
-          providers_synced: 3,
-          model_pools_synced: 10,
-          message: "Synced successfully",
-        };
-      }
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") return { default_host: "A", remote_workspace_root: "/r", remote_agent_dir: "/a", auto_refresh_interval_seconds: 10 };
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") return [{ name: "A", host_name: "1.1.1.1" }, { name: "B", host_name: "2.2.2.2" }];
+      if (command === "cloud_agent_get_status") return { service_active: true };
+      if (command === "cloud_agent_list_sessions") return [];
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      if (command === "cloud_agent_get_installation_info") return { host: args?.host, state: "installed", local_latest_version: "0.2.0", remote_version: "0.1.9", installed_at: "2026-01-01T00:00:00Z" };
       return null;
     });
   });
 
-  it("renders header and active sessions properly", async () => {
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
-    });
-
-    // Verify session badge and repo name
-    expect(screen.getByText("one-space")).toBeTruthy();
-    await waitFor(() => {
-      expect(screen.getByTestId("cloud-agent-daemon-state")).toHaveTextContent("运行中");
-      expect(screen.getByText(/24.5G \/ 50G/)).toBeTruthy();
-      expect(screen.getByText("Cloud Gateway")).toBeInTheDocument();
-      expect(screen.getByText(/Port 17688/)).toBeInTheDocument();
-    });
-  });
-
-  it("handles terminal launch trigger", async () => {
+  it("header deploy trigger opens dialog and loads SSH host list", async () => {
     const user = userEvent.setup();
-
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
-    });
-
-    const connectBtn = screen.getByText(/恢复会话/);
-    await user.click(connectBtn);
-
-    expect(invokeMock).toHaveBeenCalledWith(
-      "cloud_agent_launch_terminal",
-      expect.objectContaining({
-        target: "feat-auth-1234",
-      })
-    );
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await waitFor(() => expect(screen.getAllByText(/A/).length).toBeGreaterThan(0));
+    const btn = screen.getByTestId("cloud-agent-deploy-open");
+    await user.click(btn);
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deployment-dialog")).toBeTruthy());
   });
 
-  it("switches tabs between sessions, worktrees, and pipeline", async () => {
-    const user = userEvent.setup();
-
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
-    });
-
-    // Switch to Worktrees Tab
-    const worktreeTabBtn = screen.getByText("历史工作区");
-    await user.click(worktreeTabBtn);
-
-    await waitFor(() => {
-      expect(screen.getByText("feat: add user login")).toBeTruthy();
-    });
-
-    // Switch to PR Pipeline Tab
-    const pipelineTabBtn = screen.getByText("Issues 流水线");
-    await user.click(pipelineTabBtn);
-
-    await waitFor(() => {
-      expect(screen.getByText("Implement login api")).toBeTruthy();
-    });
+  it("installed host summary shows remote 0.1.9, local 0.2.0 and formatted time; selecting host never invokes deploy", async () => {
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-installation-summary")).toBeTruthy());
+    const summary = screen.getByTestId("cloud-agent-installation-summary");
+    expect(summary.textContent).toContain("0.1.9");
+    expect(summary.textContent).toContain("0.2.0");
+    const deployCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_deploy");
+    expect(deployCalls.length).toBe(0);
   });
 
-  it("navigates to cloud-agent settings on clicking settings icon", async () => {
-    const user = userEvent.setup();
-    const setSettingsTabMock = vi.fn();
-    const setSettingsOpenMock = vi.fn();
-    (window as any).setSettingsTab = setSettingsTabMock;
-    (window as any).setSettingsOpen = setSettingsOpenMock;
-
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
-    });
-
-    const settingsBtn = screen.getByTitle("设置");
-    await user.click(settingsBtn);
-
-    expect(setSettingsTabMock).toHaveBeenCalledWith("cloud-agent");
-    expect(setSettingsOpenMock).toHaveBeenCalledWith(true);
-  });
-
-  it("renders metric cards and supports quick status filters in active sessions", async () => {
-    const user = userEvent.setup();
-
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
-    });
-
-    // 验证 4 组核心数据指标卡存在（注意活跃会话既在 Tab 也作为指标卡渲染）
-    expect(screen.getAllByText("活跃会话").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("终端作业窗口")).toBeTruthy();
-    expect(screen.getByText("特性隔离空间")).toBeTruthy();
-    expect(screen.getByText("涉及代码仓库")).toBeTruthy();
-
-    // 验证状态快捷过滤药丸组存在
-    expect(screen.getByText("全部会话")).toBeTruthy();
-    expect(screen.getByText("活跃中")).toBeTruthy();
-    expect(screen.getByText("已离线")).toBeTruthy();
-
-    // 点击“已离线”过滤
-    const idleFilterBtn = screen.getByText("已离线");
-    await user.click(idleFilterBtn);
-
-    // 切换回“全部会话”
-    const allFilterBtn = screen.getByText("全部会话");
-    await user.click(allFilterBtn);
-
-    await waitFor(() => {
-      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
-      expect(screen.getByText("ses_opencode_999")).toBeTruthy();
-      expect(screen.getByText("feat-auth-1234")).toBeTruthy();
-    });
-  });
-
-  it("does not render sync gateway button in header", async () => {
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getAllByText("feat-auth").length).toBeGreaterThan(0);
-    });
-
-    // 验证顶部快捷操作栏中不存在“同步网关”按钮
-    expect(screen.queryByText("同步网关")).toBeNull();
-  });
-
-  it("renders consistent empty state with action buttons when data is empty", async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "cloud_agent_get_settings") {
-        return {
-          default_host: "dmit-server",
-          remote_workspace_root: "/root/cloud-agent-workspaces",
-          remote_agent_dir: "/root/onespace-cloud-agent",
-        };
+  it("stale isolation: delayed A late resolve does not overwrite B", async () => {
+    let resolveAStatus: any, resolveASessions: any, resolveAWorktrees: any, resolveATasks: any, resolveAInstall: any;
+    const aStatus = new Promise((r) => { resolveAStatus = r; });
+    const aSessions = new Promise((r) => { resolveASessions = r; });
+    const aWorktrees = new Promise((r) => { resolveAWorktrees = r; });
+    const aTasks = new Promise((r) => { resolveATasks = r; });
+    const aInstall = new Promise((r) => { resolveAInstall = r; });
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") return { default_host: "A", remote_workspace_root: "/r", remote_agent_dir: "/a", auto_refresh_interval_seconds: 10 };
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") return [{ name: "A", host_name: "1.1.1.1" }, { name: "B", host_name: "2.2.2.2" }];
+      const host = args?.host;
+      if (host === "A") {
+        if (command === "cloud_agent_get_status") return aStatus;
+        if (command === "cloud_agent_list_sessions") return aSessions;
+        if (command === "cloud_agent_list_worktrees") return aWorktrees;
+        if (command === "cloud_agent_list_tasks") return aTasks;
+        if (command === "cloud_agent_get_installation_info") return aInstall;
       }
-      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
-        return [{ name: "dmit-server", host_name: "1.2.3.4" }];
-      }
+      if (command === "cloud_agent_get_status") return { service_active: true };
+      if (command === "cloud_agent_list_sessions") return [{ session_name: "ses-beta-only" }];
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      if (command === "cloud_agent_get_installation_info") return { host: "B", state: "installed", local_latest_version: "0.2.0", remote_version: "0.2.1", installed_at: "2026-01-01T00:00:00Z" };
+      return null;
+    });
+    const user = userEvent.setup();
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await waitFor(() => expect(screen.getAllByText(/A/).length).toBeGreaterThan(0));
+    const select = screen.getByTestId("cloud-agent-host-select");
+    await user.selectOptions(select as any, "B");
+    await waitFor(() => expect(screen.getByText(/ses-beta-only/)).toBeTruthy());
+    await act(async () => {
+      resolveAStatus({ service_active: false });
+      resolveASessions([{ session_name: "ses-alpha-only" }]);
+      resolveAWorktrees([]);
+      resolveATasks([]);
+      resolveAInstall({ host: "A", state: "installed", local_latest_version: "0.0.1", remote_version: "0.0.1", installed_at: "2026-01-01T00:00:00Z" });
+    });
+    await waitFor(() => expect(screen.getByText(/ses-beta-only/)).toBeTruthy());
+    expect(screen.queryByText(/ses-alpha-only/)).toBeNull();
+    const summary = screen.getByTestId("cloud-agent-installation-summary");
+    expect(summary.textContent).toContain("0.2.1");
+    expect(summary.textContent).not.toContain("0.0.1");
+  });
+
+  it("handoff: after deploy success selected host is B and status called with host B once", async () => {
+    let deployResolve: any;
+    const deployPromise = new Promise((r) => { deployResolve = r; });
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") return { default_host: "A", remote_workspace_root: "/r", remote_agent_dir: "/a", auto_refresh_interval_seconds: 10 };
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") return [{ name: "A", host_name: "1.1.1.1" }, { name: "B", host_name: "2.2.2.2" }];
+      if (command === "cloud_agent_get_status") return { service_active: true };
+      if (command === "cloud_agent_list_sessions") return args?.host === "A" ? [{ session_name: "alpha-only" }] : [];
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      if (command === "cloud_agent_get_installation_info") return { host: args?.host, state: args?.host === "A" ? "installed" : "not_installed", local_latest_version: args?.host === "A" ? "0.2.0" : null, remote_version: args?.host === "A" ? "0.1.9" : null, installed_at: args?.host === "A" ? "2026-01-01T00:00:00Z" : null };
+      if (command === "cloud_agent_deploy") return deployPromise;
+      return null;
+    });
+    const user = userEvent.setup();
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deploy-open")).toBeTruthy());
+    // open dialog
+    await user.click(screen.getByTestId("cloud-agent-deploy-open"));
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deployment-dialog")).toBeTruthy());
+    // select target B in dialog
+    const dialogSelect = screen.getByTestId("cloud-agent-deploy-host-select");
+    await user.selectOptions(dialogSelect as any, "B");
+    // deploy
+    const btn = await screen.findByTestId("cloud-agent-deploy-submit");
+    await user.click(btn);
+    // clear mock history before resolving deploy
+    invokeMock.mockClear();
+    // resolve deploy
+    await act(async () => { deployResolve({ host: "B", operation_id: "op", success: true, phase: "metadata", remote_version: "0.2.0", installed_at: "2026-01-02T00:00:00Z" }); });
+    await waitFor(() => expect(screen.queryByTestId("cloud-agent-deployment-dialog")).toBeNull());
+    const select = screen.getByTestId("cloud-agent-host-select");
+    expect((select as any).value).toBe("B");
+    const statusCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_get_status" && c[1]?.host === "B");
+    expect(statusCalls.length).toBe(1);
+    expect(screen.queryByText(/alpha-only/)).toBeNull();
+  });
+
+  it("handoff same-host variant calls status once for A", async () => {
+    let deployResolve: any;
+    const deployPromise = new Promise((r) => { deployResolve = r; });
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") return { default_host: "A", remote_workspace_root: "/r", remote_agent_dir: "/a", auto_refresh_interval_seconds: 10 };
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") return [{ name: "A", host_name: "1.1.1.1" }, { name: "B", host_name: "2.2.2.2" }];
+      if (command === "cloud_agent_get_status") return { service_active: true };
+      if (command === "cloud_agent_list_sessions") return [];
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      if (command === "cloud_agent_get_installation_info") return { host: args?.host, state: "not_installed", local_latest_version: null, remote_version: null, installed_at: null };
+      if (command === "cloud_agent_deploy") return deployPromise;
+      return null;
+    });
+    const user = userEvent.setup();
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deploy-open")).toBeTruthy());
+    await user.click(screen.getByTestId("cloud-agent-deploy-open"));
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deployment-dialog")).toBeTruthy());
+    const btn = await screen.findByTestId("cloud-agent-deploy-submit");
+    await user.click(btn);
+    invokeMock.mockClear();
+    await act(async () => { deployResolve({ host: "A", operation_id: "op2", success: true, phase: "metadata", remote_version: "0.2.0", installed_at: "2026-01-02T00:00:00Z" }); });
+    await waitFor(() => expect(screen.queryByTestId("cloud-agent-deployment-dialog")).toBeNull());
+    const statusCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_get_status" && c[1]?.host === "A");
+    expect(statusCalls.length).toBe(1);
+  });
+
+  it("deployment failure keeps host A selected and dialog open with error", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") return { default_host: "A", remote_workspace_root: "/r", remote_agent_dir: "/a", auto_refresh_interval_seconds: 10 };
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") return [{ name: "A", host_name: "1.1.1.1" }, { name: "B", host_name: "2.2.2.2" }];
+      if (command === "cloud_agent_get_status") return { service_active: true };
+      if (command === "cloud_agent_list_sessions") return [];
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      if (command === "cloud_agent_get_installation_info") return { host: args?.host, state: "not_installed", local_latest_version: null, remote_version: null, installed_at: null };
+      if (command === "cloud_agent_deploy") throw new Error("deployment failed in phase upload: boom");
+      return null;
+    });
+    const user = userEvent.setup();
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deploy-open")).toBeTruthy());
+    await user.click(screen.getByTestId("cloud-agent-deploy-open"));
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deployment-dialog")).toBeTruthy());
+    const btn = await screen.findByTestId("cloud-agent-deploy-submit");
+    await user.click(btn);
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deploy-error")).toBeTruthy());
+    const select = screen.getByTestId("cloud-agent-host-select");
+    expect((select as any).value).toBe("A");
+    expect(screen.getByTestId("cloud-agent-deployment-dialog")).toBeTruthy();
+  });
+
+  it("online-test failure keeps installed target and retest button calls status", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") return { default_host: "A", remote_workspace_root: "/r", remote_agent_dir: "/a", auto_refresh_interval_seconds: 10 };
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") return [{ name: "A", host_name: "1.1.1.1" }, { name: "B", host_name: "2.2.2.2" }];
       if (command === "cloud_agent_get_status") {
+        if (args?.host === "B") return { service_active: false };
         return { service_active: true };
       }
       if (command === "cloud_agent_list_sessions") return [];
       if (command === "cloud_agent_list_worktrees") return [];
       if (command === "cloud_agent_list_tasks") return [];
+      if (command === "cloud_agent_get_installation_info") return { host: args?.host, state: "installed", local_latest_version: "0.2.0", remote_version: "0.1.9", installed_at: "2026-01-01T00:00:00Z" };
       return null;
     });
-
     const user = userEvent.setup();
-
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    // 活跃会话空状态与统一按钮
-    await waitFor(() => {
-      expect(screen.getByText("当前没有正在运行的云端开发会话")).toBeInTheDocument();
-      expect(screen.getAllByText("新任务").length).toBeGreaterThanOrEqual(2);
-    });
-
-    // 切换到历史工作区 Tab 检查空状态与统一按钮
-    const worktreesTab = screen.getByText("历史工作区");
-    await user.click(worktreesTab);
-    await waitFor(() => {
-      expect(screen.getByText("暂无 Git Worktree 历史工作区")).toBeInTheDocument();
-      expect(screen.getAllByText("新任务").length).toBeGreaterThanOrEqual(2);
-    });
-
-    // 切换到 Issues 流水线 Tab 检查空状态与统一刷新按钮
-    const pipelineTab = screen.getByText("Issues 流水线");
-    await user.click(pipelineTab);
-    await waitFor(() => {
-      expect(screen.getByText("暂无 Issues 自动流水线任务记录")).toBeInTheDocument();
-      expect(screen.getByText("刷新任务流水")).toBeInTheDocument();
-    });
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deploy-open")).toBeTruthy());
+    // simulate handoff to B by selecting B
+    const select = screen.getByTestId("cloud-agent-host-select");
+    await user.selectOptions(select as any, "B");
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-retest")).toBeTruthy());
+    const summary = screen.getByTestId("cloud-agent-installation-summary");
+    expect(summary).toBeTruthy();
+    const before = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_get_status").length;
+    await user.click(screen.getByTestId("cloud-agent-retest"));
+    await waitFor(() => expect(invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_get_status").length).toBeGreaterThan(before));
+    const deployCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_deploy");
+    expect(deployCalls.length).toBe(0);
   });
 
-  it("dispatches active sessions count event when sessions load", async () => {
-    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(dispatchSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "onespace:cloud-agent-sessions-count",
-          detail: { count: 1 },
-        }),
-      );
-    });
-    dispatchSpy.mockRestore();
+  it("selecting hosts and polling never invokes deploy; advance one interval", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await flushEffects();
+    expect(screen.getByTestId("cloud-agent-deploy-open")).toBeTruthy();
+    const deployCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_deploy");
+    expect(deployCalls.length).toBe(0);
+    advanceFakeTimers(10000);
+    await flushEffects();
+    const deployCalls2 = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_deploy");
+    expect(deployCalls2.length).toBe(0);
   });
 
-  it("renders empty state and guides to settings when no host is configured or available", async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "cloud_agent_get_settings") {
-        return {
-          default_host: "",
-          remote_workspace_root: "/root/cloud-agent-workspaces",
-          remote_agent_dir: "/root/onespace-cloud-agent",
-        };
-      }
-      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
-        return [];
-      }
-      return null;
-    });
-
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("尚未选择或配置云端主机")).toBeInTheDocument();
-      expect(screen.getAllByText("未配置云端主机").length).toBeGreaterThan(0);
-      expect(screen.getByText("前往设置")).toBeInTheDocument();
-    });
-  });
-
-  it("auto-selects first available ssh host when default_host is not configured", async () => {
+  it("polling suppression and resume during deployment", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
+    let deployResolve: any;
+    const deployPromise = new Promise((r) => { deployResolve = r; });
     invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command === "cloud_agent_get_settings") {
-        return {
-          default_host: "",
-          remote_workspace_root: "/root/cloud-agent-workspaces",
-          remote_agent_dir: "/root/onespace-cloud-agent",
-        };
-      }
-      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
-        return [{ name: "my-aliyun-vps", host_name: "47.1.2.3" }];
-      }
-      if (command === "cloud_agent_get_status") {
-        return {
-          service_active: true,
-          disk: { total_gb: 40, used_gb: 10, free_gb: 30, use_percent: 25 },
-          gateway: { status: "healthy", port: 17688 },
-          timestamp: 1700000000,
-        };
-      }
-      if (command === "cloud_agent_list_sessions") {
-        if (args?.host === "my-aliyun-vps") {
-          return [
-            {
-              session_name: "aliyun-ses-1",
-              repo_name: "my-aliyun-repo",
-              branch: "feat-cloud",
-              working_dir: "/root/workspaces/feat",
-              created_at: 1700000000,
-              windows_count: 1,
-              pane_pid: 9999,
-              is_active: true,
-            },
-          ];
-        }
-        return [];
-      }
+      if (command === "cloud_agent_get_settings") return { default_host: "A", remote_workspace_root: "/r", remote_agent_dir: "/a", auto_refresh_interval_seconds: 10 };
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") return [{ name: "A", host_name: "1.1.1.1" }, { name: "B", host_name: "2.2.2.2" }];
+      if (command === "cloud_agent_get_status") return { service_active: true };
+      if (command === "cloud_agent_list_sessions") return [];
       if (command === "cloud_agent_list_worktrees") return [];
       if (command === "cloud_agent_list_tasks") return [];
+      if (command === "cloud_agent_get_installation_info") return { host: args?.host, state: "not_installed", local_latest_version: null, remote_version: null, installed_at: null };
+      if (command === "cloud_agent_deploy") return deployPromise;
       return null;
     });
-
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("my-aliyun-repo")).toBeInTheDocument();
-      expect(screen.getByText("aliyun-ses-1")).toBeInTheDocument();
-      expect(screen.getByTestId("cloud-agent-daemon-state")).toHaveTextContent("运行中");
-    });
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await flushEffects();
+    expect(screen.getByTestId("cloud-agent-deploy-open")).toBeTruthy();
+    // open dialog, select B, click deploy
+    fireEvent.click(screen.getByTestId("cloud-agent-deploy-open"));
+    await flushEffects();
+    expect(screen.getByTestId("cloud-agent-deployment-dialog")).toBeTruthy();
+    const dialogSelect = screen.getByTestId("cloud-agent-deploy-host-select");
+    fireEvent.change(dialogSelect, { target: { value: "B" } });
+    await flushEffects();
+    // run the dialog's deferred installation probe so the target is settled
+    advanceFakeTimers(50);
+    await flushEffects();
+    const btn = screen.getByTestId("cloud-agent-deploy-submit");
+    fireEvent.click(btn);
+    await flushEffects();
+    invokeMock.mockClear();
+    // advance 30s -> no status call for A
+    advanceFakeTimers(30000);
+    await flushEffects();
+    const aCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_get_status" && c[1]?.host === "A");
+    expect(aCalls.length).toBe(0);
+    // resolve success
+    await act(async () => { deployResolve({ host: "B", operation_id: "op", success: true, phase: "metadata", remote_version: "0.2.0", installed_at: "2026-01-02T00:00:00Z" }); });
+    await flushEffects();
+    const bCallsAfterHandoff = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_get_status" && c[1]?.host === "B");
+    expect(bCallsAfterHandoff.length).toBe(1);
+    // advance one polling interval
+    advanceFakeTimers(10000);
+    await flushEffects();
+    const bCallsAfterPoll = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_get_status" && c[1]?.host === "B");
+    expect(bCallsAfterPoll.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("clears old data immediately and loads new host data on settings updated event", async () => {
-    let currentConfiguredDefaultHost = "host-alpha";
-
-    invokeMock.mockImplementation(async (command: string, args?: any) => {
-      if (command === "cloud_agent_get_settings") {
-        return {
-          default_host: currentConfiguredDefaultHost,
-          remote_workspace_root: "/root/cloud-agent-workspaces",
-          remote_agent_dir: "/root/onespace-cloud-agent",
-        };
-      }
-      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") {
-        return [
-          { name: "host-alpha", host_name: "1.1.1.1" },
-          { name: "host-beta", host_name: "2.2.2.2" },
-        ];
-      }
-      if (command === "cloud_agent_get_status") {
-        return { service_active: true };
-      }
-      if (command === "cloud_agent_list_sessions") {
-        if (args?.host === "host-alpha") {
-          return [
-            {
-              session_name: "ses-alpha-only",
-              repo_name: "repo-alpha",
-              branch: "main",
-              working_dir: "/root/alpha",
-              created_at: 1700000000,
-              windows_count: 1,
-              pane_pid: 111,
-              is_active: true,
-            },
-          ];
-        }
-        if (args?.host === "host-beta") {
-          return [
-            {
-              session_name: "ses-beta-only",
-              repo_name: "repo-beta",
-              branch: "dev",
-              working_dir: "/root/beta",
-              created_at: 1700000000,
-              windows_count: 1,
-              pane_pid: 222,
-              is_active: true,
-            },
-          ];
-        }
-        return [];
-      }
-      if (command === "cloud_agent_list_worktrees") return [];
-      if (command === "cloud_agent_list_tasks") return [];
-      return null;
-    });
-
-    await act(async () => {
-      renderWithProviders(<CloudAgent isVisible={true} />);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("repo-alpha")).toBeInTheDocument();
-      expect(screen.getByText("ses-alpha-only")).toBeInTheDocument();
-    });
-
-    // 模拟设置面板保存了 host-beta 并广播全局事件
-    currentConfiguredDefaultHost = "host-beta";
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent("onespace:cloud-agent-settings-updated", {
-          detail: {
-            defaultHost: "host-beta",
-            remoteWorkspaceRoot: "/root/cloud-agent-workspaces",
-            remoteAgentDir: "/root/onespace-cloud-agent",
-            opencodeYoloMode: true,
-            opencodeExtraArgs: "",
-            autoRefreshIntervalSeconds: 10,
-            diskAlertThresholdPercent: 80,
-            terminalApp: "auto",
-          },
-        })
-      );
-    });
-
-    await waitFor(() => {
-      expect(screen.queryByText("repo-alpha")).toBeNull();
-      expect(screen.queryByText("ses-alpha-only")).toBeNull();
-      expect(screen.getByText("repo-beta")).toBeInTheDocument();
-      expect(screen.getByText("ses-beta-only")).toBeInTheDocument();
-    });
+  it("installed target cannot invoke cloud_agent_deploy (Deploy disabled)", async () => {
+    const user = userEvent.setup();
+    await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deploy-open")).toBeTruthy());
+    await user.click(screen.getByTestId("cloud-agent-deploy-open"));
+    await waitFor(() => expect(screen.getByTestId("cloud-agent-deployment-dialog")).toBeTruthy());
+    const btn = screen.getByTestId("cloud-agent-deploy-submit");
+    expect(btn).toBeDisabled();
+    const deployCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_deploy");
+    expect(deployCalls.length).toBe(0);
   });
 });

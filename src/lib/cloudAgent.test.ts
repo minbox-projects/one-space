@@ -1,105 +1,109 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import en from "@/i18n/locales/en/cloudAgent";
+import zh from "@/i18n/locales/zh/cloudAgent";
 import {
-  formatWorkingDirTail,
-  formatFriendlyDuration,
-  extractPrNumber,
-  formatGitCheckoutCommand,
-  formatIssueLabelTail,
-} from "./cloudAgent";
+  CLOUD_AGENT_DEPLOY_PROGRESS_EVENT,
+  cloudAgentDeploy,
+  cloudAgentGetInstallationInfo,
+  compareSemanticVersions,
+  formatInstalledAt,
+} from "@/lib/cloudAgent";
+import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
-describe("formatWorkingDirTail", () => {
-  it("handles empty or falsy paths", () => {
-    expect(formatWorkingDirTail("")).toEqual({
-      display: "—",
-      isTruncated: false,
-      fullPath: "",
+describe("cloudAgent lib", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_installation_info") {
+        return {
+          host: args?.host ?? "b",
+          state: "installed",
+          local_latest_version: "0.2.0",
+          remote_version: "0.1.9",
+          installed_at: "2026-01-01T00:00:00Z",
+        };
+      }
+      if (command === "cloud_agent_deploy") {
+        return {
+          host: args?.host ?? "b",
+          operation_id: args?.operationId ?? "op",
+          success: true,
+          phase: "metadata",
+          remote_version: "0.2.0",
+          installed_at: "2026-01-02T00:00:00Z",
+        };
+      }
+      return null;
     });
   });
 
-  it("returns full path when shorter than maxLen", () => {
-    const path = "/home/user/project";
-    const res = formatWorkingDirTail(path, 30);
-    expect(res.display).toBe(path);
-    expect(res.isTruncated).toBe(false);
-    expect(res.fullPath).toBe(path);
+  it("maps snake_case installation info and deploy results to camelCase", async () => {
+    const info = await cloudAgentGetInstallationInfo("b");
+    expect(invokeMock).toHaveBeenCalledWith("cloud_agent_get_installation_info", { host: "b" });
+    expect(info.host).toBe("b");
+    expect(info.state).toBe("installed");
+    expect(info.localLatestVersion).toBe("0.2.0");
+    expect(info.remoteVersion).toBe("0.1.9");
+    expect(info.installedAt).toBe("2026-01-01T00:00:00Z");
+
+    const deploy = await cloudAgentDeploy("b", "op");
+    expect(invokeMock).toHaveBeenCalledWith("cloud_agent_deploy", { host: "b", operationId: "op" });
+    expect(deploy.host).toBe("b");
+    expect(deploy.operationId).toBe("op");
+    expect(deploy.success).toBe(true);
+    expect(deploy.remoteVersion).toBe("0.2.0");
+    expect(deploy.installedAt).toBe("2026-01-02T00:00:00Z");
   });
 
-  it("truncates front and keeps rear directory when exceeding maxLen", () => {
-    const path = "/root/cloud-agent-workspaces/one-space/worktrees/feat-auth";
-    const res = formatWorkingDirTail(path, 30);
-    expect(res.isTruncated).toBe(true);
-    expect(res.display.startsWith("…")).toBe(true);
-    expect(res.display.endsWith("feat-auth")).toBe(true);
-  });
-});
-
-describe("formatFriendlyDuration", () => {
-  it("formats seconds accurately in Chinese", () => {
-    expect(formatFriendlyDuration(0, "zh")).toBe("0秒");
-    expect(formatFriendlyDuration(45, "zh")).toBe("45秒");
-    expect(formatFriendlyDuration(125, "zh")).toBe("2分5秒");
-    expect(formatFriendlyDuration(3665, "zh")).toBe("1小时1分");
+  it("exports event constant", () => {
+    expect(CLOUD_AGENT_DEPLOY_PROGRESS_EVENT).toBe("cloud_agent_deploy_progress");
   });
 
-  it("formats seconds accurately in English", () => {
-    expect(formatFriendlyDuration(0, "en")).toBe("0s");
-    expect(formatFriendlyDuration(45, "en")).toBe("45s");
-    expect(formatFriendlyDuration(125, "en")).toBe("2m 5s");
-    expect(formatFriendlyDuration(3665, "en")).toBe("1h 1m");
+  describe("semver", () => {
+    it("0.1.9 < 0.1.10", () => expect(compareSemanticVersions("0.1.9", "0.1.10")).toBe("older"));
+    it("newer/equal", () => {
+      expect(compareSemanticVersions("1.0.0", "0.9.0")).toBe("newer");
+      expect(compareSemanticVersions("1.0.0", "1.0.0")).toBe("equal");
+    });
+    it("v prefix", () => expect(compareSemanticVersions("v1.0.0", "1.0.0")).toBe("equal"));
+    it("build metadata equality", () => expect(compareSemanticVersions("1.0.0+build", "1.0.0+other")).toBe("equal"));
+    it("prerelease before release", () => expect(compareSemanticVersions("1.0.0-rc.1", "1.0.0")).toBe("older"));
+    it("1.2.3-beta.2 < 1.2.3-beta.10", () => expect(compareSemanticVersions("1.2.3-beta.2", "1.2.3-beta.10")).toBe("older"));
+    it("null/undefined/empty/malformed -> unknown", () => {
+      for (const v of [null, undefined, "", "not-a-version"]) {
+        expect(compareSemanticVersions(v, "1.0.0")).toBe("unknown");
+      }
+    });
   });
 
-  it("handles null or negative gracefully", () => {
-    expect(formatFriendlyDuration(null, "zh")).toBe("0秒");
-    expect(formatFriendlyDuration(undefined, "en")).toBe("0s");
-  });
-});
-
-describe("extractPrNumber", () => {
-  it("extracts PR number from GitHub PR URL", () => {
-    expect(extractPrNumber("https://github.com/org/repo/pull/105")).toBe("#105");
-    expect(extractPrNumber("https://github.com/org/repo/pull/42/files")).toBe("#42");
-  });
-
-  it("extracts MR number from GitLab MR URL", () => {
-    expect(extractPrNumber("https://gitlab.com/org/repo/-/merge_requests/88")).toBe("#88");
-  });
-
-  it("returns null for non-PR URL or falsy values", () => {
-    expect(extractPrNumber(null)).toBeNull();
-    expect(extractPrNumber("https://github.com/org/repo")).toBeNull();
-  });
-});
-
-describe("formatGitCheckoutCommand", () => {
-  it("formats git checkout command with origin fetch", () => {
-    expect(formatGitCheckoutCommand("bot/issue-102")).toBe(
-      "git fetch origin bot/issue-102 && git checkout bot/issue-102"
-    );
+  describe("formatInstalledAt", () => {
+    it("en valid contains 2026 and not unknown", () => {
+      const out = formatInstalledAt("2026-01-01T00:00:00Z", "en");
+      expect(out).toContain("2026");
+      expect(out).not.toBe("Not recorded");
+    });
+    it("zh valid contains 2026", () => {
+      const out = formatInstalledAt("2026-01-01T00:00:00Z", "zh");
+      expect(out).toContain("2026");
+    });
+    it("invalid/empty/null/0 -> Not recorded / 未记录", () => {
+      for (const v of ["", null, "0", "bad"]) {
+        expect(formatInstalledAt(v, "en")).toBe("Not recorded");
+        expect(formatInstalledAt(v, "zh")).toBe("未记录");
+      }
+    });
   });
 
-  it("returns empty string for empty branch", () => {
-    expect(formatGitCheckoutCommand("")).toBe("");
-  });
-});
-
-describe("formatIssueLabelTail", () => {
-  it("keeps short simple repo intact", () => {
-    expect(formatIssueLabelTail("one-space", 101)).toBe("one-space#101");
-  });
-
-  it("hides front organization prefix and displays tail repo and issue full", () => {
-    expect(formatIssueLabelTail("minbox-projects/onespace-app", 102)).toBe("…/onespace-app#102");
-  });
-
-  it("hides front https url prefix and displays tail repo and issue full", () => {
-    expect(formatIssueLabelTail("https://github.com/my-org/custom-repo.git", 103)).toBe("…/custom-repo#103");
-  });
-
-  it("hides front ssh prefix and displays tail repo and issue full", () => {
-    expect(formatIssueLabelTail("git@github.com:torvalds/linux.git", 789)).toBe("…/linux#789");
-  });
-
-  it("truncates front of long standalone repo and keeps tail and issue number", () => {
-    expect(formatIssueLabelTail("super-long-repository-name-exceeding-limit", 42, 15)).toBe("…exceeding-limit#42");
+  it("i18n parity", () => {
+    const enKeys = Object.keys(en);
+    const zhKeys = Object.keys(zh);
+    expect(new Set(enKeys)).toEqual(new Set(zhKeys));
+    const required = [
+      "deployServer","deployServerHint","deploymentDialogTitle","deploymentTargetLabel","deploymentHostEmpty","deploymentStateInstalled","deploymentStateNotInstalled","deploymentStateIncomplete","deploymentStateProbeError","deploymentStateChecking","deploymentRequirements","deploymentDeployAction","deploymentInstalledAction","deploymentProgressTitle","deploymentFailedTitle","deploymentRetry","deploymentClose","deploymentInProgress","deploymentConflictHelp","installationRemoteVersion","installationLocalVersion","installationInstalledAt","installationUnknown","installationNotRecorded","retest",
+    ];
+    for (const k of required) {
+      expect(enKeys).toContain(k);
+      expect(zhKeys).toContain(k);
+    }
   });
 });

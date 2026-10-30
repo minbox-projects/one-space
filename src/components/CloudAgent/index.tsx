@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Terminal, GitBranch, GitPullRequest, Network, Server, Settings } from "lucide-react";
 import { useToast } from "../ToastProvider";
@@ -9,6 +9,7 @@ import { WorktreesHistoryTab } from "./components/WorktreesHistoryTab";
 import { PrPipelineTab } from "./components/PrPipelineTab";
 import { GatewayPanel } from "./components/GatewayPanel";
 import { NewSessionDialog } from "./components/NewSessionDialog";
+import { CloudAgentDeploymentDialog } from "./components/CloudAgentDeploymentDialog";
 import { CloudEmptyState } from "./components/CloudEmptyState";
 import { useCloudAgent, type CloudAgentTab } from "./hooks/useCloudAgent";
 
@@ -22,19 +23,27 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
     [pushToast]
   );
   const controller = useCloudAgent(notify);
+  const [deployDialogOpen, setDeployDialogOpen] = useState(false);
 
   const {
     activeTab,
     setActiveTab,
     settings,
+    hosts,
     selectedHost,
     setSelectedHost,
     status,
     sessions,
     worktrees,
     tasks,
+    installation,
+    installationLoading,
     loading,
     refreshAll,
+    retest,
+    handleDeploymentStart,
+    handleDeploymentEnd,
+    handleDeploymentInstalled,
     launchTerminal,
     killSession,
     syncGateway,
@@ -94,6 +103,11 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
           t={t}
           selectedHost={selectedHost}
           setSelectedHost={setSelectedHost}
+          hosts={hosts}
+          installation={installation}
+          installationLoading={installationLoading}
+          language={i18n.language}
+          onDeploy={() => setDeployDialogOpen(true)}
         />
 
         {/* 全局常驻云端运行时状态卡片（对齐 AI 网关 RuntimeStatusCard 风格） */}
@@ -106,6 +120,10 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
           tasks={tasks}
           loading={loading}
           selectedHost={selectedHost}
+          installation={installation}
+          installationLoading={installationLoading}
+          language={i18n.language}
+          onRetest={retest}
           onRefresh={() => void refreshAll()}
           onOpenNewTaskModal={() => setShowNewTaskModal(true)}
           onSelectTab={setActiveTab}
@@ -262,6 +280,18 @@ export function CloudAgent({ isVisible = true }: { isVisible?: boolean }) {
           </>
         )}
       </div>
+
+      {/* 服务器安装检查与打包部署弹窗 */}
+      <CloudAgentDeploymentDialog
+        t={t}
+        isOpen={deployDialogOpen}
+        onClose={() => setDeployDialogOpen(false)}
+        onInstalled={handleDeploymentInstalled}
+        onDeploymentStart={handleDeploymentStart}
+        onDeploymentEnd={handleDeploymentEnd}
+        hosts={hosts}
+        selectedHost={selectedHost}
+      />
 
       {/* 新建特性任务标准 Radix UI 弹窗 */}
       <NewSessionDialog

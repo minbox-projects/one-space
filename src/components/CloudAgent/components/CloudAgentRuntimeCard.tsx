@@ -13,12 +13,14 @@ import {
 } from "lucide-react";
 import type { TFunction } from "i18next";
 import type {
+  CloudAgentInstallationInfo,
   CloudAgentStatus,
   CloudAgentSettings,
   CloudSession,
   CloudWorktree,
   CloudAgentTask,
 } from "@/lib/cloudAgent";
+import { formatInstalledAt } from "@/lib/cloudAgent";
 import type { CloudAgentTab } from "../hooks/useCloudAgent";
 
 interface CloudAgentRuntimeCardProps {
@@ -30,6 +32,10 @@ interface CloudAgentRuntimeCardProps {
   tasks: CloudAgentTask[];
   loading: boolean;
   selectedHost?: string;
+  installation?: CloudAgentInstallationInfo | null;
+  installationLoading?: boolean;
+  language?: string;
+  onRetest?: () => void;
   onRefresh: () => void;
   onOpenNewTaskModal: () => void;
   onSelectTab: (tab: CloudAgentTab) => void;
@@ -43,6 +49,10 @@ export function CloudAgentRuntimeCard({
   worktrees,
   loading,
   selectedHost,
+  installation,
+  installationLoading,
+  language,
+  onRetest,
   onRefresh,
   onOpenNewTaskModal,
   onSelectTab,
@@ -192,10 +202,54 @@ export function CloudAgentRuntimeCard({
               </div>
             </div>
           )}
+
+          {/* 安装信息胶囊：远端版本、本地最新版本与安装时间 */}
+          {installationLoading ? (
+            <div className="flex items-center gap-1.5 rounded-lg border border-border/80 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
+              <RefreshCw className="h-3 w-3 animate-spin" />
+              <span>{t("deploymentStateChecking", "Checking remote installation...")}</span>
+            </div>
+          ) : installation ? (
+            <div className="flex items-center gap-2 rounded-lg border border-border/80 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
+              <span>
+                {t("installationRemoteVersion", "Remote version")}{" "}
+                <span className="font-mono text-foreground/80">
+                  {installation.remoteVersion ||
+                    t("installationUnknown", "Unknown")}
+                </span>
+              </span>
+              <span className="text-muted-foreground/30">·</span>
+              <span>
+                {t("installationLocalVersion", "Local latest")}{" "}
+                <span className="font-mono text-foreground/80">
+                  {installation.localLatestVersion ||
+                    t("installationUnknown", "Unknown")}
+                </span>
+              </span>
+              <span className="text-muted-foreground/30">·</span>
+              <span className="text-foreground/80">
+                {formatInstalledAt(installation.installedAt, language)}
+              </span>
+            </div>
+          ) : null}
         </div>
 
-        {/* 右侧：刷新数据与新任务按钮 */}
+        {/* 右侧：恢复测试、刷新数据与新任务按钮 */}
         <div className="flex items-center gap-2 shrink-0">
+          {installation?.state === "installed" &&
+          selectedHost &&
+          (!status || !status.service_active) ? (
+            <button
+              type="button"
+              onClick={onRetest}
+              data-testid="cloud-agent-retest"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/80 bg-background px-2.5 text-xs font-medium text-foreground shadow-2xs transition hover:bg-muted active:scale-98 cursor-pointer"
+            >
+              <RefreshCw className="h-3.5 w-3.5 text-primary" />
+              <span>{t("retest", "Retest")}</span>
+            </button>
+          ) : null}
+
           <button
             type="button"
             disabled={loading}

@@ -1,31 +1,40 @@
-import { useState, useEffect } from "react";
-import { CloudCog, Server, Settings } from "lucide-react";
+import { CloudCog, Rocket, Server, Settings } from "lucide-react";
 import type { TFunction } from "i18next";
 import { CustomSelect } from "@/components/common/CustomSelect";
-import { sshHostsList } from "@/lib/sshTunnels";
+import {
+  formatInstalledAt,
+  type CloudAgentInstallationInfo,
+} from "@/lib/cloudAgent";
+import type { CloudAgentHostOption } from "../hooks/useCloudAgent";
 
 interface CloudAgentHeaderProps {
   t: TFunction;
   selectedHost: string;
   setSelectedHost: (host: string) => void;
+  hosts?: CloudAgentHostOption[];
+  installation?: CloudAgentInstallationInfo | null;
+  installationLoading?: boolean;
+  language?: string;
+  onDeploy?: () => void;
 }
 
 export function CloudAgentHeader({
   t,
   selectedHost,
   setSelectedHost,
+  hosts = [],
+  installation,
+  installationLoading = false,
+  language,
+  onDeploy,
 }: CloudAgentHeaderProps) {
-  const [hosts, setHosts] = useState<{ id: string; label: string }[]>([]);
-
-  useEffect(() => {
-    sshHostsList<{ name: string; host_name: string }[]>()
-      .then((res) => {
-        if (res && res.length > 0) {
-          setHosts(res.map((h) => ({ id: h.name, label: h.name })));
-        }
-      })
-      .catch(() => {});
-  }, []);
+  const options =
+    hosts.length > 0
+      ? hosts.map((host) => ({ value: host.id, label: host.label }))
+      : selectedHost
+      ? [{ value: selectedHost, label: selectedHost }]
+      : [];
+  const unknownLabel = t("installationUnknown", "Unknown");
 
   return (
     <header className="flex flex-wrap items-center justify-between gap-4">
@@ -47,8 +56,40 @@ export function CloudAgentHeader({
         </div>
       </div>
 
-      {/* 右侧：环境主机切换与设置快捷入口 */}
-      <div className="flex items-center gap-2.5 shrink-0">
+      {/* 右侧：环境主机切换、安装摘要、部署与设置快捷入口 */}
+      <div className="flex flex-wrap items-center justify-end gap-2.5 shrink-0">
+        {installationLoading ? (
+          <span className="text-[11px] text-muted-foreground">
+            {t("deploymentStateChecking", "Checking remote installation...")}
+          </span>
+        ) : installation ? (
+          <div
+            data-testid="cloud-agent-installation-summary"
+            className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-border/80 bg-muted/30 px-2.5 py-1.5 text-[11px] text-muted-foreground"
+          >
+            <span>
+              {t("installationRemoteVersion", "Remote version")}{" "}
+              <span className="font-mono text-foreground">
+                {installation.remoteVersion || unknownLabel}
+              </span>
+            </span>
+            <span className="text-muted-foreground/30">·</span>
+            <span>
+              {t("installationLocalVersion", "Local latest")}{" "}
+              <span className="font-mono text-foreground">
+                {installation.localLatestVersion || unknownLabel}
+              </span>
+            </span>
+            <span className="text-muted-foreground/30">·</span>
+            <span>
+              {t("installationInstalledAt", "Installed at")}{" "}
+              <span className="text-foreground">
+                {formatInstalledAt(installation.installedAt, language)}
+              </span>
+            </span>
+          </div>
+        ) : null}
+
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Server className="h-3.5 w-3.5" />
           <div className="w-36">
@@ -57,16 +98,26 @@ export function CloudAgentHeader({
               value={selectedHost}
               onChange={setSelectedHost}
               placeholder={t("cloudAgentSelectHostPlaceholder", "请选择主机")}
-              options={
-                hosts.length > 0
-                  ? hosts.map((h) => ({ value: h.id, label: h.label }))
-                  : selectedHost
-                  ? [{ value: selectedHost, label: selectedHost }]
-                  : []
-              }
+              ariaLabel={t("cloudAgentSelectHostPlaceholder", "请选择主机")}
+              selectTestId="cloud-agent-host-select"
+              options={options}
             />
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={onDeploy}
+          data-testid="cloud-agent-deploy-open"
+          title={t(
+            "deployServerHint",
+            "Inspect a remote SSH host and deploy the bundled Cloud Agent."
+          )}
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/80 bg-background px-2.5 text-xs font-medium text-foreground shadow-2xs transition-all hover:bg-muted active:scale-98 cursor-pointer"
+        >
+          <Rocket className="h-3.5 w-3.5 text-primary" />
+          <span>{t("deployServer", "Deploy Server")}</span>
+        </button>
 
         <button
           type="button"

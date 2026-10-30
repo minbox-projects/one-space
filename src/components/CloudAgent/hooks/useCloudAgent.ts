@@ -10,6 +10,7 @@ import {
   cloudAgentKillSession,
   cloudAgentLaunchTerminal,
   cloudAgentSyncGateway,
+  cloudAgentGetInstallationInfo,
   CLOUD_AGENT_SESSIONS_COUNT_EVENT,
   CLOUD_AGENT_SETTINGS_UPDATED_EVENT,
   DEFAULT_CLOUD_AGENT_SETTINGS,
@@ -19,9 +20,16 @@ import {
   type CloudWorktree,
   type CloudAgentTask,
   type GatewaySyncResult,
+  type CloudAgentInstallationInfo,
+  type CloudAgentDeploymentResult,
 } from "@/lib/cloudAgent";
 
 export type CloudAgentTab = "sessions" | "worktrees" | "pipeline" | "gateway";
+
+export interface CloudAgentHostOption {
+  id: string;
+  label: string;
+}
 
 export function useCloudAgent(
   pushToast?: (type: "success" | "error", text: string) => void
@@ -30,26 +38,140 @@ export function useCloudAgent(
   const [settings, setSettings] = useState<CloudAgentSettings>(
     DEFAULT_CLOUD_AGENT_SETTINGS
   );
+  const [hosts, setHosts] = useState<CloudAgentHostOption[]>([]);
   const [selectedHost, setSelectedHost] = useState<string>("");
   const [status, setStatus] = useState<CloudAgentStatus | null>(null);
   const [sessions, setSessions] = useState<CloudSession[]>([]);
   const [worktrees, setWorktrees] = useState<CloudWorktree[]>([]);
   const [tasks, setTasks] = useState<CloudAgentTask[]>([]);
+  const [installation, setInstallation] =
+    useState<CloudAgentInstallationInfo | null>(null);
+  const [installationLoading, setInstallationLoading] = useState(false);
+  const [installationError, setInstallationError] = useState<string | null>(
+    null
+  );
+  const [deploymentActive, setDeploymentActive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
-  const [hasInitialized, setHasInitialized] = useState(false);
 
-  const requestIdRef = useRef<number>(0);
-  const currentHostRef = useRef<string>("");
+  const generationRef = useRef(0);
+  const selectedHostRef = useRef("");
+  const deploymentActiveRef = useRef(false);
 
-  // 手动切换选中的主机并立即清空当前显示的状态以防数据残留
-  const changeSelectedHost = useCallback((newHost: string) => {
-    setSelectedHost(newHost);
-    setStatus(null);
-    setSessions([]);
-    setWorktrees([]);
-    setTasks([]);
+  const runReads = useCallback(async (host: string, generation: number) => {
+    if (!host.trim()) {
+      setStatus(null);
+      setSessions([]);
+      setWorktrees([]);
+      setTasks([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const [statusResult, sessionsResult, worktreesResult, tasksResult] =
+      await Promise.allSettled([
+        cloudAgentGetStatus(host),
+        cloudAgentListSessions(host),
+        cloudAgentListWorktrees(host),
+        cloudAgentListTasks(host),
+      ]);
+
+    if (
+      generation !== generationRef.current ||
+      selectedHostRef.current !== host
+    ) {
+      return;
+    }
+
+    setStatus(
+      statusResult.status === "fulfilled" ? statusResult.value : null
+    );
+    setSessions(
+      sessionsResult.status === "fulfilled" ? sessionsResult.value : []
+    );
+    setWorktrees(
+      worktreesResult.status === "fulfilled" ? worktreesResult.value : []
+    );
+    setTasks(tasksResult.status === "fulfilled" ? tasksResult.value : []);
+    setLoading(false);
   }, []);
+
+  const loadInstallation = useCallback(
+    async (host: string, generation: number) => {
+      if (!host.trim()) {
+        setInstallation(null);
+        setInstallationError(null);
+        setInstallationLoading(false);
+        return;
+      }
+
+      setInstallationLoading(true);
+      setInstallationError(null);
+      try {
+        const info = await cloudAgentGetInstallationInfo(host);
+        if (
+          generation !== generationRef.current ||
+          selectedHostRef.current !== host
+        ) {
+          return;
+        }
+        setInstallation(info);
+      } catch (error: unknown) {
+        if (
+          generation !== generationRef.current ||
+          selectedHostRef.current !== host
+        ) {
+          return;
+        }
+        setInstallation(null);
+        setInstallationError(
+          error instanceof Error ? error.message : String(error)
+        );
+      } finally {
+        if (
+          generation === generationRef.current &&
+          selectedHostRef.current === host
+        ) {
+          setInstallationLoading(false);
+        }
+      }
+    },
+    []
+  );
+
+  /**
+   * Apply a host selection synchronously: increment the read generation first,
+   * clear the previous host's data, then start one guarded read pass.
+   */
+  const applyHost = useCallback(
+    (nextHost: string) => {
+      const host = nextHost?.trim() ?? "";
+      generationRef.current += 1;
+      const generation = generationRef.current;
+      selectedHostRef.current = host;
+      setSelectedHost(host);
+      setStatus(null);
+      setSessions([]);
+      setWorktrees([]);
+      setTasks([]);
+      setInstallation(null);
+      setInstallationError(null);
+      setLoading(Boolean(host));
+      setInstallationLoading(Boolean(host));
+
+      if (!host) {
+        setLoading(false);
+        setInstallationLoading(false);
+        return;
+      }
+
+      void runReads(host, generation);
+      void loadInstallation(host, generation);
+
+    },
+    [runReads, loadInstallation]
+  );
 
   // 加载初始设置与 SSH 主机列表，推导首选主机
   useEffect(() => {
@@ -65,30 +187,32 @@ export function useCloudAgent(
         settingsRes.status === "fulfilled"
           ? settingsRes.value
           : DEFAULT_CLOUD_AGENT_SETTINGS;
-      const hosts =
+      const hostList =
         hostsRes.status === "fulfilled" && Array.isArray(hostsRes.value)
           ? hostsRes.value
           : [];
 
       setSettings(loadedSettings);
+      setHosts(
+        hostList
+          .filter((host) => Boolean(host.name))
+          .map((host) => ({ id: host.name, label: host.name }))
+      );
 
-      // 计算首选主机：若 settings.defaultHost 非空则优先使用；
-      // 若 defaultHost 为空但存在可用 SSH 主机，自动选择第 1 个；否则置空
       let initialHost = "";
       if (loadedSettings.defaultHost && loadedSettings.defaultHost.trim()) {
         initialHost = loadedSettings.defaultHost.trim();
-      } else if (hosts.length > 0 && hosts[0].name) {
-        initialHost = hosts[0].name;
+      } else if (hostList.length > 0 && hostList[0].name) {
+        initialHost = hostList[0].name;
       }
 
-      setSelectedHost(initialHost);
-      setHasInitialized(true);
+      applyHost(initialHost);
     });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyHost]);
 
   // 监听全局设置保存事件，动态感知并在保存了默认主机后实时联动更新
   useEffect(() => {
@@ -98,7 +222,7 @@ export function useCloudAgent(
         const nextSettings = customEvent.detail;
         setSettings(nextSettings);
         if (nextSettings.defaultHost && nextSettings.defaultHost.trim()) {
-          changeSelectedHost(nextSettings.defaultHost.trim());
+          applyHost(nextSettings.defaultHost.trim());
         }
       }
     };
@@ -113,75 +237,56 @@ export function useCloudAgent(
         handleSettingsUpdated
       );
     };
-  }, [changeSelectedHost]);
+  }, [applyHost]);
 
-  // 刷新当前主机数据（包含防竞态与异常时清空数据逻辑）
+  // 刷新当前主机数据（保留当前选中主机，不重新执行安装检查）
   const refreshAll = useCallback(
-    async (hostOverride?: string) => {
-      const host = hostOverride !== undefined ? hostOverride : selectedHost;
-      if (!host || !host.trim()) {
+    (hostOverride?: string) => {
+      const host = (hostOverride ?? selectedHostRef.current).trim();
+      if (!host) {
         setStatus(null);
         setSessions([]);
         setWorktrees([]);
         setTasks([]);
         setLoading(false);
-        return;
+        return Promise.resolve();
       }
-
-      const reqId = ++requestIdRef.current;
-      currentHostRef.current = host;
-      setLoading(true);
-
-      try {
-        const [st, ss, wt, tk] = await Promise.allSettled([
-          cloudAgentGetStatus(host),
-          cloudAgentListSessions(host),
-          cloudAgentListWorktrees(host),
-          cloudAgentListTasks(host),
-        ]);
-
-        // 如果在此期间主机已改变或有新的请求发起，丢弃旧数据
-        if (reqId !== requestIdRef.current || currentHostRef.current !== host) {
-          return;
-        }
-
-        if (st.status === "fulfilled") {
-          setStatus(st.value);
-        } else {
-          setStatus(null);
-        }
-
-        if (ss.status === "fulfilled") {
-          setSessions(ss.value);
-        } else {
-          setSessions([]);
-        }
-
-        if (wt.status === "fulfilled") {
-          setWorktrees(wt.value);
-        } else {
-          setWorktrees([]);
-        }
-
-        if (tk.status === "fulfilled") {
-          setTasks(tk.value);
-        } else {
-          setTasks([]);
-        }
-      } finally {
-        if (reqId === requestIdRef.current) {
-          setLoading(false);
-        }
-      }
+      return runReads(host, generationRef.current);
     },
-    [selectedHost]
+    [runReads]
   );
 
-  // 主机变更时刷新（初始化完成后才触发）
-  useEffect(() => {
-    if (!hasInitialized) return;
-    refreshAll();
-  }, [selectedHost, hasInitialized, refreshAll]);
+  // 只读取当前主机的在线状态，绝不触发列表读取或安装
+  const loadStatus = useCallback(async (host: string, generation: number) => {
+    if (!host.trim()) return;
+    try {
+      const nextStatus = await cloudAgentGetStatus(host);
+      if (
+        generation !== generationRef.current ||
+        selectedHostRef.current !== host
+      ) {
+        return;
+      }
+      setStatus(nextStatus);
+    } catch {
+      if (
+        generation !== generationRef.current ||
+        selectedHostRef.current !== host
+      ) {
+        return;
+      }
+      setStatus(null);
+    }
+  }, []);
+
+  // 重新读取当前主机的安装信息与在线状态，绝不触发安装
+  const retest = useCallback(() => {
+    const host = selectedHostRef.current.trim();
+    if (!host) return;
+    const generation = generationRef.current;
+    void loadStatus(host, generation);
+    void loadInstallation(host, generation);
+  }, [loadStatus, loadInstallation]);
 
   // 会话列表更新时，通知全局同步活跃会话总数
   useEffect(() => {
@@ -193,20 +298,41 @@ export function useCloudAgent(
     );
   }, [sessions]);
 
-  // 定时自动轮询
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // 定时自动轮询；部署期间跳过，部署结束后恢复正常轮询
   useEffect(() => {
     if (!selectedHost || !selectedHost.trim()) return;
 
     const sec = Math.max(3, settings.autoRefreshIntervalSeconds || 10);
-    pollIntervalRef.current = setInterval(() => {
-      refreshAll();
+    const interval = setInterval(() => {
+      if (deploymentActiveRef.current) return;
+      const host = selectedHostRef.current.trim();
+      if (!host) return;
+      void runReads(host, generationRef.current);
     }, sec * 1000);
 
     return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      clearInterval(interval);
     };
-  }, [selectedHost, refreshAll, settings.autoRefreshIntervalSeconds]);
+  }, [selectedHost, runReads, settings.autoRefreshIntervalSeconds]);
+
+  const handleDeploymentStart = useCallback(() => {
+    deploymentActiveRef.current = true;
+    setDeploymentActive(true);
+  }, []);
+
+  const handleDeploymentEnd = useCallback(() => {
+    deploymentActiveRef.current = false;
+    setDeploymentActive(false);
+  }, []);
+
+  const handleDeploymentInstalled = useCallback(
+    (result: CloudAgentDeploymentResult) => {
+      const target = result.host?.trim();
+      if (!target) return;
+      applyHost(target);
+    },
+    [applyHost]
+  );
 
   // 恢复会话 / 调起终端
   const launchTerminal = useCallback(
@@ -235,7 +361,7 @@ export function useCloudAgent(
         const ok = await cloudAgentKillSession(sessionName, selectedHost);
         if (ok) {
           pushToast?.("success", `会话 [${sessionName}] 已成功终止`);
-          refreshAll();
+          void refreshAll();
         } else {
           pushToast?.("error", `会话 [${sessionName}] 终止失败`);
         }
@@ -253,7 +379,7 @@ export function useCloudAgent(
     try {
       const res = await cloudAgentSyncGateway(selectedHost);
       pushToast?.("success", res.message);
-      refreshAll();
+      void refreshAll();
       return res;
     } catch (err: any) {
       pushToast?.("error", `同步网关失败: ${err?.message || err}`);
@@ -289,7 +415,7 @@ export function useCloudAgent(
         });
 
         pushToast?.("success", `特性会话创建成功，已打开本地终端直连`);
-        refreshAll();
+        void refreshAll();
       } catch (err: any) {
         pushToast?.("error", `创建会话失败: ${err?.message || err}`);
         throw err;
@@ -303,14 +429,23 @@ export function useCloudAgent(
     setActiveTab,
     settings,
     setSettings,
+    hosts,
     selectedHost,
-    setSelectedHost,
+    setSelectedHost: applyHost,
     status,
     sessions,
     worktrees,
     tasks,
+    installation,
+    installationLoading,
+    installationError,
+    deploymentActive,
     loading,
     refreshAll,
+    retest,
+    handleDeploymentStart,
+    handleDeploymentEnd,
+    handleDeploymentInstalled,
     launchTerminal,
     killSession,
     syncGateway,

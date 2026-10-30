@@ -20917,6 +20917,7 @@
         "src/components/CloudAgent/components/PrPipelineTab.tsx",
         "src/components/CloudAgent/components/GatewayPanel.tsx",
         "src/components/CloudAgent/components/NewSessionDialog.tsx",
+        "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
@@ -21243,6 +21244,108 @@
           "name": "CloudAgentDeploymentResult",
           "kind": "struct",
           "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+          "name": "CloudAgentDeploymentDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CLOUD_AGENT_DEPLOY_PROGRESS_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentInstallationState",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentInstallationInfo",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeployPhase",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeployPhaseStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeploymentProgress",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeploymentResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentGetInstallationInfo",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentDeploy",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "mapDeploymentProgress",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "ParsedSemver",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "parseSemver",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "compareSemver",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "compareVersions",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "compareSemanticVersions",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatInstalledAt",
+          "kind": "function",
+          "visibility": "public"
         }
       ],
       "related_files": [
@@ -21266,6 +21369,8 @@
       ],
       "tests": [
         "src/components/CloudAgent/CloudAgent.test.tsx",
+        "src/components/CloudAgent/CloudAgentDeploymentDialog.test.tsx",
+        "src/lib/cloudAgent.test.ts",
         "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
         "src-tauri/src/cloud_agent/tests.rs",
@@ -21320,6 +21425,31 @@
         },
         {
           "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx#CloudAgentDeploymentDialog"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx#CloudAgentDeploymentDialog",
+          "to": "src/lib/cloudAgent.ts#cloudAgentGetInstallationInfo"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx#CloudAgentDeploymentDialog",
+          "to": "src/lib/cloudAgent.ts#cloudAgentDeploy"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/hooks/useCloudAgent.ts#useCloudAgent",
+          "to": "src/lib/cloudAgent.ts#cloudAgentGetInstallationInfo"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/CloudAgentHeader.tsx#CloudAgentHeader",
+          "to": "src/lib/cloudAgent.ts#formatInstalledAt"
+        },
+        {
+          "kind": "imports",
           "from": "src-tauri/src/cloud_agent/commands.rs#cloud_agent_get_installation_info",
           "to": "src-tauri/src/cloud_agent/deployment.rs#inspect_installation"
         },
@@ -21335,7 +21465,7 @@
         }
       ],
       "owner_role": "shared",
-      "responsibility": "OneSpace桌面端与OneSpace Cloud Agent深度协同管理套件，包括云端长程编程会话看板、macOS本地原生终端一键直连、AI网关安全双端同步、24/7自动PR流水线监控与OpenCode yolo授权配置",
+      "responsibility": "OneSpace桌面端与OneSpace Cloud Agent深度协同管理套件，包括云端长程编程会话看板、macOS本地原生终端一键直连、AI网关安全双端同步、24/7自动PR流水线监控、OpenCode yolo授权配置，以及一键安装检查与部署交接",
       "read_scope": [
         "src/components/CloudAgent/index.tsx",
         "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
@@ -21345,10 +21475,13 @@
         "src/components/CloudAgent/components/NewSessionDialog.tsx",
         "src/components/CloudAgent/components/CloudAgentHeader.tsx",
         "src/components/CloudAgent/hooks/useCloudAgent.ts",
+        "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
         "src/lib/cloudAgent.ts",
         "src/components/CloudAgent/CloudAgent.test.tsx",
         "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
+        "src/components/CloudAgent/CloudAgentDeploymentDialog.test.tsx",
+        "src/lib/cloudAgent.test.ts",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
         "src/i18n/locales/en/cloudAgent.ts",
         "src/i18n/locales/zh/cloudAgent.ts",

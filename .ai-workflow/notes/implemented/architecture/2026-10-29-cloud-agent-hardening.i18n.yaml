@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-10-29-cloud-agent-hardening.md
-2026-10-29-cloud-agent-hardening.md: 8f82ad74f7fade88395f4ef4120dc67188d41fcb
-2026-10-29-cloud-agent-hardening.zh.md: 763f491261a00774920bc8faa666443e7266bdca
+2026-10-29-cloud-agent-hardening.md: 01bcb1e5d451489acc9fa4a83fec785ca585d563
+2026-10-29-cloud-agent-hardening.zh.md: 148d9e3c4202035e0d979ed1f2dbe178ef399aee

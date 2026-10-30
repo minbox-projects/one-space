@@ -30,7 +30,7 @@ Issue 内容按不可信数据处理。标题与正文位于显式不可信数�
 
 守护进程掌握关闭流程。磁盘巡检每 `runtime.disk_check_interval_seconds`（默认 300 秒）执行一次，任务执行期间同样进行；网关线程意外退出会请求非零进程退出，交由 systemd 重启策略处理。`SIGTERM` 与 `SIGINT` 只记录停止状态与一个共享的单调时钟截止时间：不再开始新的 Issue 或重试，网关对当前任务保持可用最多 `runtime.shutdown_grace_seconds`（默认 300 秒），任务提前完成时正常退出，到期只终止自有的 Issue 子进程组并写入一条带实际尝试次数的 `failed` 关闭终态。命令超时、退避与通知等待只消耗剩余预算；预算不足时记录跳过投递，状态写入失败按失败报告而不声称已持久化，独立 SSH/tmux 会话不受影响。systemd 单元使用 `KillMode=mixed` 与 `TimeoutStopSec=infinity`，使自身默认停止行为无法抢占守护进程掌握的宽限期。
 
-部署先校验再发布。`deploy.sh` 以服务 PATH 预检 `python3`、`git`、`tmux`、`gh` 与 `opencode`，上传到同一文件系统的暂存目录，并在任何安装、启动器改动或重启之前用 `python3 -m json.tool` 校验既有远端配置或暂存的示例配置。随后它把当前安装快照到安装目录之外，在同一文件系统的既有 `/root/onespace-cloud-agent` 路径发布暂存目录，发布失败时恢复快照，保留既有配置字节，仅在首次安装成功后从示例初始化 `config.json`，并仅在重启成功后把快照修剪到最新三份。预检、校验或上传失败时，活跃安装与既有快照都不被改动，也不会产生虚假的首个备份。
+部署先校验再发布。`deploy.sh` 先运行 `bootstrap.sh` 完成平台门禁（Linux、root、可访问 systemd、amd64/arm64，且仅在缺少运行时依赖时才要求 Ubuntu 22.04/24.04 或 Debian 12），并只从官方渠道安装缺失的 `python3`、`git`、`tmux`、`gh` 与 `opencode`，保留既有可执行文件；GitHub 认证不是门禁。随后它上传到同一文件系统的暂存目录，并在任何安装、启动器改动或重启之前用 `python3 -m json.tool` 校验既有远端配置或随包默认配置。它把当前安装快照到配置的 Agent 目录之外，在该配置路径发布暂存目录，发布失败时恢复快照，保留既有配置字节，仅在首次安装时从 `config.default.json` 创建 `config.json`，按配置目录生成启动器与 systemd 单元，并仅在重启确认服务处于 active 之后写入携带包 `VERSION` 与 UTC `installed_at` 的 `install-info.json`。只有激活与元数据发布都成功后，才把快照修剪到最新三份；预检、校验、上传或发布失败时，活跃安装与既有快照都不被改动，不发布成功记录，也不会产生虚假的首个备份。桌面端的一键检查与部署交接，包括共享的包 `VERSION` 以及未知版本与未记录时间的区分，记录于 [Cloud Agent Desktop Deployment](../feature/2026-10-30-cloud-agent-desktop-deployment.md)。
 
 ## Alternatives considered
 
