@@ -104,8 +104,14 @@ class GatewayHttpTests(unittest.TestCase):
         h = {"Authorization": "Bearer sk-test-token"}
         st, _, _ = self._req("GET", "/models", headers=h)
         self.assertEqual(st, 200)
-        st, _, _ = self._req("GET", "/health")
+        st, _, raw = self._req("GET", "/health")
         self.assertEqual(st, 200)
+        data = json.loads(raw.decode("utf-8"))
+        self.assertIn("providers", data)
+        self.assertEqual(data["providers_count"], len(data["providers"]))
+        self.assertTrue(any(p["id"] == "p" for p in data["providers"]))
+        p_item = next(p for p in data["providers"] if p["id"] == "p")
+        self.assertEqual(p_item["models"][0]["upstream_model"], "upstream-m")
         st, _, _ = self._req("GET", "/v1/health")
         self.assertEqual(st, 200)
 
@@ -224,6 +230,81 @@ class GatewayHttpTests(unittest.TestCase):
             st, _, raw = self._req("POST", "/chat/completions", headers={**h, "Content-Length": str(len(body))}, data=body)
             self.assertEqual(st, 404)
             self.assertIn(b"model_not_found", raw)
+
+    def test_health_and_models_expose_context_and_reasoning_efforts(self):
+        # 准备带 name、context_window 和 reasoning_efforts 的配置
+        custom_cfg = _config(
+            providers={
+                "custom_provider": {
+                    "name": "Custom Provider",
+                    "base_url": "http://127.0.0.1:1/upstream",
+                    "api_keys": ["k"],
+                    "models": {
+                        "m-reason": {
+                            "upstream_model": "upstream-reason",
+                            "display_name": "Reasoning Model",
+                            "context_window": 128000,
+                            "reasoning_efforts": ["low", "medium", "high"],
+                        }
+                    },
+                    "is_active": True,
+                }
+            },
+            pools={
+                "test-pool": {
+                    "description": "Test Virtual Pool",
+                    "context_window": 256000,
+                    "reasoning_efforts": ["high"],
+                }
+            }
+        )
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f:
+            json.dump(custom_cfg, f)
+            cfg_file = f.name
+        try:
+            gw = GatewayEngine(cfg_file, sync_opencode=False)
+            srv = _Server(gw)
+            try:
+                # 1. 验证 /health
+                req = urllib.request.Request(f"http://127.0.0.1:{srv.port}/health")
+                with urllib.request.urlopen(req) as resp:
+                    health_data = json.loads(resp.read().decode())
+                self.assertEqual(health_data["status"], "ok")
+                self.assertIn("providers", health_data)
+                self.assertEqual(len(health_data["providers"]), 1)
+                p = health_data["providers"][0]
+                self.assertEqual(p["id"], "custom_provider")
+                self.assertEqual(p["name"], "Custom Provider")
+                self.assertEqual(len(p["models"]), 1)
+                m = p["models"][0]
+                self.assertEqual(m["id"], "m-reason")
+                self.assertEqual(m["upstream_model"], "upstream-reason")
+                self.assertEqual(m["display_name"], "Reasoning Model")
+                self.assertEqual(m["context_window"], 128000)
+                self.assertEqual(m["reasoning_efforts"], ["low", "medium", "high"])
+
+                # 2. 验证 /models
+                req_models = urllib.request.Request(
+                    f"http://127.0.0.1:{srv.port}/models",
+                    headers={"Authorization": "Bearer sk-test-token"}
+                )
+                with urllib.request.urlopen(req_models) as resp:
+                    models_data = json.loads(resp.read().decode())
+                m_list = models_data.get("data", [])
+                pool_model = next((item for item in m_list if item["id"] == "test-pool"), None)
+                self.assertIsNotNone(pool_model)
+                self.assertEqual(pool_model.get("context_window"), 256000)
+                self.assertEqual(pool_model.get("reasoning_efforts"), ["high"])
+
+                prov_model = next((item for item in m_list if item["id"] == "custom_provider/m-reason"), None)
+                self.assertIsNotNone(prov_model)
+                self.assertEqual(prov_model.get("context_window"), 128000)
+                self.assertEqual(prov_model.get("reasoning_efforts"), ["low", "medium", "high"])
+            finally:
+                srv.close()
+        finally:
+            if os.path.exists(cfg_file):
+                os.remove(cfg_file)
 
 
 if __name__ == "__main__":

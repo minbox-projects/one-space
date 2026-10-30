@@ -53,6 +53,7 @@ class ProviderState:
         clock: Optional[Callable[[], float]] = None,
     ):
         self.name = name
+        self.display_name: str = str(config.get("name", "")).strip() or name
         self.base_url = str(config.get("base_url", "")).rstrip("/")
         self.api_keys: List[str] = list(config.get("api_keys", []) or [])
         models = config.get("models", {})
@@ -73,6 +74,7 @@ class ProviderState:
         return ProviderState(
             self.name,
             {
+                "name": self.display_name,
                 "base_url": self.base_url,
                 "api_keys": self.api_keys,
                 "models": models,
@@ -636,10 +638,37 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         providers, model_pools = self.gateway._snapshot()
 
         if path in self.HEALTH_PATHS:
+            providers_list = []
+            for p_name, provider in providers.items():
+                models_list = []
+                for m_id, m_meta in provider.models.items():
+                    m_dict = {
+                        "id": m_id,
+                        "upstream_model": m_id,
+                        "display_name": m_id,
+                        "context_window": None,
+                        "reasoning_efforts": [],
+                    }
+                    if isinstance(m_meta, dict):
+                        m_dict["upstream_model"] = m_meta.get("upstream_model", m_id)
+                        m_dict["display_name"] = m_meta.get("display_name", m_id)
+                        m_dict["context_window"] = m_meta.get("context_window")
+                        m_dict["reasoning_efforts"] = m_meta.get("reasoning_efforts", []) or []
+                    models_list.append(m_dict)
+
+                providers_list.append({
+                    "id": p_name,
+                    "name": getattr(provider, "display_name", p_name) or p_name,
+                    "base_url": provider.base_url,
+                    "is_active": provider.is_active,
+                    "models": models_list,
+                })
+
             self.send_json_response(200, {
                 "status": "ok",
                 "providers_count": len(providers),
                 "model_pools": list(model_pools.keys()),
+                "providers": providers_list,
             })
             return
 
@@ -648,22 +677,34 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 return
             models_list = []
             for pool_id, pool_meta in model_pools.items():
-                models_list.append({
+                item = {
                     "id": pool_id,
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "onespace-model-pool",
                     "description": pool_meta.get("description", "Virtual Model Pool")
                     if isinstance(pool_meta, dict) else "Virtual Model Pool",
-                })
+                }
+                if isinstance(pool_meta, dict):
+                    if "context_window" in pool_meta and pool_meta["context_window"] is not None:
+                        item["context_window"] = pool_meta["context_window"]
+                    if "reasoning_efforts" in pool_meta and pool_meta["reasoning_efforts"]:
+                        item["reasoning_efforts"] = pool_meta["reasoning_efforts"]
+                models_list.append(item)
             for p_name, provider in providers.items():
-                for m_id in provider.models.keys():
-                    models_list.append({
+                for m_id, m_meta in provider.models.items():
+                    entry = {
                         "id": f"{p_name}/{m_id}",
                         "object": "model",
                         "created": int(time.time()),
                         "owned_by": p_name,
-                    })
+                    }
+                    if isinstance(m_meta, dict):
+                        if "context_window" in m_meta and m_meta["context_window"] is not None:
+                            entry["context_window"] = m_meta["context_window"]
+                        if "reasoning_efforts" in m_meta and m_meta["reasoning_efforts"]:
+                            entry["reasoning_efforts"] = m_meta["reasoning_efforts"]
+                    models_list.append(entry)
 
             self.send_json_response(200, {"object": "list", "data": models_list})
             return

@@ -59,11 +59,28 @@ export interface DiskUsage {
   use_percent: number;
 }
 
+export interface CloudGatewayModel {
+  id: string;
+  upstream_model: string;
+  display_name?: string | null;
+  context_window?: number | null;
+  reasoning_efforts?: string[];
+}
+
+export interface CloudGatewayProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  is_active: boolean;
+  models: CloudGatewayModel[];
+}
+
 export interface GatewayHealth {
   status: string;
   port?: number;
   providers_count?: number;
   model_pools?: string[];
+  providers?: CloudGatewayProvider[];
   error?: string;
 }
 

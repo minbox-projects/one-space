@@ -53,6 +53,7 @@ pub use provider_usage::*;
 pub use types_config::*;
 pub use usage_log::*;
 pub(crate) use storage::read_config_shared;
+pub(crate) use templates::find_builtin_template;
 
 /// Tauri event telling an open AI Gateway page to reload the persisted
 /// configuration and template mappings after a backend configuration change,

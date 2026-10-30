@@ -22,14 +22,58 @@ pub fn build_cloud_gateway_section(
             continue;
         }
 
+        let bound_template = provider
+            .template_id
+            .as_deref()
+            .and_then(|tid| crate::ai_gateway::find_builtin_template(tid).ok());
+
         let mut models_map = serde_json::Map::new();
         for mapping in &provider.mappings {
             if mapping.enabled && !mapping.auto_disabled {
+                let template_model = bound_template.as_ref().and_then(|tpl| {
+                    tpl.models
+                        .iter()
+                        .find(|m| m.upstream_model == mapping.upstream_model)
+                });
+
+                let display_name = mapping
+                    .display_name
+                    .clone()
+                    .or_else(|| template_model.and_then(|m| m.display_name.clone()));
+
+                let context_window = mapping
+                    .context_window
+                    .or_else(|| template_model.and_then(|m| m.context_window));
+
+                let reasoning_efforts = if !mapping.reasoning_efforts.is_empty() {
+                    mapping.reasoning_efforts.clone()
+                } else {
+                    template_model
+                        .map(|m| m.reasoning_efforts.clone())
+                        .unwrap_or_default()
+                };
+
+                let mut model_val = serde_json::Map::new();
+                model_val.insert(
+                    "upstream_model".to_string(),
+                    serde_json::Value::String(mapping.upstream_model.clone()),
+                );
+                if let Some(name) = display_name {
+                    model_val.insert("display_name".to_string(), serde_json::Value::String(name));
+                }
+                if let Some(ctx) = context_window {
+                    model_val.insert("context_window".to_string(), serde_json::json!(ctx));
+                }
+                if !reasoning_efforts.is_empty() {
+                    model_val.insert(
+                        "reasoning_efforts".to_string(),
+                        serde_json::json!(reasoning_efforts),
+                    );
+                }
+
                 models_map.insert(
                     mapping.local_model.clone(),
-                    serde_json::json!({
-                        "upstream_model": mapping.upstream_model
-                    }),
+                    serde_json::Value::Object(model_val),
                 );
             }
         }
@@ -37,6 +81,7 @@ pub fn build_cloud_gateway_section(
         providers_map.insert(
             provider.id.clone(),
             serde_json::json!({
+                "name": provider.name,
                 "base_url": provider.base_url,
                 "api_keys": active_keys,
                 "models": models_map,
@@ -75,12 +120,22 @@ pub fn build_cloud_gateway_section(
             &pool.id
         };
 
+        let mut pool_val = serde_json::Map::new();
+        pool_val.insert(
+            "description".to_string(),
+            serde_json::Value::String(pool.name.clone()),
+        );
+        pool_val.insert(
+            "candidates".to_string(),
+            serde_json::Value::Array(candidates),
+        );
+        if let Some(ctx) = pool.context_window {
+            pool_val.insert("context_window".to_string(), serde_json::json!(ctx));
+        }
+
         pools_map.insert(
             pool_key.to_string(),
-            serde_json::json!({
-                "description": pool.name,
-                "candidates": candidates
-            }),
+            serde_json::Value::Object(pool_val),
         );
         synced_pools_count += 1;
     }

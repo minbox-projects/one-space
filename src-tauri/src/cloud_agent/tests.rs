@@ -95,6 +95,9 @@ fn test_build_cloud_gateway_section() {
             ModelMapping {
                 local_model: "deepseek-chat".to_string(),
                 upstream_model: "deepseek-chat".to_string(),
+                display_name: Some("DeepSeek V3".to_string()),
+                context_window: Some(64000),
+                reasoning_efforts: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
                 enabled: true,
                 auto_disabled: false,
                 ..Default::default()
@@ -118,6 +121,7 @@ fn test_build_cloud_gateway_section() {
     let providers = val.get("providers").unwrap().as_object().unwrap();
     assert!(providers.contains_key("deepseek"));
     let ds = providers.get("deepseek").unwrap();
+    assert_eq!(ds.get("name").unwrap().as_str().unwrap(), "DeepSeek");
     let keys = ds.get("api_keys").unwrap().as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].as_str().unwrap(), "sk-real-secret");
@@ -125,4 +129,14 @@ fn test_build_cloud_gateway_section() {
     let models = ds.get("models").unwrap().as_object().unwrap();
     assert!(models.contains_key("deepseek-chat"));
     assert!(!models.contains_key("disabled-model"));
+
+    let chat_model = models.get("deepseek-chat").unwrap();
+    assert_eq!(chat_model.get("upstream_model").unwrap().as_str().unwrap(), "deepseek-chat");
+    assert_eq!(chat_model.get("display_name").unwrap().as_str().unwrap(), "DeepSeek V3");
+    assert_eq!(chat_model.get("context_window").unwrap().as_u64().unwrap(), 64000);
+    let efforts = chat_model.get("reasoning_efforts").unwrap().as_array().unwrap();
+    assert_eq!(efforts.len(), 3);
+    assert_eq!(efforts[0].as_str().unwrap(), "low");
+    assert_eq!(efforts[1].as_str().unwrap(), "medium");
+    assert_eq!(efforts[2].as_str().unwrap(), "high");
 }

@@ -106,12 +106,40 @@ pub struct DiskUsage {
     pub use_percent: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CloudGatewayModel {
+    pub id: String,
+    #[serde(default)]
+    pub upstream_model: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub reasoning_efforts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CloudGatewayProvider {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
+    #[serde(default)]
+    pub models: Vec<CloudGatewayModel>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GatewayHealth {
     pub status: String,
     pub port: Option<u16>,
     pub providers_count: Option<usize>,
     pub model_pools: Option<Vec<String>>,
+    #[serde(default)]
+    pub providers: Option<Vec<CloudGatewayProvider>>,
     pub error: Option<String>,
 }
 

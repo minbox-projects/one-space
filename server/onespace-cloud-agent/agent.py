@@ -357,6 +357,49 @@ def get_status_report(config_path: str = "config.json") -> dict:
     except Exception as e:
         gateway_health["error"] = str(e)
 
+    # 若未从实时网关拿到 providers（例如启动中或离线），尝试从 config.json 读取静态配置回退
+    if "providers" not in gateway_health and os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                gw_section = cfg.get("ai_gateway", {})
+                cfg_providers = gw_section.get("providers", {})
+                cfg_pools = list(gw_section.get("model_pools", {}).keys())
+                fallback_providers = []
+                for p_id, p_info in cfg_providers.items():
+                    if not isinstance(p_info, dict):
+                        continue
+                    m_list = []
+                    for m_id, m_meta in p_info.get("models", {}).items():
+                        m_dict = {
+                            "id": m_id,
+                            "upstream_model": m_id,
+                            "display_name": m_id,
+                            "context_window": None,
+                            "reasoning_efforts": [],
+                        }
+                        if isinstance(m_meta, dict):
+                            m_dict["upstream_model"] = m_meta.get("upstream_model", m_id)
+                            m_dict["display_name"] = m_meta.get("display_name", m_id)
+                            m_dict["context_window"] = m_meta.get("context_window")
+                            m_dict["reasoning_efforts"] = m_meta.get("reasoning_efforts", []) or []
+                        m_list.append(m_dict)
+                    fallback_providers.append({
+                        "id": p_id,
+                        "name": p_info.get("name", p_id) or p_id,
+                        "base_url": p_info.get("base_url", ""),
+                        "is_active": p_info.get("is_active", True),
+                        "models": m_list,
+                    })
+                if fallback_providers:
+                    gateway_health["providers"] = fallback_providers
+                    if "providers_count" not in gateway_health:
+                        gateway_health["providers_count"] = len(fallback_providers)
+                if cfg_pools and "model_pools" not in gateway_health:
+                    gateway_health["model_pools"] = cfg_pools
+        except Exception:
+            pass
+
     # 检查 systemd 服务状态
     service_active = False
     try:
