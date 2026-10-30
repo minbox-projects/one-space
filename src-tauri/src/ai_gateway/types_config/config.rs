@@ -26,8 +26,12 @@ use super::terminal::TerminalSyncRecord;
 /// sidecar transport and binds the matching untemplated provider to the built-in
 /// OpenCode Zen Free template. Version 6 removes the gateway's obsolete
 /// independent upstream proxy URL so the application-wide network proxy is the
-/// single routing source.
-pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 6;
+/// single routing source. Version 7 repairs a persisted built-in OpenCode Zen
+/// Free template snapshot whose transport was stored as missing or `direct`,
+/// restoring the template-declared sidecar transport without touching providers.
+/// Version 8 repairs the same canonical snapshot's missing or blank `models_url`
+/// so the built-in free template can sync its model list.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 8;
 
 /// Persisted AI Gateway configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
