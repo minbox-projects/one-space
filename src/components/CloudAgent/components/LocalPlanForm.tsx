@@ -6,7 +6,6 @@ import {
   FolderGit2,
   GitBranch,
   Loader2,
-  Shield,
   Upload,
 } from "lucide-react";
 import { CustomSelect } from "@/components/common/CustomSelect";
@@ -61,6 +60,31 @@ function planErrorText(plan: LocalPlanSummary): string {
   return plan.error ? String(plan.error) : plan.status;
 }
 
+function formatPlanTime(isoString?: string | null): string {
+  if (!isoString) return "";
+  try {
+    const date = new Date(isoString);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    return `${year}-${month}-${day} ${hours}:${minutes}`;
+  } catch {
+    return "";
+  }
+}
+
+function isPlanStartedOrCompleted(plan: LocalPlanSummary): boolean {
+  return (
+    plan.status === "started" ||
+    plan.status === "completed" ||
+    plan.status === "in-progress"
+  );
+}
+
 function repositoryLabel(repository: CloudPlanRepository): string {
   return (
     repository.canonical ||
@@ -90,6 +114,7 @@ export function LocalPlanForm({ t, host, onSubmitted }: LocalPlanFormProps) {
   const [selectedPlan, setSelectedPlan] = useState<LocalPlanSummary | null>(
     null
   );
+  const [showAllPlans, setShowAllPlans] = useState(false);
   const [baseBranch, setBaseBranch] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<CloudPlanSubmitResult | null>(null);
@@ -100,6 +125,12 @@ export function LocalPlanForm({ t, host, onSubmitted }: LocalPlanFormProps) {
   const submittingRef = useRef(false);
   const completedKeyRef = useRef<string | null>(null);
   const requestIdRef = useRef<{ key: string; id: string } | null>(null);
+
+  useEffect(() => {
+    if (selectedPlan && !showAllPlans && isPlanStartedOrCompleted(selectedPlan)) {
+      setSelectedPlan(null);
+    }
+  }, [showAllPlans, selectedPlan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,6 +161,7 @@ export function LocalPlanForm({ t, host, onSubmitted }: LocalPlanFormProps) {
     requestSeqRef.current += 1;
     setContext(null);
     setSelectedPlan(null);
+    setShowAllPlans(false);
     setBaseBranch("");
     setResult(null);
     setError(null);
@@ -185,6 +217,7 @@ export function LocalPlanForm({ t, host, onSubmitted }: LocalPlanFormProps) {
     setWorkspaceId(nextWorkspaceId);
     setContext(null);
     setSelectedPlan(null);
+    setShowAllPlans(false);
     setBaseBranch("");
     setResult(null);
     setError(null);
@@ -230,6 +263,15 @@ export function LocalPlanForm({ t, host, onSubmitted }: LocalPlanFormProps) {
   };
 
   const plans = context?.plans ?? [];
+  const visiblePlans = (showAllPlans
+    ? plans
+    : plans.filter((plan) => !isPlanStartedOrCompleted(plan))
+  ).slice().sort((a, b) => {
+    const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+    if (timeA !== timeB) return timeB - timeA;
+    return b.plan_id.localeCompare(a.plan_id);
+  });
   const repository = context?.repository ?? null;
   const selectedId = selectedPlan?.plan_id ?? "";
   const submitDisabled = !selectedPlan || submitting;
@@ -349,24 +391,43 @@ export function LocalPlanForm({ t, host, onSubmitted }: LocalPlanFormProps) {
 
       {context ? (
         <div className="space-y-1.5">
-          <div className="text-xs font-medium text-foreground">
-            {t("localPlanListLabel", "本地计划")}
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-medium text-foreground">
+              {t("localPlanListLabel", "本地计划")}
+            </div>
+            {plans.length > 0 ? (
+              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-muted-foreground hover:text-foreground select-none">
+                <input
+                  type="checkbox"
+                  data-testid="local-plan-show-all-checkbox"
+                  checked={showAllPlans}
+                  onChange={(e) => setShowAllPlans(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-border accent-primary cursor-pointer"
+                />
+                <span>{t("localPlanShowAll", "全部")}</span>
+              </label>
+            ) : null}
           </div>
           {context.plans_error ? (
             <p className="rounded-lg border border-destructive/20 bg-destructive/10 p-2 text-[11px] text-destructive">
               {context.plans_error}
             </p>
-          ) : plans.length === 0 ? (
+          ) : visiblePlans.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">
-              {t("localPlanNoPlans", "该工作区暂无本地计划。")}
+              {plans.length > 0
+                ? t(
+                    "localPlanNoActivePlans",
+                    "暂无可执行的本地计划（已隐藏实施中与已完成计划，勾选「全部」可查看全部）。"
+                  )
+                : t("localPlanNoPlans", "该工作区暂无本地计划。")}
             </p>
           ) : (
             <div
-              className="space-y-1.5"
+              className="space-y-1.5 max-h-56 overflow-y-auto pr-1"
               role="group"
               aria-label={t("localPlanListLabel", "本地计划")}
             >
-              {plans.map((plan) => {
+              {visiblePlans.map((plan) => {
                 const selectable = Boolean(plan.valid) && plan.status === "valid";
                 const isSelected = selectedId === plan.plan_id;
                 return (
@@ -388,13 +449,22 @@ export function LocalPlanForm({ t, host, onSubmitted }: LocalPlanFormProps) {
                         : "border-border bg-background hover:bg-muted/50"
                     } disabled:cursor-not-allowed disabled:opacity-60`}
                   >
-                    <span className="min-w-0 space-y-0.5">
-                      <span className="block truncate text-xs font-medium text-foreground">
-                        {plan.title || plan.plan_id}
+                    <span className="min-w-0 space-y-1">
+                      <span className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-xs font-semibold text-foreground tracking-tight select-all">
+                          {plan.plan_id}
+                        </span>
+                        {plan.created_at ? (
+                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                            {formatPlanTime(plan.created_at)}
+                          </span>
+                        ) : null}
                       </span>
-                      <span className="block font-mono text-[10.5px] text-muted-foreground">
-                        {plan.plan_id}
-                      </span>
+                      {plan.title && plan.title !== plan.plan_id ? (
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {plan.title}
+                        </span>
+                      ) : null}
                       {!selectable ? (
                         <span className="block text-[10.5px] text-destructive">
                           {planErrorText(plan)}
@@ -411,36 +481,6 @@ export function LocalPlanForm({ t, host, onSubmitted }: LocalPlanFormProps) {
           )}
         </div>
       ) : null}
-
-      <div
-        className="space-y-1.5 rounded-lg border border-border bg-muted/20 p-3"
-        data-testid="local-plan-consent"
-      >
-        <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-          <Shield className="h-3.5 w-3.5 text-primary" />
-          {t("localPlanConsentTitle", "上传前确认")}
-        </div>
-        <ul className="list-disc space-y-1 pl-4 text-[11px] text-muted-foreground">
-          <li>
-            {t(
-              "localPlanConsentTool",
-              "工具调用按单次审批处理，不会获得长期授权。"
-            )}
-          </li>
-          <li>
-            {t(
-              "localPlanConsentRecommendation",
-              "仅对带有唯一明确推荐答案的问题代为选择该答案，其余问题等待人工接管。"
-            )}
-          </li>
-          <li>
-            {t(
-              "localPlanConsentPr",
-              "完成后会创建 PR 供人工审查，但不会自动合并。"
-            )}
-          </li>
-        </ul>
-      </div>
 
       {result?.reused ? (
         <div

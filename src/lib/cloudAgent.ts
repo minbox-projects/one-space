@@ -157,6 +157,7 @@ export interface LocalPlanSummary {
   status: string;
   error?: string | null;
   has_tasks?: boolean;
+  created_at?: string | null;
 }
 
 export interface LocalPlanContext {

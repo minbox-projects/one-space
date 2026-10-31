@@ -66,10 +66,10 @@ describe("LocalPlanForm", () => {
     expect(screen.getByTestId("local-plan-submit")).toBeDisabled();
   });
 
-  it("consent text present", async () => {
+  it("consent text is removed", async () => {
     render(<LocalPlanForm t={t} host="h" onSubmitted={vi.fn()} />);
     await waitFor(() => screen.getByTestId("local-plan-workspace-select"));
-    expect(screen.getByTestId("local-plan-consent")).toBeInTheDocument();
+    expect(screen.queryByTestId("local-plan-consent")).not.toBeInTheDocument();
   });
 
   it("duplicate clicks single submit", async () => {
@@ -120,5 +120,105 @@ describe("LocalPlanForm", () => {
     resolveLate({ repository: { repo: "late", base_branch: "main", source: "origin" }, plans: [] });
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByText("late")).not.toBeInTheDocument();
+  });
+
+  it("filters out started plans by default and reveals them when checking show all", async () => {
+    (cloudAgentPlanContext as any).mockResolvedValue({
+      repository: { repo: "o/r", base_branch: "main", source: "origin" },
+      plans: [
+        { plan_id: "plan-active", title: "Active Plan", status: "valid", valid: true, has_tasks: true },
+        { plan_id: "plan-started", title: "Started Plan", status: "started", valid: false, error: "already started" },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<LocalPlanForm t={t} host="h" onSubmitted={vi.fn()} />);
+    await waitFor(() => screen.getByTestId("local-plan-workspace-select"));
+    await user.selectOptions(screen.getByTestId("local-plan-workspace-select"), "ws-1");
+
+    await waitFor(() => expect(screen.getByTestId("local-plan-option-plan-active")).toBeInTheDocument());
+    expect(screen.queryByTestId("local-plan-option-plan-started")).not.toBeInTheDocument();
+
+    const checkbox = screen.getByTestId("local-plan-show-all-checkbox");
+    expect(checkbox).not.toBeChecked();
+
+    await user.click(checkbox);
+    expect(checkbox).toBeChecked();
+    expect(screen.getByTestId("local-plan-option-plan-started")).toBeInTheDocument();
+
+    // 计划列表容器具有最大高度与滚动条样式
+    const listGroup = screen.getByRole("group", { name: "本地计划" });
+    expect(listGroup.className).toContain("overflow-y-auto");
+    expect(listGroup.className).toContain("max-h-56");
+
+    await user.click(checkbox);
+    expect(screen.queryByTestId("local-plan-option-plan-started")).not.toBeInTheDocument();
+  });
+
+  it("clears selected plan if unchecking show all hides it", async () => {
+    (cloudAgentPlanContext as any).mockResolvedValue({
+      repository: { repo: "o/r", base_branch: "main", source: "origin" },
+      plans: [
+        { plan_id: "plan-started", title: "Started Plan", status: "started", valid: false, error: "already started" },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<LocalPlanForm t={t} host="h" onSubmitted={vi.fn()} />);
+    await waitFor(() => screen.getByTestId("local-plan-workspace-select"));
+    await user.selectOptions(screen.getByTestId("local-plan-workspace-select"), "ws-1");
+
+    // 默认隐藏且提示友好文案
+    await waitFor(() =>
+      expect(
+        screen.getByText("暂无可执行的本地计划（已隐藏实施中与已完成计划，勾选「全部」可查看全部）。")
+      ).toBeInTheDocument()
+    );
+
+    const checkbox = screen.getByTestId("local-plan-show-all-checkbox");
+    await user.click(checkbox);
+    expect(screen.getByTestId("local-plan-option-plan-started")).toBeInTheDocument();
+
+    await user.click(checkbox);
+    expect(screen.queryByTestId("local-plan-option-plan-started")).not.toBeInTheDocument();
+  });
+
+  it("sorts plans by created_at descending and highlights plan_id", async () => {
+    (cloudAgentPlanContext as any).mockResolvedValue({
+      repository: { repo: "o/r", base_branch: "main", source: "origin" },
+      plans: [
+        {
+          plan_id: "plan-older",
+          title: "Older Plan Title",
+          status: "valid",
+          valid: true,
+          created_at: "2026-10-10T10:00:00+08:00",
+        },
+        {
+          plan_id: "plan-newer",
+          title: "Newer Plan Title",
+          status: "valid",
+          valid: true,
+          created_at: "2026-10-20T12:30:00+08:00",
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<LocalPlanForm t={t} host="h" onSubmitted={vi.fn()} />);
+    await waitFor(() => screen.getByTestId("local-plan-workspace-select"));
+    await user.selectOptions(screen.getByTestId("local-plan-workspace-select"), "ws-1");
+
+    await waitFor(() => expect(screen.getByTestId("local-plan-option-plan-newer")).toBeInTheDocument());
+
+    const buttons = screen.getAllByRole("button").filter((b) =>
+      b.getAttribute("data-testid")?.startsWith("local-plan-option-")
+    );
+    expect(buttons).toHaveLength(2);
+    // plan-newer 应该排在前面（创建时间倒序）
+    expect(buttons[0]).toHaveAttribute("data-testid", "local-plan-option-plan-newer");
+    expect(buttons[1]).toHaveAttribute("data-testid", "local-plan-option-plan-older");
+
+    // plan_id 应该在按钮文本中，并包含格式化后的时间
+    expect(buttons[0]).toHaveTextContent("plan-newer");
+    expect(buttons[0]).toHaveTextContent("2026-10-20 12:30");
+    expect(buttons[0]).toHaveTextContent("Newer Plan Title");
   });
 });

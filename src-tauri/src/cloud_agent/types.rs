@@ -230,6 +230,8 @@ pub struct LocalPlanSummary {
     pub error: Option<String>,
     pub has_tasks: bool,
     pub status: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

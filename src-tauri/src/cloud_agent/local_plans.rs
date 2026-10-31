@@ -113,6 +113,13 @@ pub fn list_local_plans(workspace_id: &str) -> Result<LocalPlanContext, String> 
         for plan_id in plan_ids {
             plans.push(validate_plan_directory(&plans_root, &plan_id));
         }
+        plans.sort_by(|left, right| {
+            right
+                .created_at
+                .as_deref()
+                .cmp(&left.created_at.as_deref())
+                .then_with(|| right.plan_id.cmp(&left.plan_id))
+        });
     }
 
     Ok(LocalPlanContext {
@@ -175,6 +182,7 @@ fn validate_plan_directory(plans_root: &Path, plan_id: &str) -> LocalPlanSummary
         error: Some(message),
         has_tasks,
         status: "invalid".to_string(),
+        created_at: None,
     };
 
     for required in REQUIRED_PLAN_FILES {
@@ -257,6 +265,11 @@ fn validate_plan_directory(plans_root: &Path, plan_id: &str) -> LocalPlanSummary
     }
 
     let title = first_heading(&plan_text).unwrap_or_else(|| plan_id.to_string());
+    let created_at = plan_frontmatter
+        .get("created_at")
+        .and_then(Value::as_str)
+        .or_else(|| spec_frontmatter.get("created_at").and_then(Value::as_str))
+        .map(|s| s.to_string());
 
     let implementation_path = directory.join("implementation.yaml");
     if implementation_path.is_file() {
@@ -286,6 +299,7 @@ fn validate_plan_directory(plans_root: &Path, plan_id: &str) -> LocalPlanSummary
                     ),
                     has_tasks,
                     status: "started".to_string(),
+                    created_at,
                 };
             }
             Some(status) => {
@@ -310,6 +324,7 @@ fn validate_plan_directory(plans_root: &Path, plan_id: &str) -> LocalPlanSummary
         error: None,
         has_tasks,
         status: "valid".to_string(),
+        created_at,
     }
 }
 
