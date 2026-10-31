@@ -190,6 +190,20 @@ async fn build_request(
     } else {
         rewrite_body_model(body, model)?
     };
+    // Reflection/Beam Chat upstreams reject historical assistant messages that
+    // lack non-empty reasoning. Repair only pool candidates that target Chat
+    // Completions; other routes and protocols keep their bytes unchanged.
+    let rewritten = match provider.pool_candidate.as_ref() {
+        Some(identity)
+            if upstream_protocol == UpstreamProtocol::ChatCompletions
+                && super::reasoning_history::model_requires_historical_reasoning(
+                    &identity.upstream_model,
+                ) =>
+        {
+            super::reasoning_history::repair_historical_reasoning(&rewritten)?
+        }
+        _ => rewritten,
+    };
     // Inject exactly this candidate's native control after conversion. `auto`
     // carries no parameters and leaves the body unchanged.
     let rewritten = match native {

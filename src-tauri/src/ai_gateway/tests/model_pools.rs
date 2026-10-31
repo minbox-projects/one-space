@@ -8013,3 +8013,178 @@ async fn pool_cooldown_wrong_protocol_does_not_clear() {
 
     stop_server().await.expect("stop");
 }
+
+#[tokio::test]
+async fn pool_reflection_beam_free_fills_missing_reasoning_history() {
+    let _home = temp_home("pool-reflection-beam-free");
+    let port = free_port().await;
+    let (upstream, log) = spawn_mock_upstream(|captured| {
+        let body: Value = serde_json::from_slice(&captured.body).expect("captured chat request");
+        let bad = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                if message["role"] != "assistant" {
+                    return false;
+                }
+                match message.get("reasoning_content") {
+                    None => true,
+                    Some(Value::Null) => true,
+                    Some(Value::String(text)) => text.trim().is_empty(),
+                    _ => true,
+                }
+            });
+        if bad {
+            MockReply::Json(400, reasoning_history_error(REASONING_HISTORY_ERROR))
+        } else {
+            reasoning_history_success(captured)
+        }
+    })
+    .await;
+
+    let current_tag = tag();
+    let provider_id = format!("p-reflection-{current_tag}");
+    let provider = pool_provider(
+        &provider_id,
+        "Reflection Provider",
+        &upstream,
+        vec![pool_key("key-reflection", "Reflection", "SAFE_FIXTURE_reflection", true)],
+        vec![provider_mapping(
+            "local-reflection",
+            "reflection/beam:free",
+            "chat_completions",
+        )],
+    );
+    let pool = json!({
+        "id": format!("pool-reflection-{current_tag}"),
+        "name": "Reflection Pool",
+        "model": format!("reflection-pool-{current_tag}"),
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_id, "local-reflection", "reflection/beam:free", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [],
+    });
+    let config = pool_config_v3(port, vec![provider], vec![pool]);
+    let alias = config["model_pools"][0]["model"].as_str().unwrap().to_string();
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+
+    let messages = json!([
+        {"role": "user", "content": "Count the synthetic blue tiles."},
+        {
+            "role": "assistant",
+            "content": "There are two blue tiles.",
+            "reasoning_content": "SAFE_FIXTURE_existing_nonempty_reasoning"
+        },
+        {"role": "user", "content": "Count the synthetic red tiles."},
+        {"role": "assistant", "content": "There are three red tiles."},
+        {"role": "user", "content": "Call a tool."},
+        {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "count", "arguments": "{}"}}]
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "5"},
+        {"role": "user", "content": "How many tiles are there altogether?"},
+        {"role": "assistant", "content": "ok", "reasoning_content": ""},
+        {"role": "assistant", "content": "ok", "reasoning_content": null},
+        {"role": "assistant", "content": "ok", "reasoning_content": "   "}
+    ]);
+
+    let (status, content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": alias, "stream": false, "messages": messages})),
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    stop_server().await.expect("stop the listener");
+
+    assert_eq!(status, 200, "reflection history must succeed on first attempt: {text}");
+    assert_eq!(captured.len(), 1, "mock upstream must be called exactly once");
+    let forwarded: Value = serde_json::from_slice(&captured[0].body).expect("captured chat request");
+    for message in forwarded["messages"].as_array().unwrap() {
+        if message["role"] == "assistant" {
+            let reasoning = message.get("reasoning_content").expect("reasoning_content must be present");
+            assert!(reasoning.is_string(), "reasoning_content must be a string: {reasoning}");
+            assert!(!reasoning.as_str().unwrap().trim().is_empty(), "reasoning_content must be non-empty: {reasoning}");
+        }
+    }
+    assert_eq!(
+        forwarded["messages"][1]["reasoning_content"],
+        "SAFE_FIXTURE_existing_nonempty_reasoning",
+        "pre-existing non-empty reasoning must be preserved unchanged"
+    );
+    let _ = content_type;
+}
+
+#[tokio::test]
+async fn pool_zen_beam_free_forwards_reasoning_history_unchanged() {
+    let _home = temp_home("pool-zen-beam-free");
+    let port = free_port().await;
+    let (upstream, log) = spawn_mock_upstream(|captured| reasoning_history_success(captured)).await;
+
+    let current_tag = tag();
+    let provider_id = format!("p-zen-{current_tag}");
+    let provider = pool_provider(
+        &provider_id,
+        "Zen Provider",
+        &upstream,
+        vec![pool_key("key-zen", "Zen", "SAFE_FIXTURE_zen", true)],
+        vec![provider_mapping("local-zen", "beam-free", "chat_completions")],
+    );
+    let pool = json!({
+        "id": format!("pool-zen-{current_tag}"),
+        "name": "Zen Pool",
+        "model": format!("zen-pool-{current_tag}"),
+        "enabled": true,
+        "candidates": [
+            pool_candidate(&provider_id, "local-zen", "beam-free", "chat_completions", Some(1)),
+        ],
+        "fallback_models": [],
+    });
+    let config = pool_config_v3(port, vec![provider], vec![pool]);
+    let alias = config["model_pools"][0]["model"].as_str().unwrap().to_string();
+    write_raw_gateway_config(&config);
+    start_server(None).await.expect("start the listener");
+
+    let messages = json!([
+        {"role": "user", "content": "Count the synthetic blue tiles."},
+        {
+            "role": "assistant",
+            "content": "There are two blue tiles.",
+            "reasoning_content": "SAFE_FIXTURE_existing_nonempty_reasoning"
+        },
+        {"role": "user", "content": "Count the synthetic red tiles."},
+        {"role": "assistant", "content": "There are three red tiles."}
+    ]);
+
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": alias, "stream": false, "messages": messages.clone()})),
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    stop_server().await.expect("stop the listener");
+
+    assert_eq!(status, 200, "zen history must succeed: {text}");
+    assert_eq!(captured.len(), 1, "mock upstream must be called exactly once");
+    let forwarded: Value = serde_json::from_slice(&captured[0].body).expect("captured chat request");
+    assert_eq!(forwarded["messages"], messages, "zen must forward the caller messages unchanged");
+    let missing = forwarded["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "assistant" && m.get("reasoning_content").is_none())
+        .expect("the assistant message without reasoning_content must still lack the key");
+    assert_eq!(missing["content"], "There are three red tiles.");
+}

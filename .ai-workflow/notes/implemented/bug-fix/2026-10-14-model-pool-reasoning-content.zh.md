@@ -11,7 +11,7 @@ Status: implemented
 ## Decision
 
 - `openai_conversion::validate_chat_message` 在便携 `role`/`content`/`tool_calls`/`tool_call_id` 键之外恰好再接受一个 provider 专有消息字段：仅限助手消息的 `messages[].reasoning_content`，其值必须是字符串（空、空白或非空）或 `null`。它仍是痕迹而非控制面，因此非助手角色或任何其他 JSON 类型仍在任何候选、SWRR 变更、尝试或探测之前按字段拒绝。
-- 同协议 Chat 池候选原样保留该字段。该情形下 `forwarding.rs` 只改写模型，因此入站 `messages` 数组以完全相同的 JSON 值到达上游——字段、取值、键存在与数组顺序都被保留，而原始空白与键顺序字节不被保留——包括值为 `null` 的显式 `reasoning_content` 键。
+- 不在下文 Reflection/Beam 修复范围内的同协议 Chat 池候选原样保留该字段。该情形下 `forwarding.rs` 只改写模型，因此入站 `messages` 数组以完全相同的 JSON 值到达上游——字段、取值、键存在与数组顺序都被保留，而原始空白与键顺序字节不被保留——包括值为 `null` 的显式 `reasoning_content` 键。
 - 两个方向的转换都省略该痕迹且不臆造推理：`chat_request_to_responses` 构建规范的、无状态的文本/工具输入且绝不发出 Responses `reasoning` 条目，既有 Chat 到原生 Anthropic Messages 的适配器同样不发出 `reasoning` 块。该 provider 专有文本绝不泄漏进可见消息内容。
 - Chat 上的 `reasoning_effort`/`reasoningEffort`、不透明的 Responses `reasoning` 状态、未解析的 `item_reference` 以及每个未列出字段都保持其既有的按字段拒绝。不新增 schema、公共符号、服务商能力猜测或会话亲和行为。
 
@@ -27,4 +27,4 @@ Status: implemented
 - 读取存储的 Chat 助手 `reasoning_content`（字符串或 `null`）不再以 `400` 中止历史重放；同协议 Chat 路径投递精确历史，而 Responses 与原生 Messages 路径保持规范、不泄漏也不臆造推理。
 - 限制：Chat 直发 Chat 的 provider 专有 `reasoning_content` 仍会到达被选中的上游，该上游可能拒绝它自己模型不认识的字段；网关不承诺跨模型的通用推理连续性。
 - 验证：`src-tauri/src/ai_gateway/tests/openai_conversion.rs` 中四个新回归通过（模块过滤 `cargo test --manifest-path src-tauri/Cargo.toml --lib ai_gateway::tests::openai_conversion::`，4 通过，退出 0）。在无后续产品改动的共享构建上，完整 `openai_conversion` 套件通过（42 通过，退出 0，含上述四个），原生 `anthropic_conversion` 通过（36 通过，退出 0），后端 `model_pools` 通过（22 通过，退出 0）——三个套件共 100 个唯一测试。
-- 部分取代：[Model Pools Route One Public Alias Across Explicit Source Candidates](../feature/2026-10-13-free-model-pool.md) 予以保留并交叉引用；本记录只在其便携契约条目上新增唯一被识别的助手 `reasoning_content` 痕迹例外，该记录的其他每项决策仍然成立。本记录又被 [Model Pools Own a Bounded Pool-Local Reasoning Policy](../feature/2026-10-15-pool-only-reasoning.md) 部分取代，仅限“本记录此前对每个入口控制的一律拒绝被新识别的推理控制收窄”这一点；本记录对助手 `reasoning_content` 轨迹的同协议 Chat 精确 JSON 保留，以及其在 Responses 与原生 Messages 转换上的省略且不臆造——全部四个轨迹行为——予以保留。
+- 部分取代：[Model Pools Route One Public Alias Across Explicit Source Candidates](../feature/2026-10-13-free-model-pool.md) 予以保留并交叉引用；本记录只在其便携契约条目上新增唯一被识别的助手 `reasoning_content` 痕迹例外，该记录的其他每项决策仍然成立。本记录又被 [Model Pools Own a Bounded Pool-Local Reasoning Policy](../feature/2026-10-15-pool-only-reasoning.md) 部分取代，仅限“本记录此前对每个入口控制的一律拒绝被新识别的推理控制收窄”这一点；本记录对助手 `reasoning_content` 轨迹的同协议 Chat 精确 JSON 保留，以及其在 Responses 与原生 Messages 转换上的省略且不臆造——全部四个轨迹行为——予以保留。此外，[Reflection/Beam Pool Chat Candidates Repair Missing Historical Reasoning](2026-10-31-reflection-beam-historical-reasoning-repair.md) 收窄了本记录此前关于缺失历史推理拒绝绝不改写、绝不臆造的绝对表述：生效上游协议为 Chat Completions 且上游模型位于 `reflection/` 命名空间的已准备池候选，现在会把缺失、为 `null`、空串或纯空白的历史助手 `reasoning_content` 填为有界占位符 `[reasoning unavailable]`；普通同协议流量与其他每个候选仍保持本记录的精确保留行为。

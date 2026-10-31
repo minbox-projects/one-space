@@ -20314,6 +20314,34 @@
       "shared_entry": false
     },
     {
+      "id": "ai-gateway-pool-reasoning-history",
+      "name": "AI Gateway Pool Reasoning History",
+      "aliases": [],
+      "module_root": "src-tauri/src",
+      "entries": [
+        "src-tauri/src/ai_gateway/reasoning_history.rs"
+      ],
+      "symbols": [],
+      "related_files": [
+        "src-tauri/src/ai_gateway/forwarding.rs",
+        "src-tauri/src/ai_gateway/model_pools.rs"
+      ],
+      "tests": [
+        "src-tauri/src/ai_gateway/tests/model_pools.rs"
+      ],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "backend",
+      "responsibility": "Bounded Reflection/Beam historical reasoning repair for prepared Chat model-pool candidates before forwarding",
+      "read_scope": [
+        "src-tauri/src/ai_gateway/forwarding.rs",
+        "src-tauri/src/ai_gateway/model_pools.rs",
+        "src-tauri/src/ai_gateway/reasoning_history.rs",
+        "src-tauri/src/ai_gateway/tests/model_pools.rs"
+      ],
+      "shared_entry": false
+    },
+    {
       "id": "server-monitor",
       "name": "Server Monitor Collection",
       "aliases": [

@@ -15,6 +15,7 @@ mod pool_context_hold;
 mod provider_usage;
 mod quota;
 mod reasoning;
+mod reasoning_history;
 mod runtime_http;
 mod selection;
 mod storage;
