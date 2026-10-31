@@ -99,7 +99,7 @@ describe("cloudAgent lib", () => {
     const zhKeys = Object.keys(zh);
     expect(new Set(enKeys)).toEqual(new Set(zhKeys));
     const required = [
-      "deployServer","deployServerHint","deploymentDialogTitle","deploymentTargetLabel","deploymentHostEmpty","deploymentStateInstalled","deploymentStateNotInstalled","deploymentStateIncomplete","deploymentStateProbeError","deploymentStateChecking","deploymentRequirements","deploymentDeployAction","deploymentInstalledAction","deploymentProgressTitle","deploymentFailedTitle","deploymentRetry","deploymentClose","deploymentInProgress","deploymentConflictHelp","installationRemoteVersion","installationLocalVersion","installationInstalledAt","installationUnknown","installationNotRecorded","retest",
+      "deployServer","deployServerHint","deploymentDialogTitle","deploymentTargetLabel","deploymentHostEmpty","deploymentStateInstalled","deploymentStateNotInstalled","deploymentStateIncomplete","deploymentStateProbeError","deploymentStateChecking","deploymentRequirements","deploymentDeployAction","deploymentInstalledAction","deploymentRedeployAction","deploymentProgressTitle","deploymentFailedTitle","deploymentRetry","deploymentClose","deploymentInProgress","deploymentConflictHelp","installationRemoteVersion","installationLocalVersion","installationInstalledAt","installationUnknown","installationNotRecorded","retest",
     ];
     for (const k of required) {
       expect(enKeys).toContain(k);

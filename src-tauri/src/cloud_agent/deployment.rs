@@ -457,7 +457,8 @@ impl DeploymentRegistry {
         state: CloudAgentInstallationState,
     ) -> Result<(), String> {
         match state {
-            CloudAgentInstallationState::NotInstalled => Ok(()),
+            CloudAgentInstallationState::NotInstalled
+            | CloudAgentInstallationState::Installed => Ok(()),
             CloudAgentInstallationState::Incomplete => {
                 let registry = self
                     .state
@@ -475,10 +476,6 @@ impl DeploymentRegistry {
                     )
                 }
             }
-            CloudAgentInstallationState::Installed => Err(
-                "a complete Cloud Agent installation already exists; redeployment is not permitted"
-                    .to_string(),
-            ),
             CloudAgentInstallationState::ProbeError => Err(
                 "the remote installation probe failed; resolve the target state manually before deploying"
                     .to_string(),

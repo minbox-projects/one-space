@@ -281,16 +281,29 @@ describe("CloudAgent deployment console", () => {
     expect(bCallsAfterPoll.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("installed target cannot invoke cloud_agent_deploy (Deploy disabled)", async () => {
+  it("installed target can invoke cloud_agent_deploy for redeployment", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "cloud_agent_get_settings") return { default_host: "A", remote_workspace_root: "/r", remote_agent_dir: "/a", auto_refresh_interval_seconds: 10 };
+      if (command === "get_ssh_hosts" || command === "ssh_hosts_list") return [{ name: "A", host_name: "1.1.1.1" }, { name: "B", host_name: "2.2.2.2" }];
+      if (command === "cloud_agent_get_status") return { service_active: true };
+      if (command === "cloud_agent_list_sessions") return [];
+      if (command === "cloud_agent_list_worktrees") return [];
+      if (command === "cloud_agent_list_tasks") return [];
+      if (command === "cloud_agent_get_installation_info") return { host: args?.host, state: "installed", local_latest_version: "0.2.0", remote_version: "0.1.9", installed_at: "2026-01-01T00:00:00Z" };
+      if (command === "cloud_agent_deploy") return new Promise(() => {});
+      return null;
+    });
     const user = userEvent.setup();
     await act(async () => { renderWithProviders(<CloudAgent isVisible={true} />); });
     await waitFor(() => expect(screen.getByTestId("cloud-agent-deploy-open")).toBeTruthy());
     await user.click(screen.getByTestId("cloud-agent-deploy-open"));
     await waitFor(() => expect(screen.getByTestId("cloud-agent-deployment-dialog")).toBeTruthy());
-    const btn = screen.getByTestId("cloud-agent-deploy-submit");
-    expect(btn).toBeDisabled();
+    const btn = await screen.findByTestId("cloud-agent-deploy-submit");
+    await waitFor(() => expect(btn).toBeEnabled());
+    await user.click(btn);
     const deployCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_deploy");
-    expect(deployCalls.length).toBe(0);
+    expect(deployCalls.length).toBe(1);
+    expect(deployCalls[0]![1]!).toMatchObject({ host: "A" });
   });
 });
 

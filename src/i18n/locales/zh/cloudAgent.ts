@@ -161,6 +161,7 @@ export default {
   deploymentRequirements: "需要 Linux、root 权限与 systemd。缺少依赖时仅在 Ubuntu 22.04/24.04 或 Debian 12 上自动安装。",
   deploymentDeployAction: "部署",
   deploymentInstalledAction: "已安装",
+  deploymentRedeployAction: "重新部署",
   deploymentProgressTitle: "部署进度",
   deploymentFailedTitle: "部署失败",
   deploymentRetry: "重试部署",

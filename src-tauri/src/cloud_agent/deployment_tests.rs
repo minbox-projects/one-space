@@ -370,12 +370,13 @@ fn registry_guards() {
     reg.record_failed("host-a".to_string(), "/path-a".to_string());
     assert!(reg.may_deploy("host-a", "/path-a", CloudAgentInstallationState::Incomplete).is_ok());
     assert!(reg.may_deploy("host-b", "/path-b", CloudAgentInstallationState::Incomplete).is_err());
-    assert!(reg.may_deploy("host-a", "/path-a", CloudAgentInstallationState::Installed).is_err());
+    assert!(reg.may_deploy("host-a", "/path-a", CloudAgentInstallationState::Installed).is_ok());
     assert!(reg.may_deploy("host-a", "/path-a", CloudAgentInstallationState::ProbeError).is_err());
     assert!(reg.may_deploy("host-c", "/path-c", CloudAgentInstallationState::NotInstalled).is_ok());
 
     let fresh = deployment::DeploymentRegistry::new();
     assert!(fresh.may_deploy("host-a", "/path-a", CloudAgentInstallationState::Incomplete).is_err());
+    assert!(fresh.may_deploy("host-a", "/path-a", CloudAgentInstallationState::Installed).is_ok());
 }
 
 #[test]

@@ -49,14 +49,22 @@ describe("CloudAgentDeploymentDialog", () => {
     expect(screen.getByTestId("cloud-agent-installed-at")).toBeTruthy();
   });
 
-  it("installed state -> submit disabled and installed label shown", async () => {
+  it("installed state -> submit enabled and redeploy label shown; clicking calls deploy", async () => {
     invokeMock.mockImplementation(async (command: string, args?: any) => {
       if (command === "cloud_agent_get_installation_info") return { host: args?.host, state: "installed", local_latest_version: "0.2.0", remote_version: "0.1.9", installed_at: "2026-01-01T00:00:00Z" };
+      if (command === "cloud_agent_deploy") return new Promise(() => {});
       return null;
     });
     const props = baseProps({ hosts: [{ id: "b", label: "B" }], selectedHost: "b" });
     await act(async () => { renderWithProviders(<CloudAgentDeploymentDialog {...props} />); });
-    await waitFor(() => expect(screen.getByTestId("cloud-agent-deploy-submit")).toBeDisabled());
+    const btn = await screen.findByTestId("cloud-agent-deploy-submit");
+    await waitFor(() => expect(btn).toBeEnabled());
+    expect(btn.textContent).toContain("deploymentRedeployAction");
+    const user = userEvent.setup();
+    await user.click(btn);
+    const deployCalls = invokeMock.mock.calls.filter((c) => c[0] === "cloud_agent_deploy");
+    expect(deployCalls.length).toBe(1);
+    expect(deployCalls[0]![1]!).toMatchObject({ host: "b" });
   });
 
   it("not_installed -> submit enabled; one click calls deploy once; second click no extra", async () => {

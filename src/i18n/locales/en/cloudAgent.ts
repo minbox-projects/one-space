@@ -161,6 +161,7 @@ export default {
   deploymentRequirements: "Requires Linux, root access and systemd. Missing dependencies are installed automatically on Ubuntu 22.04/24.04 or Debian 12.",
   deploymentDeployAction: "Deploy",
   deploymentInstalledAction: "Installed",
+  deploymentRedeployAction: "Redeploy",
   deploymentProgressTitle: "Deployment progress",
   deploymentFailedTitle: "Deployment failed",
   deploymentRetry: "Retry deployment",

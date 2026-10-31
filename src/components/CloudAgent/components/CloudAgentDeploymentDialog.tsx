@@ -248,7 +248,9 @@ export function CloudAgentDeploymentDialog({
     !inspectionError &&
     Boolean(target) &&
     !installation?.configurationError &&
-    (displayState === "not_installed" || displayState === "incomplete");
+    (displayState === "not_installed" ||
+      displayState === "incomplete" ||
+      displayState === "installed");
 
   const handleClose = useCallback(() => {
     if (deployingRef.current) return;
@@ -548,7 +550,7 @@ export function CloudAgentDeploymentDialog({
                   {t("deploymentInProgress", "Deploying...")}
                 </>
               ) : displayState === "installed" ? (
-                t("deploymentInstalledAction", "Installed")
+                t("deploymentRedeployAction", "Redeploy")
               ) : (
                 t("deploymentDeployAction", "Deploy")
               )}
