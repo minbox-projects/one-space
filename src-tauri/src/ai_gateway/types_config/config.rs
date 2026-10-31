@@ -30,8 +30,12 @@ use super::terminal::TerminalSyncRecord;
 /// Free template snapshot whose transport was stored as missing or `direct`,
 /// restoring the template-declared sidecar transport without touching providers.
 /// Version 8 repairs the same canonical snapshot's missing or blank `models_url`
-/// so the built-in free template can sync its model list.
-pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 8;
+/// so the built-in free template can sync its model list. Version 9 repoints the
+/// canonical OpenCode Zen Free template snapshot and the providers bound to it
+/// from the legacy `/zen/v1` upstream base to the official
+/// `/inference/openai/v1` inference base, leaving every custom base URL,
+/// model, metadata, key, price and unrelated template untouched.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 9;
 
 /// Persisted AI Gateway configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

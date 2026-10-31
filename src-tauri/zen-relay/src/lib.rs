@@ -61,10 +61,11 @@ pub fn join_upstream_url(base: &str, path_and_query: &str) -> Result<String, Str
     }
 }
 
-/// Validate that an upstream base is an HTTPS Zen endpoint.
+/// Validate that an upstream base is an HTTPS OpenCode endpoint.
 ///
-/// Only the exact `opencode.ai` host with a `/zen` path is accepted. Ports,
-/// user information, other hosts, plain HTTP and unrelated paths are rejected.
+/// Only the exact `opencode.ai` host with a `/zen` or `/inference/openai` path
+/// is accepted. Ports, user information, other hosts, plain HTTP, queries,
+/// fragments and unrelated paths are rejected.
 pub fn validate_upstream_base(base: &str) -> Result<(), String> {
     let base = base.trim();
     if base.is_empty() {
@@ -86,7 +87,11 @@ pub fn validate_upstream_base(base: &str) -> Result<(), String> {
     if path.is_empty() || path.contains('?') || path.contains('#') {
         return Err("upstream base path is invalid".to_string());
     }
-    if path == "/zen" || path.starts_with("/zen/") {
+    if path == "/zen"
+        || path.starts_with("/zen/")
+        || path == "/inference/openai"
+        || path.starts_with("/inference/openai/")
+    {
         Ok(())
     } else {
         Err("upstream base path is not allowed".to_string())
@@ -148,10 +153,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_zen_upstream_bases() {
-        for base in ["http://opencode.ai/zen", "https://evil.example.com/zen", "https://opencode.ai:8443/zen"] {
-            assert!(validate_upstream_base(base).is_err(), "{base}");
-        }
+    fn inference_openai_upstream_base_accepted() {
+        assert!(validate_upstream_base("https://opencode.ai/inference/openai/v1").is_ok());
+        assert_eq!(
+            join_upstream_url("https://opencode.ai/inference/openai/v1", "/v1/chat/completions").unwrap(),
+            "https://opencode.ai/inference/openai/v1/chat/completions"
+        );
+        // legacy /zen still accepted
         assert!(validate_upstream_base("https://opencode.ai/zen/v1").is_ok());
+        // non-opencode hosts and unrelated inference/anthropic paths rejected
+        assert!(validate_upstream_base("https://evil.example.com/inference/openai/v1").is_err());
+        assert!(validate_upstream_base("https://opencode.ai/inference/anthropic/v1").is_err());
     }
 }

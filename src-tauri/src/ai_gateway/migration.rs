@@ -8,7 +8,8 @@
 //! legacy single fallback candidate converted into the ordered gateway-model
 //! fallback list and its obsolete gateway-local proxy URL removed, and the
 //! persisted built-in OpenCode Zen Free template snapshot repointed to its
-//! declared sidecar transport and given its canonical model-list URL; a usage
+//! declared sidecar transport, given its canonical model-list URL and moved to
+//! the official inference base; a usage
 //! database older than [`USAGE_DB_VERSION`] has its legacy `cancelled` rows
 //! deleted once (version below 1), then gains the durable provider/day summary
 //! tables, the one-shot retained-row backfill and the continuity boundary
@@ -56,8 +57,11 @@ const OPENCODE_GO_TEMPLATE_ID: &str = "opencode-go";
 const OPENCODE_ZEN_FREE_TEMPLATE_ID: &str = "opencode-zen-free";
 /// Exact provider name the schema-5 binding migration recognizes.
 const OPENCODE_ZEN_FREE_PROVIDER_NAME: &str = "OpenCode Zen Free";
-/// Normalized OpenCode Zen Free upstream base URL.
+/// Normalized legacy OpenCode Zen Free upstream base URL. Schema 9 repoints this
+/// canonical value to [`OPENCODE_ZEN_FREE_INFERENCE_BASE_URL`].
 const OPENCODE_ZEN_FREE_BASE_URL: &str = "https://opencode.ai/zen/v1";
+/// Official OpenCode inference base URL the schema-9 gate writes.
+const OPENCODE_ZEN_FREE_INFERENCE_BASE_URL: &str = "https://opencode.ai/inference/openai/v1";
 const NAME_FIELD: &str = "name";
 const TEMPLATE_ID_FIELD: &str = "template_id";
 const TEMPLATE_FIELD: &str = "template";
@@ -534,6 +538,79 @@ fn migrate_opencode_zen_free_template_models_url(object: &mut Map<String, Value>
     changed
 }
 
+/// Repoint the persisted built-in OpenCode Zen Free template snapshot and every
+/// provider bound to it from the legacy `/zen/v1` base to the official
+/// `/inference/openai/v1` inference base. Only the exact canonical template
+/// state (outer `template_id` and nested `template.id` both `opencode-zen-free`)
+/// whose base URL normalizes to the legacy canonical value changes; providers
+/// change only when their `template_id` is `opencode-zen-free` and their base URL
+/// normalizes to the same legacy value. Models, metadata, keys, prices,
+/// transport, `models_url`, nonblank custom base URLs and unrelated templates or
+/// providers are preserved. Idempotent: a snapshot or provider already on the
+/// inference base is left alone.
+fn migrate_opencode_zen_free_inference_base_url(object: &mut Map<String, Value>) -> bool {
+    let mut changed = false;
+    if let Some(templates) = object
+        .get_mut(PROVIDER_TEMPLATES_FIELD)
+        .and_then(Value::as_array_mut)
+    {
+        for state in templates.iter_mut() {
+            let Some(state) = state.as_object_mut() else {
+                continue;
+            };
+            if state.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                != Some(OPENCODE_ZEN_FREE_TEMPLATE_ID)
+            {
+                continue;
+            }
+            let Some(template) = state.get_mut(TEMPLATE_FIELD).and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+            if template.get(ID_FIELD).and_then(Value::as_str)
+                != Some(OPENCODE_ZEN_FREE_TEMPLATE_ID)
+            {
+                continue;
+            }
+            if let Some(base_url) = template.get_mut(BASE_URL_FIELD) {
+                if base_url
+                    .as_str()
+                    .map(normalize_provider_base_url)
+                    == Some(OPENCODE_ZEN_FREE_BASE_URL)
+                {
+                    *base_url = Value::String(OPENCODE_ZEN_FREE_INFERENCE_BASE_URL.to_string());
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if let Some(providers) = object.get_mut(PROVIDERS_FIELD).and_then(Value::as_array_mut) {
+        for provider in providers.iter_mut() {
+            let Some(provider) = provider.as_object_mut() else {
+                continue;
+            };
+            if provider.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                != Some(OPENCODE_ZEN_FREE_TEMPLATE_ID)
+            {
+                continue;
+            }
+            if let Some(base_url) = provider.get_mut(BASE_URL_FIELD) {
+                if base_url
+                    .as_str()
+                    .map(normalize_provider_base_url)
+                    == Some(OPENCODE_ZEN_FREE_BASE_URL)
+                {
+                    *base_url = Value::String(OPENCODE_ZEN_FREE_INFERENCE_BASE_URL.to_string());
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed
+}
+
 /// Legacy provider-level single credential field, superseded by the ordered
 /// `keys` pool. This is the only non-test production source allowed to name it.
 const LEGACY_SINGLE_KEY_FIELD: &str = "api_key";
@@ -672,50 +749,66 @@ fn remove_legacy_gateway_proxy_url(object: &mut Map<String, Value>) -> bool {
 /// entry; provider-level runtime keys are cleared; the obsolete gateway-local
 /// proxy URL is removed; the canonical OpenCode Zen Free template snapshot is
 /// repointed to the sidecar transport and given its canonical `models_url` when
-/// missing or blank. A schema-5 value skips every earlier gate, drops the obsolete
-/// proxy URL, repairs the transport and then the `models_url`; a schema-6 value
-/// repairs the transport and `models_url`; a schema-7 value only repairs the
-/// `models_url`; a schema-8 or newer value is untouched. Missing fields are
-/// tolerated so a legacy shape can never fail the whole parse.
+/// missing or blank, then repoints the canonical OpenCode Zen Free template and
+/// its bound providers from the legacy `/zen/v1` base to the inference base. A
+/// schema-5 value skips every earlier gate, drops the obsolete proxy URL,
+/// repairs the transport and `models_url`, then the base URL; a schema-6 value
+/// repairs the transport, `models_url` and base URL; a schema-7 value repairs
+/// the `models_url` and base URL; a schema-8 value only repoints the base URL;
+/// a schema-9 or newer value is untouched. Missing fields are tolerated so a
+/// legacy shape can never fail the whole parse.
 pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value, stored_version: u32) -> bool {
     if !config.is_object() {
         return false;
     }
-    if stored_version >= 8 {
+    if stored_version >= 9 {
         // Current and future files already carry the delivered shape; never
         // rerun a migration or downgrade their version.
         return false;
     }
-    if stored_version >= 7 {
-        // A schema-7 file already completed every earlier gate. Advancing it to
-        // schema 8 only repairs the canonical OpenCode Zen Free template
-        // `models_url` and never reapplies an earlier migration.
+    if stored_version >= 8 {
+        // A schema-8 file already completed every earlier gate. Advancing it to
+        // schema 9 only repoints the canonical OpenCode Zen Free upstream base
+        // and never reapplies an earlier migration.
         let object = config
             .as_object_mut()
             .expect("config was checked to be an object");
-        return migrate_opencode_zen_free_template_models_url(object);
+        return migrate_opencode_zen_free_inference_base_url(object);
+    }
+    if stored_version >= 7 {
+        // A schema-7 file already completed every earlier gate. Advancing it to
+        // schema 9 repairs the canonical OpenCode Zen Free template `models_url`
+        // and base URL without reapplying an earlier migration.
+        let object = config
+            .as_object_mut()
+            .expect("config was checked to be an object");
+        let changed = migrate_opencode_zen_free_template_models_url(object);
+        return changed | migrate_opencode_zen_free_inference_base_url(object);
     }
     if stored_version >= 6 {
         // A schema-6 file already completed every earlier gate. Advancing it to
-        // schema 8 repairs the canonical OpenCode Zen Free template transport and
-        // `models_url` without reapplying an earlier binding migration.
+        // schema 9 repairs the canonical OpenCode Zen Free template transport,
+        // `models_url` and base URL without reapplying an earlier binding
+        // migration.
         let object = config
             .as_object_mut()
             .expect("config was checked to be an object");
         let changed = migrate_opencode_zen_free_template_transport(object);
-        return changed | migrate_opencode_zen_free_template_models_url(object);
+        let changed = changed | migrate_opencode_zen_free_template_models_url(object);
+        return changed | migrate_opencode_zen_free_inference_base_url(object);
     }
     if stored_version >= 5 {
         // A schema-5 file already completed every earlier gate. Advancing it to
-        // schema 8 removes only the obsolete gateway-local proxy URL and then
-        // repairs the canonical OpenCode Zen Free template transport and
-        // `models_url`.
+        // schema 9 removes only the obsolete gateway-local proxy URL and then
+        // repairs the canonical OpenCode Zen Free template transport,
+        // `models_url` and base URL.
         let object = config
             .as_object_mut()
             .expect("config was checked to be an object");
         let changed = remove_legacy_gateway_proxy_url(object);
         let changed = changed | migrate_opencode_zen_free_template_transport(object);
-        return changed | migrate_opencode_zen_free_template_models_url(object);
+        let changed = changed | migrate_opencode_zen_free_template_models_url(object);
+        return changed | migrate_opencode_zen_free_inference_base_url(object);
     }
     // The schema-3 Zen-to-Go identity migration runs first so reachability and
     // price scoping see the migrated provider bindings and mappings.
@@ -728,7 +821,8 @@ pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value, stored_ve
         let changed = changed | migrate_pool_fallbacks(object);
         let changed = changed | remove_legacy_gateway_proxy_url(object);
         let changed = changed | migrate_opencode_zen_free_template_transport(object);
-        changed | migrate_opencode_zen_free_template_models_url(object)
+        let changed = changed | migrate_opencode_zen_free_template_models_url(object);
+        changed | migrate_opencode_zen_free_inference_base_url(object)
     };
     let reachable = reachable_provider_models(config);
     let Some(object) = config.as_object_mut() else {

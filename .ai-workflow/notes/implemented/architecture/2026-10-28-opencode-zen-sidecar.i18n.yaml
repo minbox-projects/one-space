@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-10-28-opencode-zen-sidecar.md
-2026-10-28-opencode-zen-sidecar.md: 4656779c1357df7f10303f5aa43cec236b869523
-2026-10-28-opencode-zen-sidecar.zh.md: ef19f3646caf425db1fb41703e141401cdfa86e7
+2026-10-28-opencode-zen-sidecar.md: fe2c2b05bede783c71d54625602b8919447484c0
+2026-10-28-opencode-zen-sidecar.zh.md: 7c788f203004b95b4b883f1b1a68d49e630627ff

@@ -223,7 +223,7 @@ fn builtin_templates_declare_their_model_list_urls() {
     assert_eq!(go.icon.as_deref(), Some("opencode"));
     assert_eq!(commandcode.icon.as_deref(), Some("commandcode"));
 
-    assert_eq!(zen_free.base_url, "https://opencode.ai/zen/v1");
+    assert_eq!(zen_free.base_url, "https://opencode.ai/inference/openai/v1");
     assert_eq!(zen_free.source, "https://opencode.ai/zen/v1/models");
     assert_eq!(zen_free.models_url, Some("https://opencode.ai/zen/v1/models".to_string()));
     assert_eq!(zen_free.icon.as_deref(), Some("opencode"));
@@ -6200,4 +6200,18 @@ fn zen_free_model_list_sync_keeps_only_free_models() {
     // no paid mapping/template model
     let provider = config.providers.iter().find(|p| p.id == "p").unwrap();
     assert!(provider.mappings.iter().all(|m| m.upstream_model != "glm-5.3"));
+}
+
+#[test]
+fn zen_free_inference_endpoint() {
+    let templates = builtin_templates().expect("built-in templates must parse");
+    let zen_free = templates
+        .iter()
+        .find(|template| template.id == "opencode-zen-free")
+        .expect("the opencode-zen-free template must exist");
+    assert_eq!(zen_free.base_url, "https://opencode.ai/inference/openai/v1");
+    assert_eq!(
+        zen_free.models_url.as_deref(),
+        Some("https://opencode.ai/zen/v1/models")
+    );
 }

@@ -1966,14 +1966,14 @@ fn persisted_config_with_unknown_strategy_values_reads_with_generic_defaults() {
     );
 }
 
-/// The current configuration schema is pinned to 8 for the Zen Free model-list
-/// URL repair change.
+/// The current configuration schema is pinned to 9 for the Zen Free inference
+/// endpoint change.
 #[test]
-fn gateway_config_schema_version_advances_to_eight() {
+fn gateway_config_schema_version_advances_to_nine() {
     assert_eq!(
         crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
-        8,
-        "the Zen Free model-list URL repair must be gated by schema version 8"
+        9,
+        "the Zen Free inference endpoint change must be gated by schema version 9"
     );
 }
 
@@ -3433,5 +3433,176 @@ fn zen_free_model_list_schema8_repairs_models_url() {
         let state = on_disk["provider_templates"][0]["template"].clone();
         assert!(state.get("models_url").is_none() || state["models_url"].is_null(),
             "a current or future version must not repair models_url");
+    }
+}
+
+#[test]
+fn zen_free_inference_endpoint_schema9_migrates_base_url() {
+    for schema in [5u32, 6, 7, 8] {
+        let _home = isolated_temp_home(&format!("migration-zen-free-inference-{schema}"));
+        let cfg = json!({
+            "schema_version": schema,
+            "enabled": true,
+            "providers": [
+                {
+                    "id": "bound",
+                    "name": "OpenCode Zen Free",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "protocol": "chat_completions",
+                    "template_id": "opencode-zen-free",
+                    "enabled": true,
+                    "keys": [{"id": "k", "name": "Default", "value": "SAFE_FIXTURE_sk-bound", "enabled": true, "auto_marked": false, "failure_kind": null, "marked_at": null, "reason": null}],
+                    "mappings": [{"local_model": "zen-free-glm", "upstream_model": "glm-5.3-flash-free", "enabled": true}],
+                    "transport": "opencode_zen_sidecar"
+                },
+                {
+                    "id": "custom",
+                    "name": "Custom Direct",
+                    "base_url": "https://custom.example.com/v1",
+                    "protocol": "chat_completions",
+                    "template_id": "custom-direct",
+                    "mappings": []
+                }
+            ],
+            "model_prices": [
+                {"provider_id": "bound", "upstream_model": "glm-5.3-flash-free", "input": 1.0}
+            ],
+            "provider_templates": [
+                {
+                    "template_id": "opencode-zen-free",
+                    "template": {
+                        "id": "opencode-zen-free",
+                        "name": "OpenCode Zen Free",
+                        "base_url": "https://opencode.ai/zen/v1",
+                        "protocol": "chat_completions",
+                        "source": "https://opencode.ai/zen/v1/models",
+                        "models_url": "https://opencode.ai/zen/v1/models",
+                        "transport_strategy": "opencode_zen_sidecar",
+                        "models": [{"upstream_model": "glm-5.3-flash-free", "protocol": "chat_completions"}]
+                    },
+                    "synced_at": 123,
+                    "source": "https://opencode.ai/zen/v1/models"
+                },
+                {
+                    "template_id": "custom-direct",
+                    "template": {
+                        "id": "custom-direct",
+                        "name": "Custom Direct",
+                        "base_url": "https://custom.example.com/v1",
+                        "protocol": "chat_completions",
+                        "transport_strategy": "direct",
+                        "models_url": "https://custom.example.com/v1/models",
+                        "models": []
+                    },
+                    "synced_at": 456,
+                    "source": "https://custom.example.com/v1/models"
+                }
+            ]
+        });
+        write_encrypted_config(&cfg);
+        let before = raw_config_bytes();
+
+        let loaded = read_config().expect("older config must migrate and read");
+        assert_eq!(
+            loaded.schema_version,
+            crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
+            "migrated config must reach the current schema"
+        );
+
+        let zen_state = loaded
+            .provider_templates
+            .iter()
+            .find(|state| state.template_id == "opencode-zen-free")
+            .expect("the Zen Free template state must survive");
+        let zen_template = zen_state.template.as_ref().expect("Zen Free snapshot");
+        let zen_json = serde_json::to_value(zen_template).expect("serialize template");
+        assert_eq!(
+            zen_json["base_url"], "https://opencode.ai/inference/openai/v1",
+            "the migrated Zen Free template base_url must use the inference endpoint"
+        );
+        assert_eq!(
+            zen_json["models_url"], "https://opencode.ai/zen/v1/models",
+            "the existing canonical models_url on the Zen Free snapshot must survive"
+        );
+
+        let bound = loaded.providers.iter().find(|p| p.id == "bound").expect("bound provider");
+        assert_eq!(bound.base_url, "https://opencode.ai/inference/openai/v1");
+        assert_eq!(bound.mappings.len(), 1);
+        assert_eq!(bound.keys.len(), 1);
+        assert_eq!(bound.keys[0].value, "SAFE_FIXTURE_sk-bound");
+
+        let custom = loaded
+            .providers
+            .iter()
+            .find(|p| p.id == "custom")
+            .expect("custom provider");
+        assert_eq!(custom.base_url, "https://custom.example.com/v1");
+
+        let custom_state = loaded
+            .provider_templates
+            .iter()
+            .find(|state| state.template_id == "custom-direct")
+            .expect("the unrelated custom template must survive");
+        let custom_json = serde_json::to_value(custom_state.template.as_ref().unwrap()).expect("serialize custom");
+        assert_eq!(custom_json["base_url"], "https://custom.example.com/v1");
+
+        let after = raw_config_bytes();
+        assert_ne!(after, before, "an older config must persist migrated bytes");
+
+        // Second read is side-effect free.
+        let stable = raw_config_bytes();
+        let _second = read_config().expect("second read");
+        assert_eq!(raw_config_bytes(), stable, "a second read must not rewrite");
+    }
+
+    // Current and future versions must not rerun the migration or rewrite bytes.
+    for schema in [
+        crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
+        99u32,
+    ] {
+        let _home = isolated_temp_home(&format!("migration-zen-free-inference-current-{schema}"));
+        let cfg = json!({
+            "schema_version": schema,
+            "enabled": true,
+            "providers": [
+                {
+                    "id": "bound",
+                    "name": "OpenCode Zen Free",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "protocol": "chat_completions",
+                    "template_id": "opencode-zen-free",
+                    "mappings": []
+                }
+            ],
+            "provider_templates": [
+                {
+                    "template_id": "opencode-zen-free",
+                    "template": {
+                        "id": "opencode-zen-free",
+                        "name": "OpenCode Zen Free",
+                        "base_url": "https://opencode.ai/zen/v1",
+                        "protocol": "chat_completions",
+                        "transport_strategy": "opencode_zen_sidecar",
+                        "models": []
+                    },
+                    "synced_at": 123,
+                    "source": "https://opencode.ai/zen/v1/models"
+                }
+            ]
+        });
+        write_encrypted_config(&cfg);
+        let before = raw_config_bytes();
+        let _loaded = read_config().expect("current/future config must stay readable");
+        assert_eq!(
+            raw_config_bytes(),
+            before,
+            "a current or future version must not be rewritten"
+        );
+        let on_disk = decrypted_config_json();
+        let state = on_disk["provider_templates"][0]["template"].clone();
+        assert_eq!(
+            state["base_url"], "https://opencode.ai/zen/v1",
+            "a current or future version must not rerun the base_url migration"
+        );
     }
 }

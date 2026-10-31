@@ -20287,7 +20287,7 @@
       "depends_on": [],
       "relations": [],
       "owner_role": "backend",
-      "responsibility": "Template-bound OpenCode Zen Free transport through an isolated BoringSSL loopback relay with a one-time schema-5 binding, schema-7 saved-template transport repair, schema-8 canonical models_url repair and a free-only upstream model-list sync",
+      "responsibility": "Template-bound OpenCode Zen Free transport through an isolated BoringSSL loopback relay using the official /inference/openai/v1 base, with a one-time schema-5 binding, schema-7 saved-template transport repair, schema-8 canonical models_url repair, schema-9 persisted template and bound-provider base migration and a free-only upstream model-list sync",
       "read_scope": [
         ".github/workflows/release.yml",
         "src-tauri/scripts/build-zen-relay.mjs",
