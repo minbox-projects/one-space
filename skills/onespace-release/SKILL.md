@@ -24,14 +24,18 @@ description: 自动化 OneSpace 桌面端发布流程，包括版本号提升、
 python3 skills/onespace-release/scripts/release_tool.py show
 python3 skills/onespace-release/scripts/release_tool.py validate
 python3 skills/onespace-release/scripts/release_tool.py bump 0.1.5
+python3 skills/onespace-release/scripts/release_tool.py beta 0.1.58
 python3 skills/onespace-release/scripts/release_tool.py tag 0.1.5
 python3 skills/onespace-release/scripts/release_tool.py tag 0.1.5 --push
+python3 skills/onespace-release/scripts/release_tool.py previous-tag v0.1.58-beta.2
+python3 skills/onespace-release/scripts/release_tool.py is-prerelease v0.1.58-beta.2
 ```
 
 在风险操作前先做 dry run：
 
 ```bash
 python3 skills/onespace-release/scripts/release_tool.py bump 0.1.5 --dry-run
+python3 skills/onespace-release/scripts/release_tool.py beta 0.1.58 --dry-run
 python3 skills/onespace-release/scripts/release_tool.py tag 0.1.5 --dry-run
 ```
 
@@ -42,6 +46,15 @@ python3 skills/onespace-release/scripts/release_tool.py tag 0.1.5 --dry-run
 3. 校验未通过前禁止创建 tag。
 4. 使用附注标签（`git tag -a`），消息格式为 `release: v<version>`。
 5. 默认使用 `v` 前缀，除非仓库策略明确要求变更。
+
+## Beta 发布
+
+正式版本之前可以用同一目标版本发布多个 Beta 构建：
+
+1. `beta <base>` 的基版本是显式 `X.Y.Z`。当前稳定版低于基版本时写入 `<base>-beta.1`；当前版本已是同一基版本的 Beta 时递增为下一个编号；更高的基版本从 `beta.1` 重新开始。
+2. 基版本非法或不是 `X.Y.Z`、基版本小于或等于当前稳定版、基版本低于当前 Beta 基版本，或四个发布文件不一致时，命令失败且不写任何文件；`--dry-run` 只报告下一个版本。
+3. 提交四个发布文件后，用 `tag <base>-beta.N` 创建附注标签 `v<base>-beta.N`，按需加 `--push`；推送 `v*` 标签会触发发布工作流，并以 GitHub prerelease 发布。
+4. 发布工作流用 `previous-tag` 解析更新范围：稳定发布取上一个稳定标签并跳过 Beta 标签，Beta 发布取上一个标签；`is-prerelease` 决定发布是否标记为 prerelease。Beta 构建与稳定版共用 `~/.config/onespace` 及同一份配置与数据，不引入独立 profile 或迁移。
 
 ## 发布前置条件
 
@@ -61,7 +74,7 @@ macOS 发布需要签名材料；缺失会导致 macOS 任务在任何构建之�
 
 ### scripts/
 
-- `release_tool.py`：读取版本、执行一致性校验、提升版本、创建/推送附注标签。
+- `release_tool.py`：读取版本、执行一致性校验、提升版本、推进 Beta 版本线、解析上一发布标签与 prerelease 分类、创建/推送附注标签。
 
 ### references/
 

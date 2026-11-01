@@ -130,7 +130,7 @@ OneSpace 是一个面向开发者的 macOS 优先桌面工作台（Tauri 2 + Rea
 | 数据存储 | 存储类型、Git 地址与认证、iCloud / 本地路径、同步策略（providers、mcp、content、Skills / Subagents 源与仓库、AI 新闻等） |
 | 新闻资讯 | AI News 自动同步、间隔、保留策略、关键词与 RSS 源列表 |
 | 通用 | 开机自启动 |
-| 更新 | 自动更新开关与检查间隔 |
+| 更新 | 自动更新开关、检查间隔与「接收 Beta 更新」 |
 | Skills 源 / Subagents 源 | 自动同步开关与间隔、Git 源清单、导入 / 导出、手动 Sync Now |
 | 网络代理 | `http` / `https` / `socks5` 代理、账号密码、连通性测试 |
 | 协议路由 | 启用开关、本地端口、请求记录保留天数、Router token |
@@ -139,6 +139,16 @@ OneSpace 是一个面向开发者的 macOS 优先桌面工作台（Tauri 2 + Rea
 | AI 终端会话 | 默认工作目录、默认模型、终端应用、各模型启动命令模板与恢复会话权限模式 |
 | 外观 | 语言（中文 / English）与主题 |
 | 安全 | 查看 / 修改主密码，生成随机密码 |
+
+## Beta 版本
+
+维护者可以在正式版本之前发布同一目标版本的多个 Beta 构建：
+
+1. 在干净工作区执行 `python3 skills/onespace-release/scripts/release_tool.py beta <base>`，例如 `beta 0.1.58`：首次生成 `0.1.58-beta.1`，再次执行同一基版本递增为 `0.1.58-beta.2`；`--dry-run` 只报告下一个版本、不写文件。
+2. 提交 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 后，创建并推送附注标签 `v<base>-beta.N`；推送 `v*` 标签会触发发布工作流，并把该标签作为 GitHub prerelease 发布。
+3. 正式发布时使用稳定版本号：稳定版的更新说明以上一个稳定标签为基准（跳过 Beta 标签），Beta 版以上一个标签为基准。
+
+用户可在「设置 → 更新」开启「接收 Beta 更新」。开启后，更新检查会从 GitHub Releases 中选择版本最高、非草稿且带 `latest.json` 的发布（包含预发布），再经既有的签名校验更新器检查；Beta 查询失败、没有可用发布，或当前平台/版本没有更新或出错时，会继续检查配置的稳定端点，且绝不降级。关闭时只使用稳定端点。Beta 构建在左上品牌区显示 BETA 徽标（侧边栏折叠时仍可见），稳定、缺失或格式错误的版本不显示。Beta 构建与稳定版共用 `~/.config/onespace` 及同一份配置与数据，不引入独立 profile 或迁移；该偏好是设备本地配置，默认关闭，在同一设备的稳定版与 Beta 版之间共享，不跨设备同步，旧版本会忽略该字段。
 
 ## 文档
 
@@ -178,7 +188,7 @@ npm run tauri dev
 
 后端测试：`cargo test --manifest-path src-tauri/Cargo.toml`。
 
-版本号在 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 三处保持一致。
+版本号在 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 四处保持一致。
 
 ## macOS 常见安装问题
 

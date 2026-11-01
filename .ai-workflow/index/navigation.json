@@ -426,6 +426,7 @@
         "src/lib/aiSessions.ts",
         "src/lib/aiUsage.ts",
         "src/lib/aiWorkflowProfiles.ts",
+        "src/lib/appVersion.ts",
         "src/lib/bleLock.ts",
         "src/lib/curlParser.ts",
         "src/lib/externalActions.ts",
@@ -7816,6 +7817,18 @@
           "visibility": "public"
         },
         {
+          "file": "src/lib/appVersion.ts",
+          "name": "isBetaVersion",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/appVersion.ts",
+          "name": "useAppVersion",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/lib/bleLock.ts",
           "name": "BLE_LOCK_DEVICES_EVENT",
           "kind": "variable",
@@ -11819,6 +11832,7 @@
         "src/App.runtimeOwnership.test.tsx",
         "src/App.sidebar.test.tsx",
         "src/App.sidebarBadges.test.tsx",
+        "src/App.sidebarBetaBadge.test.tsx",
         "src/App.trayMenu.test.tsx",
         "src/components/AboutModal.test.tsx",
         "src/components/AiEnvironments/AiEnvironments.test.tsx",
@@ -11901,6 +11915,7 @@
         "src/lib/aiGateway.test.ts",
         "src/lib/aiGatewayAlertBadges.test.ts",
         "src/lib/aiWorkflowProfiles.test.ts",
+        "src/lib/appVersion.test.ts",
         "src/lib/bleLock.test.ts",
         "src/lib/curlParser.test.ts",
         "src/lib/externalActions.test.ts",
@@ -19468,6 +19483,7 @@
         "src/App.runtimeOwnership.test.tsx",
         "src/App.sidebar.test.tsx",
         "src/App.sidebarBadges.test.tsx",
+        "src/App.sidebarBetaBadge.test.tsx",
         "src/App.trayMenu.test.tsx",
         "src/App.tsx",
         "src/QuickAiApp.tsx",
@@ -19963,6 +19979,8 @@
         "src/lib/aiUsage.ts",
         "src/lib/aiWorkflowProfiles.test.ts",
         "src/lib/aiWorkflowProfiles.ts",
+        "src/lib/appVersion.test.ts",
+        "src/lib/appVersion.ts",
         "src/lib/bleLock.test.ts",
         "src/lib/bleLock.ts",
         "src/lib/curlParser.test.ts",
@@ -20971,13 +20989,153 @@
         "server/onespace-cloud-agent/core/plan_execution.py",
         "server/onespace-cloud-agent/core/plan_opencode.py",
         "server/onespace-cloud-agent/core/plan_tasks.py",
-        "server/onespace-cloud-agent/core/plan_workspace.py"
+        "server/onespace-cloud-agent/core/plan_workspace.py",
+        "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
+        "src/components/CloudAgent/components/CloudEmptyState.tsx"
       ],
       "symbols": [
+        {
+          "file": "src-tauri/src/cloud_agent/commands.rs",
+          "name": "cloud_agent_deploy",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/commands.rs",
+          "name": "cloud_agent_get_installation_info",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "DeploymentRegistry",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "RemoteShell",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "SshRemoteShell",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "build_status_command",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "classify_payload",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "inspect_installation",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "parse_install_metadata",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "parse_phase_line",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "read_install_metadata",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "run_deploy_process",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "run_deploy_process_async",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/deployment.rs",
+          "name": "validate_local_payload",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentDeployPhase",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentDeployPhaseStatus",
+          "kind": "enum",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentDeploymentProgress",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentDeploymentResult",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentInstallationInfo",
+          "kind": "struct",
+          "visibility": "public"
+        },
+        {
+          "file": "src-tauri/src/cloud_agent/types.rs",
+          "name": "CloudAgentInstallationState",
+          "kind": "enum",
+          "visibility": "public"
+        },
         {
           "file": "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
           "name": "ActiveSessionsTab",
           "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+          "name": "CloudAgentDeploymentDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+          "name": "CloudAgentDeploymentDialogProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+          "name": "CloudAgentHostLike",
+          "kind": "interface",
           "visibility": "public"
         },
         {
@@ -20987,14 +21145,26 @@
           "visibility": "public"
         },
         {
-          "file": "src/components/CloudAgent/components/GatewayPanel.tsx",
-          "name": "GatewayPanel",
+          "file": "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
+          "name": "CloudAgentRuntimeCard",
           "kind": "function",
           "visibility": "public"
         },
         {
-          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
-          "name": "NewSessionDialog",
+          "file": "src/components/CloudAgent/components/CloudEmptyState.tsx",
+          "name": "CloudEmptyState",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudEmptyState.tsx",
+          "name": "CloudEmptyStateProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/GatewayPanel.tsx",
+          "name": "GatewayPanel",
           "kind": "function",
           "visibility": "public"
         },
@@ -21005,8 +21175,56 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
+          "name": "NewSessionDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
+          "name": "NewSessionModal",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
+          "name": "NewSessionDialog",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
+          "name": "NewSessionModal",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "PipelineStepItem",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
           "name": "PrPipelineTab",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "StepState",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "derivePipelineSteps",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "resolveIssueUrl",
           "kind": "function",
           "visibility": "public"
         },
@@ -21014,6 +21232,12 @@
           "file": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
           "name": "WorktreesHistoryTab",
           "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
+          "name": "CloudAgentHostOption",
+          "kind": "interface",
           "visibility": "public"
         },
         {
@@ -21042,43 +21266,61 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentSettings",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "DEFAULT_CLOUD_AGENT_SETTINGS",
+          "name": "CLOUD_AGENT_DEPLOY_PROGRESS_EVENT",
           "kind": "variable",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "CloudSession",
+          "name": "CLOUD_AGENT_SESSIONS_COUNT_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CLOUD_AGENT_SETTINGS_UPDATED_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeployPhase",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeployPhaseStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeploymentProgress",
           "kind": "interface",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "LastCommit",
+          "name": "CloudAgentDeploymentResult",
           "kind": "interface",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "CloudWorktree",
+          "name": "CloudAgentInstallationInfo",
           "kind": "interface",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "DiskUsage",
-          "kind": "interface",
+          "name": "CloudAgentInstallationState",
+          "kind": "type",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "GatewayHealth",
+          "name": "CloudAgentSettings",
           "kind": "interface",
           "visibility": "public"
         },
@@ -21096,49 +21338,109 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
+          "name": "CloudGatewayModel",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudGatewayProvider",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudPlanCapabilities",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudPlanRepository",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudPlanSubmitInput",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudPlanSubmitResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudSession",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudWorktree",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CreateSessionParams",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "DEFAULT_CLOUD_AGENT_SETTINGS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "DiskUsage",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "GatewayHealth",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
           "name": "GatewaySyncResult",
           "kind": "interface",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentGetSettings",
-          "kind": "function",
+          "name": "LastCommit",
+          "kind": "interface",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentSaveSettings",
-          "kind": "function",
+          "name": "LaunchTerminalParams",
+          "kind": "interface",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentGetStatus",
-          "kind": "function",
+          "name": "LocalPlanContext",
+          "kind": "interface",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentListSessions",
-          "kind": "function",
+          "name": "LocalPlanSummary",
+          "kind": "interface",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentListWorktrees",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentListTasks",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CreateSessionParams",
+          "name": "ParsedSemver",
           "kind": "interface",
           "visibility": "public"
         },
@@ -21150,200 +21452,8 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentKillSession",
+          "name": "cloudAgentDeploy",
           "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "LaunchTerminalParams",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentLaunchTerminal",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentSyncGateway",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/commands.rs",
-          "name": "cloud_agent_get_installation_info",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/commands.rs",
-          "name": "cloud_agent_deploy",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "RemoteShell",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "SshRemoteShell",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "DeploymentRegistry",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "classify_payload",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "parse_install_metadata",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "parse_phase_line",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "inspect_installation",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "validate_local_payload",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "read_install_metadata",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "build_status_command",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "run_deploy_process",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "run_deploy_process_async",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentInstallationState",
-          "kind": "enum",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentInstallationInfo",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentDeployPhase",
-          "kind": "enum",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentDeployPhaseStatus",
-          "kind": "enum",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentDeploymentProgress",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentDeploymentResult",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
-          "name": "CloudAgentDeploymentDialog",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "workspacesList",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CLOUD_AGENT_DEPLOY_PROGRESS_EVENT",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentInstallationState",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentInstallationInfo",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentDeployPhase",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentDeployPhaseStatus",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentDeploymentProgress",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentDeploymentResult",
-          "kind": "interface",
           "visibility": "public"
         },
         {
@@ -21354,55 +21464,43 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanContext",
+          "name": "cloudAgentGetSettings",
           "kind": "function",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentDeploy",
+          "name": "cloudAgentGetStatus",
           "kind": "function",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanList",
+          "name": "cloudAgentKillSession",
           "kind": "function",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "mapDeploymentProgress",
+          "name": "cloudAgentLaunchTerminal",
           "kind": "function",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanSubmit",
+          "name": "cloudAgentListSessions",
           "kind": "function",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "ParsedSemver",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "parseSemver",
+          "name": "cloudAgentListTasks",
           "kind": "function",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanCancel",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "compareSemver",
+          "name": "cloudAgentListWorktrees",
           "kind": "function",
           "visibility": "public"
         },
@@ -21414,13 +21512,79 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanCancel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanCapabilities",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanContext",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanSubmit",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentSaveSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentSyncGateway",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "compareSemanticVersions",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "compareSemver",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
           "name": "compareVersions",
           "kind": "variable",
           "visibility": "public"
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "compareSemanticVersions",
+          "name": "extractPrNumber",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatFriendlyDuration",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatGitCheckoutCommand",
           "kind": "function",
           "visibility": "public"
         },
@@ -21432,7 +21596,31 @@
         },
         {
           "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanCapabilities",
+          "name": "formatIssueLabelTail",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatWorkingDirTail",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "mapDeploymentProgress",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "parseSemver",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "workspacesList",
           "kind": "function",
           "visibility": "public"
         }
@@ -21459,6 +21647,8 @@
       "tests": [
         "src/components/CloudAgent/CloudAgent.test.tsx",
         "src/components/CloudAgent/CloudAgentDeploymentDialog.test.tsx",
+        "src/components/CloudAgent/GatewayPanel.test.tsx",
+        "src/components/CloudAgent/components/PrPipelineTab.test.tsx",
         "src/lib/cloudAgent.test.ts",
         "src/lib/cloudAgent.plan.test.ts",
         "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
@@ -21527,26 +21717,6 @@
         },
         {
           "kind": "imports",
-          "from": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx#CloudAgentDeploymentDialog",
-          "to": "src/lib/cloudAgent.ts#cloudAgentGetInstallationInfo"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx#CloudAgentDeploymentDialog",
-          "to": "src/lib/cloudAgent.ts#cloudAgentDeploy"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/hooks/useCloudAgent.ts#useCloudAgent",
-          "to": "src/lib/cloudAgent.ts#cloudAgentGetInstallationInfo"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/components/CloudAgentHeader.tsx#CloudAgentHeader",
-          "to": "src/lib/cloudAgent.ts#formatInstalledAt"
-        },
-        {
-          "kind": "imports",
           "from": "src-tauri/src/cloud_agent/commands.rs#cloud_agent_get_installation_info",
           "to": "src-tauri/src/cloud_agent/deployment.rs#inspect_installation"
         },
@@ -21564,6 +21734,36 @@
           "kind": "imports",
           "from": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog",
           "to": "src/components/CloudAgent/components/LocalPlanForm.tsx#LocalPlanForm"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/ActiveSessionsTab.tsx#ActiveSessionsTab",
+          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/PrPipelineTab.tsx#PrPipelineTab",
+          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx#WorktreesHistoryTab",
+          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/hooks/useCloudAgent.ts#CloudAgentTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx#CloudAgentRuntimeCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
         }
       ],
       "owner_role": "shared",
@@ -21625,8 +21825,12 @@
         "server/onespace-cloud-agent/core/plan_opencode.py",
         "server/onespace-cloud-agent/core/plan_tasks.py",
         "server/onespace-cloud-agent/core/plan_workspace.py",
+        "src/components/CloudAgent/GatewayPanel.test.tsx",
         "src/components/CloudAgent/LocalPlanForm.test.tsx",
         "src/components/CloudAgent/PlanPipeline.test.tsx",
+        "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
+        "src/components/CloudAgent/components/CloudEmptyState.tsx",
+        "src/components/CloudAgent/components/PrPipelineTab.test.tsx",
         "src/lib/cloudAgent.plan.test.ts"
       ],
       "shared_entry": false
