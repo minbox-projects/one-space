@@ -36,6 +36,7 @@ import { UpdateUpgradeModal } from "@/components/UpdateUpgradeModal";
 import { MessageCenter } from "@/components/MessageCenter";
 import { NETWORK_CIRCUIT_MESSAGE } from "@/lib/networkCircuitBreaker";
 import { openExternalUrl } from "@/lib/externalActions";
+import { isBetaVersion, useAppVersion } from "@/lib/appVersion";
 import logoWhite from "@/assets/onespace_logo_white.png";
 import logoBlack from "@/assets/onespace_logo_black.png";
 import { TrayBleLockBridge } from "./TrayBleLockBridge";
@@ -156,6 +157,13 @@ export function AppShell(props: AppController) {
   const { navigationGroups, isNavigationItemActive } = navGroups;
   const { copyRuntimeError } = notificationEffects;
 
+  const appVersion = useAppVersion();
+  const showBetaBadge = isBetaVersion(appVersion);
+  const betaBadgeLabel = t(
+    "betaBadgeTitle",
+    "Beta build — features may be unstable",
+  );
+
   const copySyncError = () => {
     if (syncError) {
       navigator.clipboard.writeText(syncError);
@@ -238,6 +246,16 @@ export function AppShell(props: AppController) {
                   className="w-5 h-5"
                 />
                 <span className="text-lg">OneSpace</span>
+                {showBetaBadge ? (
+                  <span
+                    data-testid="app-beta-badge"
+                    title={betaBadgeLabel}
+                    aria-label={betaBadgeLabel}
+                    className="rounded-md border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-bold tracking-widest text-sky-600 dark:text-sky-400"
+                  >
+                    BETA
+                  </span>
+                ) : null}
                 {import.meta.env.DEV ? (
                   <span
                     data-testid="app-dev-badge"
@@ -271,17 +289,29 @@ export function AppShell(props: AppController) {
               </div>
             </>
           ) : (
-            <Tooltip content="Expand sidebar (⌘B)" side="right">
-              <button
-                type="button"
-                onClick={toggleSidebar}
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                aria-label="Expand sidebar (⌘B)"
-                title="Expand sidebar (⌘B)"
-              >
-                <PanelLeftOpen className="h-4 w-4" />
-              </button>
-            </Tooltip>
+            <div className="flex flex-col items-center gap-1">
+              {showBetaBadge ? (
+                <span
+                  data-testid="app-beta-badge"
+                  title={betaBadgeLabel}
+                  aria-label={betaBadgeLabel}
+                  className="rounded-md border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-widest text-sky-600 dark:text-sky-400"
+                >
+                  BETA
+                </span>
+              ) : null}
+              <Tooltip content="Expand sidebar (⌘B)" side="right">
+                <button
+                  type="button"
+                  onClick={toggleSidebar}
+                  className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label="Expand sidebar (⌘B)"
+                  title="Expand sidebar (⌘B)"
+                >
+                  <PanelLeftOpen className="h-4 w-4" />
+                </button>
+              </Tooltip>
+            </div>
           )}
         </div>
 

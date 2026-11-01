@@ -162,6 +162,8 @@ const settings = {
   "autoUpdateDesc": "启用后，OneSpace 将在后台静默检查并下载更新。",
   "updateCheckFrequency": "检查频率（分钟）",
   "updateCheckFrequencyDesc": "推荐范围：30 到 1440 分钟。",
+  "receiveBetaUpdates": "接收 Beta 更新",
+  "receiveBetaUpdatesDesc": "启用后，更新检查也会安装 Beta 版本；自动更新设置保持不变。",
   "sourceId": "源 ID",
   "sourceName": "源名称",
   "sourceIdRequired": "源 ID 为必填项。",

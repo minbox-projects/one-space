@@ -406,7 +406,8 @@ const common = {
   "noProfiles": "暂无配置文件",
   "isolation": "隔离配置",
   "configDirectory": "配置目录",
-  "permissions": "权限"
+  "permissions": "权限",
+  "betaBadgeTitle": "Beta 版本，功能可能不稳定"
 };
 
 export default common;

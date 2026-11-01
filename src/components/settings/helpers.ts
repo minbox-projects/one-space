@@ -213,6 +213,7 @@ export function normalizeConfigForUi(
     launch_at_login: cfg.launch_at_login ?? false,
     auto_update_enabled: cfg.auto_update_enabled ?? false,
     update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
+    receive_beta_updates: cfg.receive_beta_updates ?? false,
     skills_sync_enabled: cfg.skills_sync_enabled ?? true,
     skills_auto_update_enabled: cfg.skills_auto_update_enabled ?? false,
     skills_sync_interval_minutes: cfg.skills_sync_interval_minutes ?? 60,
@@ -386,6 +387,7 @@ export function getTabSnapshot(
       return {
         auto_update_enabled: !!cfg.auto_update_enabled,
         update_check_interval_minutes: cfg.update_check_interval_minutes ?? 360,
+        receive_beta_updates: !!cfg.receive_beta_updates,
       };
     case "general":
       return {

@@ -411,6 +411,27 @@ export function GeneralSection({
 
           <hr className="border-border/50" />
 
+          <SettingRow
+            label={t("receiveBetaUpdates", "Receive beta updates")}
+            description={t(
+              "receiveBetaUpdatesDesc",
+              "When enabled, update checks can also install beta builds. Automatic update settings stay unchanged.",
+            )}
+          >
+            <Switch
+              aria-label={t("receiveBetaUpdates", "Receive beta updates")}
+              checked={!!config.receive_beta_updates}
+              onCheckedChange={(checked) =>
+                setConfig((prev) => ({
+                  ...prev,
+                  receive_beta_updates: checked,
+                }))
+              }
+            />
+          </SettingRow>
+
+          <hr className="border-border/50" />
+
           <div className="space-y-2">
             <label className="text-sm font-medium text-muted-foreground">
               {t("updateCheckFrequency", "Check Frequency (minutes)")}

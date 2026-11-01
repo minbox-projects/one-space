@@ -89,6 +89,7 @@ export function syncDraftWithLatestForTab(
         next.auto_update_enabled = latestCfg.auto_update_enabled;
         next.update_check_interval_minutes =
           latestCfg.update_check_interval_minutes;
+        next.receive_beta_updates = latestCfg.receive_beta_updates;
         break;
       case "general":
         next.launch_at_login = latestCfg.launch_at_login;

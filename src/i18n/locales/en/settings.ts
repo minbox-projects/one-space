@@ -162,6 +162,8 @@ const settings = {
   "autoUpdateDesc": "When enabled, OneSpace silently checks and downloads updates in background.",
   "updateCheckFrequency": "Check Frequency (minutes)",
   "updateCheckFrequencyDesc": "Recommended range: 30 to 1440 minutes.",
+  "receiveBetaUpdates": "Receive beta updates",
+  "receiveBetaUpdatesDesc": "When enabled, update checks can also install beta builds. Automatic update settings stay unchanged.",
   "sourceId": "Source ID",
   "sourceName": "Source Name",
   "sourceIdRequired": "Source ID is required.",

@@ -94,12 +94,42 @@ export function parseVersion(version: string): [number, number, number] {
   return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
 }
 
+function parsePrereleaseIdentifiers(version: string): string[] | null {
+  const normalized = normalizeVersion(version);
+  const separatorIndex = normalized.indexOf('-');
+  if (separatorIndex < 0) return null;
+  const prerelease = normalized.slice(separatorIndex + 1);
+  if (!prerelease) return null;
+  return prerelease.split('.');
+}
+
 export function isVersionGreater(a: string, b: string): boolean {
   const pa = parseVersion(a);
   const pb = parseVersion(b);
   for (let i = 0; i < 3; i += 1) {
     if (pa[i] > pb[i]) return true;
     if (pa[i] < pb[i]) return false;
+  }
+
+  const preA = parsePrereleaseIdentifiers(a);
+  const preB = parsePrereleaseIdentifiers(b);
+  if (!preA && !preB) return false;
+  if (!preA) return true;
+  if (!preB) return false;
+
+  const length = Math.max(preA.length, preB.length);
+  for (let i = 0; i < length; i += 1) {
+    const idA = preA[i];
+    const idB = preB[i];
+    if (idA === undefined) return false;
+    if (idB === undefined) return true;
+    if (idA === idB) continue;
+    const numericA = /^\d+$/.test(idA);
+    const numericB = /^\d+$/.test(idB);
+    if (numericA && numericB) return Number(idA) > Number(idB);
+    if (numericA) return false;
+    if (numericB) return true;
+    return idA > idB;
   }
   return false;
 }

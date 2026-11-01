@@ -1069,3 +1069,130 @@ describe("SettingsView server-monitor section", () => {
     });
   });
 });
+
+describe("SettingsView beta updates preference", () => {
+  beforeEach(async () => {
+    resetTauriMocks();
+    resetMessageMocks();
+    await i18n.changeLanguage("en");
+
+    let currentConfig = structuredClone(baseStorageConfig);
+
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "get_storage_config") {
+        return structuredClone(currentConfig);
+      }
+      if (command === "save_storage_config") {
+        currentConfig = {
+          ...currentConfig,
+          ...args.config,
+          proxy: args.config.proxy ?? currentConfig.proxy,
+        };
+        return null;
+      }
+      if (command === "get_dashboard_counts") {
+        return {
+          ok: true,
+          data: {},
+          meta: { schema_version: 1, revision: 1 },
+        };
+      }
+      return undefined;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("switch is off when config lacks receive_beta_updates", async () => {
+    renderWithProviders(<SettingsView initialTab="updates" onBack={() => {}} />);
+    const sw = await screen.findByRole("switch", { name: /Receive beta updates/i });
+    expect(sw).not.toBeChecked();
+  });
+
+  it("toggling and saving persists receive_beta_updates true", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="updates" onBack={() => {}} />);
+
+    const sw = await screen.findByRole("switch", { name: /Receive beta updates/i });
+    await user.click(sw);
+
+    await user.click(screen.getByRole("button", { name: /Save Settings|保存设置/ }));
+    const confirmButtons = screen.getAllByRole("button", { name: /Save|保存/ });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("save_storage_config", expect.objectContaining({
+        config: expect.objectContaining({ receive_beta_updates: true }),
+      }));
+    });
+  });
+
+  it("reloading shows switch on after save", async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderWithProviders(<SettingsView initialTab="updates" onBack={() => {}} />);
+
+    const sw = await screen.findByRole("switch", { name: /Receive beta updates/i });
+    await user.click(sw);
+
+    await user.click(screen.getByRole("button", { name: /Save Settings|保存设置/ }));
+    const confirmButtons = screen.getAllByRole("button", { name: /Save|保存/ });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("save_storage_config", expect.anything());
+    });
+
+    unmount();
+
+    renderWithProviders(<SettingsView initialTab="updates" onBack={() => {}} />);
+    const sw2 = await screen.findByRole("switch", { name: /Receive beta updates/i });
+    expect(sw2).toBeChecked();
+  });
+
+  it("toggling only beta keeps auto and interval unchanged", async () => {
+    // seed existing values
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_storage_config") {
+        return { ...structuredClone(baseStorageConfig), auto_update_enabled: true, update_check_interval_minutes: 720 };
+      }
+      if (command === "save_storage_config") {
+        return null;
+      }
+      return undefined;
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="updates" onBack={() => {}} />);
+
+    const sw = await screen.findByRole("switch", { name: /Receive beta updates/i });
+    await user.click(sw);
+
+    await user.click(screen.getByRole("button", { name: /Save Settings|保存设置/ }));
+    const confirmButtons = screen.getAllByRole("button", { name: /Save|保存/ });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "save_storage_config") as
+        | [string, { config: Record<string, unknown> }]
+        | undefined;
+      expect(call).toBeTruthy();
+      const config = call![1].config;
+      expect(config.auto_update_enabled).toBe(true);
+      expect(config.update_check_interval_minutes).toBe(720);
+      expect(config.receive_beta_updates).toBe(true);
+    });
+  });
+
+  it("toggling beta marks updates tab dirty", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="updates" onBack={() => {}} />);
+
+    const sw = await screen.findByRole("switch", { name: /Receive beta updates/i });
+    await user.click(sw);
+
+    const saveBtn = screen.getByRole("button", { name: /Save Settings|保存设置/ });
+    expect(saveBtn).not.toBeDisabled();
+  });
+});

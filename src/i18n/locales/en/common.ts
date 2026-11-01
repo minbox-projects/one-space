@@ -406,7 +406,8 @@ const common = {
   "noProfiles": "No profiles configured",
   "isolation": "Isolation",
   "configDirectory": "Config Directory",
-  "permissions": "Permissions"
+  "permissions": "Permissions",
+  "betaBadgeTitle": "Beta build — features may be unstable"
 };
 
 export default common;

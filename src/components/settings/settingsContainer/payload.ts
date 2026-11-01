@@ -49,6 +49,7 @@ export function buildPayloadForTab(
       next.auto_update_enabled = draftCfg.auto_update_enabled;
       next.update_check_interval_minutes =
         draftCfg.update_check_interval_minutes;
+      next.receive_beta_updates = draftCfg.receive_beta_updates;
       break;
     case "general":
       next.launch_at_login = draftCfg.launch_at_login;

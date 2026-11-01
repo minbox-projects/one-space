@@ -386,3 +386,18 @@ describe('updater module', () => {
     });
   });
 });
+
+describe('prerelease-aware comparison (AC-014)', () => {
+  it('orders stable above own beta, higher beta above lower, beta above older stable', () => {
+    expect(isVersionGreater('0.1.58', '0.1.58-beta.2')).toBe(true);
+    expect(isVersionGreater('0.1.58-beta.10', '0.1.58-beta.2')).toBe(true);
+    expect(isVersionGreater('0.1.58-beta.2', '0.1.57')).toBe(true);
+  });
+
+  it('returns false for reverse pairs and equal versions', () => {
+    expect(isVersionGreater('0.1.58-beta.2', '0.1.58')).toBe(false);
+    expect(isVersionGreater('0.1.58-beta.2', '0.1.58-beta.10')).toBe(false);
+    expect(isVersionGreater('0.1.57', '0.1.58-beta.2')).toBe(false);
+    expect(isVersionGreater('0.1.58-beta.2', '0.1.58-beta.2')).toBe(false);
+  });
+});

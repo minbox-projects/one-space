@@ -120,6 +120,7 @@ export interface StorageConfig {
   launch_at_login?: boolean;
   auto_update_enabled?: boolean;
   update_check_interval_minutes?: number;
+  receive_beta_updates?: boolean;
   update_last_checked_at?: number;
   skills_sync_enabled?: boolean;
   skills_auto_update_enabled?: boolean;
