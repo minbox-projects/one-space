@@ -221,4 +221,19 @@ if ! python3 "$RELEASE_TOOL" tag 1.2.4-beta.1 --dry-run >/tmp/rt8t.out 2>&1; the
 fi
 ok "annotated prerelease tag dry-run exits 0"
 
+# ---------------------------------------------------------------------------
+# REQ-001: beta rejects mismatched release files without writing
+# ---------------------------------------------------------------------------
+REPO9="$WORK_DIR/repo9"
+make_repo "$REPO9" "1.2.3" || fail "could not create repo9"
+printf '[[package]]\nname = "OneSpace"\nversion = "1.2.2"\n' > "$REPO9/src-tauri/Cargo.lock" || fail "write mismatched lock"
+cd "$REPO9" || fail "cd repo9"
+SNAP9="$WORK_DIR/snap9"
+snapshot_files "$REPO9" "$SNAP9"
+if python3 "$RELEASE_TOOL" beta 1.2.4 >/tmp/rt9.out 2>&1; then
+  fail "beta must reject mismatched release files"
+fi
+files_unchanged "$REPO9" "$SNAP9" || fail "files changed on rejected mismatched beta"
+ok "beta rejects mismatched release files without writing"
+
 printf 'PASS - release_tool.test.sh: all behavior checks passed\n'
