@@ -201,6 +201,7 @@ pub struct StorageConfig {
 
     pub launch_at_login: Option<bool>,
     pub auto_update_enabled: Option<bool>,
+    pub receive_beta_updates: Option<bool>,
     pub update_check_interval_minutes: Option<u64>,
     pub update_last_checked_at: Option<i64>,
     pub update_ignored_version: Option<String>,
@@ -234,6 +235,13 @@ pub struct StorageConfig {
     pub is_encrypted: bool,
 }
 
+impl StorageConfig {
+    /// Whether update checks may include beta prereleases.
+    pub(crate) fn receive_beta_updates_enabled(&self) -> bool {
+        self.receive_beta_updates.unwrap_or(false)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeviceConfig {
     pub storage_type: String,
@@ -263,6 +271,7 @@ pub struct DeviceConfig {
 
     pub launch_at_login: Option<bool>,
     pub auto_update_enabled: Option<bool>,
+    pub receive_beta_updates: Option<bool>,
     pub update_check_interval_minutes: Option<u64>,
     pub update_last_checked_at: Option<i64>,
     pub update_ignored_version: Option<String>,
@@ -297,6 +306,7 @@ impl Default for DeviceConfig {
             proxy: Some(ProxyConfig::default()),
             launch_at_login: Some(false),
             auto_update_enabled: Some(false),
+            receive_beta_updates: Some(false),
             update_check_interval_minutes: Some(360),
             update_last_checked_at: None,
             update_ignored_version: None,
@@ -362,6 +372,7 @@ pub(super) fn storage_from_device(device: DeviceConfig) -> StorageConfig {
         proxy: device.proxy,
         launch_at_login: device.launch_at_login,
         auto_update_enabled: device.auto_update_enabled,
+        receive_beta_updates: device.receive_beta_updates,
         update_check_interval_minutes: device.update_check_interval_minutes,
         update_last_checked_at: device.update_last_checked_at,
         update_ignored_version: device.update_ignored_version,
@@ -413,6 +424,7 @@ pub(super) fn device_from_storage(config: &StorageConfig) -> DeviceConfig {
         proxy: config.proxy.clone(),
         launch_at_login: config.launch_at_login,
         auto_update_enabled: config.auto_update_enabled,
+        receive_beta_updates: config.receive_beta_updates,
         update_check_interval_minutes: config.update_check_interval_minutes,
         update_last_checked_at: config.update_last_checked_at,
         update_ignored_version: config.update_ignored_version.clone(),

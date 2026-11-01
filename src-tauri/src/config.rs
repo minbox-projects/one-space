@@ -967,4 +967,57 @@ mod tests {
             "the release gateway config must be unchanged"
         );
     }
+
+    #[test]
+    fn receive_beta_updates_defaults_false() {
+        let storage: StorageConfig =
+            serde_json::from_str(r#"{"storage_type":"local"}"#).expect("storage config");
+        assert!(storage.receive_beta_updates.is_none());
+        assert!(!storage.receive_beta_updates_enabled());
+
+        let device: DeviceConfig =
+            serde_json::from_str(r#"{"storage_type":"local"}"#).expect("device config");
+        let storage2 = super::types::storage_from_device(device);
+        assert!(storage2.receive_beta_updates.is_none());
+        assert!(!storage2.receive_beta_updates_enabled());
+
+        assert!(!StorageConfig::default().receive_beta_updates_enabled());
+    }
+
+    #[test]
+    fn receive_beta_updates_round_trips() {
+        let device_json = r#"{"storage_type":"local","receive_beta_updates":true}"#;
+        let device: DeviceConfig =
+            serde_json::from_str(device_json).expect("device config with field");
+        assert_eq!(device.receive_beta_updates, Some(true));
+
+        let storage = super::types::storage_from_device(device);
+        let device2 = super::types::device_from_storage(&storage);
+        assert_eq!(device2.receive_beta_updates, Some(true));
+        assert!(storage.receive_beta_updates_enabled());
+
+        let storage_json = r#"{"storage_type":"local","receive_beta_updates":true}"#;
+        let storage2: StorageConfig =
+            serde_json::from_str(storage_json).expect("storage config with field");
+        assert_eq!(storage2.receive_beta_updates, Some(true));
+        assert!(storage2.receive_beta_updates_enabled());
+    }
+
+    #[test]
+    fn app_dir_for_release_has_no_beta_specific_directory() {
+        let home = PathBuf::from(format!(
+            "/tmp/onespace-release-home-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let dir = app_dir_for(&home, false);
+        assert_eq!(dir, home.join(".config").join("onespace"));
+        let relative = dir
+            .strip_prefix(&home)
+            .expect("release app dir must be under home");
+        assert!(
+            !relative.to_string_lossy().contains("beta"),
+            "the release profile must not use a beta-specific directory: {relative:?}"
+        );
+    }
 }
+

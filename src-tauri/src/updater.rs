@@ -8,13 +8,162 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 
-use serde::Serialize;
+use semver::Version;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// Event carrying native updater download progress to the frontend facade.
 pub const APP_UPDATER_DOWNLOAD_EVENT: &str = "app-updater-download-event";
+
+const GITHUB_RELEASES_URL: &str =
+    "https://api.github.com/repos/minbox-projects/one-space/releases?per_page=100";
+const BETA_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+const LATEST_MANIFEST_ASSET: &str = "latest.json";
+
+#[derive(Deserialize)]
+struct GithubRelease {
+    #[serde(default)]
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Deserialize)]
+struct GithubReleaseAsset {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct UpdaterPluginConfig {
+    #[serde(default)]
+    endpoints: Vec<url::Url>,
+}
+
+/// Parses a release tag into the semantic version it represents.
+///
+/// Accepted forms are `vX.Y.Z` and `vX.Y.Z-beta.N`; build metadata and other
+/// prerelease identifiers are not release tags for this application.
+fn release_version(tag: &str) -> Option<Version> {
+    let version = Version::parse(tag.strip_prefix('v')?).ok()?;
+    if !version.build.is_empty() {
+        return None;
+    }
+    if !version.pre.is_empty() {
+        let beta_number = version.pre.as_str().strip_prefix("beta.")?;
+        if beta_number.is_empty() || !beta_number.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+    }
+    Some(version)
+}
+
+/// Selects the highest non-draft release that publishes `latest.json`.
+///
+/// The GitHub releases response is a JSON array. Entries without a valid
+/// release tag or without a `latest.json` asset are skipped, and semantic
+/// version precedence ranks a stable release above its prereleases. A
+/// malformed body or a non-array body is an error.
+pub(crate) fn select_beta_release_tag(releases_json: &str) -> Result<Option<String>, String> {
+    let body: serde_json::Value = serde_json::from_str(releases_json).map_err(|e| e.to_string())?;
+    let releases = body
+        .as_array()
+        .ok_or_else(|| "GitHub releases response is not an array".to_string())?;
+
+    let mut best: Option<(Version, String)> = None;
+    for release in releases {
+        let Ok(release) = serde_json::from_value::<GithubRelease>(release.clone()) else {
+            continue;
+        };
+        if release.draft {
+            continue;
+        }
+        if !release
+            .assets
+            .iter()
+            .any(|asset| asset.name == LATEST_MANIFEST_ASSET)
+        {
+            continue;
+        }
+        let Some(version) = release_version(&release.tag_name) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .map_or(true, |(current, _)| version > *current)
+        {
+            best = Some((version, release.tag_name));
+        }
+    }
+
+    Ok(best.map(|(_, tag)| tag))
+}
+
+/// Builds the update manifest URL for a valid release tag.
+pub(crate) fn beta_release_endpoint(tag: &str) -> Result<url::Url, String> {
+    if release_version(tag).is_none() {
+        return Err(format!("Invalid release tag: {tag}"));
+    }
+    url::Url::parse(&format!(
+        "https://github.com/minbox-projects/one-space/releases/download/{tag}/{LATEST_MANIFEST_ASSET}"
+    ))
+    .map_err(|e| e.to_string())
+}
+
+/// Orders the endpoints for an update check: the selected beta endpoint first
+/// when beta updates are enabled, followed by the configured stable endpoints.
+pub(crate) fn updater_endpoint_plan(
+    receive_beta_updates: bool,
+    beta_endpoint: Option<url::Url>,
+    stable_endpoints: Vec<url::Url>,
+) -> Vec<url::Url> {
+    let mut endpoints = Vec::new();
+    if receive_beta_updates {
+        if let Some(beta_endpoint) = beta_endpoint {
+            endpoints.push(beta_endpoint);
+        }
+    }
+    endpoints.extend(stable_endpoints);
+    endpoints
+}
+
+/// Checks endpoints sequentially and returns the first available update.
+///
+/// A missing update or an error moves on to the next endpoint. When no
+/// endpoint provides an update, any endpoint that reported no update makes the
+/// result `Ok(None)`; the last error is returned only when every endpoint
+/// failed.
+pub(crate) async fn check_endpoints_in_order<T, F, Fut>(
+    endpoints: Vec<url::Url>,
+    mut check: F,
+) -> Result<Option<T>, String>
+where
+    F: FnMut(url::Url) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<T>, String>>,
+{
+    let mut last_error = None;
+    let mut saw_no_update = false;
+    for endpoint in endpoints {
+        match check(endpoint).await {
+            Ok(Some(value)) => return Ok(Some(value)),
+            Ok(None) => saw_no_update = true,
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    if saw_no_update {
+        return Ok(None);
+    }
+    match last_error {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
+}
 
 /// Typed metadata for an available release.
 #[derive(Clone, Debug, Serialize)]
@@ -151,6 +300,67 @@ fn configure_current_transport(builder: reqwest::ClientBuilder) -> reqwest::Clie
         .unwrap_or_else(|_| reqwest::Client::builder().no_proxy())
 }
 
+/// Returns the stable endpoints declared by the updater plugin configuration.
+fn configured_stable_endpoints(app: &AppHandle) -> Result<Vec<url::Url>, String> {
+    let plugin_config = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .cloned()
+        .ok_or_else(|| "Updater plugin configuration is missing".to_string())?;
+    let config: UpdaterPluginConfig = serde_json::from_value(plugin_config)
+        .map_err(|_| "Updater plugin endpoints are invalid".to_string())?;
+    if config.endpoints.is_empty() {
+        return Err("Updater plugin has no stable endpoint".to_string());
+    }
+    Ok(config.endpoints)
+}
+
+/// Resolves the update manifest of the highest eligible GitHub release.
+///
+/// The request uses the current managed proxy and is bounded by a fixed
+/// timeout; a failed lookup or an empty result simply leaves the check on the
+/// stable channel.
+async fn selected_beta_endpoint(app: &AppHandle) -> Result<Option<url::Url>, String> {
+    let client = crate::proxy::apply_current_proxy_to_builder(
+        reqwest::Client::builder()
+            .user_agent("OneSpace")
+            .timeout(BETA_LOOKUP_TIMEOUT),
+    )
+    .map_err(|_| "Failed to prepare beta update transport".to_string())?
+    .build()
+    .map_err(|_| "Failed to prepare beta update transport".to_string())?;
+
+    let response = client
+        .get(GITHUB_RELEASES_URL)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub releases request failed with status {}",
+            response.status()
+        ));
+    }
+
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    let tag = select_beta_release_tag(&body)?;
+    tag.map(|tag| beta_release_endpoint(&tag)).transpose()
+}
+
+/// Checks one endpoint through the current managed proxy transport.
+async fn check_endpoint(app: AppHandle, endpoint: url::Url) -> Result<Option<Update>, String> {
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| error.to_string())?
+        .configure_client(configure_current_transport)
+        .build()
+        .map_err(|error| error.to_string())?;
+    updater.check().await.map_err(|error| error.to_string())
+}
+
 /// Checks the configured endpoint through the current managed proxy transport.
 #[tauri::command]
 pub async fn app_updater_check(app: AppHandle) -> Result<Option<AppUpdateMetadata>, String> {
@@ -160,13 +370,28 @@ pub async fn app_updater_check(app: AppHandle) -> Result<Option<AppUpdateMetadat
         .build()
         .map_err(|_| "Failed to prepare updater transport".to_string())?;
 
-    let updater = app
-        .updater_builder()
-        .configure_client(configure_current_transport)
-        .build()
-        .map_err(|error| error.to_string())?;
+    let receive_beta_updates = crate::config::get_config()
+        .map(|config| config.receive_beta_updates_enabled())
+        .unwrap_or(false);
 
-    let update = updater.check().await.map_err(|error| error.to_string())?;
+    let update = if receive_beta_updates {
+        let beta_endpoint = selected_beta_endpoint(&app).await.ok().flatten();
+        let stable_endpoints = configured_stable_endpoints(&app).unwrap_or_default();
+        let endpoints = updater_endpoint_plan(true, beta_endpoint, stable_endpoints);
+        check_endpoints_in_order(endpoints, |endpoint| {
+            let app = app.clone();
+            async move { check_endpoint(app, endpoint).await }
+        })
+        .await?
+    } else {
+        let updater = app
+            .updater_builder()
+            .configure_client(configure_current_transport)
+            .build()
+            .map_err(|error| error.to_string())?;
+        updater.check().await.map_err(|error| error.to_string())?
+    };
+
     let state = app.state::<AppUpdaterState>();
 
     match update {

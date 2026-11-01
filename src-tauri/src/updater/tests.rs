@@ -319,3 +319,144 @@ async fn updater_shutdown_clears_owned_state() {
 
     publish_direct();
 }
+
+#[tokio::test]
+async fn beta_selection_ac011() {
+    let json = r#"[
+      {"tag_name":"v0.1.57","draft":false,"assets":[{"name":"latest.json"}]},
+      {"tag_name":"v0.1.58-beta.1","draft":false,"assets":[{"name":"latest.json"}]},
+      {"tag_name":"v0.1.58-beta.2","draft":false,"assets":[{"name":"latest.json"}]},
+      {"tag_name":"v0.1.59-beta.1","draft":true,"assets":[{"name":"latest.json"}]}
+    ]"#;
+    assert_eq!(
+        select_beta_release_tag(json).unwrap(),
+        Some("v0.1.58-beta.2".to_string())
+    );
+    let url = beta_release_endpoint("v0.1.58-beta.2").unwrap();
+    assert_eq!(
+        url.as_str(),
+        "https://github.com/minbox-projects/one-space/releases/download/v0.1.58-beta.2/latest.json"
+    );
+}
+
+#[test]
+fn beta_selection_stable_outranks_prerelease() {
+    let json = r#"[
+      {"tag_name":"v0.1.58","draft":false,"assets":[{"name":"latest.json"}]},
+      {"tag_name":"v0.1.58-beta.2","draft":false,"assets":[{"name":"latest.json"}]},
+      {"tag_name":"v0.1.60","draft":false,"assets":[{"name":"other.json"}]},
+      {"tag_name":"nightly","draft":false,"assets":[{"name":"latest.json"}]}
+    ]"#;
+    assert_eq!(
+        select_beta_release_tag(json).unwrap(),
+        Some("v0.1.58".to_string())
+    );
+}
+
+#[test]
+fn beta_selection_malformed_empty_and_invalid_tag() {
+    assert!(select_beta_release_tag("{not json").is_err());
+    assert!(select_beta_release_tag("\"not an array\"").is_err());
+    assert_eq!(select_beta_release_tag("[]").unwrap(), None);
+    assert!(beta_release_endpoint("nightly").is_err());
+}
+
+#[test]
+fn beta_endpoint_plan_ac012() {
+    let beta = url::Url::parse("https://example.com/beta/latest.json").unwrap();
+    let stable = vec![url::Url::parse("https://example.com/stable/latest.json").unwrap()];
+
+    assert_eq!(
+        updater_endpoint_plan(false, Some(beta.clone()), stable.clone()),
+        stable.clone()
+    );
+
+    let mut expected = vec![beta.clone()];
+    expected.extend(stable.clone());
+    assert_eq!(
+        updater_endpoint_plan(true, Some(beta.clone()), stable.clone()),
+        expected
+    );
+
+    assert_eq!(updater_endpoint_plan(true, None, stable.clone()), stable.clone());
+}
+
+#[tokio::test]
+async fn beta_fallback_errors_then_stable_some() {
+    let beta_url = url::Url::parse("https://example.com/beta/latest.json").unwrap();
+    let stable_url = url::Url::parse("https://example.com/stable/latest.json").unwrap();
+    let endpoints = vec![beta_url.clone(), stable_url.clone()];
+    let mut attempted = Vec::new();
+    let result: Result<Option<String>, String> = check_endpoints_in_order(endpoints, |url: url::Url| {
+        let is_beta = url == beta_url;
+        attempted.push(url.clone());
+        async move {
+            if is_beta {
+                Err("beta boom".to_string())
+            } else {
+                Ok(Some("stable".to_string()))
+            }
+        }
+    })
+    .await;
+    assert_eq!(result.unwrap(), Some("stable".to_string()));
+    assert_eq!(attempted, vec![beta_url, stable_url]);
+}
+
+#[tokio::test]
+async fn beta_fallback_none_then_stable_some() {
+    let beta_url = url::Url::parse("https://example.com/beta/latest.json").unwrap();
+    let stable_url = url::Url::parse("https://example.com/stable/latest.json").unwrap();
+    let endpoints = vec![beta_url.clone(), stable_url.clone()];
+    let result: Result<Option<String>, String> = check_endpoints_in_order(endpoints, |url: url::Url| {
+        let is_beta = url == beta_url;
+        async move {
+            if is_beta {
+                Ok(None)
+            } else {
+                Ok(Some("stable".to_string()))
+            }
+        }
+    })
+    .await;
+    assert_eq!(result.unwrap(), Some("stable".to_string()));
+}
+
+#[tokio::test]
+async fn beta_fallback_errors_then_stable_none() {
+    let beta_url = url::Url::parse("https://example.com/beta/latest.json").unwrap();
+    let stable_url = url::Url::parse("https://example.com/stable/latest.json").unwrap();
+    let endpoints = vec![beta_url.clone(), stable_url.clone()];
+    let result: Result<Option<String>, String> = check_endpoints_in_order(endpoints, |url: url::Url| {
+        let is_beta = url == beta_url;
+        async move {
+            if is_beta {
+                Err("beta boom".to_string())
+            } else {
+                Ok(None)
+            }
+        }
+    })
+    .await;
+    assert_eq!(result.unwrap(), None);
+}
+
+#[tokio::test]
+async fn beta_fallback_both_error() {
+    let beta_url = url::Url::parse("https://example.com/beta/latest.json").unwrap();
+    let stable_url = url::Url::parse("https://example.com/stable/latest.json").unwrap();
+    let endpoints = vec![beta_url.clone(), stable_url.clone()];
+    let result: Result<Option<String>, String> = check_endpoints_in_order(endpoints, |url: url::Url| {
+        let is_beta = url == beta_url;
+        async move {
+            if is_beta {
+                Err("beta boom".to_string())
+            } else {
+                Err("stable boom".to_string())
+            }
+        }
+    })
+    .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), "stable boom");
+}
