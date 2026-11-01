@@ -8188,3 +8188,94 @@ async fn pool_zen_beam_free_forwards_reasoning_history_unchanged() {
         .expect("the assistant message without reasoning_content must still lack the key");
     assert_eq!(missing["content"], "There are three red tiles.");
 }
+
+#[tokio::test]
+async fn ordinary_route_preserves_and_fills_reasoning_content() {
+    let _home = temp_home("ordinary-reasoning-history-fill");
+    let port = free_port().await;
+    let tag = tag();
+    let provider_id = format!("p-{tag}");
+    let (provider_url, log) = spawn_mock_upstream(|captured| {
+        let body: Value = serde_json::from_slice(&captured.body).unwrap_or(Value::Null);
+        let bad = body["messages"]
+            .as_array()
+            .map(|messages| {
+                messages.iter().any(|message| {
+                    if message["role"] != "assistant" {
+                        return false;
+                    }
+                    match message.get("reasoning_content") {
+                        None => true,
+                        Some(Value::Null) => true,
+                        Some(Value::String(text)) => text.trim().is_empty(),
+                        Some(_) => true,
+                    }
+                })
+            })
+            .unwrap_or(false);
+        if bad {
+            MockReply::Json(400, reasoning_history_error(REASONING_HISTORY_ERROR))
+        } else {
+            reasoning_history_success(captured)
+        }
+    })
+    .await;
+
+    let provider = pool_provider(
+        &provider_id,
+        "Reflection Provider",
+        &provider_url,
+        vec![pool_key("key-default", "Default", "sk-upstream", true)],
+        vec![provider_mapping(
+            "local-reflection",
+            "reflection/beam:free",
+            "chat_completions",
+        )],
+    );
+    write_raw_gateway_config(&pool_config_v3(port, vec![provider], vec![]));
+    start_server(None).await.expect("start the listener");
+
+    let messages = reasoning_history_messages(false);
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        &[("authorization", "Bearer local-key")],
+        Some(json!({"model": "local-reflection", "messages": messages})),
+    )
+    .await;
+
+    let captured = log.lock().unwrap().clone();
+    stop_server().await.expect("stop the listener");
+
+    assert_eq!(status, 200, "ordinary route must succeed after filling reasoning: {text}");
+    assert_eq!(
+        captured.len(),
+        1,
+        "mock upstream must be called exactly once: {}", captured.len()
+    );
+    let forwarded: Value =
+        serde_json::from_slice(&captured[0].body).expect("captured chat request");
+    let forwarded_messages = forwarded["messages"]
+        .as_array()
+        .expect("forwarded messages");
+    for message in forwarded_messages {
+        if message["role"] == "assistant" {
+            let reasoning = message
+                .get("reasoning_content")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            assert!(
+                !reasoning.trim().is_empty(),
+                "every forwarded assistant message must carry non-empty reasoning_content: {forwarded}"
+            );
+        }
+    }
+    assert_eq!(
+        forwarded_messages[1]["reasoning_content"],
+        "SAFE_FIXTURE_existing_nonempty_reasoning",
+        "the existing non-empty reasoning_content must be preserved exactly: {forwarded}"
+    );
+
+    let _ = tag;
+}

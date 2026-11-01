@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/bug-fix/2026-10-31-reflection-beam-historical-reasoning-repair.md
-2026-10-31-reflection-beam-historical-reasoning-repair.md: e3e1608cd9f6834a5d5d2986bf256a46eb87d659
-2026-10-31-reflection-beam-historical-reasoning-repair.zh.md: 1485e8e04d354fd1903063607ae0646e20db7bbc
+2026-10-31-reflection-beam-historical-reasoning-repair.md: 5b69b2ac68b62e631cc9ade8768a26a9e391aff0
+2026-10-31-reflection-beam-historical-reasoning-repair.zh.md: 622e0950d89a388ef4dfc683338964ee76225e38

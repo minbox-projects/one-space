@@ -20332,7 +20332,7 @@
       "depends_on": [],
       "relations": [],
       "owner_role": "backend",
-      "responsibility": "Bounded Reflection/Beam historical reasoning repair for prepared Chat model-pool candidates before forwarding",
+      "responsibility": "Bounded Reflection/Beam historical reasoning repair for Chat Completions requests whose resolved upstream model is in the reflection/ namespace, covering ordinary routes and prepared model-pool candidates",
       "read_scope": [
         "src-tauri/src/ai_gateway/forwarding.rs",
         "src-tauri/src/ai_gateway/model_pools.rs",
