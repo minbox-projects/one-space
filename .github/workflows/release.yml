@@ -99,14 +99,32 @@ jobs:
       - name: build frontend
         run: npm run build
 
+      - name: Resolve release range
+        id: release_range
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Prefer python3, but fall back to python on runners that only expose it.
+          if command -v python3 >/dev/null 2>&1; then
+            PYTHON=python3
+          else
+            PYTHON=python
+          fi
+
+          previous_tag="$("$PYTHON" skills/onespace-release/scripts/release_tool.py previous-tag "${{ github.ref_name }}")"
+          is_prerelease="$("$PYTHON" skills/onespace-release/scripts/release_tool.py is-prerelease "${{ github.ref_name }}")"
+
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
+
       - name: Generate changelog
         id: changelog
         shell: bash
         run: |
           # 获取当前触发发版的标签
           CURRENT_TAG=${{ github.ref_name }}
-          # 获取上一个标签，如果不存在则为空
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 $CURRENT_TAG^ 2>/dev/null || echo "")
+          # 使用解析出的上一个标签，如果不存在则为空
+          PREVIOUS_TAG="${{ steps.release_range.outputs.previous_tag }}"
           
           echo "body<<EOF" >> $GITHUB_OUTPUT
           echo "## 更新内容 / What's Changed" >> $GITHUB_OUTPUT
@@ -174,7 +192,7 @@ jobs:
           releaseName: 'OneSpace ${{ github.ref_name }}'
           releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ steps.release_range.outputs.is_prerelease == 'true' }}
           args: --target ${{ matrix.target }}
 
       - name: verify signed macOS release artifact

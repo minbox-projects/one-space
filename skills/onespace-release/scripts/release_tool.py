@@ -5,6 +5,9 @@ Features:
 - show: display current versions in project release files
 - validate: ensure versions are consistent
 - bump: update versions in release files
+- beta: start or advance a beta version for an explicit base
+- previous-tag: resolve the tag preceding a release tag
+- is-prerelease: report whether a release tag is a prerelease
 - tag: run preflight checks then create annotated git tag (optional push)
 """
 
@@ -17,10 +20,14 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple, Union
 
 
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+BASE_VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+BETA_VERSION_RE = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-beta\.(0|[1-9]\d*)$"
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +35,53 @@ class ReleaseTarget:
     key: str
     path: Path
     kind: str
+
+
+@dataclass(frozen=True)
+class SemVer:
+    major: int
+    minor: int
+    patch: int
+    prerelease: Tuple[Union[int, str], ...] = ()
+
+    @property
+    def is_prerelease(self) -> bool:
+        return bool(self.prerelease)
+
+
+def parse_semver(value: str) -> Optional[SemVer]:
+    if not SEMVER_RE.match(value):
+        return None
+
+    core_text = value.split("+", 1)[0]
+    version_text, _, prerelease_text = core_text.partition("-")
+    major, minor, patch = (int(part) for part in version_text.split("."))
+    prerelease: Tuple[Union[int, str], ...] = ()
+    if prerelease_text:
+        prerelease = tuple(
+            int(part) if part.isdigit() else part
+            for part in prerelease_text.split(".")
+        )
+    return SemVer(major, minor, patch, prerelease)
+
+
+def semver_key(version: SemVer) -> Tuple[object, ...]:
+    prerelease: Tuple[object, ...]
+    if version.prerelease:
+        identifiers = tuple(
+            (0, identifier) if isinstance(identifier, int) else (1, identifier)
+            for identifier in version.prerelease
+        )
+        prerelease = (0, identifiers)
+    else:
+        prerelease = (1,)
+    return (version.major, version.minor, version.patch, prerelease)
+
+
+def parse_release_tag(tag: str) -> Optional[SemVer]:
+    if not tag.startswith("v"):
+        return None
+    return parse_semver(tag[1:])
 
 
 def repo_root(start: Path) -> Path:
@@ -173,6 +227,38 @@ def bump_versions(targets: List[ReleaseTarget], version: str, dry_run: bool) -> 
             raise ValueError(f"Unsupported target kind: {target.kind}")
 
 
+def compute_beta_version(current: str, base: str) -> str:
+    base_match = BASE_VERSION_RE.match(base)
+    if not base_match:
+        raise ValueError(f"Invalid beta base: {base} (expected X.Y.Z)")
+
+    target_core = tuple(int(base_match.group(index)) for index in (1, 2, 3))
+
+    beta_match = BETA_VERSION_RE.match(current)
+    if beta_match:
+        current_core = tuple(int(beta_match.group(index)) for index in (1, 2, 3))
+        beta_number = int(beta_match.group(4))
+        if target_core < current_core:
+            raise ValueError(
+                f"Target base {base} is lower than current beta base "
+                f"{'.'.join(str(part) for part in current_core)}"
+            )
+        if target_core == current_core:
+            return f"{base}-beta.{beta_number + 1}"
+        return f"{base}-beta.1"
+
+    stable_match = BASE_VERSION_RE.match(current)
+    if stable_match:
+        current_core = tuple(int(stable_match.group(index)) for index in (1, 2, 3))
+        if target_core <= current_core:
+            raise ValueError(
+                f"Target base {base} must be greater than current stable version {current}"
+            )
+        return f"{base}-beta.1"
+
+    raise ValueError(f"Current version {current} is not a stable or beta version")
+
+
 def run_git(args: List[str], root: Path) -> None:
     cmd = ["git", *args]
     try:
@@ -196,6 +282,27 @@ def run_git_capture(args: List[str], root: Path) -> str:
         detail = f": {stderr}" if stderr else ""
         raise RuntimeError(f"git command failed: {' '.join(cmd)}{detail}") from exc
     return completed.stdout
+
+
+def git_ref_exists(root: Path, ref: str) -> bool:
+    completed = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+    )
+    return completed.returncode == 0
+
+
+def reachable_release_tags(root: Path, tag: str) -> List[str]:
+    merged_ref = tag if git_ref_exists(root, tag) else "HEAD"
+    output = run_git_capture(["tag", "--merged", merged_ref], root)
+    tags: List[str] = []
+    for line in output.splitlines():
+        name = line.strip()
+        if name and parse_release_tag(name) is not None:
+            tags.append(name)
+    return tags
 
 
 def create_tag(root: Path, tag_name: str, message: str, push: bool, dry_run: bool) -> None:
@@ -275,6 +382,63 @@ def cmd_bump(root: Path, version: str, dry_run: bool) -> int:
     return cmd_validate(root)
 
 
+def cmd_beta(root: Path, base: str, dry_run: bool) -> int:
+    targets = release_targets(root)
+    versions = read_versions(targets)
+    errors = validate_versions(versions)
+
+    if errors:
+        print("Beta update failed:")
+        for err in errors:
+            print(f"- {err}")
+        return 1
+
+    current = next(iter(versions.values()))
+    next_version = compute_beta_version(current, base)
+
+    if dry_run:
+        print(f"[dry-run] Next beta version: {next_version}")
+        return 0
+
+    bump_versions(targets, next_version, dry_run=False)
+    print(f"Updated versions to {next_version}")
+    return cmd_validate(root)
+
+
+def cmd_previous_tag(root: Path, tag: str) -> int:
+    current = parse_release_tag(tag)
+    if current is None:
+        print(f"Invalid release tag: {tag}", file=sys.stderr)
+        return 1
+
+    current_key = semver_key(current)
+    candidates: List[Tuple[str, SemVer]] = []
+    for name in reachable_release_tags(root, tag):
+        candidate = parse_release_tag(name)
+        if candidate is None:
+            continue
+        if semver_key(candidate) >= current_key:
+            continue
+        if not current.is_prerelease and candidate.is_prerelease:
+            continue
+        candidates.append((name, candidate))
+
+    if candidates:
+        previous_name, _ = max(candidates, key=lambda item: semver_key(item[1]))
+        print(previous_name)
+    return 0
+
+
+def cmd_is_prerelease(tag: str) -> int:
+    version = parse_release_tag(tag)
+    if version is None:
+        print(f"Invalid release tag: {tag}", file=sys.stderr)
+        return 1
+
+    print("true" if version.is_prerelease else "false")
+    return 0
+
+
 def cmd_tag(root: Path, version: str, prefix: str, push: bool, dry_run: bool) -> int:
     if not SEMVER_RE.match(version):
         print(f"Invalid semver: {version}", file=sys.stderr)
@@ -306,6 +470,20 @@ def build_parser() -> argparse.ArgumentParser:
     bump_parser.add_argument("version", help="Target semver (e.g. 0.1.5)")
     bump_parser.add_argument("--dry-run", action="store_true", help="Do not write files")
 
+    beta_parser = subparsers.add_parser("beta", help="Set the next beta version for a base")
+    beta_parser.add_argument("base", help="Target base version (e.g. 0.1.58)")
+    beta_parser.add_argument("--dry-run", action="store_true", help="Do not write files")
+
+    previous_tag_parser = subparsers.add_parser(
+        "previous-tag", help="Print the tag preceding a release tag"
+    )
+    previous_tag_parser.add_argument("tag", help="Release tag (e.g. v0.1.58-beta.2)")
+
+    is_prerelease_parser = subparsers.add_parser(
+        "is-prerelease", help="Print whether a tag version is a prerelease"
+    )
+    is_prerelease_parser.add_argument("tag", help="Release tag (e.g. v0.1.58-beta.2)")
+
     tag_parser = subparsers.add_parser("tag", help="Create annotated release tag")
     tag_parser.add_argument("version", help="Target semver (e.g. 0.1.5)")
     tag_parser.add_argument("--prefix", default="v", help="Tag prefix (default: v)")
@@ -328,6 +506,12 @@ def main() -> int:
             return cmd_validate(root)
         if args.command == "bump":
             return cmd_bump(root, args.version, args.dry_run)
+        if args.command == "beta":
+            return cmd_beta(root, args.base, args.dry_run)
+        if args.command == "previous-tag":
+            return cmd_previous_tag(root, args.tag)
+        if args.command == "is-prerelease":
+            return cmd_is_prerelease(args.tag)
         if args.command == "tag":
             return cmd_tag(root, args.version, args.prefix, args.push, args.dry_run)
 
