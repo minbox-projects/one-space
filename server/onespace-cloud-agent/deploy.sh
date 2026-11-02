@@ -105,6 +105,10 @@ CORE_FILES=(
     "core/gateway.py"
     "core/issue_worker.py"
     "core/notifier.py"
+    "core/plan_execution.py"
+    "core/plan_opencode.py"
+    "core/plan_tasks.py"
+    "core/plan_workspace.py"
     "core/session_runner.py"
 )
 

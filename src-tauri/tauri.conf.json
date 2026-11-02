@@ -51,6 +51,10 @@
       "../server/onespace-cloud-agent/core/gateway.py": "cloud-agent/core/gateway.py",
       "../server/onespace-cloud-agent/core/issue_worker.py": "cloud-agent/core/issue_worker.py",
       "../server/onespace-cloud-agent/core/notifier.py": "cloud-agent/core/notifier.py",
+      "../server/onespace-cloud-agent/core/plan_execution.py": "cloud-agent/core/plan_execution.py",
+      "../server/onespace-cloud-agent/core/plan_opencode.py": "cloud-agent/core/plan_opencode.py",
+      "../server/onespace-cloud-agent/core/plan_tasks.py": "cloud-agent/core/plan_tasks.py",
+      "../server/onespace-cloud-agent/core/plan_workspace.py": "cloud-agent/core/plan_workspace.py",
       "../server/onespace-cloud-agent/core/session_runner.py": "cloud-agent/core/session_runner.py",
       "../server/onespace-cloud-agent/systemd/onespace-cloud-agent.service": "cloud-agent/systemd/onespace-cloud-agent.service"
     },

@@ -15,18 +15,22 @@ use crate::cloud_agent::types::{
     CloudAgentDeploymentResult, CloudAgentInstallationInfo, CloudAgentInstallationState,
 };
 
-const REQUIRED_PAYLOAD_FILES: [&str; 8] = [
+const REQUIRED_PAYLOAD_FILES: [&str; 12] = [
     "agent.py",
     "core/__init__.py",
     "core/disk_guardian.py",
     "core/gateway.py",
     "core/issue_worker.py",
     "core/notifier.py",
+    "core/plan_execution.py",
+    "core/plan_opencode.py",
+    "core/plan_tasks.py",
+    "core/plan_workspace.py",
     "core/session_runner.py",
     "config.json",
 ];
 
-const DEPLOYABLE_FILES: [&str; 13] = [
+const DEPLOYABLE_FILES: [&str; 17] = [
     "deploy.sh",
     "bootstrap.sh",
     "VERSION",
@@ -38,6 +42,10 @@ const DEPLOYABLE_FILES: [&str; 13] = [
     "core/gateway.py",
     "core/issue_worker.py",
     "core/notifier.py",
+    "core/plan_execution.py",
+    "core/plan_opencode.py",
+    "core/plan_tasks.py",
+    "core/plan_workspace.py",
     "core/session_runner.py",
     "systemd/onespace-cloud-agent.service",
 ];

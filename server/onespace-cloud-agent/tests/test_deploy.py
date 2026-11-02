@@ -448,8 +448,9 @@ class TestCleanInstallEndToEnd(unittest.TestCase):
             for phase in ("platform", "dependencies", "upload", "config", "publish", "service", "metadata"):
                 self.assertIn(f"phase={phase}", proc.stdout)
             required = ["agent.py", "core/__init__.py", "core/disk_guardian.py", "core/gateway.py",
-                        "core/issue_worker.py", "core/notifier.py", "core/session_runner.py",
-                        "config.json", "VERSION"]
+                        "core/issue_worker.py", "core/notifier.py", "core/plan_execution.py",
+                        "core/plan_opencode.py", "core/plan_tasks.py", "core/plan_workspace.py",
+                        "core/session_runner.py", "config.json", "VERSION"]
             for rel in required:
                 self.assertTrue((h.remote_agent / rel).exists(), rel)
             apt_text = h.apt_record.read_text() if h.apt_record.exists() else ""
@@ -646,9 +647,13 @@ class TestMetadataIntegrity(unittest.TestCase):
             srcs = h.scp_sources.read_text().splitlines() if h.scp_sources.exists() else []
             names = ["deploy.sh", "bootstrap.sh", "VERSION", "config.default.json", "config.example.json",
                      "agent.py", "core/__init__.py", "core/disk_guardian.py", "core/gateway.py",
-                     "core/issue_worker.py", "core/notifier.py", "core/session_runner.py",
-                     "systemd/onespace-cloud-agent.service"]
+                     "core/issue_worker.py", "core/notifier.py", "core/plan_execution.py",
+                     "core/plan_opencode.py", "core/plan_tasks.py", "core/plan_workspace.py",
+                     "core/session_runner.py", "systemd/onespace-cloud-agent.service"]
             for name in names:
+                self.assertTrue(any(name in s for s in srcs), name)
+            for module in (SERVER_DIR / "core").glob("*.py"):
+                name = "core/%s" % module.name
                 self.assertTrue(any(name in s for s in srcs), name)
             for s in srcs:
                 if "config.json" in s:

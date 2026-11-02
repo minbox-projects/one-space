@@ -53,6 +53,10 @@ fn required_files() -> Vec<String> {
         "core/gateway.py".into(),
         "core/issue_worker.py".into(),
         "core/notifier.py".into(),
+        "core/plan_execution.py".into(),
+        "core/plan_opencode.py".into(),
+        "core/plan_tasks.py".into(),
+        "core/plan_workspace.py".into(),
         "core/session_runner.py".into(),
         "config.json".into(),
     ]
@@ -71,6 +75,10 @@ fn payload_files() -> Vec<&'static str> {
         "core/gateway.py",
         "core/issue_worker.py",
         "core/notifier.py",
+        "core/plan_execution.py",
+        "core/plan_opencode.py",
+        "core/plan_tasks.py",
+        "core/plan_workspace.py",
         "core/session_runner.py",
         "systemd/onespace-cloud-agent.service",
     ]

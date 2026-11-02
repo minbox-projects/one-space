@@ -75,7 +75,7 @@ server/onespace-cloud-agent/
 7. **metadata**：服务确认活跃后，原子写入安装记录 `install-info.json`。
 8. **cleanup**：把快照修剪到最新 3 份。修剪是尽力而为，失败不会使已经成功的部署失败。
 
-上传的载荷为 `deploy.sh`、`bootstrap.sh`、`VERSION`、`config.default.json`、`config.example.json`、`agent.py`、`core/` 下 6 个 Python 文件与 `systemd/onespace-cloud-agent.service`；本机 `config.json`、`.env` 与测试文件不会上传。
+上传的载荷为 `deploy.sh`、`bootstrap.sh`、`VERSION`、`config.default.json`、`config.example.json`、`agent.py`、`core/` 下的全部 Python 模块与 `systemd/onespace-cloud-agent.service`；本机 `config.json`、`.env` 与测试文件不会上传。
 
 ### 阶段输出
 
