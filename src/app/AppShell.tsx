@@ -251,7 +251,7 @@ export function AppShell(props: AppController) {
                     data-testid="app-beta-badge"
                     title={betaBadgeLabel}
                     aria-label={betaBadgeLabel}
-                    className="rounded-md border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-bold tracking-widest text-sky-600 dark:text-sky-400"
+                    className="rounded border border-sky-500/40 bg-sky-500/15 px-1 py-px text-[9px] font-bold tracking-wider text-sky-600 dark:text-sky-400"
                   >
                     BETA
                   </span>
@@ -261,7 +261,7 @@ export function AppShell(props: AppController) {
                     data-testid="app-dev-badge"
                     title="Development build"
                     aria-label="Development build"
-                    className="rounded-md border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tracking-widest text-amber-600 dark:text-amber-400"
+                    className="rounded border border-amber-500/40 bg-amber-500/15 px-1 py-px text-[9px] font-bold tracking-wider text-amber-600 dark:text-amber-400"
                   >
                     DEV
                   </span>
@@ -295,7 +295,7 @@ export function AppShell(props: AppController) {
                   data-testid="app-beta-badge"
                   title={betaBadgeLabel}
                   aria-label={betaBadgeLabel}
-                  className="rounded-md border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-widest text-sky-600 dark:text-sky-400"
+                  className="rounded border border-sky-500/40 bg-sky-500/15 px-1 py-px text-[8px] font-bold tracking-wider text-sky-600 dark:text-sky-400"
                 >
                   BETA
                 </span>
