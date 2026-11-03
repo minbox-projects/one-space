@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "OneSpace",
-  "version": "0.1.59-beta.1",
+  "version": "0.1.59-beta.2",
   "identifier": "com.onespace.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -31,7 +31,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/onespace-zen-relay"],
+    "externalBin": [
+      "binaries/onespace-zen-relay"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
