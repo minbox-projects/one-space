@@ -2,18 +2,21 @@ use crate::config::{self};
 use crate::subagents::{
     acquire_job_key, api_ok, combined_revision, current_installed_subagents, ensure_dir,
     ensure_within, find_current_installed_subagent, find_definition_markdown, get_source, hash_dir,
-    job_lock, load_local_subagents_state, load_subagents_state, load_sync_state,
-    locate_existing_record_local_dir, make_repo_key, mirror_dir, model_dir,
-    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
+    hash_source_entry, hydrate_local_records_from_catalog, is_ignored_name, job_lock,
+    load_local_subagents_state, load_subagents_state, load_sync_state, local_source_id,
+    local_subagent_id, locate_existing_record_local_dir, make_repo_key, mirror_dir, model_dir,
+    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name,
+    normalized_repo_dir_name, now_ts, parse_required_subagent_dir_name,
     parse_subagent_frontmatter_meta, parse_subagent_md, project_primary_dir,
     prune_codex_project_managed_entries, read_required_subagent_dir_name_from_entry,
     record_local_dir, record_scope, refresh_repository_record_from_snapshot, replace_dir_atomic,
-    replace_source_entry_atomic, repo_storage_dir, resolve_effective_models,
-    resolve_subagent_target_dir, save_local_subagents_state, save_subagents_state,
-    snapshot_repository_index_baseline, source_entry_exists, source_subagent_abs_path,
-    trigger_storage_sync, upsert_codex_project_agent_entry, upsert_repository_from_dir, ApiOk,
-    CatalogOpenFolderResult, CatalogSubagentKeyInput, SubagentKeyInput, SubagentRecord,
-    SubagentsLocalState, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+    replace_source_entry_atomic, repo_index_baseline_dir, repo_storage_dir,
+    resolve_effective_models, resolve_subagent_target_dir, save_local_subagents_state,
+    save_subagents_state, snapshot_repository_index_baseline, source_entry_exists,
+    source_entry_markdown_path, source_subagent_abs_path, trigger_storage_sync,
+    update_record_remote_flags, upsert_codex_project_agent_entry, upsert_repository_from_dir,
+    ApiOk, CatalogOpenFolderResult, CatalogSubagentKeyInput, SubagentKeyInput, SubagentRecord,
+    SubagentsLocalState, SubagentsState, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -233,6 +236,258 @@ pub(in crate::subagents) fn rebuild_local_installed_from_models(
     Ok(())
 }
 
+struct DiscoveredLocalSubagent {
+    path: PathBuf,
+    dir_name: String,
+    name: String,
+    description: String,
+    models: Vec<String>,
+    model: Option<String>,
+    tools: Vec<String>,
+    hash: String,
+}
+
+fn local_subagent_scan_roots() -> Result<Vec<PathBuf>, String> {
+    let mut roots = vec![];
+    let mut seen = HashSet::new();
+    for model in MODELS {
+        let root = mirror_dir(model)?;
+        let canonical = fs::canonicalize(&root).unwrap_or(root);
+        if seen.insert(canonical.clone()) {
+            roots.push(canonical);
+        }
+    }
+    Ok(roots)
+}
+
+fn scan_local_subagents_in_root(root: &Path) -> Result<Vec<DiscoveredLocalSubagent>, String> {
+    let entries = fs::read_dir(root).map_err(|e| e.to_string())?;
+    let mut out = vec![];
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let entry_name = entry.file_name().to_string_lossy().to_string();
+        if is_ignored_name(&entry_name) {
+            continue;
+        }
+        let Some(markdown_path) = source_entry_markdown_path(&path) else {
+            continue;
+        };
+        let markdown = fs::read_to_string(&markdown_path).unwrap_or_default();
+        let Ok(dir_name) = parse_required_subagent_dir_name(&markdown) else {
+            continue;
+        };
+        let (name, description, models) = parse_subagent_md(&markdown, &[]);
+        let (model, tools) = parse_subagent_frontmatter_meta(&markdown);
+        let hash = hash_source_entry(&path)?;
+        out.push(DiscoveredLocalSubagent {
+            path: fs::canonicalize(&path).unwrap_or(path),
+            dir_name,
+            name,
+            description,
+            models,
+            model,
+            tools,
+            hash,
+        });
+    }
+    Ok(out)
+}
+
+fn discover_local_subagents() -> Result<(Vec<PathBuf>, Vec<DiscoveredLocalSubagent>), String> {
+    let roots = local_subagent_scan_roots()?;
+    let mut seen = HashSet::new();
+    let mut out = vec![];
+    for root in &roots {
+        for item in scan_local_subagents_in_root(root)? {
+            if seen.insert(item.dir_name.clone()) {
+                out.push(item);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
+    Ok((roots, out))
+}
+
+fn import_local_subagents_into_model_dirs() -> Result<(), String> {
+    for model in MODELS {
+        let mirror_root = mirror_dir(model)?;
+        let model_root = model_dir(model)?;
+        for item in scan_local_subagents_in_root(&mirror_root)? {
+            let dest = model_root.join(&item.dir_name);
+            ensure_within(&model_root, &dest)?;
+            replace_source_entry_atomic(&item.path, &dest)?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_local_repositories(
+    shared_state: &mut SubagentsState,
+    discovered: &[DiscoveredLocalSubagent],
+    roots: &[PathBuf],
+) -> Result<bool, String> {
+    let remote_names = shared_state
+        .repositories
+        .iter()
+        .filter(|repo| repo.source_type == "remote")
+        .map(normalized_repo_dir_name)
+        .collect::<HashSet<_>>();
+    let mut changed = false;
+
+    let stale_keys = shared_state
+        .repositories
+        .iter()
+        .filter(|repo| {
+            if repo.source_type != "local_import" {
+                return false;
+            }
+            let Some(source_path) = repo.source_path.as_deref() else {
+                return false;
+            };
+            let source_path = Path::new(source_path);
+            roots.iter().any(|root| source_path.starts_with(root)) && !source_path.exists()
+        })
+        .map(|repo| repo.repo_key.clone())
+        .collect::<Vec<_>>();
+    for repo_key in stale_keys {
+        if let Ok(path) = repo_storage_dir(&repo_key) {
+            if path.exists() {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
+        if let Ok(path) = repo_index_baseline_dir(&repo_key) {
+            if path.exists() {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
+        let before = shared_state.repositories.len();
+        shared_state
+            .repositories
+            .retain(|repo| repo.repo_key != repo_key);
+        if shared_state.repositories.len() != before {
+            changed = true;
+        }
+    }
+
+    for item in discovered {
+        if remote_names.contains(&item.dir_name) {
+            continue;
+        }
+        let item_path = item.path.to_string_lossy().to_string();
+        if shared_state.repositories.iter().any(|repo| {
+            repo.source_type == "local_import"
+                && normalized_repo_dir_name(repo) == item.dir_name
+                && repo.source_path.as_deref() != Some(item_path.as_str())
+        }) {
+            continue;
+        }
+        let source_id = local_source_id(&item.path);
+        let repo_key = make_repo_key(&source_id, ".");
+        let unchanged = shared_state
+            .repositories
+            .iter()
+            .find(|repo| repo.repo_key == repo_key)
+            .map(|repo| {
+                repo.source_type == "local_import"
+                    && repo.dir_name == item.dir_name
+                    && repo.name == item.name
+                    && repo.description == item.description
+                    && repo.models == item.models
+                    && repo.model == item.model
+                    && repo.tools == item.tools
+                    && repo.source_path.as_deref() == Some(item_path.as_str())
+                    && repo.hash.as_deref() == Some(item.hash.as_str())
+                    && repo.ever_installed
+            })
+            .unwrap_or(false);
+        if unchanged {
+            continue;
+        }
+        let subagent_id = local_subagent_id(&source_id, ".");
+        upsert_repository_from_dir(
+            shared_state,
+            &item.path,
+            &source_id,
+            ".",
+            &subagent_id,
+            &item.dir_name,
+            "local_import",
+            &item.name,
+            &item.description,
+            &item.models,
+            item.model.as_deref(),
+            &item.tools,
+            &source_id,
+            Some(item_path),
+            Some(item.hash.clone()),
+            true,
+        )?;
+        if let Some(repo) = shared_state
+            .repositories
+            .iter_mut()
+            .find(|repo| repo.repo_key == repo_key)
+        {
+            if repo.hash.as_deref() != Some(item.hash.as_str()) {
+                repo.hash = Some(item.hash.clone());
+                repo.updated_at = Some(now_ts());
+            }
+        }
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
+pub(in crate::subagents) fn subagents_sync_local_blocking(
+) -> Result<(SubagentsState, SubagentsLocalState, bool), String> {
+    let (roots, discovered) = discover_local_subagents()?;
+    import_local_subagents_into_model_dirs()?;
+
+    let mut shared_state = load_subagents_state()?;
+    let mut local_state = load_local_subagents_state()?;
+    let sync_state = load_sync_state()?;
+    let cfg = config::get_storage_config()?;
+
+    rebuild_local_installed_from_models(&mut local_state)?;
+    let repositories_changed = sync_local_repositories(&mut shared_state, &discovered, &roots)?;
+    hydrate_local_records_from_catalog(&mut local_state, &sync_state);
+    update_record_remote_flags(&mut local_state, &sync_state, &cfg);
+    local_state = save_local_subagents_state(local_state)?;
+    if repositories_changed {
+        shared_state = save_subagents_state(shared_state)?;
+    }
+
+    Ok((shared_state, local_state, repositories_changed))
+}
+
+#[tauri::command]
+pub async fn subagents_sync_local(
+    app: tauri::AppHandle,
+) -> Result<ApiOk<Vec<SubagentRecord>>, String> {
+    let _job = match acquire_job_key("sync:local")? {
+        Some(value) => value,
+        None => {
+            let local_state = load_local_subagents_state()?;
+            let shared_state = load_subagents_state()?;
+            return api_ok(
+                local_state.subagents.clone(),
+                combined_revision(&shared_state, &local_state),
+            );
+        }
+    };
+    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
+
+    let (shared_state, local_state, repositories_changed) = subagents_sync_local_blocking()?;
+    if repositories_changed {
+        trigger_storage_sync(app, "subagents_sync_local");
+    }
+
+    api_ok(
+        local_state.subagents.clone(),
+        combined_revision(&shared_state, &local_state),
+    )
+}
+
 #[tauri::command]
 pub async fn subagents_reconcile(
     _app: tauri::AppHandle,
@@ -265,48 +520,6 @@ pub async fn subagents_reconcile(
     .map_err(|_| "subagents/mirror_apply_failed".to_string())?;
     let state = load_local_subagents_state()?;
     api_ok(true, state.revision)
-}
-
-#[tauri::command]
-pub async fn subagents_rescan_mirror(
-    _app: tauri::AppHandle,
-) -> Result<ApiOk<Vec<SubagentRecord>>, String> {
-    let _job = match acquire_job_key("rescan:mirror")? {
-        Some(v) => v,
-        None => {
-            let state = load_local_subagents_state()?;
-            return api_ok(state.subagents.clone(), state.revision);
-        }
-    };
-    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-
-    for model in MODELS {
-        if let Ok(mirror_root) = mirror_dir(model) {
-            if let Ok(model_root) = model_dir(model) {
-                if let Ok(entries) = fs::read_dir(&mirror_root) {
-                    for entry in entries.flatten() {
-                        let p = entry.path();
-                        if !p.is_dir() {
-                            continue;
-                        }
-                        let id = entry.file_name().to_string_lossy().to_string();
-                        if find_definition_markdown(&p).is_none() {
-                            continue;
-                        }
-                        let sot_dir = model_root.join(&id);
-                        if let Ok(()) = ensure_within(&model_root, &sot_dir) {
-                            let _ = replace_dir_atomic(&p, &sot_dir);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut local_state = load_local_subagents_state()?;
-    rebuild_local_installed_from_models(&mut local_state)?;
-    let local_state = save_local_subagents_state(local_state)?;
-    api_ok(local_state.subagents.clone(), local_state.revision)
 }
 
 pub(in crate::subagents) fn open_folder_path(path: &Path) -> Result<(), String> {

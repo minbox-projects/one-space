@@ -14,7 +14,7 @@ import {
   subagentsRepoDetailGet,
   subagentsRepoList,
   subagentsRepoSetModel,
-  subagentsRescanMirror,
+  subagentsSyncLocal,
   subagentsUninstall,
 } from "@/lib/subagents";
 import { buildInstallStateFromCatalog, buildInstallTargetFromRepository, buildPartialInstallSummary, matchesRepositoryItem, normalizeSourceNameMap, toggleSelectableModel } from "../helpers/workspaceCapabilityHelpers";
@@ -213,7 +213,7 @@ export function useWorkspaceSubagentsPanelState(args: {
 
   const fetchInstalledSubagents = useCallback(async () => {
     const [globalRes, projectRes] = await Promise.allSettled([
-      subagentsRescanMirror() as Promise<{ data?: WorkspaceSubagentRecord[] }>,
+      subagentsSyncLocal() as Promise<{ data?: WorkspaceSubagentRecord[] }>,
       subagentsListInstalled<{ data?: WorkspaceSubagentRecord[] }>({
         model: null as unknown as string,
         scope: "project",

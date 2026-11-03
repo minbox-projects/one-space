@@ -10902,7 +10902,7 @@
         },
         {
           "file": "src/lib/subagents.ts",
-          "name": "subagentsRescanMirror",
+          "name": "subagentsSyncLocal",
           "kind": "function",
           "visibility": "public"
         },

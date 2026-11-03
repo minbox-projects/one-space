@@ -39,12 +39,12 @@ export function subagentsSyncStatusGet<T>() {
   return invokeTyped<T>("subagents_sync_status_get");
 }
 
-export function subagentsRescanMirror() {
-  return invokeTyped("subagents_rescan_mirror");
-}
-
 export function subagentsSyncNow() {
   return invokeTyped("subagents_sync_now");
+}
+
+export function subagentsSyncLocal<T>() {
+  return invokeTyped<T>("subagents_sync_local");
 }
 
 export function subagentsInstall<T>(input: {

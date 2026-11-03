@@ -152,7 +152,7 @@ pub fn run() {
                 let _ = crate::skills::skills_initialize_unified();
                 let _ = crate::skills::skills_rescan_mirror(app_handle.clone()).await;
                 let _ = crate::skills::skills_reconcile(app_handle.clone(), None, None, None).await;
-                let _ = crate::subagents::subagents_rescan_mirror(app_handle.clone()).await;
+                let _ = crate::subagents::subagents_sync_local(app_handle.clone()).await;
                 let _ = crate::subagents::subagents_reconcile(app_handle, None, None, None).await;
             });
 
@@ -479,6 +479,7 @@ pub fn run() {
             subagents::subagents_list_catalog,
             subagents::subagents_source_diagnose,
             subagents::subagents_sync_now,
+            subagents::subagents_sync_local,
             subagents::subagents_sync_status_get,
             subagents::subagents_repo_list_with_update,
             subagents::subagents_repo_import_folder,
@@ -492,7 +493,6 @@ pub fn run() {
             subagents::subagents_repo_reload_apply,
             subagents::subagents_update_diff_preview,
             subagents::subagents_update_apply,
-            subagents::subagents_rescan_mirror,
             subagents::subagents_reconcile,
             subagents::subagents_open_folder,
             // AI Workflow Profiles

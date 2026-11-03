@@ -6,7 +6,7 @@ import { renderWithProviders } from "@/test/mocks/render";
 import { emitMock, invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 const subagentMocks = vi.hoisted(() => ({
-  subagentsRescanMirror: vi.fn(),
+  subagentsSyncLocal: vi.fn(),
   subagentsListInstalled: vi.fn(),
   subagentsListCatalog: vi.fn(),
   subagentsRepoList: vi.fn(),
@@ -68,7 +68,7 @@ describe("WorkspaceSubagentsPanel", () => {
       throw new Error(`Unexpected invoke command: ${command}`);
     });
 
-    subagentMocks.subagentsRescanMirror.mockResolvedValue({
+    subagentMocks.subagentsSyncLocal.mockResolvedValue({
       data: [{ id: "sub-global", model: "claude", models: ["claude"], name: "Global Subagent", description: "Global", source_id: "repo", source_rel_path: "subagents/global", installed_at: 1, has_update: false, icon_seed: "a", scope: "global" }],
     });
     subagentMocks.subagentsListInstalled.mockResolvedValue({

@@ -8,7 +8,7 @@ import {
   subagentsListCatalog,
   subagentsListInstalled,
   subagentsRepoList,
-  subagentsRescanMirror,
+  subagentsSyncLocal,
   subagentsSyncNow,
   subagentsSyncStatusGet,
 } from '@/lib/subagents';
@@ -256,9 +256,9 @@ export function useSubagentsData({
         setLoading(true);
         try {
           try {
-            await subagentsRescanMirror();
+            await subagentsSyncLocal();
           } catch {
-            // ignore best-effort rescan errors
+            // ignore best-effort local sync errors
           }
           await reloadAll(activeMode === 'repository');
         } finally {

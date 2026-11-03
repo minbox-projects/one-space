@@ -688,3 +688,96 @@ fn subagents_local_cache_base_root_follows_profile_app_dir() {
 
     drop(_guard);
 }
+
+#[test]
+fn sync_local_imports_local_agent_directories_and_markdown_files() {
+    with_temp_home("sync-local", |home| {
+        let _guard = crate::config::test_home::TestHomeGuard::set(home);
+        let agents_root = home.join(".codex").join("agents");
+        write_subagent_dir(
+            &agents_root.join("local-reviewer"),
+            "local-reviewer",
+            "Local Reviewer",
+            "Imported locally",
+        );
+        fs::write(
+            agents_root.join("flat-helper.md"),
+            "---\nname: flat-helper\ndescription: Flat helper\nmodels: [codex]\n---\n# Flat Helper\n\nImported flat\n",
+        )
+        .expect("write flat subagent markdown");
+        let invalid_dir = agents_root.join("invalid-agent");
+        fs::create_dir_all(&invalid_dir).expect("create invalid subagent dir");
+        fs::write(invalid_dir.join("AGENT.md"), "# missing frontmatter\n")
+            .expect("write invalid subagent markdown");
+
+        let (shared, local, repositories_changed) =
+            subagents_sync_local_blocking().expect("sync local subagents");
+
+        assert!(repositories_changed);
+        assert!(local
+            .subagents
+            .iter()
+            .any(|s| s.model == "codex" && s.dir_name == "local-reviewer"));
+        assert!(local
+            .subagents
+            .iter()
+            .any(|s| s.model == "codex" && s.dir_name == "flat-helper"));
+        assert!(!local
+            .subagents
+            .iter()
+            .any(|s| s.dir_name == "invalid-agent"));
+
+        let codex_model_root = model_dir("codex").expect("resolve codex model dir");
+        assert!(codex_model_root
+            .join("local-reviewer")
+            .join("AGENT.md")
+            .is_file());
+        assert!(codex_model_root
+            .join("flat-helper")
+            .join("AGENT.md")
+            .is_file());
+        assert!(shared
+            .repositories
+            .iter()
+            .any(|r| { r.source_type == "local_import" && r.dir_name == "local-reviewer" }));
+        assert!(shared
+            .repositories
+            .iter()
+            .any(|r| r.source_type == "local_import" && r.dir_name == "flat-helper"));
+        assert!(!shared
+            .repositories
+            .iter()
+            .any(|r| r.dir_name == "invalid-agent"));
+
+        let (shared_again, local_again, repositories_changed_again) =
+            subagents_sync_local_blocking().expect("sync local subagents again");
+        assert!(
+            !repositories_changed_again,
+            "an unchanged local sync must not rewrite repository state"
+        );
+        assert_eq!(
+            local_again
+                .subagents
+                .iter()
+                .filter(|s| s.dir_name == "local-reviewer")
+                .count(),
+            1
+        );
+        assert_eq!(
+            shared_again
+                .repositories
+                .iter()
+                .filter(|r| r.dir_name == "local-reviewer")
+                .count(),
+            1
+        );
+        assert_eq!(
+            shared_again
+                .repositories
+                .iter()
+                .filter(|r| r.dir_name == "flat-helper")
+                .count(),
+            1
+        );
+    });
+}

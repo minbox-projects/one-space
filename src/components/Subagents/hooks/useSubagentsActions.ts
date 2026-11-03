@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { runUserAction } from '@/lib/userActions';
 import { buildUninstallSubagentActionDescriptor } from '@/lib/actionDescriptors/subagents';
@@ -14,6 +14,7 @@ import {
   subagentsRepoReloadApply,
   subagentsRepoReloadPreview,
   subagentsRepoSetModel,
+  subagentsSyncLocal,
   subagentsUninstall,
   subagentsUpdateApply,
   subagentsUpdateDiffPreview,
@@ -89,6 +90,8 @@ export function useSubagentsActions(data: SubagentsData) {
     resolveRepositorySubagent,
   } = data;
 
+  const [syncingLocal, setSyncingLocal] = useState(false);
+
   const installAllowedModels = useMemo(
     () =>
       installTarget
@@ -102,6 +105,42 @@ export function useSubagentsActions(data: SubagentsData) {
 
   const handleSyncSources = async () => {
     await triggerSyncSources(true);
+  };
+
+  const handleSyncLocal = async () => {
+    if (syncingLocal) return;
+    try {
+      setSyncingLocal(true);
+      await runUserAction(
+        actionContext,
+        {
+          source: 'subagents',
+          category: 'sync',
+          action: 'sync-local',
+          target: { tab: 'subagents' },
+          dedupeKey: 'subagents:local-sync',
+          success: {
+            title: t('subagentsLocalSyncSuccess', 'Subagents synced from local.'),
+            summary: t('subagentsLocalSyncSuccess', 'Subagents synced from local.'),
+          },
+          error: {
+            title: t('subagentsLocalSyncFailed', 'Local sync failed: {{message}}'),
+          },
+        },
+        () => subagentsSyncLocal<ApiResp<SubagentRecord[]>>(),
+      );
+      await reloadAll();
+      notifyCountsChanged();
+    } catch (e: any) {
+      setMessage({
+        type: 'error',
+        text: t('subagentsLocalSyncFailed', 'Local sync failed: {{message}}', {
+          message: String(e),
+        }),
+      });
+    } finally {
+      setSyncingLocal(false);
+    }
   };
 
   const installSubagentToModels = async (
@@ -747,7 +786,9 @@ export function useSubagentsActions(data: SubagentsData) {
   return {
     installAllowedModels,
     canSubmitInstall,
+    syncingLocal,
     handleSyncSources,
+    handleSyncLocal,
     installSubagentToModels,
     installRepositoryToModels,
     openInstallDialog,

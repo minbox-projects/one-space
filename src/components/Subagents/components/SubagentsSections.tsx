@@ -3,7 +3,17 @@ import { allModels, formatTs, modelIconMap, modelTabs } from '../helpers';
 import type { SubagentsView } from '../view';
 
 export function SubagentsHeader({ view }: { view: SubagentsView }) {
-  const { t, activeMode, message, loading, refreshingSources, handleSyncSources, handleImportRepositoryFolder } = view;
+  const {
+    t,
+    activeMode,
+    message,
+    loading,
+    refreshingSources,
+    syncingLocal,
+    handleSyncSources,
+    handleSyncLocal,
+    handleImportRepositoryFolder,
+  } = view;
   return (
     <div className="flex items-center justify-between">
       <div>
@@ -27,6 +37,14 @@ export function SubagentsHeader({ view }: { view: SubagentsView }) {
             {message.text}
           </div>
         )}
+        <button
+          onClick={handleSyncLocal}
+          disabled={loading || syncingLocal}
+          className="px-4 py-2 border rounded-md text-sm font-medium inline-flex items-center gap-2 hover:bg-muted disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${syncingLocal ? 'animate-spin' : ''}`} />
+          {t('subagentsLocalSync', '从本地同步')}
+        </button>
         {activeMode === 'recommended' && (
           <button
             onClick={handleSyncSources}
