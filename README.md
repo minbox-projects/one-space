@@ -145,7 +145,7 @@ OneSpace 是一个面向开发者的 macOS 优先桌面工作台（Tauri 2 + Rea
 维护者可以在正式版本之前发布同一目标版本的多个 Beta 构建：
 
 1. 在干净工作区执行 `python3 skills/onespace-release/scripts/release_tool.py beta <base>`，例如 `beta 0.1.58`：首次生成 `0.1.58-beta.1`，再次执行同一基版本递增为 `0.1.58-beta.2`；`--dry-run` 只报告下一个版本、不写文件。
-2. 提交 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 后，创建并推送附注标签 `v<base>-beta.N`；推送 `v*` 标签会触发发布工作流，并把该标签作为 GitHub prerelease 发布。
+2. 提交 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 后，创建并推送附注标签 `v<base>-beta.N`；推送 `v*` 标签会触发发布工作流，并把该标签作为 GitHub prerelease 发布。Windows 的 Beta 构建只生成 NSIS 安装包，因为 MSI/WiX 要求 prerelease 标识符为纯数字；稳定版仍构建 MSI 与 NSIS。
 3. 正式发布时使用稳定版本号：稳定版的更新说明以上一个稳定标签为基准（跳过 Beta 标签），Beta 版以上一个标签为基准。
 
 用户可在「设置 → 更新」开启「接收 Beta 更新」。开启后，更新检查会从 GitHub Releases 中选择版本最高、非草稿且带 `latest.json` 的发布（包含预发布），再经既有的签名校验更新器检查；Beta 查询失败、没有可用发布，或当前平台/版本没有更新或出错时，会继续检查配置的稳定端点，且绝不降级。关闭时只使用稳定端点。Beta 构建在左上品牌区显示 BETA 徽标（侧边栏折叠时仍可见），稳定、缺失或格式错误的版本不显示。Beta 构建与稳定版共用 `~/.config/onespace` 及同一份配置与数据，不引入独立 profile 或迁移；该偏好是设备本地配置，默认关闭，在同一设备的稳定版与 Beta 版之间共享，不跨设备同步，旧版本会忽略该字段。

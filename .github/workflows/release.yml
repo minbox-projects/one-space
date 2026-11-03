@@ -180,6 +180,23 @@ jobs:
           ONESPACE_TARGET_TRIPLE: ${{ matrix.target }}
         run: node src-tauri/scripts/build-zen-relay.mjs --release
 
+      - name: Resolve tauri build args
+        id: tauri_build_args
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          IS_PRERELEASE: ${{ steps.release_range.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          # WiX/MSI rejects alphanumeric prerelease identifiers such as
+          # 0.1.59-beta.1, so prerelease Windows builds produce NSIS only.
+          build_args="--target $TARGET"
+          if [ "$PLATFORM" = "windows-latest" ] && [ "$IS_PRERELEASE" = "true" ]; then
+            build_args="$build_args --bundles nsis"
+          fi
+          echo "args=$build_args" >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -193,7 +210,7 @@ jobs:
           releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
           prerelease: ${{ steps.release_range.outputs.is_prerelease == 'true' }}
-          args: --target ${{ matrix.target }}
+          args: ${{ steps.tauri_build_args.outputs.args }}
 
       - name: verify signed macOS release artifact
         if: matrix.platform == 'macos-latest'

@@ -45,6 +45,8 @@ Beta 标签是合法的 semver prerelease，推送后在 GitHub 上以 prereleas
 
 发布范围由发布助手解析：`previous-tag` 对稳定发布返回上一个稳定标签（跳过 Beta 标签），对 Beta 发布返回上一个标签；`is-prerelease` 对 Beta 标签返回 `true`、对稳定标签返回 `false`。
 
+Windows 的 Beta 构建只打包 NSIS（发布工作流传入 `--bundles nsis`）：MSI/WiX 要求 prerelease 标识符为纯数字，`-beta.N` 会在打包阶段失败；稳定版仍构建 MSI 与 NSIS。
+
 ## 发布前检查
 
 1. 工作区必须干净（`git status --short` 预期为空）

@@ -54,7 +54,7 @@ python3 skills/onespace-release/scripts/release_tool.py tag 0.1.5 --dry-run
 1. `beta <base>` 的基版本是显式 `X.Y.Z`。当前稳定版低于基版本时写入 `<base>-beta.1`；当前版本已是同一基版本的 Beta 时递增为下一个编号；更高的基版本从 `beta.1` 重新开始。
 2. 基版本非法或不是 `X.Y.Z`、基版本小于或等于当前稳定版、基版本低于当前 Beta 基版本，或四个发布文件不一致时，命令失败且不写任何文件；`--dry-run` 只报告下一个版本。
 3. 提交四个发布文件后，用 `tag <base>-beta.N` 创建附注标签 `v<base>-beta.N`，按需加 `--push`；推送 `v*` 标签会触发发布工作流，并以 GitHub prerelease 发布。
-4. 发布工作流用 `previous-tag` 解析更新范围：稳定发布取上一个稳定标签并跳过 Beta 标签，Beta 发布取上一个标签；`is-prerelease` 决定发布是否标记为 prerelease。Beta 构建与稳定版共用 `~/.config/onespace` 及同一份配置与数据，不引入独立 profile 或迁移。
+4. 发布工作流用 `previous-tag` 解析更新范围：稳定发布取上一个稳定标签并跳过 Beta 标签，Beta 发布取上一个标签；`is-prerelease` 决定发布是否标记为 prerelease。Windows 的 Beta 构建只打包 NSIS（发布工作流传入 `--bundles nsis`）：MSI/WiX 要求 prerelease 标识符为纯数字，`-beta.N` 会在打包阶段失败；稳定版仍构建 MSI 与 NSIS。Beta 构建与稳定版共用 `~/.config/onespace` 及同一份配置与数据，不引入独立 profile 或迁移。
 
 ## 发布前置条件
 
