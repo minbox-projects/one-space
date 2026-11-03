@@ -1,6 +1,7 @@
 use super::{
     find_definition_markdown, get_source, hash_dir, make_repo_key, metadata_timestamp,
-    normalized_record_dir_name, now_ts, parse_subagent_md, project_scan_root,
+    normalized_record_dir_name, now_ts, parse_subagent_frontmatter_meta, parse_subagent_md,
+    project_scan_root,
     read_required_subagent_dir_name_from_entry, record_local_dir, scope_project_match,
     source_entry_exists, source_subagent_abs_path, subagent_has_markdown_update,
     upsert_repository_from_dir, upsert_repository_record, CatalogSubagent, RepositoryRecord,
@@ -183,6 +184,7 @@ pub(in crate::subagents) fn scan_project_installed_subagents_for_model(
     for (dir_name, path, markdown) in entries {
         let content = fs::read_to_string(&markdown).map_err(|e| e.to_string())?;
         let (name, description, models) = parse_subagent_md(&content, &[]);
+        let (agent_model, agent_tools) = parse_subagent_frontmatter_meta(&content);
         records.push(SubagentRecord {
             id: dir_name.clone(),
             dir_name: dir_name.clone(),
@@ -202,6 +204,8 @@ pub(in crate::subagents) fn scan_project_installed_subagents_for_model(
             scope: INSTALL_SCOPE_PROJECT.to_string(),
             project_root: Some(project_root.to_string()),
             target_path: Some(path.to_string_lossy().to_string()),
+            agent_model,
+            agent_tools,
         });
     }
 

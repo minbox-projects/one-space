@@ -326,6 +326,8 @@ fn has_dir_name_conflict_detects_same_model_only() {
                 scope: INSTALL_SCOPE_GLOBAL.to_string(),
                 project_root: None,
                 target_path: None,
+                agent_model: None,
+                agent_tools: vec![],
             },
             SubagentRecord {
                 id: "legacy-2".to_string(),
@@ -346,6 +348,8 @@ fn has_dir_name_conflict_detects_same_model_only() {
                 scope: INSTALL_SCOPE_GLOBAL.to_string(),
                 project_root: None,
                 target_path: None,
+                agent_model: None,
+                agent_tools: vec![],
             },
         ],
         revision: 0,
@@ -400,6 +404,8 @@ fn hydrate_local_records_from_catalog_recovers_remote_metadata() {
             scope: INSTALL_SCOPE_GLOBAL.to_string(),
             project_root: None,
             target_path: None,
+            agent_model: None,
+            agent_tools: vec![],
         }],
         revision: 0,
         last_rescan_at: None,
@@ -779,5 +785,47 @@ fn sync_local_imports_local_agent_directories_and_markdown_files() {
                 .count(),
             1
         );
+    });
+}
+
+#[test]
+fn sync_local_keeps_each_tools_agent_model_separate_for_same_dir_name() {
+    with_temp_home("sync-local-agent-model", |home| {
+        let _guard = crate::config::test_home::TestHomeGuard::set(home);
+        let claude_dir = home.join(".claude").join("agents").join("shared-agent");
+        fs::create_dir_all(&claude_dir).expect("create claude agent dir");
+        fs::write(
+            claude_dir.join("AGENT.md"),
+            "---\nname: shared-agent\ndescription: Shared\ntools: Read, Edit\nmodel: sonnet\n---\n# Shared\n",
+        )
+        .expect("write claude agent");
+        let opencode_root = home.join(".config").join("opencode").join("agents");
+        fs::create_dir_all(&opencode_root).expect("create opencode agents root");
+        fs::write(
+            opencode_root.join("shared-agent.md"),
+            "---\nname: shared-agent\ndescription: Shared\nmodel: gateway/deepseek-v4.1-flash\n---\n# Shared\n",
+        )
+        .expect("write opencode agent");
+
+        let (_, local, _) = subagents_sync_local_blocking().expect("sync local subagents");
+
+        let claude = local
+            .subagents
+            .iter()
+            .find(|s| s.model == "claude" && s.dir_name == "shared-agent")
+            .expect("claude shared agent");
+        assert_eq!(claude.agent_model.as_deref(), Some("sonnet"));
+        assert_eq!(claude.agent_tools, vec!["Read", "Edit"]);
+
+        let opencode = local
+            .subagents
+            .iter()
+            .find(|s| s.model == "opencode" && s.dir_name == "shared-agent")
+            .expect("opencode shared agent");
+        assert_eq!(
+            opencode.agent_model.as_deref(),
+            Some("gateway/deepseek-v4.1-flash")
+        );
+        assert!(opencode.agent_tools.is_empty());
     });
 }

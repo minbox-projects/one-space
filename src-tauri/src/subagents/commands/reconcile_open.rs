@@ -184,6 +184,7 @@ pub(in crate::subagents) fn rebuild_local_installed_from_models(
             };
             let content = fs::read_to_string(&md).unwrap_or_default();
             let (name, desc, models) = parse_subagent_md(&content, &[]);
+            let (agent_model, agent_tools) = parse_subagent_frontmatter_meta(&content);
             let hash = hash_dir(&p)?;
             existing.insert((model.to_string(), dir_name.clone()));
 
@@ -201,6 +202,8 @@ pub(in crate::subagents) fn rebuild_local_installed_from_models(
                 record.scope = INSTALL_SCOPE_GLOBAL.to_string();
                 record.project_root = None;
                 record.target_path = Some(p.to_string_lossy().to_string());
+                record.agent_model = agent_model.clone();
+                record.agent_tools = agent_tools.clone();
             } else {
                 state.subagents.push(SubagentRecord {
                     id: dir_name.clone(),
@@ -221,6 +224,8 @@ pub(in crate::subagents) fn rebuild_local_installed_from_models(
                     scope: INSTALL_SCOPE_GLOBAL.to_string(),
                     project_root: None,
                     target_path: Some(p.to_string_lossy().to_string()),
+                    agent_model: agent_model.clone(),
+                    agent_tools: agent_tools.clone(),
                 });
             }
         }

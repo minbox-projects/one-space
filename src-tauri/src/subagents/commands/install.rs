@@ -200,6 +200,8 @@ pub async fn subagents_install(
         scope: install_scope.clone(),
         project_root: install_project_root.clone(),
         target_path: Some(dest.to_string_lossy().to_string()),
+        agent_model: catalog.model.clone(),
+        agent_tools: catalog.tools.clone(),
     };
 
     if install_scope == INSTALL_SCOPE_GLOBAL {

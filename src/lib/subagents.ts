@@ -3,7 +3,7 @@ import { invokeTyped } from "@/lib/userActions";
 export type SubagentsInstallScope = "global" | "project";
 
 export function subagentsListInstalled<T>(input: {
-  model: string;
+  model: string | null;
   scope: SubagentsInstallScope;
   project_root?: string | null;
 }) {

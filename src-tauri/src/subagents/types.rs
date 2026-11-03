@@ -134,6 +134,10 @@ pub struct SubagentRecord {
     pub project_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_tools: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

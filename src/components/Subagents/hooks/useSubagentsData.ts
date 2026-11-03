@@ -146,7 +146,7 @@ export function useSubagentsData({
     const requestSeq = installedLoadSeqRef.current + 1;
     installedLoadSeqRef.current = requestSeq;
     const res = await subagentsListInstalled<ApiResp<SubagentRecord[]>>({
-      model: 'claude',
+      model: null,
       scope: 'global',
       project_root: null,
     });

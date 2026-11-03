@@ -148,7 +148,6 @@ export function SubagentsInstalledSection({ view }: { view: SubagentsView }) {
     handleOpenDetail,
     handleReinstall,
     handleUninstall,
-    findLatestRepository,
     handleOpenDiff,
   } = view;
   return (
@@ -176,14 +175,8 @@ export function SubagentsInstalledSection({ view }: { view: SubagentsView }) {
             const Icon = pickIcon(skill.icon_seed || skill.id);
             const reinstallKey = `${skill.model}:${skill.id}`;
             const reinstalling = !!reinstallingKeys[reinstallKey];
-            const matchedRepo = findLatestRepository({
-              source_id: skill.source_id,
-              source_rel_path: skill.source_rel_path,
-              id: skill.id,
-              dir_name: skill.dir_name,
-            });
-            const modelText = (matchedRepo?.model || String(skill.model || '')).trim();
-            const toolsText = (matchedRepo?.tools || []).filter(Boolean).join(', ');
+            const modelText = (skill.agent_model || String(skill.model || '')).trim();
+            const toolsText = (skill.agent_tools || []).filter(Boolean).join(', ');
             return (
               <div
                 key={`${skill.model}:${skill.id}`}

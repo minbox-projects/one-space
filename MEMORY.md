@@ -94,6 +94,7 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - `subagents_sync_local` 在应用启动、Subagents 页面首次加载和工作区能力面板刷新时扫描 Claude / Antigravity / Codex / OpenCode 的全局 agents 目录，将 frontmatter `name` 合法的目录或单文件 Markdown 导入当前 profile 的模型目录并重建全局已安装记录；手动「从本地同步」按钮复用同一命令，旧 `subagents_rescan_mirror` 已删除。
 - 本地发现按目录名合并，优先 `claude` → `antigravity` → `codex` → `opencode`；已由 remote 仓库管理的目录名不会重复登记为 `local_import`，本地仓库条目在源路径消失后清理其快照与索引基线。
 - 同步只导入与刷新，不按本地目录缺失删除已安装模型记录；模型目录仍是已安装状态的本地权威缓存。
+- 每条已安装记录保存其自身工具目录副本 frontmatter 的 `agent_model` / `agent_tools`（本地同步扫描或远端安装时解析），卡片按该副本展示模型与工具，避免同名 Subagent 跨工具串用元数据。
 
 ## AI 网关模块与边界
 

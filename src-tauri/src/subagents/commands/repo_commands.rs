@@ -226,6 +226,8 @@ pub async fn subagents_repo_set_model(
                 scope: repo_scope.clone(),
                 project_root: repo_project_root.clone(),
                 target_path: Some(dest.to_string_lossy().to_string()),
+                agent_model: repo.model.clone(),
+                agent_tools: repo.tools.clone(),
             });
         }
         if input.model == "codex" && repo_scope == INSTALL_SCOPE_PROJECT {

@@ -21,6 +21,8 @@ export interface SubagentRecord {
   scope?: InstallScope;
   project_root?: string | null;
   target_path?: string | null;
+  agent_model?: string | null;
+  agent_tools?: string[];
 }
 
 export interface CatalogSubagent {
