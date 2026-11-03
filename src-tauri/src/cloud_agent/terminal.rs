@@ -17,6 +17,16 @@ pub fn normalize_terminal_app_key(app_name: &str) -> String {
     clean_terminal_app_name(app_name).to_lowercase()
 }
 
+pub fn build_otty_terminal_applescript(ssh_cmd: &str) -> String {
+    format!(
+        r#"tell application "Otty"
+        activate
+        do script "{}"
+    end tell"#,
+        escape_applescript_string(ssh_cmd)
+    )
+}
+
 pub fn build_ssh_connect_command(
     host: &str,
     target: &str,
@@ -92,6 +102,12 @@ fn dispatch_ssh_command(ssh_cmd: &str, terminal_override: Option<&str>) -> Resul
             .arg("-c")
             .arg(ssh_cmd)
             .spawn();
+        if res.is_ok() {
+            return Ok(());
+        }
+    } else if term_key == "otty" {
+        let script = build_otty_terminal_applescript(ssh_cmd);
+        let res = Command::new("osascript").arg("-e").arg(&script).spawn();
         if res.is_ok() {
             return Ok(());
         }

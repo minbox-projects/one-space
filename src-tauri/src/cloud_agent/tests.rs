@@ -1,8 +1,8 @@
 use super::commands::resolve_host;
 use super::gateway_sync::{build_cloud_gateway_section, build_remote_config_write};
 use super::terminal::{
-    build_ssh_connect_command, clean_terminal_app_name, escape_applescript_string,
-    normalize_terminal_app_key,
+    build_otty_terminal_applescript, build_ssh_connect_command, clean_terminal_app_name,
+    escape_applescript_string, normalize_terminal_app_key,
 };
 use super::types::CloudAgentSettings;
 use crate::ai_gateway::{
@@ -44,11 +44,20 @@ fn test_resolve_host() {
 fn test_terminal_name_and_applescript_escaping() {
     assert_eq!(clean_terminal_app_name("iTerm.app"), "iTerm");
     assert_eq!(clean_terminal_app_name("Ghostty"), "Ghostty");
+    assert_eq!(clean_terminal_app_name("Otty.app"), "Otty");
     assert_eq!(normalize_terminal_app_key("  iTerm2.app "), "iterm2");
+    assert_eq!(normalize_terminal_app_key(" Otty.app "), "otty");
     assert_eq!(
         escape_applescript_string("hello \"world\" \\ test"),
         "hello \\\"world\\\" \\\\ test"
     );
+}
+
+#[test]
+fn test_build_otty_terminal_applescript_runs_script() {
+    let script = build_otty_terminal_applescript("ssh -t host \"cloud-session target\"");
+    assert!(script.contains("tell application \"Otty\""));
+    assert!(script.contains("do script \"ssh -t host \\\"cloud-session target\\\"\""));
 }
 
 #[test]

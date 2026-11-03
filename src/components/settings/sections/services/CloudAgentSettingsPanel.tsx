@@ -101,6 +101,7 @@ export function CloudAgentSettingsPanel({
                 { value: "iTerm", label: "iTerm2" },
                 { value: "Ghostty", label: "Ghostty" },
                 { value: "Alacritty", label: "Alacritty" },
+                { value: "Otty", label: "Otty" },
               ]}
             />
           </div>

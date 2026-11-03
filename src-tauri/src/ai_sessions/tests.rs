@@ -115,6 +115,15 @@ fn native_terminal_applescript_keeps_do_script_for_terminal() {
 }
 
 #[test]
+fn native_terminal_applescript_keeps_do_script_for_otty() {
+    let script =
+        build_native_terminal_applescript("Otty", "/tmp/otty-project", "codex resume 123", None);
+    assert!(script.contains("tell application \"Otty\""));
+    assert!(script.contains("do script \"codex resume 123\""));
+    assert!(!script.contains("new surface configuration"));
+}
+
+#[test]
 fn native_terminal_runner_builds_ghostty_script_from_shared_entry() {
     let mut captured = String::new();
     run_native_terminal_command_for_app_with_executor(
