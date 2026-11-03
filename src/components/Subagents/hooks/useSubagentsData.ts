@@ -74,7 +74,7 @@ export function useSubagentsData({
 
   const [activeModel, setActiveModel] = useState<ModelType>('claude');
   const [activeMode, setActiveMode] = useState<'recommended' | 'repository' | 'installed'>(
-    initialEntry || 'recommended',
+    initialEntry || 'installed',
   );
   const [recommendedSourceFilter, setRecommendedSourceFilter] = useState<'all' | string>('all');
   const [recommendedSearch, setRecommendedSearch] = useState('');

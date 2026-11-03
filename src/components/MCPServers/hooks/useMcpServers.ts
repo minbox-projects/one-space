@@ -39,7 +39,7 @@ export function useMcpServers({
   onLinkedProvidersChange,
 }: UseMcpServersOptions) {
   const [servers, setServers] = useState<MCPServer[]>([]);
-  const [viewMode, setViewMode] = useState<'server' | 'model'>('server');
+  const [viewMode, setViewMode] = useState<'server' | 'model'>('model');
   const [activeModel, setActiveModel] = useState<MCPModel>('claude');
   const [modelSwitchStates, setModelSwitchStates] = useState<Record<string, MCPModelSwitchState>>({});
   const [modelSyncPending, setModelSyncPending] = useState<Set<string>>(new Set());
