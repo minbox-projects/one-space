@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  skillsCompatibilityGet,
   skillsDetailGet,
-  skillsInitializeUnified,
   skillsInstall,
   skillsListInstalled,
   skillsRepoList,
-  skillsRescanMirror,
+  skillsSyncLocal,
   skillsSyncNow,
   skillsSyncStatusGet,
 } from "@/lib/skills";
@@ -17,39 +15,39 @@ describe("skills IPC command contract", () => {
     resetTauriMocks();
     invokeMock.mockResolvedValue({});
 
-    await skillsListInstalled({ model: "codex", scope: "global", project_root: null });
+    await skillsListInstalled({ model: null, scope: "global", project_root: null });
     await skillsInstall({
       source_id: "official",
       skill_ref: "git-commit",
-      model: "codex",
+      model: "global",
       scope: "global",
     });
     await skillsSyncStatusGet();
     await skillsSyncNow();
-    await skillsRescanMirror();
+    await skillsSyncLocal();
     await skillsRepoList(false, { scope: "global" });
-    await skillsDetailGet({ model: "codex", skill_id: "official-git-commit", scope: "global" });
+    await skillsDetailGet({ model: "global", skill_id: "official-git-commit", scope: "global" });
 
     expect(invokeMock.mock.calls).toEqual([
-      ["skills_list_installed", { model: "codex", scope: "global", projectRoot: null }],
+      ["skills_list_installed", { model: null, scope: "global", projectRoot: null }],
       [
         "skills_install",
         {
           input: {
             source_id: "official",
             skill_ref: "git-commit",
-            model: "codex",
+            model: "global",
             scope: "global",
           },
         },
       ],
       ["skills_sync_status_get", undefined],
       ["skills_sync_now", undefined],
-      ["skills_rescan_mirror", undefined],
+      ["skills_sync_local", undefined],
       ["skills_repo_list", { includeUpdate: false, scope: "global", projectRoot: null }],
       [
         "skills_detail_get",
-        { input: { model: "codex", skill_id: "official-git-commit", scope: "global" } },
+        { input: { model: "global", skill_id: "official-git-commit", scope: "global" } },
       ],
     ]);
   });
@@ -63,7 +61,7 @@ describe("skills IPC command contract", () => {
         {
           id: "official-git-commit",
           dir_name: "git-commit",
-          model: "codex",
+          model: "global",
           scope: "global",
           target_path: unified,
         },
@@ -78,16 +76,4 @@ describe("skills IPC command contract", () => {
     expect(result.data[0].target_path).toBe(unified);
   });
 
-  it("exposes production wrappers for unified initialization and compatibility results", async () => {
-    resetTauriMocks();
-    invokeMock.mockResolvedValue({});
-
-    await skillsInitializeUnified();
-    await skillsCompatibilityGet();
-
-    expect(invokeMock.mock.calls).toEqual([
-      ["skills_initialize_unified", undefined],
-      ["skills_compatibility_get", undefined],
-    ]);
-  });
 });

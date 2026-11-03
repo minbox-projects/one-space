@@ -5,12 +5,12 @@ use crate::skills::{
     find_current_installed_skill, get_source, installed_targets_for_repo, job_lock,
     load_local_skills_state, load_skills_state, load_sync_state, locate_existing_record_local_dir,
     normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name,
-    normalized_repo_dir_name, now_ts, reconcile_internal, record_local_dir, repo_storage_dir,
-    resolve_effective_models, resolve_repo_reload_compare, resolve_skill_target_dir,
-    save_local_skills_state, save_skills_state, scope_project_match, source_skill_abs_path,
-    trigger_storage_sync, unique_models_from_targets, ApiOk, CatalogSkill, CatalogSkillDetail,
-    CatalogSkillKeyInput, ReloadApplyResult, ReloadPreview, RepoReloadApplyInput,
-    RepoSkillKeyInput, SkillDetail, SkillKeyInput, INSTALL_SCOPE_GLOBAL,
+    normalized_repo_dir_name, now_ts, record_local_dir, repo_storage_dir, resolve_effective_models,
+    resolve_repo_reload_compare, resolve_skill_target_dir, save_local_skills_state,
+    save_skills_state, scope_project_match, source_skill_abs_path, trigger_storage_sync,
+    unique_models_from_targets, ApiOk, CatalogSkill, CatalogSkillDetail, CatalogSkillKeyInput,
+    ReloadApplyResult, ReloadPreview, RepoReloadApplyInput, RepoSkillKeyInput, SkillDetail,
+    SkillKeyInput, GLOBAL_SKILL_MODEL, INSTALL_SCOPE_GLOBAL,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -23,9 +23,14 @@ pub async fn skills_uninstall(
     let uninstall_scope = normalize_install_scope(input.scope.as_deref());
     let uninstall_project_root =
         normalize_project_root_for_scope(&uninstall_scope, input.project_root.as_deref())?;
+    let effective_model = if uninstall_scope == INSTALL_SCOPE_GLOBAL {
+        GLOBAL_SKILL_MODEL
+    } else {
+        input.model.as_str()
+    };
     let dedupe_key = format!(
         "uninstall:{}:{}:{}:{}",
-        input.model,
+        effective_model,
         input.skill_id,
         uninstall_scope,
         uninstall_project_root.clone().unwrap_or_default()
@@ -45,14 +50,14 @@ pub async fn skills_uninstall(
         &state,
         &sync_state,
         &cfg,
-        &input.model,
+        effective_model,
         &input.skill_id,
         &uninstall_scope,
         uninstall_project_root.as_deref(),
     ) {
         let local = locate_existing_record_local_dir(&record)?;
         let (root, compat_roots) = resolve_skill_target_dir(
-            &input.model,
+            effective_model,
             &uninstall_scope,
             uninstall_project_root.as_deref(),
         )?;
@@ -71,7 +76,7 @@ pub async fn skills_uninstall(
     }
     let revision = if uninstall_scope == INSTALL_SCOPE_GLOBAL {
         state.skills.retain(|s| {
-            !(s.model == input.model
+            !((uninstall_scope == INSTALL_SCOPE_GLOBAL || s.model == effective_model)
                 && s.id == input.skill_id
                 && scope_project_match(s, &uninstall_scope, uninstall_project_root.as_deref()))
         });
@@ -80,11 +85,6 @@ pub async fn skills_uninstall(
         state.revision
     };
 
-    let _ = reconcile_internal(
-        Some(&input.model),
-        Some(uninstall_scope.as_str()),
-        uninstall_project_root.as_deref(),
-    );
     api_ok(true, revision)
 }
 
@@ -96,11 +96,16 @@ pub fn skills_detail_get(input: SkillKeyInput) -> Result<ApiOk<SkillDetail>, Str
     let state = load_local_skills_state()?;
     let sync_state = load_sync_state()?;
     let cfg = config::get_storage_config()?;
+    let effective_model = if detail_scope == INSTALL_SCOPE_GLOBAL {
+        GLOBAL_SKILL_MODEL
+    } else {
+        input.model.as_str()
+    };
     let record = find_current_installed_skill(
         &state,
         &sync_state,
         &cfg,
-        &input.model,
+        effective_model,
         &input.skill_id,
         &detail_scope,
         detail_project_root.as_deref(),
@@ -307,13 +312,6 @@ pub async fn skills_repo_reload_apply(
     shared_state = save_skills_state(shared_state)?;
     local_state = save_local_skills_state(local_state)?;
 
-    for target in &result.synced_targets {
-        let _ = reconcile_internal(
-            Some(&target.model),
-            Some(target.scope.as_str()),
-            target.project_root.as_deref(),
-        );
-    }
     trigger_storage_sync(app, "skills_repo_reload_apply");
 
     api_ok(result, combined_revision(&shared_state, &local_state))

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useConfirmDialog } from "../../ConfirmDialogProvider";
 import type { WorkspaceCapabilityEntry } from "../../workspaceCapabilityContext";
-import { skillsCatalogDetailGet, skillsCatalogOpenFolder, skillsDetailGet, skillsInstall, skillsListCatalog, skillsListInstalled, skillsOpenFolder, skillsRepoDetailGet, skillsRepoList, skillsRepoSetModel, skillsRescanMirror, skillsUninstall } from "@/lib/skills";
+import { skillsCatalogDetailGet, skillsCatalogOpenFolder, skillsDetailGet, skillsInstall, skillsListCatalog, skillsListInstalled, skillsOpenFolder, skillsRepoDetailGet, skillsRepoList, skillsRepoSetModel, skillsSyncLocal, skillsUninstall } from "@/lib/skills";
 import { buildInstallStateFromCatalog, buildInstallTargetFromRepository, buildPartialInstallSummary, matchesRepositoryItem, normalizeSourceNameMap, toggleSelectableModel } from "../helpers/workspaceCapabilityHelpers";
 import type {
   CapabilityRepoModelInstallState,
@@ -182,6 +182,10 @@ export function useWorkspaceSkillsPanelState(args: {
   const groupInstalledByModel = useCallback((skills: WorkspaceSkillRecord[]) => {
     const next = createEmptyInstalledByModel();
     skills.forEach((skill) => {
+      if ((skill.model as string) === "global") {
+        modelTabs.forEach((tab) => next[tab.id].push(skill));
+        return;
+      }
       next[skill.model].push(skill);
     });
     modelTabs.forEach((tab) => {
@@ -202,7 +206,7 @@ export function useWorkspaceSkillsPanelState(args: {
 
   const fetchInstalledSkills = useCallback(async () => {
     const [globalRes, projectRes] = await Promise.allSettled([
-      skillsRescanMirror() as Promise<{ data?: WorkspaceSkillRecord[] }>,
+      skillsSyncLocal<{ data?: WorkspaceSkillRecord[] }>(),
       skillsListInstalled<{ data?: WorkspaceSkillRecord[] }>({
         model: null as unknown as string,
         scope: "project",
@@ -254,6 +258,7 @@ export function useWorkspaceSkillsPanelState(args: {
       setInitialLoadDone(false);
       setInstalledByModel(createEmptyInstalledByModel());
       try {
+        await skillsSyncLocal().catch(() => undefined);
         await reloadAll();
       } finally {
         if (!disposed) {
@@ -359,7 +364,7 @@ export function useWorkspaceSkillsPanelState(args: {
     return repositorySkills.filter((repo) => {
       if (!repo.models.includes(activeModel)) return false;
       if (repositorySourceFilter === "remote" && repo.source_type !== "remote") return false;
-      if (repositorySourceFilter === "local" && repo.source_type !== "local_import" && repo.source_type !== "mirror") {
+      if (repositorySourceFilter === "local" && repo.source_type !== "local_import") {
         return false;
       }
       if (!keyword) return true;

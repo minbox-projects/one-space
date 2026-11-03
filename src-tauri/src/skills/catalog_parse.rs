@@ -1,8 +1,8 @@
 use super::{
     ensure_within, has_path_traversal, hash_dir, is_duplicate_clone_file, is_ignored_name,
-    make_repo_key, now_ts, record_scope, repo_storage_dir,
-    resolve_skill_target_dir, safe_slug, skills_cache_root, CatalogSkill,
-    RepositoryRecord, SkillRecord, SkillsLocalState, SkillsState, MODELS,
+    make_repo_key, now_ts, record_scope, repo_storage_dir, resolve_skill_target_dir, safe_slug,
+    skills_cache_root, CatalogSkill, RepositoryRecord, SkillRecord, SkillsLocalState, SkillsState,
+    INSTALL_SCOPE_GLOBAL, MODELS,
 };
 use crate::config::{SkillSourceConfig, StorageConfig};
 use std::collections::HashMap;
@@ -285,7 +285,7 @@ pub(in crate::skills) fn has_dir_name_conflict(
     ignore_skill_id: Option<&str>,
 ) -> bool {
     state.skills.iter().any(|s| {
-        if s.model != model {
+        if scope != INSTALL_SCOPE_GLOBAL && s.model != model {
             return false;
         }
         if record_scope(s) != scope {
@@ -322,7 +322,7 @@ pub(in crate::skills) fn ensure_model_dir_name_available(
     if dest.exists() {
         if let Some(skill_id) = ignore_skill_id {
             if let Some(existing) = state.skills.iter().find(|s| {
-                s.model == model
+                (scope == INSTALL_SCOPE_GLOBAL || s.model == model)
                     && s.id == skill_id
                     && record_scope(s) == scope
                     && record_project_root(s)
@@ -350,7 +350,7 @@ pub(in crate::skills) fn remove_existing_record_dir_if_moved(
     new_dest: &Path,
 ) -> Result<(), String> {
     let Some(existing) = state.skills.iter().find(|s| {
-        s.model == model
+        (scope == INSTALL_SCOPE_GLOBAL || s.model == model)
             && s.id == skill_id
             && record_scope(s) == scope
             && record_project_root(s)
@@ -762,8 +762,8 @@ pub(in crate::skills) fn refresh_repository_metadata_from_snapshots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::test_support::{SERIAL_GUARD, with_global_proxy};
     use crate::config::ProxyConfig;
+    use crate::proxy::test_support::{with_global_proxy, SERIAL_GUARD};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
@@ -802,8 +802,20 @@ mod tests {
         let text_a = fs::read_to_string(&out_a).unwrap();
         // expected url
         let expected = "http://SAFE_FIXTURE_proxy_user:SAFE_FIXTURE_proxy_pass@127.0.0.1:8123";
-        for key in ["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy"] {
-            assert!(text_a.contains(&format!("{}={}", key, expected)), "missing {} in {}", key, text_a);
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            assert!(
+                text_a.contains(&format!("{}={}", key, expected)),
+                "missing {} in {}",
+                key,
+                text_a
+            );
         }
         assert!(text_a.contains("NO_PROXY=localhost,127.0.0.1,::1"));
         assert!(text_a.contains("no_proxy=localhost,127.0.0.1,::1"));
@@ -814,9 +826,20 @@ mod tests {
         std::env::set_var("GIT_ENV_OUTPUT", out_b.to_string_lossy().to_string());
         let _ = git_run(None, &["fetch"]);
         let text_b = fs::read_to_string(&out_b).unwrap();
-        for key in ["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy"] {
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
             // should be absent or empty
-            assert!(!text_b.contains(&format!("{}=", key)) || text_b.contains(&format!("{}=\n", key)), "proxy var present in disabled: {}", text_b);
+            assert!(
+                !text_b.contains(&format!("{}=", key)) || text_b.contains(&format!("{}=\n", key)),
+                "proxy var present in disabled: {}",
+                text_b
+            );
         }
         assert!(text_b.contains("NO_PROXY=localhost,127.0.0.1,::1"));
         assert!(text_b.contains("no_proxy=localhost,127.0.0.1,::1"));

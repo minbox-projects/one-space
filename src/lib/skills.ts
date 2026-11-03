@@ -36,16 +36,8 @@ export function skillsSyncStatusGet<T>() {
   return invokeTyped<T>("skills_sync_status_get");
 }
 
-export function skillsRescanMirror() {
-  return invokeTyped("skills_rescan_mirror");
-}
-
-export function skillsInitializeUnified<T>() {
-  return invokeTyped<T>("skills_initialize_unified");
-}
-
-export function skillsCompatibilityGet<T>() {
-  return invokeTyped<T>("skills_compatibility_get");
+export function skillsSyncLocal<T>() {
+  return invokeTyped<T>("skills_sync_local");
 }
 
 export function skillsSyncNow() {

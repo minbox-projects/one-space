@@ -2,9 +2,8 @@ use crate::config::{self};
 use crate::skills::{
     acquire_job_key, api_ok, apply_repository_update_from_dir, combined_revision,
     ensure_repository_snapshots_materialized, job_lock, load_local_skills_state, load_skills_state,
-    now_ts, reconcile_internal, repo_storage_dir, repository_has_remote_source_update,
-    repository_source_dir, save_local_skills_state, save_skills_state, trigger_storage_sync, ApiOk,
-    RepoAutoUpdateResult,
+    now_ts, repo_storage_dir, repository_has_remote_source_update, repository_source_dir,
+    save_local_skills_state, save_skills_state, trigger_storage_sync, ApiOk, RepoAutoUpdateResult,
 };
 
 #[tauri::command]
@@ -79,13 +78,6 @@ pub async fn skills_repo_auto_update_pending(
         if !updated_repo_keys.is_empty() {
             shared_state = save_skills_state(shared_state)?;
             local_state = save_local_skills_state(local_state)?;
-            for target in &synced_targets {
-                let _ = reconcile_internal(
-                    Some(&target.model),
-                    Some(target.scope.as_str()),
-                    target.project_root.as_deref(),
-                );
-            }
             trigger_storage_sync(app, "skills_repo_auto_update_pending");
         }
 

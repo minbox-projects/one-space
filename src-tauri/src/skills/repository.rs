@@ -1,13 +1,11 @@
 use super::{
-    get_source, is_duplicate_clone_file, is_ignored_name, make_repo_key,
-    normalized_record_dir_name, normalized_repo_dir_name, now_ts, record_local_dir,
-    replace_dir_atomic, repo_index_baseline_dir, repo_storage_dir,
+    get_source, is_duplicate_clone_file, is_ignored_name, make_repo_key, normalized_repo_dir_name,
+    now_ts, replace_dir_atomic, repo_index_baseline_dir, repo_storage_dir,
     snapshot_repository_index_baseline, source_skill_abs_path, RepoModelInstallState,
     RepositoryRecord, RepositorySkillView, SkillRecord, SkillsState,
 };
 use crate::config::StorageConfig;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -63,14 +61,6 @@ pub(in crate::skills) fn hash_dir(path: &Path) -> Result<String, String> {
         hasher.update(&content);
     }
     Ok(format!("{:x}", hasher.finalize()))
-}
-
-pub(in crate::skills) fn source_type_from_source_id(source_id: &str) -> String {
-    if source_id.starts_with("local-") || source_id == "local" || source_id == "mirror-local" {
-        "local_import".to_string()
-    } else {
-        "remote".to_string()
-    }
 }
 
 pub(in crate::skills) fn upsert_repository_record(
@@ -172,6 +162,13 @@ pub(in crate::skills) fn build_repo_install_state(
     let mut installed = RepoModelInstallState::default();
     for skill in installed_skills {
         if !skill_matches_repository(skill, repo) {
+            continue;
+        }
+        if skill.model == crate::skills::GLOBAL_SKILL_MODEL {
+            installed.claude = true;
+            installed.antigravity = true;
+            installed.codex = true;
+            installed.opencode = true;
             continue;
         }
         match skill.model.as_str() {
@@ -310,54 +307,6 @@ pub(in crate::skills) fn build_repository_views(
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     out
-}
-
-pub(in crate::skills) fn ensure_repositories_migrated(
-    state: &mut SkillsState,
-) -> Result<bool, String> {
-    if !state.repositories.is_empty() {
-        return Ok(false);
-    }
-
-    let mut changed = false;
-    let mut seen = HashSet::new();
-    for skill in &state.skills {
-        let repo_key = make_repo_key(&skill.source_id, &skill.source_rel_path);
-        if !seen.insert(repo_key.clone()) {
-            continue;
-        }
-
-        let mut repo_hash = Some(skill.local_hash.clone());
-        if let Ok(src) = record_local_dir(skill) {
-            if src.exists() {
-                let dst = repo_storage_dir(&repo_key)?;
-                if replace_dir_atomic(&src, &dst).is_ok() {
-                    let _ = snapshot_repository_index_baseline(&repo_key, &dst);
-                    repo_hash = hash_dir(&dst).ok().or(repo_hash);
-                }
-            }
-        }
-
-        state.repositories.push(RepositoryRecord {
-            repo_key: repo_key.clone(),
-            skill_id: skill.id.clone(),
-            dir_name: normalized_record_dir_name(skill),
-            source_id: skill.source_id.clone(),
-            source_rel_path: skill.source_rel_path.clone(),
-            source_type: source_type_from_source_id(&skill.source_id),
-            source_path: None,
-            name: skill.name.clone(),
-            description: skill.description.clone(),
-            models: skill.models.clone(),
-            icon_seed: skill.icon_seed.clone(),
-            hash: repo_hash,
-            created_at: now_ts(),
-            updated_at: Some(now_ts()),
-            ever_installed: true,
-        });
-        changed = true;
-    }
-    Ok(changed)
 }
 
 pub(in crate::skills) fn upsert_repository_from_dir(

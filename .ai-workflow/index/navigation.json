@@ -10434,19 +10434,7 @@
         },
         {
           "file": "src/lib/skills.ts",
-          "name": "skillsCompatibilityGet",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/skills.ts",
           "name": "skillsDetailGet",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/skills.ts",
-          "name": "skillsInitializeUnified",
           "kind": "function",
           "visibility": "public"
         },
@@ -10518,7 +10506,7 @@
         },
         {
           "file": "src/lib/skills.ts",
-          "name": "skillsRescanMirror",
+          "name": "skillsSyncLocal",
           "kind": "function",
           "visibility": "public"
         },

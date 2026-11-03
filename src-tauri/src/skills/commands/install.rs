@@ -4,11 +4,11 @@ use crate::skills::{
     ensure_model_dir_name_available, ensure_within, get_source, hash_dir, job_lock,
     load_local_skills_state, load_skills_state, load_sync_state, make_repo_key,
     mark_repo_ever_installed, normalize_install_scope, normalize_project_root_for_scope, now_ts,
-    read_required_skill_dir_name, reconcile_internal, remove_existing_record_dir_if_moved,
-    replace_dir_atomic, repo_storage_dir, resolve_effective_models, resolve_skill_target_dir,
-    save_local_skills_state, save_skills_state, scope_project_match, source_skill_abs_path,
-    trigger_storage_sync, upsert_repo_dir_name, upsert_repository_from_dir, ApiOk, InstallInput,
-    SkillRecord, INSTALL_SCOPE_GLOBAL, MODELS,
+    read_required_skill_dir_name, remove_existing_record_dir_if_moved, replace_dir_atomic,
+    repo_storage_dir, resolve_effective_models, resolve_skill_target_dir, save_local_skills_state,
+    save_skills_state, scope_project_match, source_skill_abs_path, trigger_storage_sync,
+    upsert_repo_dir_name, upsert_repository_from_dir, ApiOk, InstallInput, SkillRecord,
+    GLOBAL_SKILL_MODEL, INSTALL_SCOPE_GLOBAL, MODELS,
 };
 
 #[tauri::command]
@@ -19,9 +19,14 @@ pub async fn skills_install(
     let install_scope = normalize_install_scope(input.scope.as_deref());
     let install_project_root =
         normalize_project_root_for_scope(&install_scope, input.project_root.as_deref())?;
+    let effective_model = if install_scope == INSTALL_SCOPE_GLOBAL {
+        GLOBAL_SKILL_MODEL
+    } else {
+        input.model.as_str()
+    };
     let dedupe_key = format!(
         "install:{}:{}:{}:{}",
-        input.model,
+        effective_model,
         input.skill_ref,
         install_scope,
         install_project_root.clone().unwrap_or_default()
@@ -36,7 +41,7 @@ pub async fn skills_install(
                 &state,
                 &sync_state,
                 &cfg,
-                Some(&input.model),
+                Some(effective_model),
                 &install_scope,
                 install_project_root.as_deref(),
             )?
@@ -50,7 +55,7 @@ pub async fn skills_install(
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
 
-    if !MODELS.contains(&input.model.as_str()) {
+    if install_scope != INSTALL_SCOPE_GLOBAL && !MODELS.contains(&input.model.as_str()) {
         return Err("unsupported model".to_string());
     }
 
@@ -67,7 +72,7 @@ pub async fn skills_install(
         .cloned()
         .ok_or("catalog skill not found")?;
     let allowed_models = resolve_effective_models(&catalog.models, &source.default_models);
-    if !allowed_models.contains(&input.model) {
+    if install_scope != INSTALL_SCOPE_GLOBAL && !allowed_models.contains(&input.model) {
         return Err("skills/model_not_allowed".to_string());
     }
 
@@ -140,14 +145,14 @@ pub async fn skills_install(
 
     ensure_model_dir_name_available(
         &local_state,
-        &input.model,
+        effective_model,
         &install_scope,
         install_project_root.as_deref(),
         &catalog_dir_name,
         Some(repo_record.skill_id.as_str()),
     )?;
     let (model_root, compat_roots) = resolve_skill_target_dir(
-        &input.model,
+        effective_model,
         &install_scope,
         install_project_root.as_deref(),
     )?;
@@ -155,7 +160,7 @@ pub async fn skills_install(
     ensure_within(&model_root, &dest)?;
     remove_existing_record_dir_if_moved(
         &local_state,
-        &input.model,
+        effective_model,
         &install_scope,
         install_project_root.as_deref(),
         &repo_record.skill_id,
@@ -163,13 +168,18 @@ pub async fn skills_install(
     )?;
     let repo_src = repo_storage_dir(&repo_record.repo_key)?;
     replace_dir_atomic(&repo_src, &dest)?;
+    for compat_root in compat_roots {
+        let compat_dest = compat_root.join(&catalog_dir_name);
+        ensure_within(&compat_root, &compat_dest)?;
+        replace_dir_atomic(&dest, &compat_dest)?;
+    }
 
     let local_hash = hash_dir(&dest)?;
     let now = now_ts();
     let record = SkillRecord {
         id: repo_record.skill_id.clone(),
         dir_name: catalog_dir_name.clone(),
-        model: input.model.clone(),
+        model: effective_model.to_string(),
         models: allowed_models,
         name: catalog.name.clone(),
         description: catalog.description.clone(),
@@ -189,16 +199,11 @@ pub async fn skills_install(
 
     if install_scope == INSTALL_SCOPE_GLOBAL {
         local_state.skills.retain(|s| {
-            !(s.model == input.model
+            !((install_scope == INSTALL_SCOPE_GLOBAL || s.model == effective_model)
                 && s.id == repo_record.skill_id
                 && scope_project_match(s, &install_scope, install_project_root.as_deref()))
         });
         local_state.skills.push(record.clone());
-    }
-    for compat_root in compat_roots {
-        let compat_dest = compat_root.join(&catalog_dir_name);
-        ensure_within(&compat_root, &compat_dest)?;
-        replace_dir_atomic(&dest, &compat_dest)?;
     }
     if shared_changed {
         shared_state = save_skills_state(shared_state)?;
@@ -207,11 +212,6 @@ pub async fn skills_install(
         local_state = save_local_skills_state(local_state)?;
     }
 
-    let _ = reconcile_internal(
-        Some(&input.model),
-        Some(install_scope.as_str()),
-        install_project_root.as_deref(),
-    );
     if shared_changed {
         trigger_storage_sync(app, "skills_install");
     }

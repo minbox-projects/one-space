@@ -63,9 +63,9 @@ OneSpace 是一个面向开发者的 macOS 优先桌面工作台（Tauri 2 + Rea
 **Skills**
 
 - `Recommended` / `Repository` / `Installed` 三视图
-- 支持 `Global`（工具全局）与 `Project`（项目目录）两种安装范围
-- 各工具统一使用 `~/.agents/skills` 规范目录，并为 `Claude` 维护兼容符号链接
-- 支持 Git 源同步、差异预览、更新应用、本地目录导入与打开
+- 支持 `Global`（统一目录 `~/.agents/skills`）与 `Project`（项目目录）两种安装范围
+- 全局安装只写入 `~/.agents/skills`，并自动发现四个工具全局目录中的本地 Skills
+- 支持 Git 源同步、差异预览、更新应用、本地目录自动发现/导入与打开
 
 **MCP Servers**
 

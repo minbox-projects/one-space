@@ -1,7 +1,7 @@
 use super::{
-    ensure_repositories_migrated, record_scope, replace_dir_atomic, ApiMeta, ApiOk,
-    RepositoryRecord, SkillsLocalState, SkillsState, SkillsSyncState, IGNORE_NAMES,
-    INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+    record_scope, replace_dir_atomic, ApiMeta, ApiOk, RepositoryRecord, SkillsLocalState,
+    SkillsState, SkillsSyncState, GLOBAL_SKILL_MODEL, IGNORE_NAMES, INSTALL_SCOPE_GLOBAL,
+    INSTALL_SCOPE_PROJECT,
 };
 use crate::config::{self};
 use serde::{Deserialize, Serialize};
@@ -70,21 +70,13 @@ pub(in crate::skills) fn sync_state_path() -> Result<PathBuf, String> {
     Ok(skills_meta_root()?.join("sync_state.json"))
 }
 
-pub(in crate::skills) fn model_dir(model: &str) -> Result<PathBuf, String> {
-    if !MODELS.contains(&model) {
-        return Err(format!("unsupported model: {}", model));
-    }
-    // Global Skills have one canonical home; model directories are compatibility projections.
+pub(in crate::skills) fn global_skills_dir() -> Result<PathBuf, String> {
     let p = dirs::home_dir()
         .ok_or("home directory not found")?
         .join(".agents")
         .join("skills");
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     Ok(p)
-}
-
-pub(in crate::skills) fn ensure_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|e| e.to_string())
 }
 
 pub(in crate::skills) fn project_primary_dir(
@@ -116,57 +108,6 @@ pub(in crate::skills) fn project_compat_dirs(model: &str, project_root: &Path) -
     }
 }
 
-pub(in crate::skills) fn mirror_dir(model: &str) -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("home directory not found")?;
-    if model == "claude" {
-        let unified = home.join(".agents").join("skills");
-        fs::create_dir_all(&unified).map_err(|e| e.to_string())?;
-        let claude_root = home.join(".claude");
-        fs::create_dir_all(&claude_root).map_err(|e| e.to_string())?;
-        let link = claude_root.join("skills");
-        match fs::symlink_metadata(&link) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                // Compare canonical targets so a correct relative symlink that
-                // resolves to the unified directory is accepted, while wrong or
-                // broken symlinks are still reported without being rewritten.
-                let matches_unified = match (fs::canonicalize(&link), fs::canonicalize(&unified)) {
-                    (Ok(resolved_link), Ok(resolved_unified)) => resolved_link == resolved_unified,
-                    _ => false,
-                };
-                if !matches_unified {
-                    return Err(format!(
-                        "{} is not a symlink to {}",
-                        link.display(),
-                        unified.display()
-                    ));
-                }
-            }
-            Ok(_) => {
-                return Err(format!(
-                    "{} exists and must be a symlink to {}",
-                    link.display(),
-                    unified.display()
-                ))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(&unified, &link)
-                    .map_err(|e| format!("{}: {}", link.display(), e))?;
-            }
-            Err(error) => return Err(format!("{}: {}", link.display(), error)),
-        }
-        return Ok(fs::canonicalize(&link).unwrap_or(unified));
-    }
-    let p = match model {
-        "codex" => home.join(".codex").join("skills"),
-        "antigravity" => home.join(".gemini").join("config").join("skills"),
-        "opencode" => home.join(".config").join("opencode").join("skills"),
-        _ => return Err(format!("unsupported model: {}", model)),
-    };
-    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    Ok(fs::canonicalize(&p).unwrap_or(p))
-}
-
 pub(in crate::skills) fn resolve_skill_target_dir(
     model: &str,
     scope: &str,
@@ -182,9 +123,7 @@ pub(in crate::skills) fn resolve_skill_target_dir(
         }
         return Ok((primary, compat));
     }
-    let primary = model_dir(model)?;
-    let mirror = mirror_dir(model)?;
-    Ok((primary, vec![mirror]))
+    Ok((global_skills_dir()?, vec![]))
 }
 
 pub(in crate::skills) fn make_repo_key(source_id: &str, source_rel_path: &str) -> String {
@@ -408,10 +347,6 @@ pub(in crate::skills) fn is_local_duplicate_repository(
 pub(in crate::skills) fn normalize_repositories(state: &mut SkillsState) -> bool {
     let mut changed = false;
     for repo in &mut state.repositories {
-        if repo.source_type == "mirror" {
-            repo.source_type = "local_import".to_string();
-            changed = true;
-        }
         if repo.dir_name.trim().is_empty() {
             repo.dir_name = repo.skill_id.clone();
             changed = true;
@@ -442,9 +377,6 @@ pub(in crate::skills) fn normalize_repositories(state: &mut SkillsState) -> bool
 pub(in crate::skills) fn load_skills_state() -> Result<SkillsState, String> {
     let mut state: SkillsState = read_json_or_default(&skills_state_path()?)?;
     let mut changed = false;
-    if ensure_repositories_migrated(&mut state)? {
-        changed = true;
-    }
     if normalize_repositories(&mut state) {
         changed = true;
     }
@@ -491,7 +423,28 @@ pub(in crate::skills) fn normalize_local_skills_state(state: &mut SkillsLocalSta
     state
         .skills
         .retain(|skill| record_scope(skill) == INSTALL_SCOPE_GLOBAL);
-    before_len != state.skills.len()
+    let mut changed = before_len != state.skills.len();
+    for skill in &mut state.skills {
+        if skill.model != GLOBAL_SKILL_MODEL {
+            skill.model = GLOBAL_SKILL_MODEL.to_string();
+            changed = true;
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    state.skills.retain(|skill| {
+        let key = if skill.dir_name.trim().is_empty() {
+            skill.id.clone()
+        } else {
+            skill.dir_name.trim().to_string()
+        };
+        if seen.insert(key) {
+            true
+        } else {
+            changed = true;
+            false
+        }
+    });
+    changed
 }
 
 pub(in crate::skills) fn combined_revision(shared: &SkillsState, local: &SkillsLocalState) -> u64 {

@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { emit } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { runUserAction } from '@/lib/userActions';
@@ -17,7 +16,7 @@ import {
   skillsRepoSetModel,
   skillsUninstall,
 } from '@/lib/skills';
-import { allModels, errorContainsCode } from '../helpers';
+import { errorContainsCode } from '../helpers';
 import type {
   ApiResp,
   CatalogOpenFolderResult,
@@ -38,7 +37,6 @@ export function useSkillsActions(data: SkillsData) {
   const {
     t,
     actionContext,
-    activeModel,
     setActiveModel,
     setActiveMode,
     loading,
@@ -75,78 +73,32 @@ export function useSkillsActions(data: SkillsData) {
     loadSyncState,
     loadDisplayConfig,
     triggerSyncSources,
-    revealInstalledModels,
     toInstallTargetFromRepo,
     buildInstallStateForCatalog,
     findLatestRepository,
     resolveRepositorySkill,
   } = data;
 
-  const installAllowedModels = useMemo(
-    () =>
-      installTarget
-        ? allModels.filter((model) => {
-            if (!installTarget.models.includes(model)) return false;
-            return true;
-          })
-        : [],
-    [installTarget]
-  );
-
   const handleSyncSources = async () => {
     await triggerSyncSources(true);
   };
 
-  const installSkillToModels = async (
-    item: CatalogSkill,
-    selectedModels: ModelType[],
-  ) => {
-    const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
-    if (targetModels.length === 0) {
-      setMessage({
-        type: 'error',
-        text: t('sourceModelsRequired', 'Select at least one model.'),
-      });
-      return;
-    }
+  const installSkillToModels = async (item: CatalogSkill, _selectedModels: ModelType[]) => {
     try {
       setLoading(true);
       setInstallSubmitting(true);
-      const results = await Promise.allSettled(
-        targetModels.map((model) =>
-          skillsInstall({
-            source_id: item.source_id,
-            skill_ref: item.rel_path,
-            model,
-            scope: 'global',
-          })
-        )
-      );
+      await skillsInstall({
+        source_id: item.source_id,
+        skill_ref: item.rel_path,
+        model: 'global',
+        scope: 'global',
+      });
       await reloadAll();
-      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
-      const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
-      if (succeeded > 0) {
-        emit('refresh-counts').catch(() => {});
-        revealInstalledModels(targetModels);
-      }
-      if (failed.length === 0) {
-        setMessage({
-          type: 'success',
-          text:
-            succeeded === 1
-              ? t('installed', 'Installed')
-              : t('skillsInstallSuccessMulti', 'Installed for {{count}} models', { count: succeeded }),
-        });
-      } else {
-        setMessage({
-          type: 'error',
-          text: t('skillsInstallPartialFailed', 'Installed {{success}}, failed {{failed}} ({{models}})', {
-            success: succeeded,
-            failed: failed.length,
-            models: failed.join(', '),
-          }),
-        });
-      }
+      emit('refresh-counts').catch(() => {});
+      setMessage({
+        type: 'success',
+        text: t('installed', 'Installed'),
+      });
     } catch (e: any) {
       setMessage({
         type: 'error',
@@ -160,7 +112,7 @@ export function useSkillsActions(data: SkillsData) {
 
   const installRepositoryToModels = async (
     item: InstallTargetSkill,
-    selectedModels: ModelType[],
+    _selectedModels: ModelType[],
   ) => {
     if (!item.repo_key) {
       setMessage({
@@ -170,53 +122,21 @@ export function useSkillsActions(data: SkillsData) {
       return;
     }
 
-    const targetModels = allModels.filter((model) => item.models.includes(model) && selectedModels.includes(model));
-    if (targetModels.length === 0) {
-      setMessage({
-        type: 'error',
-        text: t('sourceModelsRequired', 'Select at least one model.'),
-      });
-      return;
-    }
-
     try {
       setLoading(true);
       setInstallSubmitting(true);
-      const results = await Promise.allSettled(
-        targetModels.map((model) =>
-          skillsRepoSetModel({
-            repo_key: item.repo_key!,
-            model,
-            enabled: true,
-            scope: 'global',
-          })
-        )
-      );
+      await skillsRepoSetModel({
+        repo_key: item.repo_key,
+        model: 'global',
+        enabled: true,
+        scope: 'global',
+      });
       await reloadAll();
-      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
-      const failed = targetModels.filter((_, idx) => results[idx].status === 'rejected');
-      if (succeeded > 0) {
-        emit('refresh-counts').catch(() => {});
-        revealInstalledModels(targetModels);
-      }
-      if (failed.length === 0) {
-        setMessage({
-          type: 'success',
-          text:
-            succeeded === 1
-              ? t('installed', 'Installed')
-              : t('skillsInstallSuccessMulti', 'Installed for {{count}} models', { count: succeeded }),
-        });
-      } else {
-        setMessage({
-          type: 'error',
-          text: t('skillsInstallPartialFailed', 'Installed {{success}}, failed {{failed}} ({{models}})', {
-            success: succeeded,
-            failed: failed.length,
-            models: failed.join(', '),
-          }),
-        });
-      }
+      emit('refresh-counts').catch(() => {});
+      setMessage({
+        type: 'success',
+        text: t('installed', 'Installed'),
+      });
     } catch (e: any) {
       setMessage({
         type: 'error',
@@ -231,43 +151,15 @@ export function useSkillsActions(data: SkillsData) {
   const openInstallDialog = (
     target: InstallTargetSkill,
     mode: 'catalog' | 'repository',
-    preferredModel?: ModelType
+    _preferredModel?: ModelType
   ) => {
-    const allowed = allModels.filter((model) => {
-      if (!target.models.includes(model)) return false;
-      return true;
-    });
-    if (allowed.length === 0) {
-      setMessage({
-        type: 'success',
-        text: t('installed', 'Installed'),
-      });
-      return;
-    }
     setInstallMode(mode);
     setInstallTarget(target);
-    const preferredDefault = preferredModel || activeModel;
-    const installedDefaults =
-      mode === 'repository' && target.installed
-        ? allowed.filter((model) => target.installed?.[model])
-        : [];
-    setInstallModels(
-      installedDefaults.length > 0
-        ? installedDefaults
-        : [allowed.includes(preferredDefault) ? preferredDefault : allowed[0]]
-    );
+    setInstallModels([]);
     setInstallDialogOpen(true);
   };
 
   const handleInstall = async (item: CatalogSkill) => {
-    const allowed = allModels.filter((model) => item.models.includes(model));
-    if (allowed.length === 0) {
-      setMessage({
-        type: 'error',
-        text: t('skillsInstallUnavailableForModel', 'This skill is not available for the selected model.'),
-      });
-      return;
-    }
     openInstallDialog(item, 'catalog');
   };
 
@@ -276,9 +168,8 @@ export function useSkillsActions(data: SkillsData) {
     openInstallDialog(toInstallTargetFromRepo(latest), 'repository');
   };
 
-  const canSubmitInstall = installAllowedModels.length > 0 && installModels.length > 0 && !installSubmitting && !loading;
+  const canSubmitInstall = !!installTarget && !installSubmitting && !loading;
   const toggleInstallModel = (model: ModelType) => {
-    if (!installAllowedModels.includes(model)) return;
     setInstallModels((prev) => {
       if (prev.includes(model)) {
         return prev.filter((m) => m !== model);
@@ -287,7 +178,7 @@ export function useSkillsActions(data: SkillsData) {
     });
   };
   const handleInstallConfirm = async () => {
-    if (!installTarget || installModels.length === 0) return;
+    if (!installTarget) return;
     if (installMode === 'repository') {
       await installRepositoryToModels(installTarget, installModels);
     } else {
@@ -395,7 +286,7 @@ export function useSkillsActions(data: SkillsData) {
         () =>
           skillsRepoSetModel({
             repo_key: matchedRepo.repo_key,
-            model: skill.model,
+            model: 'global',
             enabled: true,
             scope: 'global',
           }),
@@ -705,7 +596,6 @@ export function useSkillsActions(data: SkillsData) {
   };
 
   return {
-    installAllowedModels,
     canSubmitInstall,
     handleSyncSources,
     installSkillToModels,

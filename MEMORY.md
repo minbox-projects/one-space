@@ -80,13 +80,20 @@ OneSpace 是面向开发者的 macOS 桌面工作台（Tauri 2 + React 19 + Type
 - OpenCode 会话历史与用量同时读取 legacy JSON、SQLite v1（`session` / `message`）和 SQLite v2（`session_v2` / `session_message`）。trim 后相同的 session ID 固定按 v2 > v1 > JSON 选择来源，低优先级来源只补充独有 session；用量在选中来源内保留该 session 的全部 message，以 message 级 token 数据兼容早期 v1 并匹配 v2，跨来源不重复累计。Tauri schema、前端与 resolver 保持不变；原因与取舍见 [OpenCode session storage compatibility](.ai-workflow/notes/implemented/bug-fix/2026-09-20-opencode-session-storage-compatibility.md)。
 - Antigravity 用量三来源：legacy `~/.gemini/tmp` 下 `session-` 前缀 `.json`/`.jsonl` 按迁移前 gemini 口径解析 token（`.json` 的 `cached+cache` 求和、`message.metadata.model` 回退）并产出 `UsageRecord`；新格式 brain transcript（两处 brain 根下 `transcript_full.jsonl`，`USER_INPUT` 大小写不敏感）只计 `scanned_sessions`/`scanned_calls`，不进 token 聚合；额度经 `sessions_antigravity_quota` 直读 `agy -p /usage --output-format json`（成功结果 5 分钟 TTL、失败不缓存），不走扫描缓存。`empty` 契约：`available` 且 `scanned_sessions==0` 即 `empty`，有源无 token 时前端显示 Antigravity 专属 token 不可用说明。四个工具的来源收集另有共享缓存（`ai_sessions/usage_cache.rs`）：L1 按工具/窗口缓存整份 `ToolScan`（30s TTL、按解析出的来源根键控、收集期间持锁合并并发调用），L2 按文件身份（路径+长度+mtime，绝不用哈希）缓存单来源解析结果——变更/截断/删除文件只更新自身贡献、解析错误绝不缓存；`sessions_usage_clear_cache` 清空 L1+L2 与额度缓存作为显式刷新旁路，计数器 `usage_collection_stats`（source_reads/parsed_entries/collection_calls/cache_hits）仅供测量。历史回填的 per-file 复用由 `HistoryFileCache` 提供，覆盖 claude/codex/antigravity（按 path+metadata+dependencies 键），OpenCode 历史因跨文件依赖刻意不按文件备忘录化。原因与取舍见 [Antigravity Usage and Quota](.ai-workflow/notes/implemented/architecture/2026-09-21-antigravity-usage-and-quota.md)。
 
-## Skills 统一目录与兼容
+## Skills 统一目录与本地同步
 
-- `~/.agents/skills` 是所有 Skills 安装、扫描、同步与显示的规范目录；迁移后不再按工具维护独立 Skills 目录。
-- `~/.claude/skills` 是指向 `~/.agents/skills` 的兼容符号链接；若该路径被普通文件/目录或错误、损坏的符号链接占用，则保持原样并返回可操作的失败，绝不覆盖。
-- 同名冲突以统一目录版本为准；工具特定版本备份到 `~/.agents/skills/.backups/<tool>/<skill>/<content-hash>/`，按来源工具、Skill 名与内容哈希做幂等键，重复初始化不产生重复备份。
-- `.backups`、`.stage-*`、`.backup-*` 是内部产物，绝不视为 Skill：扫描、迁移、投影、哈希、复制与计数全部跳过，避免递归膨胀。启动初始化时清理统一与各工具 skills 根下的 `.stage-*`/`.backup-*`、删除工具根 `.backups` 副本；统一 `.backups` 出现递归嵌套污染时整体删除，未污染的合法备份保留。
-- 兼容性矩阵由后端记录 Claude / OpenCode / Codex / Antigravity 对 `~/.agents/skills` 的读取行为；无法直接读取的工具显式标记为依赖兼容路径或不受支持。
+- `~/.agents/skills` 是所有全局 Skills 安装、扫描、同步与显示的规范目录；OneSpace 不再向 `~/.claude/skills`、`~/.codex/skills`、`~/.gemini/config/skills`、`~/.config/opencode/skills` 写入或投影全局 Skills。
+- 全局安装与模型解耦：安装、卸载、重装与仓库启用只操作 `~/.agents/skills`，全局记录使用 `global` 模型标识；模型选择仅用于 Project 范围与推荐列表浏览。
+- 本地同步 `skills_sync_local` 在应用启动、Skills 页面加载和工作区能力面板刷新时扫描统一目录与四个工具全局目录，自动登记为 `local_import` 仓库条目；只读取，不复制、不删除、不写回工具目录。
+- 本地发现按目录名合并，优先统一目录；已由 remote 仓库管理的名称不再重复登记；本地发现条目在源目录消失后自动移除，手动导入的 `local-*` 条目不受影响。
+- `.backups`、`.stage-*`、`.backup-*` 仍是内部产物，绝不视为 Skill：扫描、哈希、复制与计数全部跳过。
+- 启动不再执行自动迁移、冲突备份或 Claude 符号链接创建；兼容性矩阵、`skills_initialize_unified`、`skills_compatibility_get`、`skills_rescan_mirror` 与 `skills_reconcile` 已删除。
+
+## Subagents 本地同步
+
+- `subagents_sync_local` 在应用启动、Subagents 页面首次加载和工作区能力面板刷新时扫描 Claude / Antigravity / Codex / OpenCode 的全局 agents 目录，将 frontmatter `name` 合法的目录或单文件 Markdown 导入当前 profile 的模型目录并重建全局已安装记录；手动「从本地同步」按钮复用同一命令，旧 `subagents_rescan_mirror` 已删除。
+- 本地发现按目录名合并，优先 `claude` → `antigravity` → `codex` → `opencode`；已由 remote 仓库管理的目录名不会重复登记为 `local_import`，本地仓库条目在源路径消失后清理其快照与索引基线。
+- 同步只导入与刷新，不按本地目录缺失删除已安装模型记录；模型目录仍是已安装状态的本地权威缓存。
 
 ## AI 网关模块与边界
 

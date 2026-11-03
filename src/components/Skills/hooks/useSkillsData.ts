@@ -8,7 +8,7 @@ import {
   skillsListCatalog,
   skillsListInstalled,
   skillsRepoList,
-  skillsRescanMirror,
+  skillsSyncLocal,
   skillsSyncNow,
   skillsSyncStatusGet,
 } from '@/lib/skills';
@@ -126,10 +126,11 @@ export function useSkillsData({
       opencode: [],
     };
     skills.forEach((skill) => {
-      const model = skill.model as ModelType;
-      if (model === 'claude' || model === 'antigravity' || model === 'codex' || model === 'opencode') {
-        next[model].push(skill);
+      if (skill.model === 'global') {
+        allModels.forEach((model) => next[model].push(skill));
+        return;
       }
+      next[skill.model].push(skill);
     });
     return next;
   };
@@ -248,7 +249,7 @@ export function useSkillsData({
         setLoading(true);
         try {
           try {
-            await skillsRescanMirror();
+            await skillsSyncLocal();
           } catch {
             // ignore best-effort rescan errors
           }
@@ -405,13 +406,6 @@ export function useSkillsData({
     [reloadDiffMap, reloadSelectedPath]
   );
 
-  const filteredInstalled = useMemo(() => {
-    return [...activeInstalled].sort((a, b) => {
-      const bUpdated = b.updated_at || b.installed_at || 0;
-      const aUpdated = a.updated_at || a.installed_at || 0;
-      return bUpdated - aUpdated;
-    });
-  }, [activeInstalled]);
   const catalogSources = useMemo(() => {
     const seen = new Set<string>();
     const list: Array<{ id: string; label: string }> = [];
@@ -451,7 +445,28 @@ export function useSkillsData({
       ].some((field) => String(field || '').toLowerCase().includes(keyword))
     );
   }, [catalog, recommendedSourceFilter, recommendedSearch, activeModel]);
-  const visibleInstalled = filteredInstalled;
+  const allInstalled = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: SkillRecord[] = [];
+    allModels.forEach((model) => {
+      (installedByModel[model] || []).forEach((skill) => {
+        const key = [skill.id, skill.scope || 'global', skill.project_root || ''].join('::');
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged.push(skill);
+      });
+    });
+    return merged;
+  }, [installedByModel]);
+  const visibleInstalled = useMemo(
+    () =>
+      [...allInstalled].sort((a, b) => {
+        const bUpdated = b.updated_at || b.installed_at || 0;
+        const aUpdated = a.updated_at || a.installed_at || 0;
+        return bUpdated - aUpdated;
+      }),
+    [allInstalled],
+  );
   const visibleCatalog = filteredCatalog;
   const visibleRepository = useMemo(() => {
     const bySource = (() => {
@@ -461,9 +476,7 @@ export function useSkillsData({
       if (repositorySourceFilter === 'remote') {
         return repositorySkills.filter((repo) => repo.source_type === 'remote');
       }
-      return repositorySkills.filter((repo) =>
-        repo.source_type === 'local_import' || repo.source_type === 'mirror'
-      );
+      return repositorySkills.filter((repo) => repo.source_type === 'local_import');
     })();
     const keyword = repositorySearch.trim().toLowerCase();
     if (!keyword) return bySource;
@@ -497,11 +510,6 @@ export function useSkillsData({
         return {
           label: t('skillsSourceTypeLocalImport', 'Local Import'),
           className: 'bg-emerald-500/10 text-emerald-700 border-emerald-500/30',
-        };
-      case 'mirror':
-        return {
-          label: t('skillsSourceTypeMirror', 'Mirror'),
-          className: 'bg-amber-500/10 text-amber-700 border-amber-500/30',
         };
       default:
         return {

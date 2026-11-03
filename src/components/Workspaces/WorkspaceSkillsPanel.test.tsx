@@ -6,7 +6,7 @@ import { renderWithProviders } from "@/test/mocks/render";
 import { emitMock, invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
 const skillsMocks = vi.hoisted(() => ({
-  skillsRescanMirror: vi.fn(),
+  skillsSyncLocal: vi.fn(),
   skillsListInstalled: vi.fn(),
   skillsListCatalog: vi.fn(),
   skillsRepoList: vi.fn(),
@@ -68,7 +68,7 @@ describe("WorkspaceSkillsPanel", () => {
       throw new Error(`Unexpected invoke command: ${command}`);
     });
 
-    skillsMocks.skillsRescanMirror.mockResolvedValue({
+    skillsMocks.skillsSyncLocal.mockResolvedValue({
       data: [{ id: "skill-global", model: "claude", models: ["claude"], name: "Global Skill", description: "Global", source_id: "repo", source_rel_path: "skills/global", installed_at: 1, has_update: false, icon_seed: "a", scope: "global" }],
     });
     skillsMocks.skillsListInstalled.mockResolvedValue({

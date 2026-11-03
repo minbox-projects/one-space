@@ -1,14 +1,14 @@
 use super::{
     build_installed_target, compare_snapshot_dirs, copy_dir_secure_internal,
-    ensure_model_dir_name_available, ensure_within, get_source, has_dir_name_conflict, hash_dir,
-    locate_existing_record_local_dir, model_dir, normalized_record_dir_name,
+    ensure_model_dir_name_available, ensure_within, get_source, global_skills_dir,
+    has_dir_name_conflict, hash_dir, locate_existing_record_local_dir, normalized_record_dir_name,
     normalized_repo_dir_name, now_ts, parse_required_skill_dir_name, parse_skill_md,
     record_project_root, record_scope, record_target_root, remove_existing_record_dir_if_moved,
     replace_dir_atomic, repo_index_baseline_dir, repo_storage_dir, repository_source_dir,
     resolve_skill_target_dir, scope_project_match, skill_matches_repository, skills_root,
     snapshot_repository_index_baseline, source_skill_abs_path, upsert_repo_dir_name,
     InstalledSkillTarget, ReloadApplyResult, RepositoryRecord, SkillRecord, SkillsLocalState,
-    SkillsState, INSTALL_SCOPE_GLOBAL, MODELS,
+    SkillsState, GLOBAL_SKILL_MODEL, INSTALL_SCOPE_GLOBAL,
 };
 use crate::config::StorageConfig;
 use std::collections::HashSet;
@@ -444,87 +444,76 @@ pub(in crate::skills) fn migrate_installed_dir_names(
 ) -> Result<(bool, bool), String> {
     let mut shared_changed = false;
     let mut local_changed = false;
+    let model_root = global_skills_dir()?;
+    let indices = local_state
+        .skills
+        .iter()
+        .enumerate()
+        .filter_map(|(index, record)| {
+            (record_scope(record) == INSTALL_SCOPE_GLOBAL).then_some(index)
+        })
+        .collect::<Vec<_>>();
 
-    for model in MODELS {
-        let model_root = model_dir(model)?;
-        let indices = local_state
-            .skills
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, s)| {
-                if s.model == model && record_scope(s) == INSTALL_SCOPE_GLOBAL {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        for idx in indices {
-            let record = local_state.skills[idx].clone();
-            let current_dir = locate_existing_record_local_dir(&record)?;
-            if !current_dir.exists() {
+    for index in indices {
+        let record = local_state.skills[index].clone();
+        let current_dir = locate_existing_record_local_dir(&record)?;
+        if !current_dir.exists() {
+            continue;
+        }
+        let md = current_dir.join("SKILL.md");
+        if !md.exists() {
+            continue;
+        }
+        let md_raw = fs::read_to_string(&md).unwrap_or_default();
+        let desired_dir_name = match parse_required_skill_dir_name(&md_raw) {
+            Ok(name) => name,
+            Err(_) => continue,
+        };
+        if has_dir_name_conflict(
+            local_state,
+            GLOBAL_SKILL_MODEL,
+            INSTALL_SCOPE_GLOBAL,
+            None,
+            &desired_dir_name,
+            Some(record.id.as_str()),
+        ) {
+            continue;
+        }
+        let target_dir = model_root.join(&desired_dir_name);
+        ensure_within(&model_root, &target_dir)?;
+        if current_dir != target_dir {
+            if target_dir.exists() {
                 continue;
             }
-            let md = current_dir.join("SKILL.md");
-            if !md.exists() {
-                continue;
-            }
-            let md_raw = fs::read_to_string(&md).unwrap_or_default();
-            let desired_dir_name = match parse_required_skill_dir_name(&md_raw) {
-                Ok(name) => name,
-                Err(_) => continue,
-            };
-
-            if has_dir_name_conflict(
-                local_state,
-                model,
-                INSTALL_SCOPE_GLOBAL,
-                None,
-                &desired_dir_name,
-                Some(record.id.as_str()),
-            ) {
-                continue;
-            }
-
-            let target_dir = model_root.join(&desired_dir_name);
-            ensure_within(&model_root, &target_dir)?;
-
-            if current_dir != target_dir {
-                if target_dir.exists() {
-                    continue;
-                }
-                match fs::rename(&current_dir, &target_dir) {
-                    Ok(_) => {}
-                    Err(_) => {
-                        replace_dir_atomic(&current_dir, &target_dir)?;
-                        if current_dir.exists() {
-                            fs::remove_dir_all(&current_dir).map_err(|e| e.to_string())?;
-                        }
+            match fs::rename(&current_dir, &target_dir) {
+                Ok(_) => {}
+                Err(_) => {
+                    replace_dir_atomic(&current_dir, &target_dir)?;
+                    if current_dir.exists() {
+                        fs::remove_dir_all(&current_dir).map_err(|e| e.to_string())?;
                     }
                 }
-                local_changed = true;
             }
-
-            let new_hash = hash_dir(&target_dir)?;
-            if local_state.skills[idx].dir_name != desired_dir_name {
-                local_state.skills[idx].dir_name = desired_dir_name.clone();
-                local_changed = true;
-            }
-            if local_state.skills[idx].local_hash != new_hash {
-                local_state.skills[idx].local_hash = new_hash;
-                local_changed = true;
-            }
-
-            if upsert_repo_dir_name(
-                shared_state,
-                &local_state.skills[idx].source_id,
-                &local_state.skills[idx].source_rel_path,
-                &local_state.skills[idx].id,
-                &desired_dir_name,
-            ) {
-                shared_changed = true;
-            }
+            local_changed = true;
+        }
+        let new_hash = hash_dir(&target_dir)?;
+        let next = &mut local_state.skills[index];
+        if next.dir_name != desired_dir_name {
+            next.dir_name = desired_dir_name.clone();
+            local_changed = true;
+        }
+        if next.local_hash != new_hash {
+            next.local_hash = new_hash;
+            local_changed = true;
+        }
+        if upsert_repo_dir_name(
+            shared_state,
+            &next.source_id,
+            &next.source_rel_path,
+            &next.id,
+            &desired_dir_name,
+        ) {
+            shared_changed = true;
         }
     }
 

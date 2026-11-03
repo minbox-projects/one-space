@@ -62,7 +62,7 @@
 
 来源：
 
-- 当前已安装到指定模型的条目
+- 统一目录 `~/.agents/skills` 中当前已安装的条目
 
 适合：
 
@@ -95,22 +95,23 @@
 
 ### 5.1 Global Scope
 
-`~/.agents/skills` 是 OneSpace Skills 的唯一权威（canonical）目录。安装、扫描、同步与展示都以它为准；各 CLI 读取的工具目录只是它的兼容投影（compatibility projection），OneSpace 会把权威内容投影过去，绝不会用工具目录里的内容反向覆盖 `~/.agents/skills`。
+`~/.agents/skills` 是 OneSpace 全局 Skills 的唯一权威（canonical）目录。全局安装、卸载、重装与展示都只操作它；本地发现只读取工具专属全局目录，OneSpace 不再向这些目录写入或投影 Skills。
 
-最终常见投影位置：
+本地同步 `skills_sync_local` 会在应用启动、Skills 页面加载和工作区能力面板刷新时扫描以下目录：
 
-- Claude：`~/.claude/skills`（指向 `~/.agents/skills` 的符号链接）
-- Antigravity：`~/.gemini/config/skills/<name>/`
+- `~/.agents/skills`
+- Claude：`~/.claude/skills`
 - Codex：`~/.codex/skills`
+- Antigravity：`~/.gemini/config/skills`
 - OpenCode：`~/.config/opencode/skills`
 
-首次初始化会把工具目录中已存在的非冲突 Skills 迁移进 `~/.agents/skills`；同名冲突时保留统一目录版本，并把工具目录版本备份到 `~/.agents/skills/.backups/<tool>/<skill>/`。初始化对失败项按条结构化报告，不会丢弃已成功的迁移。
+扫描结果只登记为 `Local Import` 仓库条目，不会复制、移动或删除任何技能文件，也不会写回工具目录。同名技能按目录名合并并优先统一目录；已由远端源管理的名称不会重复登记；源目录消失后对应发现条目会从 OneSpace 状态中移除。
 
-`.backups`、`.stage-*`、`.backup-*` 是 OneSpace 内部产物，不是 Skill：扫描、迁移、投影、哈希、复制与计数一律跳过。初始化启动时还会清理统一目录与各工具目录根下的 `.stage-*`/`.backup-*` 残留、删除工具目录根下的 `.backups` 副本；若统一目录的 `.backups` 内出现递归嵌套的 `.backups`（历史版本递归膨胀产物），则整体删除后重建，未污染的冲突备份保持不动。
+`.backups`、`.stage-*`、`.backup-*` 是 OneSpace 内部产物，不是 Skill：扫描、哈希、复制与计数一律跳过。
 
 ### 5.2 Project Scope
 
-项目安装目录：
+Project 范围仍按工具安装到项目目录：
 
 - Claude：`<project>/.claude/skills`
 - Codex：`<project>/.agents/skills`
@@ -120,34 +121,19 @@
 
 ## 6. Skills 页面怎么用
 
-## 5.3 四工具兼容性矩阵
-
-OneSpace 使用 `~/.agents/skills` 作为统一 Skills 目录。当前证据分类如下：
-
-| 工具 | 分类 | 证据与实际路径 |
-| --- | --- | --- |
-| Codex | DirectUnified | 项目路径为 `<project>/.agents/skills`，与统一布局一致；全局统一目录为 `~/.agents/skills`。 |
-| Claude | CompatibilityPath | Claude 使用 `~/.claude/skills`，由 OneSpace 做兼容投影。 |
-| OpenCode | CompatibilityPath | OpenCode 使用 `~/.config/opencode/skills` 和 `<project>/.opencode/skills`。 |
-| Antigravity | CompatibilityPath | 项目可使用 `<project>/.agents/skills`，但全局读取路径是 `~/.gemini/config/skills`，因此整体按兼容路径处理。 |
-
-矩阵 API 只返回 `DirectUnified`、`CompatibilityPath` 或 `Unsupported`。只有明确读取 `~/.agents/skills` 的工具才可标记为 `DirectUnified`；其余工具必须通过对应兼容路径访问。
-
 ### 6.1 Recommended 视图
 
 常用操作：
 
 1. 点击 `Sync Now`
 2. 选择某个 Skill
-3. 选择安装模型，可以多选
-4. 选择安装范围 `Global / Project`
-5. 如果是 `Project`，选择项目目录
-6. 安装
+3. 安装到 `~/.agents/skills`
 
 当前行为说明：
 
-- 同一个 Skill 可以装到多个模型
-- 同一个 Skill 也可以同时存在 `Global` 与 `Project` 两个范围
+- 全局安装与模型解耦，一次安装只写入统一目录
+- 模型页签用于浏览推荐列表；Project 范围安装仍按模型选择目标目录
+- 同一个 Skill 可以同时存在 `Global` 与 `Project` 两个范围
 
 ### 6.2 Repository 视图
 
@@ -158,7 +144,7 @@ Repository 更适合做管理动作。
 - 按 `All / Local / Remote` 过滤来源
 - 搜索名称、描述、ID、路径
 - 查看每个条目的模型覆盖情况
-- 从仓库直接为某个模型启用安装
+- 从仓库直接安装到 `~/.agents/skills`
 - 打开详情
 - 执行“从本地重新加载”预览与应用
 
@@ -168,7 +154,7 @@ Installed 适合确认“已经生效的东西”。
 
 当前支持：
 
-- 按当前模型查看已安装项
+- 查看统一目录中已安装的全部 Skills
 - 查看详情
 - 打开本地目录
 - 卸载
@@ -178,7 +164,9 @@ Installed 适合确认“已经生效的东西”。
 
 ## 7. 本地导入
 
-`Import From Folder` 可以把本地目录纳入 OneSpace 管理。
+OneSpace 会自动发现四个工具全局目录与统一目录中的本地 Skills，并把它们登记为 `Repository` 中的 `Local Import` 条目。发现过程只读取元数据与哈希，不会复制、移动或删除文件。
+
+`Import From Folder` 仍可手动把任意本地目录纳入 OneSpace 管理。
 
 适合场景：
 
@@ -186,10 +174,7 @@ Installed 适合确认“已经生效的东西”。
 - 本地开发中的试验性 Skills
 - 从其他仓库搬迁已有 Skills
 
-导入后条目会进入：
-
-- `Repository`
-- 对应模型下的 `Installed`（如果导入时选择了安装）
+导入后条目会进入 `Repository`；需要写入统一目录时再执行安装。
 
 ## 8. 更新与差异预览
 
@@ -221,7 +206,7 @@ Skills 有几条当前代码层面的硬规则：
   - 数字
   - `-`
   - `_`
-- 同一模型、同一安装范围下，目录名冲突会直接拒绝安装
+- 同一安装范围内，目录名冲突会直接拒绝安装；全局范围跨模型共享同一命名空间
 
 这能避免：
 
@@ -267,12 +252,13 @@ OneSpace 并不是只把 Skills/Subagents 安装到磁盘就结束了。
 
 在实际启动会话时：
 
-- `AI Sessions` 恢复会话前会做一次 Skills/Subagents 预检与 reconcile
+- `AI Sessions` 恢复会话前仍会对 Subagents 做预检与 reconcile
+- Skills 不再做全局投影或会话期 reconcile，工具直接读取 `~/.agents/skills`（或由用户在工具侧自行配置）
 
 因此推荐理解为：
 
-- 页面负责管理内容
-- 会话负责在启动时让内容进入正确上下文
+- 页面负责管理统一目录与本地发现
+- 工具侧是否读取统一目录由工具自身决定
 
 ## 12. Source 设置页
 
@@ -304,13 +290,11 @@ OneSpace 并不是只把 Skills/Subagents 安装到磁盘就结束了。
 
 - `Recommended Source`
 - `Local Import`
-- `Mirror`
 
 可以把它们理解为：
 
 - Recommended Source：远端源同步结果
-- Local Import：你手工导入的本地目录
-- Mirror：OneSpace 自己维护的镜像仓库结果
+- Local Import：自动发现的工具目录/统一目录技能，或你手工导入的本地目录
 
 ## 14. 常见问题
 
@@ -336,7 +320,7 @@ OneSpace 并不是只把 Skills/Subagents 安装到磁盘就结束了。
 1. 安装范围是否正确
 2. 当前会话对应的工具是否正确
 3. 是否需要重新启动会话
-4. 是否从 `AI Sessions` 重新发起一次启动，让 reconcile 流程跑一遍
+4. 该工具是否读取 `~/.agents/skills`；OneSpace 不再向工具专属全局目录投影
 
 ### Q4：导入时报冲突
 

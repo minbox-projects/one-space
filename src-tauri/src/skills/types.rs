@@ -7,47 +7,11 @@ use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 pub(in crate::skills) const MODELS: [&str; 4] = ["claude", "antigravity", "codex", "opencode"];
+pub(in crate::skills) const GLOBAL_SKILL_MODEL: &str = "global";
 pub(in crate::skills) const IGNORE_NAMES: [&str; 5] =
     [".git", ".DS_Store", "node_modules", "dist", "target"];
 pub(in crate::skills) const INSTALL_SCOPE_GLOBAL: &str = "global";
 pub(in crate::skills) const INSTALL_SCOPE_PROJECT: &str = "project";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum CompatibilityKind {
-    DirectUnified,
-    CompatibilityPath,
-    Unsupported,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CompatibilityResult {
-    pub tool: String,
-    pub kind: CompatibilityKind,
-    pub evidence: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SkillMigrationStatus {
-    Migrated,
-    ConflictBackedUp,
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SkillMigrationOutcome {
-    pub tool: String,
-    pub skill: String,
-    pub status: SkillMigrationStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backup_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failed_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SkillsInitResult { pub outcomes: Vec<SkillMigrationOutcome> }
 
 pub(in crate::skills) static JOB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 pub(in crate::skills) static RUNNING_JOB_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();

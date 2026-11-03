@@ -3,13 +3,13 @@ use crate::skills::{
     acquire_job_key, api_ok, build_repository_views, combined_revision, current_installed_skills,
     ensure_model_dir_name_available, ensure_within, get_source, hash_dir, job_lock,
     load_local_skills_state, load_skills_state, load_sync_state, locate_existing_record_local_dir,
-    make_repo_key, mark_repo_ever_installed, normalize_install_scope,
-    normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
-    read_required_skill_dir_name, reconcile_internal, remove_existing_record_dir_if_moved,
-    replace_dir_atomic, repo_storage_dir, resolve_skill_target_dir, save_local_skills_state,
-    save_skills_state, scope_project_match, source_skill_abs_path, trigger_storage_sync,
-    upsert_repo_dir_name, upsert_repository_from_dir, ApiOk, RepoSetModelInput, RepoSkillKeyInput,
-    RepositorySkillView, SkillRecord, SkillsSyncState, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT,
+    make_repo_key, mark_repo_ever_installed, materialize_repository_snapshot_if_missing,
+    normalize_install_scope, normalize_project_root_for_scope, normalized_record_dir_name, now_ts,
+    read_required_skill_dir_name, remove_existing_record_dir_if_moved, replace_dir_atomic,
+    repo_storage_dir, resolve_skill_target_dir, save_local_skills_state, save_skills_state,
+    scope_project_match, source_skill_abs_path, trigger_storage_sync, upsert_repo_dir_name,
+    upsert_repository_from_dir, ApiOk, RepoSetModelInput, RepoSkillKeyInput, RepositorySkillView,
+    SkillRecord, SkillsSyncState, GLOBAL_SKILL_MODEL, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT,
     MODELS,
 };
 use std::fs;
@@ -81,17 +81,21 @@ pub async fn skills_repo_set_model(
     app: tauri::AppHandle,
     input: RepoSetModelInput,
 ) -> Result<ApiOk<RepositorySkillView>, String> {
-    if !MODELS.contains(&input.model.as_str()) {
-        return Err("unsupported model".to_string());
-    }
-
     let repo_scope = normalize_install_scope(input.scope.as_deref());
     let repo_project_root =
         normalize_project_root_for_scope(&repo_scope, input.project_root.as_deref())?;
+    let effective_model = if repo_scope == INSTALL_SCOPE_GLOBAL {
+        GLOBAL_SKILL_MODEL
+    } else {
+        if !MODELS.contains(&input.model.as_str()) {
+            return Err("unsupported model".to_string());
+        }
+        input.model.as_str()
+    };
     let dedupe_key = format!(
         "repo_set:{}:{}:{}:{}:{}",
         input.repo_key,
-        input.model,
+        effective_model,
         input.enabled,
         repo_scope,
         repo_project_root.clone().unwrap_or_default()
@@ -131,7 +135,14 @@ pub async fn skills_repo_set_model(
     let mut shared_changed = false;
     let mut local_changed = false;
 
-    let repo_src = repo_storage_dir(&repo.repo_key)?;
+    let mut repo_src = repo_storage_dir(&repo.repo_key)?;
+    if input.enabled && !repo_src.exists() {
+        let cfg = config::get_storage_config()?;
+        if materialize_repository_snapshot_if_missing(&repo, &local_state, &cfg)? {
+            shared_changed = true;
+            repo_src = repo_storage_dir(&repo.repo_key)?;
+        }
+    }
     if input.enabled && !repo_src.exists() {
         if repo.source_type == "remote" {
             let cfg = config::get_storage_config()?;
@@ -177,19 +188,19 @@ pub async fn skills_repo_set_model(
             mark_repo_ever_installed(&mut shared_state, &repo.repo_key) || shared_changed;
         ensure_model_dir_name_available(
             &local_state,
-            &input.model,
+            effective_model,
             &repo_scope,
             repo_project_root.as_deref(),
             &repo_dir_name,
             Some(repo.skill_id.as_str()),
         )?;
         let (model_root, compat_roots) =
-            resolve_skill_target_dir(&input.model, &repo_scope, repo_project_root.as_deref())?;
+            resolve_skill_target_dir(effective_model, &repo_scope, repo_project_root.as_deref())?;
         let dest = model_root.join(&repo_dir_name);
         ensure_within(&model_root, &dest)?;
         remove_existing_record_dir_if_moved(
             &local_state,
-            &input.model,
+            effective_model,
             &repo_scope,
             repo_project_root.as_deref(),
             &repo.skill_id,
@@ -205,14 +216,13 @@ pub async fn skills_repo_set_model(
         let local_hash = hash_dir(&dest)?;
         if repo_scope == INSTALL_SCOPE_GLOBAL {
             local_state.skills.retain(|s| {
-                !(s.model == input.model
-                    && s.id == repo.skill_id
+                !(s.id == repo.skill_id
                     && scope_project_match(s, &repo_scope, repo_project_root.as_deref()))
             });
             local_state.skills.push(SkillRecord {
                 id: repo.skill_id.clone(),
                 dir_name: repo_dir_name,
-                model: input.model.clone(),
+                model: effective_model.to_string(),
                 models: repo.models.clone(),
                 name: repo.name.clone(),
                 description: repo.description.clone(),
@@ -233,15 +243,14 @@ pub async fn skills_repo_set_model(
         }
     } else {
         let (_, compat_roots) =
-            resolve_skill_target_dir(&input.model, &repo_scope, repo_project_root.as_deref())?;
+            resolve_skill_target_dir(effective_model, &repo_scope, repo_project_root.as_deref())?;
         let records_to_remove = local_state
             .skills
             .iter()
             .filter(|s| {
-                s.model == input.model
+                (s.id == repo.skill_id
+                    || make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key)
                     && scope_project_match(s, &repo_scope, repo_project_root.as_deref())
-                    && (s.id == repo.skill_id
-                        || make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -261,10 +270,9 @@ pub async fn skills_repo_set_model(
         }
         let before = local_state.skills.len();
         local_state.skills.retain(|s| {
-            !(s.model == input.model
-                && scope_project_match(s, &repo_scope, repo_project_root.as_deref())
-                && (s.id == repo.skill_id
-                    || make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key))
+            !((s.id == repo.skill_id
+                || make_repo_key(&s.source_id, &s.source_rel_path) == repo.repo_key)
+                && scope_project_match(s, &repo_scope, repo_project_root.as_deref()))
         });
         local_changed = local_changed || before != local_state.skills.len();
     }
@@ -275,11 +283,6 @@ pub async fn skills_repo_set_model(
     if local_changed {
         local_state = save_local_skills_state(local_state)?;
     }
-    let _ = reconcile_internal(
-        Some(&input.model),
-        Some(repo_scope.as_str()),
-        repo_project_root.as_deref(),
-    );
     if shared_changed {
         trigger_storage_sync(app, "skills_repo_set_model");
     }

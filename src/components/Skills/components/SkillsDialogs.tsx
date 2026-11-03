@@ -9,7 +9,6 @@ import {
   DialogTitle,
   DialogDescription,
 } from '../../ui/dialog';
-import { skillModelOptions } from '../../skillsModelOptions';
 import { formatInstalledTarget, renderDiffDocument } from '../helpers';
 import type { SkillsView } from '../view';
 
@@ -97,9 +96,6 @@ export function SkillsInstallDialog({ view }: { view: SkillsView }) {
     setInstallMode,
     setInstallModels,
     installTarget,
-    installAllowedModels,
-    installModels,
-    toggleInstallModel,
     canSubmitInstall,
     handleInstallConfirm,
   } = view;
@@ -119,41 +115,17 @@ export function SkillsInstallDialog({ view }: { view: SkillsView }) {
       {installDialogOpen && (
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>{t('skillsInstallSelectModelsTitle', 'Select models to install')}</DialogTitle>
+            <DialogTitle>
+              {t('skillsInstallUnifiedTitle', 'Install to ~/.agents/skills')}
+            </DialogTitle>
             <DialogDescription>
-              {t('skillsInstallSelectModelsDesc', 'Choose model targets for {{name}}', {
-                name: installTarget?.name || '',
-              })}
+              {t(
+                'skillsInstallUnifiedDesc',
+                'Global skills are installed only into ~/.agents/skills. {{name}} will be managed from that directory.',
+                { name: installTarget?.name || '' },
+              )}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-muted-foreground">{t('sourceModels', 'Apply Models')}</label>
-            <div className="grid grid-cols-2 gap-2">
-              {installAllowedModels.map((model) => {
-                const option = skillModelOptions.find((item) => item.id === model);
-                if (!option) return null;
-                const active = installModels.includes(model);
-                return (
-                  <button
-                    key={`install-model-${model}`}
-                    type="button"
-                    onClick={() => toggleInstallModel(model)}
-                    className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${
-                      active
-                        ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                        : 'bg-background hover:bg-muted/50 text-foreground border-border'
-                    }`}
-                  >
-                    <option.Icon className="w-4 h-4 shrink-0" />
-                    <span className="truncate">{option.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-            {installModels.length === 0 && (
-              <p className="text-xs text-destructive">{t('sourceModelsRequired', 'Select at least one model.')}</p>
-            )}
-          </div>
           <DialogFooter>
             <button
               type="button"

@@ -1,10 +1,11 @@
 use super::{
     get_source, hash_dir, is_ignored_name, make_repo_key, metadata_timestamp,
     normalized_record_dir_name, now_ts, parse_skill_md, project_scan_root,
-    read_required_skill_dir_name, record_local_dir, repo_storage_dir, scope_project_match,
-    skill_has_markdown_update, source_skill_abs_path, upsert_repository_from_dir,
-    upsert_repository_record, CatalogSkill, RepositoryRecord, SkillRecord, SkillsLocalState,
-    SkillsState, SkillsSyncState, INSTALL_SCOPE_PROJECT, MODELS,
+    read_required_skill_dir_name, record_local_dir, record_scope, repo_storage_dir,
+    scope_project_match, skill_has_markdown_update, source_skill_abs_path,
+    upsert_repository_from_dir, upsert_repository_record, CatalogSkill, RepositoryRecord,
+    SkillRecord, SkillsLocalState, SkillsState, SkillsSyncState, GLOBAL_SKILL_MODEL,
+    INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
 };
 use crate::config::StorageConfig;
 use std::collections::{HashMap, HashSet};
@@ -240,7 +241,15 @@ pub(in crate::skills) fn current_installed_skills(
     let mut list = local_state
         .skills
         .iter()
-        .filter(|skill| model.map(|value| skill.model == value).unwrap_or(true))
+        .filter(|skill| {
+            model
+                .map(|value| {
+                    skill.model == value
+                        || (value == GLOBAL_SKILL_MODEL
+                            && record_scope(skill) == INSTALL_SCOPE_GLOBAL)
+                })
+                .unwrap_or(true)
+        })
         .filter(|skill| scope_project_match(skill, scope, project_root))
         .cloned()
         .collect::<Vec<_>>();
@@ -257,11 +266,16 @@ pub(in crate::skills) fn find_current_installed_skill(
     scope: &str,
     project_root: Option<&str>,
 ) -> Result<SkillRecord, String> {
+    let model_filter = if scope == INSTALL_SCOPE_GLOBAL {
+        None
+    } else {
+        Some(model)
+    };
     current_installed_skills(
         local_state,
         sync_state,
         cfg,
-        Some(model),
+        model_filter,
         scope,
         project_root,
     )?

@@ -34,7 +34,7 @@ export function Skills({
       <SkillsHeader view={view} />
       <SkillsModeTabs view={view} />
 
-      {activeMode !== 'repository' && <SkillsModelTabs view={view} />}
+      {activeMode === 'recommended' && <SkillsModelTabs view={view} />}
 
       {activeMode === 'installed' && <SkillsInstalledSection view={view} />}
 

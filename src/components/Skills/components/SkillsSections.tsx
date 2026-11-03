@@ -141,8 +141,8 @@ export function SkillsInstalledSection({ view }: { view: SkillsView }) {
       ) : visibleInstalled.length === 0 ? (
         <div className="text-center py-12">
           <Sparkles className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
-          <h3 className="text-lg font-semibold mb-2">{t('noInstalledSkillsForModel', '该模型下暂无已安装 Skills')}</h3>
-          <p className="text-muted-foreground">{t('noInstalledSkillsForModelDesc', '你可以先到“推荐”中安装 Skills。')}</p>
+          <h3 className="text-lg font-semibold mb-2">{t('noInstalledSkillsForModel', 'No installed skills in ~/.agents/skills')}</h3>
+          <p className="text-muted-foreground">{t('noInstalledSkillsForModelDesc', 'Install a skill from Recommended or Repository.')}</p>
           <button
             onClick={handleSwitchToRecommended}
             className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm"

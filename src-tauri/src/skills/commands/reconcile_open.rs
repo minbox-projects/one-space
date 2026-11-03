@@ -1,424 +1,321 @@
 use crate::config::{self};
 use crate::skills::{
-    acquire_job_key, api_ok, combined_revision, compatibility_matrix, ensure_dir,
-    find_current_installed_skill, get_source, hash_dir, is_ignored_name, job_lock,
+    acquire_job_key, api_ok, combined_revision, find_current_installed_skill, get_source,
+    global_skills_dir, hash_dir, hydrate_local_records_from_catalog, is_ignored_name, job_lock,
     load_local_skills_state, load_skills_state, load_sync_state, local_skill_id, make_repo_key,
-    mirror_dir, model_dir, normalize_install_scope, normalize_project_root_for_scope,
-    normalized_record_dir_name, now_ts, parse_required_skill_dir_name, parse_skill_md,
-    project_compat_dirs, project_primary_dir, read_required_skill_dir_name, record_local_dir,
-    record_scope, refresh_repository_record_from_snapshot, replace_dir_atomic, repo_storage_dir,
-    resolve_effective_models, save_local_skills_state, save_skills_state,
-    scan_project_installed_skills_for_model, snapshot_repository_index_baseline,
-    source_skill_abs_path, trigger_storage_sync, upsert_repository_from_dir, ApiOk,
-    CatalogOpenFolderResult, CatalogSkillKeyInput, CompatibilityResult, RepositoryRecord,
-    SkillKeyInput, SkillMigrationOutcome, SkillMigrationStatus, SkillRecord, SkillsInitResult,
-    SkillsLocalState, INSTALL_SCOPE_GLOBAL, INSTALL_SCOPE_PROJECT, MODELS,
+    metadata_timestamp, normalize_install_scope, normalize_project_root_for_scope, now_ts,
+    parse_required_skill_dir_name, parse_skill_md, read_required_skill_dir_name, record_local_dir,
+    record_scope, refresh_repository_record_from_snapshot, replace_dir_atomic,
+    repo_index_baseline_dir, repo_storage_dir, resolve_effective_models, save_local_skills_state,
+    save_skills_state, scan_project_installed_skills_for_model, snapshot_repository_index_baseline,
+    source_skill_abs_path, trigger_storage_sync, update_record_remote_flags,
+    upsert_repository_from_dir, upsert_repository_record, ApiOk, CatalogOpenFolderResult,
+    CatalogSkillKeyInput, RepositoryRecord, SkillKeyInput, SkillRecord, SkillsLocalState,
+    SkillsState, GLOBAL_SKILL_MODEL, INSTALL_SCOPE_GLOBAL, MODELS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn migrate_skill_into_unified(
-    tool: &str,
-    skill: &str,
-    source: &Path,
-    unified: &Path,
-) -> Result<Option<SkillMigrationOutcome>, (String, String)> {
-    let destination = unified.join(skill);
-    if destination.exists() {
-        let source_hash = hash_dir(source).map_err(|err| (source.display().to_string(), err))?;
-        let destination_hash =
-            hash_dir(&destination).map_err(|err| (destination.display().to_string(), err))?;
-        if source_hash == destination_hash {
-            return Ok(None);
+fn local_discovery_roots() -> Result<Vec<PathBuf>, String> {
+    let home = dirs::home_dir().ok_or("home directory not found")?;
+    let candidates = [
+        home.join(".agents").join("skills"),
+        home.join(".claude").join("skills"),
+        home.join(".codex").join("skills"),
+        home.join(".gemini").join("config").join("skills"),
+        home.join(".config").join("opencode").join("skills"),
+    ];
+    let mut roots = vec![];
+    let mut seen = HashSet::new();
+    for path in candidates {
+        if !path.is_dir() {
+            continue;
         }
-        let backup_root = unified.join(".backups").join(tool).join(skill);
-        fs::create_dir_all(&backup_root)
-            .map_err(|err| (backup_root.display().to_string(), err.to_string()))?;
-        let backup = backup_root.join(&source_hash);
-        if !backup.exists() {
-            crate::skills::copy_dir_secure(source, &backup)
-                .map_err(|err| (source.display().to_string(), err))?;
-        }
-        Ok(Some(SkillMigrationOutcome {
-            tool: tool.to_string(),
-            skill: skill.to_string(),
-            status: SkillMigrationStatus::ConflictBackedUp,
-            backup_path: Some(backup.to_string_lossy().to_string()),
-            failed_path: None,
-            message: None,
-        }))
-    } else {
-        crate::skills::copy_dir_secure(source, &destination)
-            .map_err(|err| (source.display().to_string(), err))?;
-        Ok(Some(SkillMigrationOutcome {
-            tool: tool.to_string(),
-            skill: skill.to_string(),
-            status: SkillMigrationStatus::Migrated,
-            backup_path: None,
-            failed_path: None,
-            message: None,
-        }))
-    }
-}
-
-fn remove_generated_dir(path: &Path) {
-    if let Ok(meta) = fs::symlink_metadata(path) {
-        if meta.is_dir() && !meta.file_type().is_symlink() {
-            let _ = fs::remove_dir_all(path);
+        let canonical = fs::canonicalize(&path).unwrap_or(path);
+        if seen.insert(canonical.clone()) {
+            roots.push(canonical);
         }
     }
+    Ok(roots)
 }
 
-fn cleanup_generated_dirs(root: &Path) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
+fn is_real_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+fn scan_immediate_skill_dirs(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = match fs::read_dir(root) {
+        Ok(value) => value,
+        Err(_) => return Ok(vec![]),
     };
+    let mut out = vec![];
     for entry in entries.flatten() {
+        let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(".stage-") || name.starts_with(".backup-") {
-            remove_generated_dir(&entry.path());
+        if is_ignored_name(&name) || !is_real_dir(&path) {
+            continue;
+        }
+        if path.join("SKILL.md").is_file() {
+            out.push(path);
         }
     }
+    out.sort();
+    Ok(out)
 }
 
-fn unified_backups_is_polluted(backups: &Path) -> bool {
-    fn scan(dir: &Path, remaining_depth: u32) -> bool {
-        if remaining_depth == 0 {
-            return false;
-        }
-        let Ok(entries) = fs::read_dir(dir) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+struct DiscoveredLocalSkill {
+    folder_name: String,
+    dir_name: String,
+    path: PathBuf,
+    name: String,
+    description: String,
+    models: Vec<String>,
+    hash: String,
+}
+
+fn discover_local_skills() -> Result<Vec<DiscoveredLocalSkill>, String> {
+    let mut out = vec![];
+    let mut seen = HashSet::new();
+    for root in local_discovery_roots()? {
+        for path in scan_immediate_skill_dirs(&root)? {
+            let folder_name = path
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let markdown = fs::read_to_string(path.join("SKILL.md")).unwrap_or_default();
+            let Ok(dir_name) = parse_required_skill_dir_name(&markdown) else {
                 continue;
             };
-            if !meta.is_dir() || meta.file_type().is_symlink() {
+            if !seen.insert(dir_name.clone()) {
                 continue;
             }
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name == ".backups" || name.starts_with(".stage-") || name.starts_with(".backup-") {
-                return true;
-            }
-            if scan(&entry.path(), remaining_depth - 1) {
-                return true;
-            }
+            let (name, description, models) = parse_skill_md(&markdown, &[]);
+            let hash = hash_dir(&path)?;
+            out.push(DiscoveredLocalSkill {
+                folder_name,
+                dir_name,
+                path,
+                name,
+                description,
+                models,
+                hash,
+            });
         }
-        false
     }
-    scan(backups, 3)
+    Ok(out)
 }
 
-fn cleanup_generated_artifacts(unified: &Path) {
-    let unified_canon = fs::canonicalize(unified).unwrap_or_else(|_| unified.to_path_buf());
-    cleanup_generated_dirs(unified);
-    let unified_backups = unified.join(".backups");
-    if unified_backups.is_dir() && unified_backups_is_polluted(&unified_backups) {
-        remove_generated_dir(&unified_backups);
-    }
-    for model in MODELS {
-        let Ok(root) = mirror_dir(model) else {
-            continue;
-        };
-        cleanup_generated_dirs(&root);
-        let root_canon = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-        if root_canon == unified_canon {
-            continue;
-        }
-        let tool_backups = root.join(".backups");
-        if tool_backups.is_dir() {
-            remove_generated_dir(&tool_backups);
-        }
-    }
+fn installed_local_skill_folders(state: &SkillsLocalState) -> HashSet<String> {
+    state
+        .skills
+        .iter()
+        .map(|skill| {
+            skill
+                .source_rel_path
+                .rsplit('/')
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
-pub fn initialize_unified_skills() -> Result<SkillsInitResult, String> {
-    let unified = dirs::home_dir()
-        .ok_or("home directory not found")?
-        .join(".agents")
-        .join("skills");
-    fs::create_dir_all(&unified).map_err(|e| e.to_string())?;
-    cleanup_generated_artifacts(&unified);
-    let unified_canon = fs::canonicalize(&unified).unwrap_or_else(|_| unified.clone());
-    let mut outcomes = Vec::new();
-    for tool in MODELS {
-        let source_root = mirror_dir(tool)?;
-        let source_canon = fs::canonicalize(&source_root).unwrap_or_else(|_| source_root.clone());
-        if source_canon == unified_canon {
-            continue;
-        }
-        let entries = match fs::read_dir(&source_root) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let source = entry.path();
-            if !source.is_dir() {
-                continue;
-            }
-            let skill = entry.file_name().to_string_lossy().to_string();
-            if is_ignored_name(&skill) {
-                continue;
-            }
-            match migrate_skill_into_unified(tool, &skill, &source, &unified) {
-                Ok(Some(outcome)) => outcomes.push(outcome),
-                Ok(None) => {}
-                Err((path, message)) => outcomes.push(SkillMigrationOutcome {
-                    tool: tool.to_string(),
-                    skill,
-                    status: SkillMigrationStatus::Failed,
-                    backup_path: None,
-                    failed_path: Some(path),
-                    message: Some(message),
-                }),
-            }
-        }
-    }
-    Ok(SkillsInitResult { outcomes })
-}
-
-#[tauri::command]
-pub fn skills_initialize_unified() -> Result<SkillsInitResult, String> {
-    initialize_unified_skills()
-}
-
-#[tauri::command]
-pub fn skills_compatibility_get() -> Result<Vec<CompatibilityResult>, String> {
-    Ok(compatibility_matrix())
-}
-
-pub(in crate::skills) fn reconcile_one_model(
-    model: &str,
-    scope: &str,
-    project_root: Option<&str>,
-) -> Result<(), String> {
-    if scope == INSTALL_SCOPE_PROJECT {
-        let root = project_root.ok_or("skills/project_root_required")?;
-        let project_root_path = PathBuf::from(root);
-        let primary = project_primary_dir(model, &project_root_path)?;
-        for compat in project_compat_dirs(model, &project_root_path) {
-            ensure_dir(&compat)?;
-            let mut primary_map: HashMap<String, PathBuf> = HashMap::new();
-            for entry in fs::read_dir(&primary).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let p = entry.path();
-                if p.is_dir() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if is_ignored_name(&name) {
-                        continue;
-                    }
-                    primary_map.insert(name, p);
-                }
-            }
-            let mut compat_names = HashSet::new();
-            for entry in fs::read_dir(&compat).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let p = entry.path();
-                if p.is_dir() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if is_ignored_name(&name) {
-                        continue;
-                    }
-                    compat_names.insert(name.clone());
-                    if let Some(src) = primary_map.get(&name) {
-                        let dst = compat.join(&name);
-                        if hash_dir(src)? != hash_dir(&dst)? {
-                            replace_dir_atomic(src, &dst)?;
-                        }
-                    } else {
-                        fs::remove_dir_all(p).map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-            for (name, src) in primary_map {
-                if !compat_names.contains(&name) {
-                    replace_dir_atomic(&src, &compat.join(name))?;
-                }
-            }
-        }
-        return Ok(());
-    }
-
-    let sot = model_dir(model)?;
-    let mirror = mirror_dir(model)?;
-
-    let mut sot_map: HashMap<String, PathBuf> = HashMap::new();
-    for entry in fs::read_dir(&sot).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let p = entry.path();
-        if p.is_dir() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if is_ignored_name(&name) {
-                continue;
-            }
-            sot_map.insert(name, p);
-        }
-    }
-
-    let mut mirror_names = HashSet::new();
-    for entry in fs::read_dir(&mirror).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let p = entry.path();
-        if p.is_dir() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if is_ignored_name(&name) {
-                continue;
-            }
-            mirror_names.insert(name.clone());
-            if let Some(src) = sot_map.get(&name) {
-                let dst = mirror.join(&name);
-                if hash_dir(src)? != hash_dir(&dst)? {
-                    replace_dir_atomic(src, &dst)?;
-                }
-            } else {
-                fs::remove_dir_all(p).map_err(|e| e.to_string())?;
-            }
-        }
-    }
-
-    for (name, src) in sot_map {
-        if !mirror_names.contains(&name) {
-            let dst = mirror.join(name);
-            replace_dir_atomic(&src, &dst)?;
-        }
-    }
-
-    Ok(())
-}
-
-pub(in crate::skills) fn reconcile_internal(
-    model: Option<&str>,
-    scope: Option<&str>,
-    project_root: Option<&str>,
-) -> Result<(), String> {
-    let target_scope = normalize_install_scope(scope);
-    match model {
-        Some(m) => reconcile_one_model(m, &target_scope, project_root),
-        None => {
-            for m in MODELS {
-                let _ = reconcile_one_model(m, &target_scope, project_root);
-            }
-            Ok(())
-        }
-    }
-}
-
-pub(in crate::skills) fn rebuild_local_installed_from_models(
+pub(in crate::skills) fn rebuild_global_installed_from_unified(
     state: &mut SkillsLocalState,
-) -> Result<(), String> {
-    let mut existing = HashSet::new();
-    let root = model_dir("codex")?;
-    for model in ["codex"] {
-        for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let p = entry.path();
-            if !p.is_dir() {
-                continue;
-            }
-            let dir_name = entry.file_name().to_string_lossy().to_string();
-            if is_ignored_name(&dir_name) {
-                continue;
-            }
-            let md = p.join("SKILL.md");
-            if !md.exists() {
-                continue;
-            }
-            let content = fs::read_to_string(&md).unwrap_or_default();
-            let (name, desc, models) = parse_skill_md(&content, &[]);
-            let hash = hash_dir(&p)?;
-            existing.insert((model.to_string(), dir_name.clone()));
+) -> Result<bool, String> {
+    let root = global_skills_dir()?;
+    let mut records = vec![];
+    for path in scan_immediate_skill_dirs(&root)? {
+        let folder_name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let markdown = fs::read_to_string(path.join("SKILL.md")).unwrap_or_default();
+        let (name, description, models) = parse_skill_md(&markdown, &[]);
+        let existing = state.skills.iter().find(|skill| {
+            record_scope(skill) == INSTALL_SCOPE_GLOBAL
+                && (skill.dir_name == folder_name
+                    || skill.source_rel_path.rsplit('/').next() == Some(folder_name.as_str()))
+        });
+        records.push(SkillRecord {
+            id: existing
+                .map(|skill| skill.id.clone())
+                .unwrap_or_else(|| local_skill_id("local", &folder_name)),
+            dir_name: folder_name.clone(),
+            model: GLOBAL_SKILL_MODEL.to_string(),
+            models,
+            name,
+            description,
+            source_id: existing
+                .map(|skill| skill.source_id.clone())
+                .unwrap_or_else(|| "local".to_string()),
+            source_rel_path: existing
+                .map(|skill| skill.source_rel_path.clone())
+                .unwrap_or_else(|| folder_name.clone()),
+            installed_at: metadata_timestamp(&path),
+            updated_at: Some(metadata_timestamp(&path.join("SKILL.md"))),
+            last_synced_at: existing.and_then(|skill| skill.last_synced_at),
+            local_hash: hash_dir(&path)?,
+            remote_hash: existing.and_then(|skill| skill.remote_hash.clone()),
+            has_update: existing.map(|skill| skill.has_update).unwrap_or(false),
+            icon_seed: existing
+                .map(|skill| skill.icon_seed.clone())
+                .unwrap_or_else(|| "local".to_string()),
+            scope: INSTALL_SCOPE_GLOBAL.to_string(),
+            project_root: None,
+            target_path: Some(path.to_string_lossy().to_string()),
+        });
+    }
+    records.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
+    let changed = state.skills.len() != records.len()
+        || state
+            .skills
+            .iter()
+            .zip(records.iter())
+            .any(|(left, right)| {
+                left.id != right.id
+                    || left.dir_name != right.dir_name
+                    || left.local_hash != right.local_hash
+                    || left.name != right.name
+                    || left.description != right.description
+                    || left.models != right.models
+                    || left.target_path != right.target_path
+            });
+    if changed {
+        state.skills = records;
+        state.last_rescan_at = Some(now_ts());
+    }
+    Ok(changed)
+}
 
-            if let Some(record) = state.skills.iter_mut().find(|s| {
-                s.model == model
-                    && record_scope(s) == INSTALL_SCOPE_GLOBAL
-                    && normalized_record_dir_name(s) == dir_name
-            }) {
-                record.dir_name = dir_name.clone();
-                record.name = name.clone();
-                record.description = desc.clone();
-                record.models = models.clone();
-                record.local_hash = hash.clone();
-                record.has_update = false;
-                record.scope = INSTALL_SCOPE_GLOBAL.to_string();
-                record.project_root = None;
-                record.target_path = Some(p.to_string_lossy().to_string());
+pub(in crate::skills) fn sync_local_repositories(
+    shared_state: &mut SkillsState,
+    local_state: &SkillsLocalState,
+) -> Result<bool, String> {
+    let discovered = discover_local_skills()?;
+    let installed = installed_local_skill_folders(local_state);
+    let remote_names = shared_state
+        .repositories
+        .iter()
+        .filter(|repo| repo.source_type == "remote")
+        .map(|repo| {
+            let name = repo.dir_name.trim();
+            if name.is_empty() {
+                repo.skill_id.clone()
             } else {
-                state.skills.push(SkillRecord {
-                    id: dir_name.clone(),
-                    dir_name: dir_name.clone(),
-                    model: model.to_string(),
-                    models: models.clone(),
-                    name: name.clone(),
-                    description: desc.clone(),
-                    source_id: "local".to_string(),
-                    source_rel_path: dir_name.clone(),
-                    installed_at: now_ts(),
-                    updated_at: None,
-                    last_synced_at: None,
-                    local_hash: hash.clone(),
-                    remote_hash: None,
-                    has_update: false,
-                    icon_seed: dir_name.clone(),
-                    scope: INSTALL_SCOPE_GLOBAL.to_string(),
-                    project_root: None,
-                    target_path: Some(p.to_string_lossy().to_string()),
-                });
+                name.to_string()
             }
+        })
+        .collect::<HashSet<_>>();
+    let discovered_by_folder = discovered
+        .iter()
+        .map(|item| (item.folder_name.clone(), item))
+        .collect::<HashMap<_, _>>();
+    let mut changed = false;
+
+    let stale = shared_state
+        .repositories
+        .iter()
+        .filter(|repo| {
+            repo.source_id == "local" && !discovered_by_folder.contains_key(&repo.source_rel_path)
+        })
+        .map(|repo| repo.repo_key.clone())
+        .collect::<Vec<_>>();
+    for repo_key in stale {
+        if let Some(repo) = shared_state
+            .repositories
+            .iter()
+            .find(|repo| repo.repo_key == repo_key)
+        {
+            if let Ok(path) = repo_storage_dir(&repo.repo_key) {
+                let _ = fs::remove_dir_all(path);
+            }
+            if let Ok(path) = repo_index_baseline_dir(&repo.repo_key) {
+                let _ = fs::remove_dir_all(path);
+            }
+            shared_state
+                .repositories
+                .retain(|item| item.repo_key != repo_key);
+            changed = true;
         }
     }
 
-    state.skills.retain(|s| {
-        if record_scope(s) != INSTALL_SCOPE_GLOBAL {
-            return true;
+    for item in discovered {
+        if remote_names.contains(&item.dir_name) {
+            let before = shared_state.repositories.len();
+            shared_state.repositories.retain(|repo| {
+                !(repo.source_id == "local" && repo.source_rel_path == item.folder_name)
+            });
+            if before != shared_state.repositories.len() {
+                changed = true;
+            }
+            continue;
         }
-        existing.contains(&(s.model.clone(), normalized_record_dir_name(s)))
-    });
-    state.last_rescan_at = Some(now_ts());
-    Ok(())
+        let repo_key = make_repo_key("local", &item.folder_name);
+        let existing = shared_state
+            .repositories
+            .iter()
+            .find(|repo| repo.repo_key == repo_key)
+            .cloned();
+        let ever_installed = existing
+            .as_ref()
+            .map(|repo| repo.ever_installed)
+            .unwrap_or(false)
+            || installed.contains(&item.folder_name);
+        let unchanged = existing
+            .as_ref()
+            .map(|repo| {
+                repo.source_type == "local_import"
+                    && repo.dir_name == item.dir_name
+                    && repo.source_path.as_deref() == Some(item.path.to_string_lossy().as_ref())
+                    && repo.name == item.name
+                    && repo.description == item.description
+                    && repo.models == item.models
+                    && repo.hash.as_deref() == Some(item.hash.as_str())
+                    && repo.ever_installed == ever_installed
+            })
+            .unwrap_or(false);
+        if unchanged {
+            continue;
+        }
+        let repo_snapshot = repo_storage_dir(&repo_key)?;
+        if repo_snapshot.exists() {
+            replace_dir_atomic(&item.path, &repo_snapshot)?;
+            snapshot_repository_index_baseline(&repo_key, &repo_snapshot)?;
+        }
+        let record = RepositoryRecord {
+            repo_key: repo_key.clone(),
+            skill_id: local_skill_id("local", &item.folder_name),
+            dir_name: item.dir_name,
+            source_id: "local".to_string(),
+            source_rel_path: item.folder_name,
+            source_type: "local_import".to_string(),
+            source_path: Some(item.path.to_string_lossy().to_string()),
+            name: item.name,
+            description: item.description,
+            models: item.models,
+            icon_seed: "local".to_string(),
+            hash: Some(item.hash),
+            created_at: existing.as_ref().map(|repo| repo.created_at).unwrap_or(0),
+            updated_at: Some(now_ts()),
+            ever_installed,
+        };
+        upsert_repository_record(&mut shared_state.repositories, record);
+        changed = true;
+    }
+
+    Ok(changed)
 }
 
 #[tauri::command]
-pub async fn skills_reconcile(
-    _app: tauri::AppHandle,
-    model: Option<String>,
-    scope: Option<String>,
-    project_root: Option<String>,
-) -> Result<ApiOk<bool>, String> {
-    let target_scope = normalize_install_scope(scope.as_deref());
-    let target_project_root =
-        normalize_project_root_for_scope(&target_scope, project_root.as_deref())?;
-    let dedupe_key = format!(
-        "reconcile:{}:{}:{}",
-        model.clone().unwrap_or_else(|| "all".to_string()),
-        target_scope,
-        target_project_root.clone().unwrap_or_default()
-    );
-    let _job = match acquire_job_key(dedupe_key)? {
-        Some(v) => v,
-        None => {
-            let state = load_local_skills_state()?;
-            return api_ok(true, state.revision);
-        }
-    };
-    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-    reconcile_internal(
-        model.as_deref(),
-        Some(target_scope.as_str()),
-        target_project_root.as_deref(),
-    )
-    .map_err(|_| "skills/mirror_apply_failed".to_string())?;
-    let state = load_local_skills_state()?;
-    api_ok(true, state.revision)
-}
-
-#[tauri::command]
-pub async fn skills_rescan_mirror(
-    _app: tauri::AppHandle,
-) -> Result<ApiOk<Vec<SkillRecord>>, String> {
-    let _job = match acquire_job_key("rescan:mirror")? {
-        Some(v) => v,
+pub async fn skills_sync_local(app: tauri::AppHandle) -> Result<ApiOk<Vec<SkillRecord>>, String> {
+    let _job = match acquire_job_key("sync:local")? {
+        Some(value) => value,
         None => {
             let state = load_local_skills_state()?;
             return api_ok(state.skills.clone(), state.revision);
@@ -426,67 +323,55 @@ pub async fn skills_rescan_mirror(
     };
     let _guard = job_lock().lock().map_err(|e| e.to_string())?;
 
-    // The unified directory is authoritative: project it into each tool
-    // directory. Never copy tool-directory content back into the unified dir.
-    reconcile_internal(None, Some(INSTALL_SCOPE_GLOBAL), None)?;
-
-    // 关键修复：同步仓库记录
-    let mut state = load_skills_state()?;
-
-    for model in MODELS {
-        let root = model_dir(model)?;
-        let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if !p.is_dir() {
-                continue;
-            }
-            let entry_name = entry.file_name().to_string_lossy().to_string();
-            if is_ignored_name(&entry_name) {
-                continue;
-            }
-            let md = p.join("SKILL.md");
-            if !md.exists() {
-                continue;
-            }
-            let content = fs::read_to_string(&md).unwrap_or_default();
-            let (name, desc, models) = parse_skill_md(&content, &[]);
-            let dir_name = parse_required_skill_dir_name(&content)
-                .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
-
-            // 尝试匹配或创建仓库记录
-            let source_id = "local".to_string(); // 本地扫描的统一标识
-            let rel_path = entry.file_name().to_string_lossy().to_string();
-            let repo_key = make_repo_key(&source_id, &rel_path);
-
-            if !state.repositories.iter().any(|r| r.repo_key == repo_key) {
-                state.repositories.push(RepositoryRecord {
-                    repo_key,
-                    skill_id: local_skill_id(&source_id, &rel_path),
-                    dir_name,
-                    source_id,
-                    source_rel_path: rel_path,
-                    source_type: "local_import".to_string(),
-                    source_path: Some(p.to_string_lossy().to_string()),
-                    name,
-                    description: desc,
-                    models,
-                    icon_seed: "local".to_string(),
-                    hash: Some(hash_dir(&p)?),
-                    created_at: now_ts(),
-                    updated_at: Some(now_ts()),
-                    ever_installed: true,
-                });
-            }
-        }
-    }
-
-    save_skills_state(state)?;
-
+    let mut shared_state = load_skills_state()?;
     let mut local_state = load_local_skills_state()?;
-    rebuild_local_installed_from_models(&mut local_state)?;
-    let local_state = save_local_skills_state(local_state)?;
-    api_ok(local_state.skills.clone(), local_state.revision)
+    let mut installed_changed = rebuild_global_installed_from_unified(&mut local_state)?;
+    let sync_state = load_sync_state()?;
+    let before_sources = local_state
+        .skills
+        .iter()
+        .map(|skill| {
+            (
+                skill.id.clone(),
+                skill.source_id.clone(),
+                skill.source_rel_path.clone(),
+                skill.remote_hash.clone(),
+                skill.has_update,
+                skill.icon_seed.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    hydrate_local_records_from_catalog(&mut local_state, &sync_state);
+    update_record_remote_flags(&mut local_state, &sync_state);
+    let hydrated_changed = local_state
+        .skills
+        .iter()
+        .map(|skill| {
+            (
+                skill.id.clone(),
+                skill.source_id.clone(),
+                skill.source_rel_path.clone(),
+                skill.remote_hash.clone(),
+                skill.has_update,
+                skill.icon_seed.clone(),
+            )
+        })
+        .collect::<Vec<_>>()
+        != before_sources;
+    installed_changed = installed_changed || hydrated_changed;
+    let repositories_changed = sync_local_repositories(&mut shared_state, &local_state)?;
+
+    if installed_changed {
+        local_state = save_local_skills_state(local_state)?;
+    }
+    if repositories_changed {
+        shared_state = save_skills_state(shared_state)?;
+        trigger_storage_sync(app, "skills_sync_local");
+    }
+    api_ok(
+        local_state.skills.clone(),
+        combined_revision(&shared_state, &local_state),
+    )
 }
 
 pub(in crate::skills) fn open_folder_path(path: &Path) -> Result<(), String> {
@@ -693,58 +578,11 @@ pub fn skills_open_folder(input: SkillKeyInput) -> Result<ApiOk<bool>, String> {
     api_ok(true, state.revision)
 }
 
-pub fn skills_reconcile_for_tool(
-    tool: &str,
-    scope: Option<&str>,
-    project_root: Option<&str>,
-) -> Result<(), String> {
-    if !MODELS.contains(&tool) {
-        return Ok(());
-    }
-    let normalized_scope = normalize_install_scope(scope);
-    let normalized_project_root =
-        normalize_project_root_for_scope(&normalized_scope, project_root)?;
-    let key = format!(
-        "reconcile:{}:{}:{}",
-        tool,
-        normalized_scope,
-        normalized_project_root.clone().unwrap_or_default()
-    );
-    let _job = match acquire_job_key(key)? {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-    let _guard = job_lock().lock().map_err(|e| e.to_string())?;
-    reconcile_internal(
-        Some(tool),
-        Some(normalized_scope.as_str()),
-        normalized_project_root.as_deref(),
-    )
-    .map_err(|_| "skills/mirror_apply_failed".to_string())
-}
-
 pub fn skills_installed_count_all_scopes() -> Result<usize, String> {
-    // A single unified skill is projected into every supported tool, so count
-    // each resolved skill directory once across models and scopes.
     let mut seen: HashSet<PathBuf> = HashSet::new();
-    for model in MODELS {
-        if let Ok(root) = model_dir(model) {
-            if let Ok(entries) = fs::read_dir(&root) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if is_ignored_name(&name) {
-                        continue;
-                    }
-                    if path.join("SKILL.md").exists() {
-                        seen.insert(fs::canonicalize(&path).unwrap_or(path));
-                    }
-                }
-            }
-        }
+    let root = global_skills_dir()?;
+    for path in scan_immediate_skill_dirs(&root)? {
+        seen.insert(fs::canonicalize(&path).unwrap_or(path));
     }
     let sync_state = load_sync_state()?;
     let cfg = config::get_storage_config()?;

@@ -386,12 +386,6 @@ where
     }
 
     let (install_scope, install_project_root) = session_install_scope_and_root(&target);
-    crate::skills::skills_reconcile_for_tool(
-        &target.tool,
-        Some(install_scope.as_str()),
-        install_project_root.as_deref(),
-    )
-    .map_err(|e| api_error("skills_preflight_failed", e))?;
     crate::subagents::subagents_reconcile_for_tool(
         &target.tool,
         Some(install_scope.as_str()),

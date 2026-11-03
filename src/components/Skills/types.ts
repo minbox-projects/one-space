@@ -8,7 +8,7 @@ export type ApiResp<T> = { ok: boolean; data: T; meta: { revision: number; ts: n
 export interface SkillRecord {
   id: string;
   dir_name?: string;
-  model: ModelType;
+  model: ModelType | 'global';
   models: ModelType[];
   name: string;
   description: string;

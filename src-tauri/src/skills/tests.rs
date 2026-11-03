@@ -1,8 +1,6 @@
 use super::*;
 use crate::config::{SkillSourceConfig, StorageConfig};
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -46,19 +44,6 @@ fn write_skill_dir(dir: &Path, frontmatter_name: &str, title: &str, description:
 }
 
 #[cfg(unix)]
-#[test]
-fn initialize_unified_skills_creates_claude_compatibility_symlink() {
-    with_temp_home("claude-compat", |home| {
-        let expected = home.join(".agents").join("skills");
-        let compat = home.join(".claude").join("skills");
-
-        initialize_unified_skills().expect("initialize skills");
-        assert_eq!(fs::read_link(&compat).expect("claude compatibility link"), expected);
-        initialize_unified_skills().expect("initialize skills is idempotent");
-        assert_eq!(fs::read_link(&compat).expect("claude compatibility link"), expected);
-    });
-}
-
 #[test]
 fn current_installed_skills_scans_project_scope_without_local_state_records() {
     with_temp_home("project-scan", |home| {
@@ -142,8 +127,7 @@ fn hash_dir_ignores_file_mtime_when_content_is_unchanged() {
         .write(true)
         .open(&skill_md)
         .expect("open skill markdown");
-    file.set_modified(changed_mtime)
-        .expect("set changed mtime");
+    file.set_modified(changed_mtime).expect("set changed mtime");
     drop(file);
 
     let observed_mtime = fs::metadata(&skill_md)
@@ -213,81 +197,6 @@ description: desc
 "#;
     let err = parse_required_skill_dir_name(md).expect_err("invalid name should fail");
     assert_eq!(err, "skills/invalid_frontmatter_name");
-}
-
-#[test]
-fn has_dir_name_conflict_detects_same_model_only() {
-    let state = SkillsLocalState {
-        skills: vec![
-            SkillRecord {
-                id: "legacy-1".to_string(),
-                dir_name: "git-commit".to_string(),
-                model: "codex".to_string(),
-                models: vec![],
-                name: "n".to_string(),
-                description: "d".to_string(),
-                source_id: "local".to_string(),
-                source_rel_path: "a".to_string(),
-                installed_at: 0,
-                updated_at: None,
-                last_synced_at: None,
-                local_hash: "".to_string(),
-                remote_hash: None,
-                has_update: false,
-                icon_seed: "".to_string(),
-                scope: INSTALL_SCOPE_GLOBAL.to_string(),
-                project_root: None,
-                target_path: None,
-            },
-            SkillRecord {
-                id: "legacy-2".to_string(),
-                dir_name: "git-commit".to_string(),
-                model: "claude".to_string(),
-                models: vec![],
-                name: "n".to_string(),
-                description: "d".to_string(),
-                source_id: "local".to_string(),
-                source_rel_path: "b".to_string(),
-                installed_at: 0,
-                updated_at: None,
-                last_synced_at: None,
-                local_hash: "".to_string(),
-                remote_hash: None,
-                has_update: false,
-                icon_seed: "".to_string(),
-                scope: INSTALL_SCOPE_GLOBAL.to_string(),
-                project_root: None,
-                target_path: None,
-            },
-        ],
-        revision: 0,
-        last_rescan_at: None,
-    };
-
-    assert!(has_dir_name_conflict(
-        &state,
-        "codex",
-        INSTALL_SCOPE_GLOBAL,
-        None,
-        "git-commit",
-        Some("other-id"),
-    ));
-    assert!(!has_dir_name_conflict(
-        &state,
-        "antigravity",
-        INSTALL_SCOPE_GLOBAL,
-        None,
-        "git-commit",
-        Some("other-id"),
-    ));
-    assert!(!has_dir_name_conflict(
-        &state,
-        "codex",
-        INSTALL_SCOPE_GLOBAL,
-        None,
-        "git-commit",
-        Some("legacy-1"),
-    ));
 }
 
 #[test]
@@ -415,8 +324,8 @@ fn apply_repository_update_syncs_global_and_project_targets_and_moves_dir_name()
             .to_string_lossy()
             .to_string();
 
-        let global_old_dir = model_dir("codex")
-            .expect("global model dir")
+        let global_old_dir = global_skills_dir()
+            .expect("global skills dir")
             .join("git-commit");
         write_skill_dir(&global_old_dir, "git-commit", "Git Commit", "Old version");
         let project_old_dir = project_primary_dir("codex", &project_root)
@@ -454,7 +363,7 @@ fn apply_repository_update_syncs_global_and_project_targets_and_moves_dir_name()
                 SkillRecord {
                     id: "official-git-commit".to_string(),
                     dir_name: "git-commit".to_string(),
-                    model: "codex".to_string(),
+                    model: GLOBAL_SKILL_MODEL.to_string(),
                     models: vec!["codex".to_string()],
                     name: "Git Commit".to_string(),
                     description: "Old version".to_string(),
@@ -507,15 +416,17 @@ fn apply_repository_update_syncs_global_and_project_targets_and_moves_dir_name()
         .expect("apply repository update");
 
         assert_eq!(result.synced_targets.len(), 2);
-        assert_eq!(result.synced_models, vec!["codex".to_string()]);
+        assert_eq!(
+            result.synced_models,
+            vec!["global".to_string(), "codex".to_string()]
+        );
 
-        let new_global_dir = model_dir("codex")
-            .expect("global model dir")
+        let new_global_dir = global_skills_dir()
+            .expect("global skills dir")
             .join("git-commit-v2");
         let new_project_dir = project_primary_dir("codex", &project_root)
             .expect("project primary")
             .join("git-commit-v2");
-        let global_mirror_dir = home.join(".codex").join("skills").join("git-commit-v2");
         let project_compat_dir = project_root
             .join(".codex")
             .join("skills")
@@ -534,14 +445,18 @@ fn apply_repository_update_syncs_global_and_project_targets_and_moves_dir_name()
             expected_md
         );
         assert_eq!(
-            fs::read_to_string(global_mirror_dir.join("SKILL.md")).expect("global mirror updated"),
-            expected_md
-        );
-        assert_eq!(
             fs::read_to_string(project_compat_dir.join("SKILL.md"))
                 .expect("project compat updated"),
             expected_md
         );
+        assert!(!home.join(".claude").join("skills").exists());
+        assert!(!home.join(".codex").join("skills").exists());
+        assert!(!home.join(".gemini").join("config").join("skills").exists());
+        assert!(!home
+            .join(".config")
+            .join("opencode")
+            .join("skills")
+            .exists());
         assert!(local_state.skills.iter().all(|skill| {
             skill.dir_name == "git-commit-v2" && !skill.has_update && skill.remote_hash.is_some()
         }));
@@ -563,9 +478,13 @@ fn apply_repository_update_rolls_back_snapshot_when_target_sync_fails() {
             .join("git-commit");
         write_skill_dir(&source_dir, "shared-dir", "Git Commit", "New version");
 
-        let installed_dir = model_dir("codex").expect("model dir").join("git-commit");
+        let installed_dir = global_skills_dir()
+            .expect("global skills dir")
+            .join("git-commit");
         write_skill_dir(&installed_dir, "git-commit", "Git Commit", "Old version");
-        let conflicting_dir = model_dir("codex").expect("model dir").join("shared-dir");
+        let conflicting_dir = global_skills_dir()
+            .expect("global skills dir")
+            .join("shared-dir");
         write_skill_dir(&conflicting_dir, "shared-dir", "Other Skill", "Conflicting");
         let conflicting_md =
             fs::read_to_string(conflicting_dir.join("SKILL.md")).expect("conflicting markdown");
@@ -600,7 +519,7 @@ fn apply_repository_update_rolls_back_snapshot_when_target_sync_fails() {
                 SkillRecord {
                     id: "official-git-commit".to_string(),
                     dir_name: "git-commit".to_string(),
-                    model: "codex".to_string(),
+                    model: GLOBAL_SKILL_MODEL.to_string(),
                     models: vec!["codex".to_string()],
                     name: "Git Commit".to_string(),
                     description: "Old version".to_string(),
@@ -620,7 +539,7 @@ fn apply_repository_update_rolls_back_snapshot_when_target_sync_fails() {
                 SkillRecord {
                     id: "conflict-skill".to_string(),
                     dir_name: "shared-dir".to_string(),
-                    model: "codex".to_string(),
+                    model: GLOBAL_SKILL_MODEL.to_string(),
                     models: vec!["codex".to_string()],
                     name: "Conflict".to_string(),
                     description: "Conflicting".to_string(),
@@ -672,14 +591,16 @@ fn apply_repository_update_rolls_back_snapshot_when_target_sync_fails() {
 #[test]
 fn skills_list_installed_clears_legacy_has_update_flags() {
     with_temp_home("installed-no-update-flag", |_| {
-        let installed_dir = model_dir("codex").expect("model dir").join("git-commit");
+        let installed_dir = global_skills_dir()
+            .expect("global skills dir")
+            .join("git-commit");
         write_skill_dir(&installed_dir, "git-commit", "Git Commit", "Installed");
 
         save_local_skills_state(SkillsLocalState {
             skills: vec![SkillRecord {
                 id: "official-git-commit".to_string(),
                 dir_name: "git-commit".to_string(),
-                model: "codex".to_string(),
+                model: GLOBAL_SKILL_MODEL.to_string(),
                 models: vec!["codex".to_string()],
                 name: "Git Commit".to_string(),
                 description: "Installed".to_string(),
@@ -702,7 +623,7 @@ fn skills_list_installed_clears_legacy_has_update_flags() {
         .expect("save local state");
 
         let result = skills_list_installed(
-            Some("codex".to_string()),
+            Some(GLOBAL_SKILL_MODEL.to_string()),
             Some(INSTALL_SCOPE_GLOBAL.to_string()),
             None,
         )
@@ -717,135 +638,6 @@ fn skills_list_installed_clears_legacy_has_update_flags() {
     });
 }
 
-#[test]
-fn antigravity_skill_paths_resolve_to_agents_and_gemini_config() {
-    with_temp_home("antigravity-paths", |home| {
-        let project_root = home.join("project");
-        fs::create_dir_all(&project_root).expect("create project root");
-
-        let project_dir =
-            project_primary_dir("antigravity", &project_root).expect("project primary dir");
-        assert_eq!(project_dir, project_root.join(".agents").join("skills"));
-
-        let global_dir = mirror_dir("antigravity").expect("global mirror dir");
-        let expected_global = home.join(".gemini").join("config").join("skills");
-        assert_eq!(
-            global_dir,
-            fs::canonicalize(&expected_global).expect("canonical global skills dir")
-        );
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Four-tool compatibility matrix (REQ-001 / AC-001 / AC-009)
-//
-// Public boundary: the Skills backend reports, for every supported tool
-// (claude, opencode, codex, antigravity), how that tool reads Skills relative
-// to the canonical `~/.agents/skills` directory. Each result must be exactly
-// one of DirectUnified, CompatibilityPath, or Unsupported, and must carry
-// observable evidence. A tool that does not read `~/.agents/skills` directly
-// must never be reported as directly supported (AC-009).
-//
-// These tests are RED against the current implementation: the compatibility
-// matrix API consumed by later operations is defined by Step 1 and does not
-// exist yet.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn compatibility_matrix_has_exactly_one_result_per_supported_tool() {
-    let matrix = compatibility_matrix();
-
-    let mut tools = matrix
-        .iter()
-        .map(|result| result.tool.clone())
-        .collect::<Vec<_>>();
-    tools.sort();
-    assert_eq!(
-        tools,
-        vec![
-            "antigravity".to_string(),
-            "claude".to_string(),
-            "codex".to_string(),
-            "opencode".to_string(),
-        ],
-        "every supported tool must have exactly one compatibility result"
-    );
-}
-
-#[test]
-fn compatibility_results_use_only_the_three_supported_kinds() {
-    for result in compatibility_matrix() {
-        match &result.kind {
-            CompatibilityKind::DirectUnified
-            | CompatibilityKind::CompatibilityPath
-            | CompatibilityKind::Unsupported => {}
-        }
-    }
-}
-
-#[test]
-fn compatibility_results_carry_observable_evidence() {
-    let matrix = compatibility_matrix();
-    assert!(!matrix.is_empty(), "compatibility matrix must not be empty");
-    for result in &matrix {
-        assert!(
-            !result.evidence.is_empty(),
-            "tool {} must include observable evidence",
-            result.tool
-        );
-        for evidence in &result.evidence {
-            assert!(
-                !evidence.trim().is_empty(),
-                "tool {} must not include blank evidence entries",
-                result.tool
-            );
-        }
-    }
-}
-
-#[test]
-fn claude_is_reported_as_compatibility_path_not_direct_unified() {
-    // The frozen plan routes Claude through the ~/.claude/skills projection
-    // (REQ-005 / AC-005), so Claude must never claim direct unified support.
-    let claude = compatibility_matrix()
-        .into_iter()
-        .find(|result| result.tool == "claude")
-        .expect("claude result must exist");
-    assert!(
-        matches!(&claude.kind, CompatibilityKind::CompatibilityPath),
-        "claude must be classified as compatibility-path support"
-    );
-    let evidence = claude.evidence.join("\n");
-    assert!(
-        evidence.contains(".claude") && evidence.contains("skills"),
-        "claude evidence must reference the ~/.claude/skills projection path"
-    );
-}
-
-#[test]
-fn direct_unified_claims_must_cite_the_unified_directory() {
-    // AC-009: a tool that does not directly read ~/.agents/skills must not be
-    // reported as directly supported. Any DirectUnified claim therefore needs
-    // evidence that names the unified directory.
-    for result in compatibility_matrix() {
-        if matches!(&result.kind, CompatibilityKind::DirectUnified) {
-            let evidence = result.evidence.join("\n");
-            assert!(
-                evidence.contains(".agents") && evidence.contains("skills"),
-                "direct unified support for {} must cite ~/.agents/skills evidence",
-                result.tool
-            );
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Canonical unified Skills directory (REQ-002 / AC-002 / AC-008)
-//
-// Public boundary: installation, scanning, synchronization, and displayed
-// records all use `~/.agents/skills` as the canonical source/destination
-// instead of a tool-specific or OneSpace-internal maintenance directory.
-//
 // These tests are RED against the current implementation: empty
 // initialization, global install, scan, sync, and display still resolve to the
 // internal per-model maintenance directory.
@@ -895,7 +687,7 @@ fn global_scan_surfaces_skills_from_the_unified_agents_directory() {
         write_skill_dir(&skill_dir, "git-commit", "Git Commit", "Unified copy");
 
         let mut state = SkillsLocalState::default();
-        rebuild_local_installed_from_models(&mut state).expect("rebuild global installed skills");
+        rebuild_global_installed_from_unified(&mut state).expect("rebuild global installed skills");
 
         let found = state
             .skills
@@ -940,541 +732,110 @@ fn global_record_display_path_resolves_under_the_unified_agents_directory() {
 }
 
 #[test]
-fn global_sync_projects_unified_skills_into_tool_directories() {
-    with_temp_home("unified-sync", |home| {
-        let unified = unified_skills_root(home);
-        let skill_dir = unified.join("git-commit");
-        write_skill_dir(&skill_dir, "git-commit", "Git Commit", "Unified copy");
-
-        reconcile_one_model("codex", INSTALL_SCOPE_GLOBAL, None).expect("reconcile codex global");
-
-        let projected = home.join(".codex").join("skills").join("git-commit");
-        assert!(
-            projected.join("SKILL.md").exists(),
-            "sync must project the unified skill into {}, found none",
-            projected.display()
-        );
-        assert!(
-            skill_dir.join("SKILL.md").exists(),
-            "the canonical unified copy must remain after syncing"
-        );
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Unified Skills migration and conflict backups (REQ-003 / AC-003,
-// REQ-004 / AC-004)
-//
-// Public boundary: `initialize_unified_skills` performs the first
-// initialization described by the frozen plan. Tool-specific Skills are
-// migrated into `~/.agents/skills` with their content preserved. When the same
-// Skill name already exists in the unified directory, the unified version stays
-// authoritative and the tool-specific version is preserved under
-// `~/.agents/skills/.backups/<tool>/<skill>/`, keyed by content so that an
-// unchanged conflict never creates another backup. The returned
-// `SkillsInitResult` exposes per-Skill outcomes whose status identifies a
-// conflict.
-//
-// These tests are RED against the current implementation: no initialization
-// entry point, migration result, or `.backups` handling exists yet.
-// ---------------------------------------------------------------------------
-
-fn find_file_with_content(root: &Path, expected: &str) -> Option<std::path::PathBuf> {
-    for entry in fs::read_dir(root).ok()?.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_file_with_content(&path, expected) {
-                return Some(found);
-            }
-        } else if fs::read_to_string(&path)
-            .map(|content| content == expected)
-            .unwrap_or(false)
-        {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn snapshot_file_tree(root: &Path) -> Vec<(String, Vec<u8>)> {
-    fn walk(root: &Path, current: &Path, out: &mut Vec<(String, Vec<u8>)>) {
-        let Ok(entries) = fs::read_dir(current) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(root, &path, out);
-            } else if let Ok(content) = fs::read(&path) {
-                let relative = path
-                    .strip_prefix(root)
-                    .unwrap_or(path.as_path())
-                    .to_string_lossy()
-                    .to_string();
-                out.push((relative, content));
-            }
-        }
-    }
-    let mut out = vec![];
-    walk(root, root, &mut out);
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
-}
-
-#[test]
-fn first_initialization_migrates_non_conflicting_tool_skill_into_unified_directory() {
-    with_temp_home("step3-migrate", |home| {
-        let source_dir = home.join(".codex").join("skills").join("git-commit");
-        write_skill_dir(&source_dir, "git-commit", "Git Commit", "Tool-specific copy");
-        let source_md =
-            fs::read_to_string(source_dir.join("SKILL.md")).expect("read tool-specific skill");
-
-        let result = initialize_unified_skills().expect("initialize unified skills");
-
-        let migrated_dir = unified_skills_root(home).join("git-commit");
-        assert!(
-            migrated_dir.join("SKILL.md").exists(),
-            "a non-conflicting tool Skill must be migrated into {}",
-            migrated_dir.display()
-        );
-        assert_eq!(
-            fs::read_to_string(migrated_dir.join("SKILL.md")).expect("read migrated skill"),
-            source_md,
-            "migration must preserve the tool-specific content"
-        );
-
-        let outcome = result
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.tool == "codex" && outcome.skill == "git-commit")
-            .expect("result must report the migrated Skill");
-        assert!(
-            matches!(&outcome.status, SkillMigrationStatus::Migrated),
-            "non-conflicting migration must be reported as migrated, got {:?}",
-            outcome.status
-        );
-    });
-}
-
-#[test]
-fn first_initialization_keeps_unified_on_conflict_and_backs_up_tool_copy() {
-    with_temp_home("step3-conflict", |home| {
-        let unified_dir = unified_skills_root(home).join("git-commit");
-        write_skill_dir(&unified_dir, "git-commit", "Git Commit", "Unified version");
-        let unified_md =
-            fs::read_to_string(unified_dir.join("SKILL.md")).expect("read unified skill");
-
-        let source_dir = home.join(".codex").join("skills").join("git-commit");
-        write_skill_dir(&source_dir, "git-commit", "Git Commit", "Tool-specific version");
-        let source_md =
-            fs::read_to_string(source_dir.join("SKILL.md")).expect("read tool-specific skill");
-
-        let result = initialize_unified_skills().expect("initialize unified skills");
-
-        assert_eq!(
-            fs::read_to_string(unified_dir.join("SKILL.md")).expect("read unified skill"),
-            unified_md,
-            "the unified version must remain authoritative on conflict"
-        );
-
-        let backup_root = unified_skills_root(home)
-            .join(".backups")
-            .join("codex")
-            .join("git-commit");
-        assert!(
-            backup_root.exists(),
-            "the conflicting tool copy must be preserved under {}",
-            backup_root.display()
-        );
-        assert!(
-            find_file_with_content(&backup_root, &source_md).is_some(),
-            "the backup under {} must contain the tool-specific content",
-            backup_root.display()
-        );
-
-        let outcome = result
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.tool == "codex" && outcome.skill == "git-commit")
-            .expect("result must report the conflicting Skill");
-        assert!(
-            matches!(&outcome.status, SkillMigrationStatus::ConflictBackedUp),
-            "the result must identify the conflict, got {:?}",
-            outcome.status
-        );
-        let backup_path = outcome
-            .backup_path
-            .as_deref()
-            .expect("a conflict outcome must report its backup path");
-        let reported = Path::new(backup_path);
-        assert!(
-            reported.starts_with(&backup_root),
-            "reported backup path {backup_path} must live under {}",
-            backup_root.display()
-        );
-        assert!(
-            reported.exists(),
-            "reported backup path {backup_path} must exist on disk"
-        );
-    });
-}
-
-#[test]
-fn repeated_initialization_does_not_duplicate_unchanged_conflict_backup() {
-    with_temp_home("step3-backup-idempotent", |home| {
-        let unified_dir = unified_skills_root(home).join("git-commit");
-        write_skill_dir(&unified_dir, "git-commit", "Git Commit", "Unified version");
-
-        let source_dir = home.join(".codex").join("skills").join("git-commit");
-        write_skill_dir(&source_dir, "git-commit", "Git Commit", "Tool-specific version");
-
-        initialize_unified_skills().expect("first initialization");
-        let backup_root = unified_skills_root(home)
-            .join(".backups")
-            .join("codex")
-            .join("git-commit");
-        assert!(
-            backup_root.exists(),
-            "first initialization must create a conflict backup"
-        );
-        let first_snapshot = snapshot_file_tree(&backup_root);
-
-        initialize_unified_skills().expect("second initialization");
-        let second_snapshot = snapshot_file_tree(&backup_root);
-
-        assert_eq!(
-            first_snapshot, second_snapshot,
-            "an unchanged conflict must not create another backup or alter the existing one"
-        );
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Claude compatibility path (REQ-005 / AC-005, REQ-006 / AC-006)
-//
-// Public boundary: `initialize_unified_skills` keeps Claude working by making
-// `~/.claude/skills` a symlink that resolves to the canonical `~/.agents/skills`
-// directory when that path is free. Every occupied-path collision - ordinary
-// file, ordinary directory, wrong symlink, or broken symlink - must be preserved
-// exactly as the user left it and reported as an actionable failure that names
-// the conflicting Claude path instead of being silently replaced.
-//
-// These tests are RED against the current implementation: initialization only
-// migrates Skills and never creates, inspects, or reports on ~/.claude/skills.
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-fn claude_skills_path(home: &Path) -> std::path::PathBuf {
-    home.join(".claude").join("skills")
-}
-
-#[cfg(unix)]
-fn assert_actionable_claude_failure(result: Result<SkillsInitResult, String>) {
-    let message = match result {
-        Ok(_) => {
-            panic!("an occupied ~/.claude/skills path must be rejected with an actionable failure")
-        }
-        Err(message) => message,
+fn has_dir_name_conflict_is_global_across_models() {
+    let state = SkillsLocalState {
+        skills: vec![
+            SkillRecord {
+                id: "legacy-1".to_string(),
+                dir_name: "git-commit".to_string(),
+                model: GLOBAL_SKILL_MODEL.to_string(),
+                models: vec![],
+                name: "n".to_string(),
+                description: "d".to_string(),
+                source_id: "local".to_string(),
+                source_rel_path: "a".to_string(),
+                installed_at: 0,
+                updated_at: None,
+                last_synced_at: None,
+                local_hash: "".to_string(),
+                remote_hash: None,
+                has_update: false,
+                icon_seed: "".to_string(),
+                scope: INSTALL_SCOPE_GLOBAL.to_string(),
+                project_root: None,
+                target_path: None,
+            },
+            SkillRecord {
+                id: "legacy-2".to_string(),
+                dir_name: "git-commit".to_string(),
+                model: "claude".to_string(),
+                models: vec![],
+                name: "n".to_string(),
+                description: "d".to_string(),
+                source_id: "local".to_string(),
+                source_rel_path: "b".to_string(),
+                installed_at: 0,
+                updated_at: None,
+                last_synced_at: None,
+                local_hash: "".to_string(),
+                remote_hash: None,
+                has_update: false,
+                icon_seed: "".to_string(),
+                scope: INSTALL_SCOPE_PROJECT.to_string(),
+                project_root: Some("/tmp/project".to_string()),
+                target_path: None,
+            },
+        ],
+        revision: 0,
+        last_rescan_at: None,
     };
-    let lowered = message.to_lowercase();
-    assert!(
-        lowered.contains("claude") && lowered.contains("skills"),
-        "the failure must name the conflicting Claude Skills path, got: {message:?}"
-    );
+
+    assert!(has_dir_name_conflict(
+        &state,
+        "codex",
+        INSTALL_SCOPE_GLOBAL,
+        None,
+        "git-commit",
+        Some("other-id"),
+    ));
+    assert!(!has_dir_name_conflict(
+        &state,
+        "antigravity",
+        INSTALL_SCOPE_GLOBAL,
+        None,
+        "git-commit",
+        Some("legacy-1"),
+    ));
+    assert!(has_dir_name_conflict(
+        &state,
+        "claude",
+        INSTALL_SCOPE_PROJECT,
+        Some("/tmp/project"),
+        "git-commit",
+        Some("other-id"),
+    ));
+    assert!(!has_dir_name_conflict(
+        &state,
+        "codex",
+        INSTALL_SCOPE_PROJECT,
+        Some("/tmp/project"),
+        "git-commit",
+        Some("other-id"),
+    ));
 }
 
-#[cfg(unix)]
 #[test]
-fn claude_compat_initialization_creates_skills_symlink_to_unified_directory() {
-    with_temp_home("step4-claude-symlink", |home| {
-        let claude = claude_skills_path(home);
+fn global_install_target_is_unified_for_every_model_without_tool_projections() {
+    with_temp_home("global-target-only", |home| {
         let unified = unified_skills_root(home);
-        assert!(
-            fs::symlink_metadata(&claude).is_err(),
-            "precondition: {} must not exist before initialization",
-            claude.display()
-        );
-
-        initialize_unified_skills().expect("initialization must succeed for a free Claude path");
-
-        let meta = fs::symlink_metadata(&claude).unwrap_or_else(|err| {
-            panic!("{} must exist after initialization: {err}", claude.display())
-        });
-        assert!(
-            meta.file_type().is_symlink(),
-            "{} must be a symlink, got {:?}",
-            claude.display(),
-            meta.file_type()
-        );
-        let resolved = fs::canonicalize(&claude).expect("Claude symlink must resolve");
-        let unified_resolved =
-            fs::canonicalize(&unified).expect("unified Skills directory must exist");
-        assert_eq!(
-            resolved,
-            unified_resolved,
-            "{} must resolve to the unified directory {}",
-            claude.display(),
-            unified.display()
-        );
-    });
-}
-
-#[cfg(unix)]
-#[test]
-fn claude_compat_initialization_preserves_occupied_file_and_reports_failure() {
-    with_temp_home("step4-claude-file", |home| {
-        let claude = claude_skills_path(home);
-        fs::create_dir_all(claude.parent().expect("Claude parent directory"))
-            .expect("create .claude");
-        fs::write(&claude, "user-owned file\n").expect("write occupied file");
-
-        assert_actionable_claude_failure(initialize_unified_skills());
-
-        let meta = fs::symlink_metadata(&claude).expect("occupied file must remain");
-        assert!(
-            meta.file_type().is_file() && !meta.file_type().is_symlink(),
-            "{} must remain an ordinary file",
-            claude.display()
-        );
-        assert_eq!(
-            fs::read_to_string(&claude).expect("read occupied file"),
-            "user-owned file\n",
-            "the occupied file content must be preserved"
-        );
-    });
-}
-
-#[cfg(unix)]
-#[test]
-fn claude_compat_initialization_preserves_occupied_directory_and_reports_failure() {
-    with_temp_home("step4-claude-directory", |home| {
-        let claude = claude_skills_path(home);
-        fs::create_dir_all(&claude).expect("create occupied directory");
-        fs::write(claude.join("marker.txt"), "user-owned directory\n").expect("write marker");
-
-        assert_actionable_claude_failure(initialize_unified_skills());
-
-        let meta = fs::symlink_metadata(&claude).expect("occupied directory must remain");
-        assert!(
-            meta.file_type().is_dir() && !meta.file_type().is_symlink(),
-            "{} must remain an ordinary directory",
-            claude.display()
-        );
-        assert_eq!(
-            fs::read_to_string(claude.join("marker.txt")).expect("read marker"),
-            "user-owned directory\n",
-            "the occupied directory content must be preserved"
-        );
-    });
-}
-
-#[cfg(unix)]
-#[test]
-fn claude_compat_initialization_preserves_wrong_symlink_and_reports_failure() {
-    with_temp_home("step4-claude-wrong-symlink", |home| {
-        let claude = claude_skills_path(home);
-        fs::create_dir_all(claude.parent().expect("Claude parent directory"))
-            .expect("create .claude");
-        let wrong_target = home.join(".claude").join("other-skills");
-        fs::create_dir_all(&wrong_target).expect("create wrong target");
-        symlink(&wrong_target, &claude).expect("create wrong symlink");
-
-        assert_actionable_claude_failure(initialize_unified_skills());
-
-        let meta = fs::symlink_metadata(&claude).expect("wrong symlink must remain");
-        assert!(
-            meta.file_type().is_symlink(),
-            "{} must remain a symlink",
-            claude.display()
-        );
-        assert_eq!(
-            fs::read_link(&claude).expect("read wrong symlink"),
-            wrong_target,
-            "the wrong symlink target must not be rewritten"
-        );
-        assert_eq!(
-            fs::canonicalize(&claude).expect("wrong symlink must still resolve"),
-            fs::canonicalize(&wrong_target).expect("wrong target must exist"),
-            "the wrong symlink must not be repointed at the unified directory"
-        );
-    });
-}
-
-#[cfg(unix)]
-#[test]
-fn claude_compat_initialization_preserves_broken_symlink_and_reports_failure() {
-    with_temp_home("step4-claude-broken-symlink", |home| {
-        let claude = claude_skills_path(home);
-        fs::create_dir_all(claude.parent().expect("Claude parent directory"))
-            .expect("create .claude");
-        let missing_target = home.join(".claude").join("missing-skills");
-        symlink(&missing_target, &claude).expect("create broken symlink");
-
-        assert_actionable_claude_failure(initialize_unified_skills());
-
-        let meta = fs::symlink_metadata(&claude).expect("broken symlink must remain");
-        assert!(
-            meta.file_type().is_symlink(),
-            "{} must remain a symlink",
-            claude.display()
-        );
-        assert_eq!(
-            fs::read_link(&claude).expect("read broken symlink"),
-            missing_target,
-            "the broken symlink target must not be rewritten"
-        );
-        assert!(
-            !claude.exists(),
-            "the broken symlink must stay broken instead of being repointed"
-        );
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Idempotent repeated initialization and truthful partial failures
-// (REQ-007 / AC-007, REQ-008 / AC-010)
-//
-// Public boundary: `initialize_unified_skills` must be stable when it runs
-// again without source changes. A Skill migrated on the first run is identical
-// in the unified directory and in its tool directory, so the second run must
-// not reclassify it as a conflict, add a backup, change unified content, or
-// replace the correct Claude compatibility symlink. When a later item fails,
-// the successful migration must remain on disk and the returned failure must
-// identify the failed Skill and its path instead of a bare OS error.
-//
-// These tests are RED against the current implementation: a repeated run backs
-// up every already-migrated Skill as a new conflict, and a failed copy aborts
-// with an OS error that names neither the item nor its path.
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-#[test]
-fn repeated_initialization_keeps_migrated_skill_backup_free_and_symlink_stable() {
-    with_temp_home("step5-idempotent", |home| {
-        use std::os::unix::fs::MetadataExt;
-
-        let source_dir = home.join(".codex").join("skills").join("git-commit");
-        write_skill_dir(&source_dir, "git-commit", "Git Commit", "Tool-specific copy");
-
-        let unified = unified_skills_root(home);
-        let claude = claude_skills_path(home);
-
-        initialize_unified_skills().expect("first initialization");
-        assert!(
-            unified.join("git-commit").join("SKILL.md").exists(),
-            "the non-conflicting Skill must be migrated on the first run"
-        );
-        assert!(
-            !unified
-                .join(".backups")
-                .join("codex")
-                .join("git-commit")
-                .exists(),
-            "a non-conflicting migration must not create a conflict backup"
-        );
-
-        let first_tree = snapshot_file_tree(&unified);
-        let first_target = fs::read_link(&claude).expect("claude compatibility symlink");
-        let first_inode = fs::symlink_metadata(&claude)
-            .expect("claude compatibility symlink metadata")
-            .ino();
-
-        initialize_unified_skills().expect("second initialization");
-
-        assert_eq!(
-            snapshot_file_tree(&unified),
-            first_tree,
-            "repeated initialization must not add a backup or change unified content"
-        );
-        assert_eq!(
-            fs::read_link(&claude).expect("claude compatibility symlink"),
-            first_target,
-            "a correct Claude symlink must not be repointed"
-        );
-        assert_eq!(
-            fs::symlink_metadata(&claude)
-                .expect("claude compatibility symlink metadata")
-                .ino(),
-            first_inode,
-            "a correct Claude symlink must not be replaced"
-        );
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Accepted review repairs (RED)
-//
-// The following tests encode review findings that have been accepted but are
-// not yet implemented. They are RED against the current tree:
-//   (b) `skills_rescan_mirror` copies tool directories into the authoritative
-//       unified directory instead of projecting unified -> tools.
-//   (c) `initialize_unified_skills` aborts with a bare `Err` on the first failed
-//       item, discarding the successful per-item outcomes.
-//   (d) `skills_installed_count_all_scopes` counts the single unified directory
-//       once per supported tool (four times).
-//   (e) `mirror_dir` compares the raw symlink target and rejects a correct
-//       relative symlink that resolves to `~/.agents/skills`.
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-#[test]
-fn partial_initialization_reports_structured_outcomes_and_preserves_successful_migration() {
-    use std::os::unix::fs::PermissionsExt;
-
-    with_temp_home("structured-partial-failure", |home| {
-        // "antigravity" is processed before "codex", so this migration succeeds
-        // before the failing item is reached.
-        let good_source = home
-            .join(".gemini")
-            .join("config")
+        for model in MODELS {
+            let (primary, compat) = resolve_skill_target_dir(model, INSTALL_SCOPE_GLOBAL, None)
+                .unwrap_or_else(|err| panic!("resolve global target for {model}: {err}"));
+            assert_under_unified(home, &primary, "global install target");
+            assert!(
+                compat.is_empty(),
+                "global install for {model} must not project into tool directories"
+            );
+        }
+        assert!(unified.exists());
+        assert!(!home.join(".claude").join("skills").exists());
+        assert!(!home.join(".codex").join("skills").exists());
+        assert!(!home.join(".gemini").join("config").join("skills").exists());
+        assert!(!home
+            .join(".config")
+            .join("opencode")
             .join("skills")
-            .join("good-skill");
-        write_skill_dir(&good_source, "good-skill", "Good Skill", "Migratable copy");
-
-        let bad_source = home.join(".codex").join("skills").join("bad-skill");
-        write_skill_dir(&bad_source, "bad-skill", "Bad Skill", "Unreadable copy");
-        let mut unreadable = fs::metadata(&bad_source)
-            .expect("bad skill metadata")
-            .permissions();
-        unreadable.set_mode(0o000);
-        fs::set_permissions(&bad_source, unreadable).expect("make bad skill unreadable");
-
-        let result = initialize_unified_skills();
-
-        // Restore permissions before asserting so the temp HOME can be removed.
-        let mut readable = fs::metadata(&bad_source)
-            .expect("bad skill metadata")
-            .permissions();
-        readable.set_mode(0o755);
-        fs::set_permissions(&bad_source, readable).expect("restore bad skill permissions");
-
-        let unified = unified_skills_root(home);
-        assert!(
-            unified.join("good-skill").join("SKILL.md").exists(),
-            "a successful migration must remain after a later item fails"
-        );
-
-        let init = result.expect(
-            "a partial failure must be returned as structured partial-success outcomes, not a bare error",
-        );
-        assert!(
-            init.outcomes
-                .iter()
-                .any(|outcome| outcome.skill == "good-skill"
-                    && matches!(&outcome.status, SkillMigrationStatus::Migrated)),
-            "the successful migration must stay recorded as migrated: {:?}",
-            init.outcomes
-        );
-        let failed = init
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.skill == "bad-skill")
-            .expect("the failed item must be identified in the structured outcomes");
-        assert!(
-            !matches!(&failed.status, SkillMigrationStatus::Migrated),
-            "the failed item must not be reported as migrated: {:?}",
-            failed.status
-        );
+            .exists());
     });
 }
 
@@ -1497,86 +858,109 @@ fn canonical_display_count_counts_unified_skill_once() {
     });
 }
 
-#[cfg(unix)]
 #[test]
-fn claude_compat_initialization_accepts_correct_relative_symlink() {
-    with_temp_home("claude-relative-symlink", |home| {
+fn local_sync_registers_tool_and_unified_skills_without_writing() {
+    with_temp_home("local-sync-discover", |home| {
         let unified = unified_skills_root(home);
-        fs::create_dir_all(&unified).expect("create unified directory");
+        write_skill_dir(
+            &unified.join("unified-skill"),
+            "unified-skill",
+            "Unified",
+            "From unified",
+        );
+        let claude_dir = home.join(".claude").join("skills").join("claude-skill");
+        let codex_dir = home.join(".codex").join("skills").join("codex-skill");
+        let antigravity_dir = home
+            .join(".gemini")
+            .join("config")
+            .join("skills")
+            .join("antigravity-skill");
+        let opencode_dir = home
+            .join(".config")
+            .join("opencode")
+            .join("skills")
+            .join("opencode-skill");
+        write_skill_dir(&claude_dir, "claude-skill", "Claude", "From claude");
+        write_skill_dir(&codex_dir, "codex-skill", "Codex", "From codex");
+        write_skill_dir(
+            &antigravity_dir,
+            "antigravity-skill",
+            "Antigravity",
+            "From antigravity",
+        );
+        write_skill_dir(&opencode_dir, "opencode-skill", "OpenCode", "From opencode");
 
-        let claude = claude_skills_path(home);
-        fs::create_dir_all(claude.parent().expect("claude parent")).expect("create .claude");
-        let relative_target = Path::new("..")
-            .join(".agents")
-            .join("skills");
-        symlink(&relative_target, &claude).expect("create relative compatibility symlink");
+        let mut shared_state = SkillsState::default();
+        let local_state = SkillsLocalState::default();
+        assert!(sync_local_repositories(&mut shared_state, &local_state).expect("sync local"));
 
-        initialize_unified_skills()
-            .expect("a correct relative Claude symlink resolving to the unified directory is valid");
-
-        let meta = fs::symlink_metadata(&claude).expect("relative symlink must remain");
+        assert_eq!(shared_state.repositories.len(), 5);
+        for repo in &shared_state.repositories {
+            assert_eq!(repo.source_type, "local_import");
+            let source_path = repo.source_path.as_deref().expect("discovered source path");
+            assert!(Path::new(source_path).join("SKILL.md").is_file());
+            assert!(
+                !repo_storage_dir(&repo.repo_key)
+                    .expect("repo storage path")
+                    .exists(),
+                "discovery must not copy skill content into repository storage"
+            );
+        }
+        for path in [&claude_dir, &codex_dir, &antigravity_dir, &opencode_dir] {
+            assert!(
+                path.join("SKILL.md").is_file(),
+                "discovery must never remove local tool skills"
+            );
+        }
         assert!(
-            meta.file_type().is_symlink(),
-            "the accepted Claude path must stay a symlink"
-        );
-        assert_eq!(
-            fs::canonicalize(&claude).expect("relative symlink must resolve"),
-            fs::canonicalize(&unified).expect("unified directory must resolve"),
-            "the relative symlink must resolve to the unified directory"
+            !sync_local_repositories(&mut shared_state, &local_state)
+                .expect("idempotent local sync"),
+            "an unchanged local skill set must not rewrite repository state"
         );
     });
 }
 
 #[test]
-fn tool_sync_projects_unified_content_and_never_overwrites_it_from_tool_copies() {
-    with_temp_home("tool-sync-unified-authoritative", |home| {
-        let unified = unified_skills_root(home).join("git-commit");
-        write_skill_dir(&unified, "git-commit", "Git Commit", "Unified authoritative");
-        let unified_md =
-            fs::read_to_string(unified.join("SKILL.md")).expect("read unified skill");
+fn local_sync_refreshes_and_removes_discovered_repositories() {
+    with_temp_home("local-sync-refresh", |home| {
+        let claude_dir = home.join(".claude").join("skills").join("claude-skill");
+        let codex_dir = home.join(".codex").join("skills").join("codex-skill");
+        write_skill_dir(&claude_dir, "claude-skill", "Claude", "Initial");
+        write_skill_dir(&codex_dir, "codex-skill", "Codex", "Removed later");
 
-        let tool = home.join(".codex").join("skills").join("git-commit");
-        write_skill_dir(&tool, "git-commit", "Git Commit", "Stale tool copy");
+        let mut shared_state = SkillsState::default();
+        let local_state = SkillsLocalState::default();
+        assert!(sync_local_repositories(&mut shared_state, &local_state).expect("first sync"));
+        let first_hash = shared_state
+            .repositories
+            .iter()
+            .find(|repo| repo.source_rel_path == "claude-skill")
+            .and_then(|repo| repo.hash.clone())
+            .expect("claude hash");
+        let repo_snapshot = repo_storage_dir(&make_repo_key("local", "claude-skill"))
+            .expect("local repository snapshot");
+        replace_dir_atomic(&claude_dir, &repo_snapshot).expect("seed local repository snapshot");
 
-        reconcile_one_model("codex", INSTALL_SCOPE_GLOBAL, None).expect("sync codex global");
+        write_skill_dir(&claude_dir, "claude-skill", "Claude", "Updated");
+        fs::remove_dir_all(&codex_dir).expect("remove codex skill");
+        assert!(sync_local_repositories(&mut shared_state, &local_state).expect("second sync"));
 
-        assert_eq!(
-            fs::read_to_string(unified.join("SKILL.md")).expect("read unified skill"),
-            unified_md,
-            "tool sync must never overwrite the authoritative unified content"
-        );
-        assert_eq!(
-            fs::read_to_string(tool.join("SKILL.md")).expect("read projected tool skill"),
-            unified_md,
-            "tool sync must project the unified content into the tool directory"
+        assert_eq!(shared_state.repositories.len(), 1);
+        let repo = &shared_state.repositories[0];
+        assert_eq!(repo.source_rel_path, "claude-skill");
+        assert_ne!(repo.hash.as_deref(), Some(first_hash.as_str()));
+        assert!(claude_dir.join("SKILL.md").is_file());
+        let snapshot_markdown = fs::read_to_string(repo_snapshot.join("SKILL.md"))
+            .expect("refreshed repository snapshot markdown");
+        assert!(
+            snapshot_markdown.contains("Updated"),
+            "local sync must refresh an existing repository snapshot from the source"
         );
     });
 }
 
 #[test]
-fn production_mirror_rescan_never_copies_tool_content_into_unified() {
-    const RECONCILE_SOURCE: &str = include_str!("commands/reconcile_open.rs");
-    let command = RECONCILE_SOURCE
-        .split_once("pub async fn skills_rescan_mirror")
-        .map(|(_, rest)| rest)
-        .expect("skills_rescan_mirror command must exist");
-    let body = command
-        .split("#[tauri::command]")
-        .next()
-        .unwrap_or(command);
-
-    assert!(
-        !body.contains("replace_dir_atomic(&p, &sot_dir"),
-        "skills_rescan_mirror must not copy tool directories into the authoritative unified directory"
-    );
-    assert!(
-        body.contains("reconcile_internal"),
-        "skills_rescan_mirror must project the unified directory through reconcile_internal"
-    );
-}
-
-#[test]
-fn unified_skills_commands_are_registered_in_the_tauri_handler() {
+fn skills_commands_registration_reflects_local_sync() {
     const RUN_APP_SOURCE: &str = include_str!("../app_runtime/run_app.rs");
     let handler = RUN_APP_SOURCE
         .split_once(".invoke_handler")
@@ -1584,186 +968,20 @@ fn unified_skills_commands_are_registered_in_the_tauri_handler() {
         .expect("tauri invoke_handler block must exist");
 
     assert!(
-        handler.contains("skills::skills_initialize_unified"),
-        "unified skills initialization must be registered as a Tauri command"
+        handler.contains("skills::skills_sync_local"),
+        "local discovery must be registered as a Tauri command"
     );
-    assert!(
-        handler.contains("skills::skills_compatibility_get"),
-        "skills compatibility results must be registered as a Tauri command"
-    );
-}
-
-#[test]
-fn reconcile_never_projects_internal_artifacts_into_tool_dirs() {
-    with_temp_home("reconcile-skip-internal", |home| {
-        let unified = unified_skills_root(home);
-        write_skill_dir(
-            &unified.join("git-commit"),
-            "git-commit",
-            "Git Commit",
-            "Unified version",
-        );
-        write_skill_dir(
-            &unified
-                .join(".backups")
-                .join("codex")
-                .join("git-commit")
-                .join("deadbeef"),
-            "git-commit",
-            "Git Commit",
-            "Backed up version",
-        );
-        write_skill_dir(
-            &unified.join(".stage-1"),
-            "git-commit",
-            "Git Commit",
-            "Stage copy",
-        );
-
-        reconcile_one_model("codex", INSTALL_SCOPE_GLOBAL, None).expect("reconcile codex");
-        reconcile_one_model("opencode", INSTALL_SCOPE_GLOBAL, None).expect("reconcile opencode");
-
-        let codex = home.join(".codex").join("skills");
+    for removed in [
+        "skills::skills_initialize_unified",
+        "skills::skills_compatibility_get",
+        "skills::skills_rescan_mirror",
+        "skills::skills_reconcile",
+    ] {
         assert!(
-            codex.join("git-commit").join("SKILL.md").exists(),
-            "a real skill must still be projected into {}",
-            codex.display()
+            !handler.contains(removed),
+            "{removed} must not be registered after the global projection refactor"
         );
-        assert!(
-            !codex.join(".backups").exists(),
-            ".backups must never be projected into {}",
-            codex.display()
-        );
-        assert!(
-            !codex.join(".stage-1").exists(),
-            "stage directories must never be projected into {}",
-            codex.display()
-        );
-        let opencode = home.join(".config").join("opencode").join("skills");
-        assert!(
-            !opencode.join(".backups").exists(),
-            ".backups must never be projected into {}",
-            opencode.display()
-        );
-    });
-}
-
-#[test]
-fn initialization_never_migrates_tool_internal_artifacts_and_removes_them() {
-    with_temp_home("init-skip-internal", |home| {
-        let codex = home.join(".codex").join("skills");
-        write_skill_dir(
-            &codex.join("git-commit"),
-            "git-commit",
-            "Git Commit",
-            "Tool version",
-        );
-        write_skill_dir(
-            &codex.join(".backups").join("codex").join("git-commit"),
-            "git-commit",
-            "Git Commit",
-            "Tool-side junk",
-        );
-        write_skill_dir(
-            &codex.join(".stage-1"),
-            "git-commit",
-            "Git Commit",
-            "Tool-side stage",
-        );
-
-        initialize_unified_skills().expect("initialize");
-
-        let unified = unified_skills_root(home);
-        assert!(
-            unified.join("git-commit").join("SKILL.md").exists(),
-            "a real tool skill must be migrated into {}",
-            unified.display()
-        );
-        assert!(
-            !unified.join(".backups").exists(),
-            "tool-side internal artifacts must not be backed up into {}",
-            unified.display()
-        );
-        assert!(
-            !unified.join(".stage-1").exists(),
-            "tool-side stage directories must not be migrated into {}",
-            unified.display()
-        );
-        assert!(
-            !codex.join(".backups").exists(),
-            "tool-side .backups must be removed"
-        );
-        assert!(
-            !codex.join(".stage-1").exists(),
-            "tool-side stage directories must be removed"
-        );
-        assert!(
-            codex.join("git-commit").join("SKILL.md").exists(),
-            "a real tool skill must be preserved"
-        );
-    });
-}
-
-#[test]
-fn initialization_removes_recursively_polluted_unified_backups() {
-    with_temp_home("init-polluted-backups", |home| {
-        let unified = unified_skills_root(home);
-        write_skill_dir(
-            &unified.join("git-commit"),
-            "git-commit",
-            "Git Commit",
-            "Unified version",
-        );
-        write_skill_dir(
-            &unified
-                .join(".backups")
-                .join("codex")
-                .join(".backups")
-                .join("abc")
-                .join("codex")
-                .join("git-commit"),
-            "git-commit",
-            "Git Commit",
-            "Recursive pollution",
-        );
-
-        initialize_unified_skills().expect("initialize");
-
-        assert!(
-            !unified.join(".backups").exists(),
-            "a polluted .backups tree must be removed"
-        );
-        assert!(
-            unified.join("git-commit").join("SKILL.md").exists(),
-            "a real unified skill must be preserved"
-        );
-    });
-}
-
-#[test]
-fn initialization_preserves_clean_unified_backups() {
-    with_temp_home("init-clean-backups", |home| {
-        let unified = unified_skills_root(home);
-        write_skill_dir(
-            &unified.join("git-commit"),
-            "git-commit",
-            "Git Commit",
-            "Unified version",
-        );
-        let backup = unified
-            .join(".backups")
-            .join("codex")
-            .join("git-commit")
-            .join("abc123");
-        write_skill_dir(&backup, "git-commit", "Git Commit", "Tool-specific version");
-
-        initialize_unified_skills().expect("initialize");
-
-        assert!(
-            backup.join("SKILL.md").exists(),
-            "a clean conflict backup must be preserved"
-        );
-    });
+    }
 }
 
 #[test]
@@ -1784,7 +1002,7 @@ fn local_rescan_and_count_ignore_stage_copies_of_skills() {
         );
 
         let mut state = SkillsLocalState::default();
-        rebuild_local_installed_from_models(&mut state).expect("rebuild installed");
+        rebuild_global_installed_from_unified(&mut state).expect("rebuild installed");
         let names: Vec<_> = state.skills.iter().map(|s| s.dir_name.clone()).collect();
         assert_eq!(
             names,
