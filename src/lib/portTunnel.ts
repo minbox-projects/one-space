@@ -11,6 +11,7 @@ export interface TunnelConfig {
   protocol: TunnelProtocol;
   remote_port?: number;
   frp_server?: string;
+  frp_server_port?: number;
   frp_token?: string;
   custom_domain?: string;
   auto_start: boolean;

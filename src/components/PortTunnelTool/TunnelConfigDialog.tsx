@@ -31,6 +31,7 @@ export function TunnelConfigDialog({
   const [protocol, setProtocol] = useState<TunnelProtocol>("http");
   const [remotePort, setRemotePort] = useState<number | undefined>();
   const [frpServer, setFrpServer] = useState("");
+  const [frpServerPort, setFrpServerPort] = useState<number>(7000);
   const [frpToken, setFrpToken] = useState("");
   const [customDomain, setCustomDomain] = useState("");
   const [saving, setSaving] = useState(false);
@@ -44,6 +45,7 @@ export function TunnelConfigDialog({
       setProtocol(config.protocol);
       setRemotePort(config.remote_port);
       setFrpServer(config.frp_server || "");
+      setFrpServerPort(config.frp_server_port ?? 7000);
       setFrpToken(config.frp_token || "");
       setCustomDomain(config.custom_domain || "");
     } else {
@@ -53,6 +55,7 @@ export function TunnelConfigDialog({
       setProtocol("http");
       setRemotePort(undefined);
       setFrpServer("");
+      setFrpServerPort(7000);
       setFrpToken("");
       setCustomDomain("");
     }
@@ -75,8 +78,16 @@ export function TunnelConfigDialog({
         setError("FRP server address is required");
         return;
       }
-      if (!customDomain.trim() && (!remotePort || remotePort <= 0)) {
-        setError("Please specify a custom domain or a remote port for FRP");
+      if (!frpServerPort || frpServerPort < 1 || frpServerPort > 65535) {
+        setError("FRP server port must be between 1 and 65535");
+        return;
+      }
+      if (protocol === "http" && !customDomain.trim()) {
+        setError("Please specify a custom domain for HTTP FRP");
+        return;
+      }
+      if (protocol === "tcp" && (!remotePort || remotePort < 1 || remotePort > 65535)) {
+        setError("Please specify a remote port for TCP FRP");
         return;
       }
     }
@@ -90,10 +101,12 @@ export function TunnelConfigDialog({
         mode,
         local_port: Number(localPort),
         protocol,
-        remote_port: remotePort ? Number(remotePort) : undefined,
+        remote_port: protocol === "tcp" && remotePort ? Number(remotePort) : undefined,
         frp_server: frpServer.trim() ? frpServer.trim() : undefined,
+        frp_server_port: Number(frpServerPort),
         frp_token: frpToken.trim() ? frpToken.trim() : undefined,
-        custom_domain: customDomain.trim() ? customDomain.trim() : undefined,
+        custom_domain:
+          protocol === "http" && customDomain.trim() ? customDomain.trim() : undefined,
         auto_start: config?.auto_start ?? false,
       };
 
@@ -207,6 +220,28 @@ export function TunnelConfigDialog({
             {/* FRP specific inputs */}
             {mode === "frp" && (
               <div className="space-y-3 rounded-xl border border-border/80 bg-muted/20 p-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    {t("portTunnelProtocol", "Protocol")}
+                  </label>
+                  <div className="inline-flex gap-1 rounded-lg border border-border/60 bg-background p-1">
+                    {(["http", "tcp"] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setProtocol(value)}
+                        className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                          protocol === value
+                            ? "bg-emerald-500/10 text-emerald-600 ring-1 ring-emerald-500/30 dark:text-emerald-400"
+                            : "text-muted-foreground hover:bg-muted/60"
+                        }`}
+                      >
+                        {value.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">
@@ -238,29 +273,50 @@ export function TunnelConfigDialog({
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">
-                      {t("portTunnelCustomDomain", "Custom Domain / Subdomain")}
-                    </label>
-                    <input
-                      type="text"
-                      value={customDomain}
-                      onChange={(e) => setCustomDomain(e.target.value)}
-                      placeholder="app.mydomain.com"
-                      className="w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">
-                      {t("portTunnelRemotePort", "Remote Port (Optional)")}
+                      {t("portTunnelFrpServerPort", "FRP Server Port")}
                     </label>
                     <input
                       type="number"
-                      value={remotePort || ""}
-                      onChange={(e) => setRemotePort(e.target.value ? Number(e.target.value) : undefined)}
-                      placeholder="e.g. 8080"
+                      min={1}
+                      max={65535}
+                      value={frpServerPort || ""}
+                      onChange={(e) => setFrpServerPort(Number(e.target.value))}
+                      placeholder="7000"
                       className="w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-mono outline-none focus:ring-1 focus:ring-ring"
                     />
                   </div>
+
+                  {protocol === "http" ? (
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        {t("portTunnelCustomDomain", "Custom Domain / Subdomain")}
+                      </label>
+                      <input
+                        type="text"
+                        value={customDomain}
+                        onChange={(e) => setCustomDomain(e.target.value)}
+                        placeholder="app.mydomain.com"
+                        className="w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+                      />
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        {t("portTunnelRemotePort", "Remote Port")}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={remotePort || ""}
+                        onChange={(e) =>
+                          setRemotePort(e.target.value ? Number(e.target.value) : undefined)
+                        }
+                        placeholder="e.g. 8080"
+                        className="w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-mono outline-none focus:ring-1 focus:ring-ring"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -275,7 +331,11 @@ export function TunnelConfigDialog({
             >
               {t("cancel", "Cancel")}
             </Button>
-            <Button type="submit" size="sm" disabled={saving}>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={saving}
+            >
               {saving ? t("saving", "Saving...") : t("save", "Save")}
             </Button>
           </DialogFooter>

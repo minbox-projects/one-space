@@ -14,6 +14,7 @@ fn test_validate_tunnel_config_valid_cloudflare() {
         frp_server: None,
         frp_token: None,
         custom_domain: None,
+        frp_server_port: None,
         auto_start: false,
         created_at: 0,
         updated_at: 0,
@@ -33,6 +34,7 @@ fn test_validate_tunnel_config_invalid_port() {
         frp_server: None,
         frp_token: None,
         custom_domain: None,
+        frp_server_port: None,
         auto_start: false,
         created_at: 0,
         updated_at: 0,
@@ -46,35 +48,56 @@ fn test_validate_tunnel_config_invalid_port() {
 
 #[test]
 fn test_validate_tunnel_config_frp_requirements() {
+    // Frp + Http: remote_port-only => Err
     let mut cfg = TunnelConfig {
         id: "frp-test".to_string(),
         name: "Test FRP".to_string(),
         mode: TunnelMode::Frp,
         local_port: 8080,
         protocol: TunnelProtocol::Http,
-        remote_port: None,
-        frp_server: None,
+        remote_port: Some(9000),
+        frp_server: Some("frp.example.com".to_string()),
         frp_token: None,
         custom_domain: None,
+        frp_server_port: None,
         auto_start: false,
         created_at: 0,
         updated_at: 0,
     };
-    // Missing server
     assert!(validate_tunnel_config(&cfg).is_err());
 
-    // Has server but missing remote_port or custom_domain
-    cfg.frp_server = Some("frp.example.com".to_string());
-    assert!(validate_tunnel_config(&cfg).is_err());
-
-    // Has custom domain
+    // Frp + Http: non-empty custom_domain => Ok
+    cfg.remote_port = None;
     cfg.custom_domain = Some("sub.example.com".to_string());
     assert!(validate_tunnel_config(&cfg).is_ok());
 
-    // Or has remote_port
+    // Frp + Http: remote_port == Some(0) => Err (when no domain)
     cfg.custom_domain = None;
-    cfg.remote_port = Some(9000);
-    assert!(validate_tunnel_config(&cfg).is_ok());
+    cfg.remote_port = Some(0);
+    assert!(validate_tunnel_config(&cfg).is_err());
+
+    // Frp + Tcp: custom_domain-only => Err
+    let mut cfg2 = TunnelConfig {
+        id: "frp-tcp".to_string(),
+        name: "Test FRP TCP".to_string(),
+        mode: TunnelMode::Frp,
+        local_port: 8080,
+        protocol: TunnelProtocol::Tcp,
+        remote_port: None,
+        frp_server: Some("frp.example.com".to_string()),
+        frp_token: None,
+        custom_domain: Some("app.example.com".to_string()),
+        frp_server_port: None,
+        auto_start: false,
+        created_at: 0,
+        updated_at: 0,
+    };
+    assert!(validate_tunnel_config(&cfg2).is_err());
+
+    // Frp + Tcp: remote_port > 0 => Ok
+    cfg2.custom_domain = None;
+    cfg2.remote_port = Some(9000);
+    assert!(validate_tunnel_config(&cfg2).is_ok());
 }
 
 #[test]
@@ -106,6 +129,7 @@ fn test_json_serialization_roundtrip() {
         frp_server: None,
         frp_token: None,
         custom_domain: None,
+        frp_server_port: None,
         auto_start: true,
         created_at: 1000,
         updated_at: 2000,
@@ -204,4 +228,158 @@ fn test_get_all_status_excludes_ephemeral_prefix() {
     for status in get_all_status() {
         assert!(!status.id.starts_with(EPHEMERAL_TUNNEL_ID_PREFIX));
     }
+}
+
+#[test]
+fn test_validate_frp_http_requires_custom_domain() {
+    let mut cfg = TunnelConfig {
+        id: "frp-http".to_string(),
+        name: "FRP HTTP".to_string(),
+        mode: TunnelMode::Frp,
+        local_port: 8080,
+        protocol: TunnelProtocol::Http,
+        remote_port: Some(9000),
+        frp_server: Some("frp.example.com".to_string()),
+        frp_token: None,
+        custom_domain: None,
+        frp_server_port: None,
+        auto_start: false,
+        created_at: 0,
+        updated_at: 0,
+    };
+    // remote_port alone must be rejected for http
+    assert!(validate_tunnel_config(&cfg).is_err());
+
+    cfg.custom_domain = Some("app.example.com".to_string());
+    assert!(validate_tunnel_config(&cfg).is_ok());
+
+    // empty custom_domain rejected
+    cfg.custom_domain = Some("   ".to_string());
+    assert!(validate_tunnel_config(&cfg).is_err());
+}
+
+#[test]
+fn test_validate_frp_tcp_requires_remote_port() {
+    let mut cfg = TunnelConfig {
+        id: "frp-tcp".to_string(),
+        name: "FRP TCP".to_string(),
+        mode: TunnelMode::Frp,
+        local_port: 8080,
+        protocol: TunnelProtocol::Tcp,
+        remote_port: None,
+        frp_server: Some("frp.example.com".to_string()),
+        frp_token: None,
+        custom_domain: Some("app.example.com".to_string()),
+        frp_server_port: None,
+        auto_start: false,
+        created_at: 0,
+        updated_at: 0,
+    };
+    // custom_domain alone must be rejected for tcp
+    assert!(validate_tunnel_config(&cfg).is_err());
+
+    cfg.remote_port = Some(9000);
+    assert!(validate_tunnel_config(&cfg).is_ok());
+
+    cfg.remote_port = Some(0);
+    assert!(validate_tunnel_config(&cfg).is_err());
+}
+
+#[test]
+fn test_validate_frp_server_port_zero_rejected() {
+    let mut cfg = TunnelConfig {
+        id: "frp-port".to_string(),
+        name: "FRP Port".to_string(),
+        mode: TunnelMode::Frp,
+        local_port: 8080,
+        protocol: TunnelProtocol::Tcp,
+        remote_port: Some(9000),
+        frp_server: Some("frp.example.com".to_string()),
+        frp_token: None,
+        custom_domain: None,
+        frp_server_port: Some(0),
+        auto_start: false,
+        created_at: 0,
+        updated_at: 0,
+    };
+    assert!(validate_tunnel_config(&cfg).is_err());
+
+    cfg.frp_server_port = Some(7000);
+    assert!(validate_tunnel_config(&cfg).is_ok());
+}
+
+#[test]
+fn test_frp_config_content_http() {
+    let cfg = TunnelConfig {
+        id: "frp-http".to_string(),
+        name: "my-http".to_string(),
+        mode: TunnelMode::Frp,
+        local_port: 8080,
+        protocol: TunnelProtocol::Http,
+        remote_port: None,
+        frp_server: Some("frp.example.com".to_string()),
+        frp_token: Some("secret".to_string()),
+        custom_domain: Some("app.example.com".to_string()),
+        frp_server_port: Some(23550),
+        auto_start: false,
+        created_at: 0,
+        updated_at: 0,
+    };
+    let content = super::supervisor::frp_config_content(&cfg).unwrap();
+    assert!(content.contains("[common]"));
+    assert!(content.contains("server_addr = frp.example.com"));
+    assert!(content.contains("server_port = 23550"));
+    assert!(content.contains("token = secret"));
+    assert!(content.contains("[my-http]"));
+    assert!(content.contains("type = http"));
+    assert!(content.contains("local_ip = 127.0.0.1"));
+    assert!(content.contains("local_port = 8080"));
+    assert!(content.contains("custom_domains = app.example.com"));
+    assert!(!content.contains("remote_port"));
+}
+
+#[test]
+fn test_frp_config_content_default_port_and_token_omitted() {
+    let cfg = TunnelConfig {
+        id: "frp-tcp".to_string(),
+        name: "my-tcp".to_string(),
+        mode: TunnelMode::Frp,
+        local_port: 9090,
+        protocol: TunnelProtocol::Tcp,
+        remote_port: Some(9000),
+        frp_server: Some("frp.example.com".to_string()),
+        frp_token: None,
+        custom_domain: None,
+        frp_server_port: None,
+        auto_start: false,
+        created_at: 0,
+        updated_at: 0,
+    };
+    let content = super::supervisor::frp_config_content(&cfg).unwrap();
+    assert!(content.contains("server_port = 7000"));
+    assert!(!content.contains("token ="));
+    assert!(content.contains("type = tcp"));
+    assert!(content.contains("remote_port = 9000"));
+    assert!(!content.contains("custom_domains"));
+}
+
+#[test]
+fn test_frp_config_content_empty_token_omitted() {
+    let cfg = TunnelConfig {
+        id: "frp-t".to_string(),
+        name: "t".to_string(),
+        mode: TunnelMode::Frp,
+        local_port: 80,
+        protocol: TunnelProtocol::Http,
+        remote_port: None,
+        frp_server: Some("s".to_string()),
+        frp_token: Some("".to_string()),
+        custom_domain: Some("d".to_string()),
+        frp_server_port: None,
+        auto_start: false,
+        created_at: 0,
+        updated_at: 0,
+    };
+    let content = super::supervisor::frp_config_content(&cfg).unwrap();
+    assert!(!content.contains("token ="));
 }

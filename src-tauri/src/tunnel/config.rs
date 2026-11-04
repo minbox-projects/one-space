@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use crate::app_runtime::atomic_write_string;
 use crate::config::get_app_dir;
-use super::types::{TunnelConfig, TunnelMode};
+use super::types::{TunnelConfig, TunnelMode, TunnelProtocol};
 
 pub fn tunnels_path() -> Result<PathBuf, String> {
     Ok(get_app_dir()?.join("tunnels.json"))
@@ -28,15 +28,27 @@ pub fn validate_tunnel_config(config: &TunnelConfig) -> Result<(), String> {
             if server.is_empty() {
                 return Err("FRP server address is required".to_string());
             }
-            let has_remote_port = config.remote_port.map(|p| p > 0).unwrap_or(false);
-            let has_custom_domain = config
-                .custom_domain
-                .as_deref()
-                .map(|d| !d.trim().is_empty())
-                .unwrap_or(false);
+            if config.frp_server_port == Some(0) {
+                return Err("FRP server port must be between 1 and 65535".to_string());
+            }
 
-            if !has_remote_port && !has_custom_domain {
-                return Err("FRP tunnel requires either a remote port or a custom domain".to_string());
+            match config.protocol {
+                TunnelProtocol::Http => {
+                    let has_custom_domain = config
+                        .custom_domain
+                        .as_deref()
+                        .map(|d| !d.trim().is_empty())
+                        .unwrap_or(false);
+                    if !has_custom_domain {
+                        return Err("FRP HTTP tunnel requires a custom domain".to_string());
+                    }
+                }
+                TunnelProtocol::Tcp => {
+                    let has_remote_port = config.remote_port.map(|p| p > 0).unwrap_or(false);
+                    if !has_remote_port {
+                        return Err("FRP TCP tunnel requires a remote port".to_string());
+                    }
+                }
             }
         }
     }

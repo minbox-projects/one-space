@@ -777,6 +777,7 @@ portTunnelDeleteConfirm
 portTunnelDesc
 portTunnelEdit
 portTunnelFrpServer
+portTunnelFrpServerPort
 portTunnelFrpToken
 portTunnelLocalPort
 portTunnelLogs

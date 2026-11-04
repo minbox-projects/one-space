@@ -68,6 +68,56 @@ pub(crate) fn cloudflare_tunnel_args(target_url: &str) -> Vec<String> {
     ]
 }
 
+pub(crate) fn frp_config_content(config: &TunnelConfig) -> Result<String, String> {
+    let server = config
+        .frp_server
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "FRP server address is required".to_string())?;
+
+    let server_port = config.frp_server_port.unwrap_or(7000);
+    if server_port == 0 {
+        return Err("FRP server port must be between 1 and 65535".to_string());
+    }
+
+    let (protocol, proxy_line) = match config.protocol {
+        TunnelProtocol::Http => {
+            let domain = config
+                .custom_domain
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "FRP HTTP tunnel requires a custom domain".to_string())?;
+            ("http", format!("custom_domains = {}\n", domain))
+        }
+        TunnelProtocol::Tcp => {
+            let remote_port = config
+                .remote_port
+                .filter(|port| *port > 0)
+                .ok_or_else(|| "FRP TCP tunnel requires a remote port".to_string())?;
+            ("tcp", format!("remote_port = {}\n", remote_port))
+        }
+    };
+
+    let mut content = format!(
+        "[common]\nserver_addr = {}\nserver_port = {}\n",
+        server, server_port
+    );
+    if let Some(token) = config.frp_token.as_deref() {
+        if !token.is_empty() {
+            content.push_str(&format!("token = {}\n", token));
+        }
+    }
+    content.push_str(&format!(
+        "\n[{}]\ntype = {}\nlocal_ip = 127.0.0.1\nlocal_port = {}\n",
+        config.name, protocol, config.local_port
+    ));
+    content.push_str(&proxy_line);
+
+    Ok(content)
+}
+
 pub struct ActiveTunnel {
     pub id: String,
     pub event_name: String,
@@ -327,35 +377,7 @@ pub async fn start_tunnel(
             let _ = fs::create_dir_all(&config_dir);
             let config_path = config_dir.join(format!("frpc_{}.ini", config.id));
 
-            let server = config.frp_server.as_deref().unwrap_or("127.0.0.1");
-            let token = config.frp_token.as_deref().unwrap_or("");
-            let protocol_str = match config.protocol {
-                TunnelProtocol::Http => "http",
-                TunnelProtocol::Tcp => "tcp",
-            };
-
-            let mut ini = format!(
-                "[common]\nserver_addr = {}\nserver_port = 7000\n",
-                server
-            );
-            if !token.is_empty() {
-                ini.push_str(&format!("token = {}\n", token));
-            }
-            ini.push_str(&format!(
-                "\n[{}]\ntype = {}\nlocal_ip = 127.0.0.1\nlocal_port = {}\n",
-                config.name, protocol_str, config.local_port
-            ));
-
-            if let Some(ref domain) = config.custom_domain {
-                if !domain.trim().is_empty() {
-                    ini.push_str(&format!("custom_domains = {}\n", domain.trim()));
-                }
-            }
-            if let Some(port) = config.remote_port {
-                if port > 0 {
-                    ini.push_str(&format!("remote_port = {}\n", port));
-                }
-            }
+            let ini = frp_config_content(config)?;
 
             fs::write(&config_path, &ini).map_err(|e| e.to_string())?;
 

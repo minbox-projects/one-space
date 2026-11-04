@@ -13,6 +13,7 @@ const portTunnel = {
   "portTunnelRemotePort": "Remote Port",
   "portTunnelProtocol": "Protocol",
   "portTunnelFrpServer": "FRP Server Host",
+  "portTunnelFrpServerPort": "FRP Server Port",
   "portTunnelFrpToken": "Auth Token",
   "portTunnelCustomDomain": "Custom Subdomain / Domain",
   "portTunnelPublicUrl": "Public Access URL",

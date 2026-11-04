@@ -26,6 +26,8 @@ pub struct TunnelConfig {
     pub remote_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frp_server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frp_server_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frp_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

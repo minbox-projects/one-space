@@ -13,6 +13,7 @@ const portTunnel = {
   "portTunnelRemotePort": "远程端口",
   "portTunnelProtocol": "协议类型",
   "portTunnelFrpServer": "FRP 服务器地址",
+  "portTunnelFrpServerPort": "FRP 服务器端口",
   "portTunnelFrpToken": "连接令牌 Token",
   "portTunnelCustomDomain": "自定义二级域名/域名",
   "portTunnelPublicUrl": "公网访问地址",
