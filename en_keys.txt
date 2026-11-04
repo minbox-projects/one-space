@@ -766,6 +766,8 @@ portPlaceholder
 portTunnel
 portTunnelClearLogs
 portTunnelClose
+portTunnelCloudflareAutoNotice
+portTunnelCloudflareEndpoint
 portTunnelCmdCopied
 portTunnelCopied
 portTunnelCopyInstallCmd
@@ -776,7 +778,9 @@ portTunnelDelete
 portTunnelDeleteConfirm
 portTunnelDesc
 portTunnelEdit
+portTunnelFrpProtocolGroup
 portTunnelFrpServer
+portTunnelFrpServerGroup
 portTunnelFrpServerPort
 portTunnelFrpToken
 portTunnelLocalPort
@@ -790,6 +794,7 @@ portTunnelName
 portTunnelNoLogs
 portTunnelNoTunnels
 portTunnelOpenBrowser
+portTunnelPortMapping
 portTunnelProtocol
 portTunnelPublicUrl
 portTunnelQrSubtitle

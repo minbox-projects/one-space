@@ -84,4 +84,27 @@ describe("TunnelConfigDialog", () => {
     expect(payload.frp_server_port).toBe(23550);
     expect(payload.remote_port).toBe(9000);
   });
+
+  it("e) Cloudflare mode renders standalone name and port mapping relation", () => {
+    render(
+      <TunnelConfigDialog open onOpenChange={vi.fn()} config={null} onSave={vi.fn()} />,
+    );
+    expect(screen.getByPlaceholderText("e.g. Next.js App")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("3000")).toBeInTheDocument();
+    expect(screen.getByText("*.trycloudflare.com")).toBeInTheDocument();
+  });
+
+  it("f) FRP mode displays FRP Protocol group and FRP Server Settings group separately", async () => {
+    const user = userEvent.setup();
+    render(
+      <TunnelConfigDialog open onOpenChange={vi.fn()} config={null} onSave={vi.fn()} />,
+    );
+    await user.click(screen.getByRole("button", { name: /Custom FRP/i }));
+
+    expect(screen.getByText(/FRP Protocol|FRP 协议配置/i)).toBeInTheDocument();
+    expect(screen.getByText(/FRP Server Settings|FRP 服务器设置/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("3000")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("frp.mydomain.com")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("7000")).toBeInTheDocument();
+  });
 });
