@@ -12,6 +12,12 @@ pub struct RemoteBotConfig {
     pub active_workspace: Option<String>,
     #[serde(default = "default_true")]
     pub auto_approve_permissions: bool,
+    #[serde(default = "default_true")]
+    pub enable_natural_dialogue: bool,
+    #[serde(default)]
+    pub opencode_bin_path: Option<String>,
+    #[serde(default)]
+    pub workspace_directories: Vec<String>,
     #[serde(default)]
     pub updated_at: i64,
 }
@@ -32,6 +38,9 @@ impl Default for RemoteBotConfig {
             allowed_chat_ids: Vec::new(),
             active_workspace: None,
             auto_approve_permissions: true,
+            enable_natural_dialogue: true,
+            opencode_bin_path: None,
+            workspace_directories: Vec::new(),
             updated_at: chrono::Utc::now().timestamp(),
         }
     }

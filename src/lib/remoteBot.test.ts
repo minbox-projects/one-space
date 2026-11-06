@@ -5,6 +5,8 @@ import {
   remoteBotRestart,
   remoteBotSaveConfig,
   remoteBotTestConnection,
+  remoteBotProbeOpencode,
+  type RemoteBotConfig,
 } from "./remoteBot";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -16,35 +18,31 @@ describe("remoteBot IPC", () => {
     resetTauriMocks();
   });
 
+  const baseConfig: RemoteBotConfig = {
+    enabled: true,
+    bot_token: TEST_BOT_TOKEN,
+    allowed_chat_ids: [123456],
+    active_workspace: "onespace-app",
+    auto_approve_permissions: true,
+    enable_natural_dialogue: true,
+    opencode_bin_path: null,
+    workspace_directories: ["/test/workspace"],
+    updated_at: 1700000000,
+  };
+
   it("remoteBotGetConfig 调用 remote_bot_get_config", async () => {
-    const mockConfig = {
-      enabled: true,
-      bot_token: TEST_BOT_TOKEN,
-      allowed_chat_ids: [123456],
-      active_workspace: "onespace-app",
-      auto_approve_permissions: true,
-      updated_at: 1700000000,
-    };
-    invokeMock.mockResolvedValueOnce(mockConfig);
+    invokeMock.mockResolvedValueOnce(baseConfig);
 
     const res = await remoteBotGetConfig();
-    expect(res).toEqual(mockConfig);
+    expect(res).toEqual(baseConfig);
     expect(invokeMock).toHaveBeenCalledWith("remote_bot_get_config");
   });
 
   it("remoteBotSaveConfig 调用 remote_bot_save_config", async () => {
-    const mockConfig = {
-      enabled: true,
-      bot_token: TEST_BOT_TOKEN,
-      allowed_chat_ids: [123456],
-      active_workspace: "onespace-app",
-      auto_approve_permissions: true,
-      updated_at: 1700000000,
-    };
     invokeMock.mockResolvedValueOnce(undefined);
 
-    await remoteBotSaveConfig(mockConfig);
-    expect(invokeMock).toHaveBeenCalledWith("remote_bot_save_config", { config: mockConfig });
+    await remoteBotSaveConfig(baseConfig);
+    expect(invokeMock).toHaveBeenCalledWith("remote_bot_save_config", { config: baseConfig });
   });
 
   it("remoteBotTestConnection 调用 remote_bot_test_connection", async () => {
@@ -88,5 +86,15 @@ describe("remoteBot IPC", () => {
     const res = await remoteBotRestart();
     expect(res).toEqual(mockStatus);
     expect(invokeMock).toHaveBeenCalledWith("remote_bot_restart");
+  });
+
+  it("remoteBotProbeOpencode 调用 remote_bot_probe_opencode", async () => {
+    invokeMock.mockResolvedValueOnce("opencode 1.0.0");
+
+    const res = await remoteBotProbeOpencode("~/.local/bin/opencode");
+    expect(res).toBe("opencode 1.0.0");
+    expect(invokeMock).toHaveBeenCalledWith("remote_bot_probe_opencode", {
+      binPath: "~/.local/bin/opencode",
+    });
   });
 });

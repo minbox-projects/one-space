@@ -264,6 +264,7 @@ pub fn run() {
             remote_bot::remote_bot_test_connection,
             remote_bot::remote_bot_get_status,
             remote_bot::remote_bot_restart,
+            remote_bot::remote_bot_probe_opencode,
             server_monitor::commands::server_monitor_snapshot,
             server_monitor::commands::server_monitor_upsert,
             server_monitor::commands::server_monitor_delete,

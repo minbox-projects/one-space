@@ -188,34 +188,90 @@ impl CardBuilder {
     pub fn projects_card(active_workspace: &str, physical_path: &str, projects: &[&str]) -> (String, InlineKeyboardMarkup) {
         let text = format!(
             "📂 *工作区项目管理*\n\
-            > ▫️ 当前活跃: `{}`\n\
-            > ▫️ 本地路径: `{}`\n\n\
-            点击下方按钮切换指令生效的目标项目：",
+            > ├─ 当前活跃: `{}`\n\
+            > └─ 本地路径: `{}`\n\n\
+            点击下方按钮快速切换指令生效的目标项目：\n\n\
+            💡 *小提示：输入 `/projects <名称>` 可快速搜索全量系统工作空间。*",
             active_workspace,
             physical_path
         );
 
-        let mut rows = Vec::new();
+        let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+        let mut pending_pair: Vec<InlineKeyboardButton> = Vec::new();
+
         for p in projects {
             let is_active = *p == active_workspace;
-            let label = if is_active {
-                format!("📁 {} (当前选中)", p)
+            if is_active {
+                // 当前选中项独占一行突出展示
+                if !pending_pair.is_empty() {
+                    rows.push(std::mem::take(&mut pending_pair));
+                }
+                let label = if p.chars().count() > 14 {
+                    format!("📁 {}… (当前选中)", p.chars().take(12).collect::<String>())
+                } else {
+                    format!("📁 {} (当前选中)", p)
+                };
+                rows.push(vec![InlineKeyboardButton::callback(label, format!("set_project:{}", p))]);
             } else {
-                format!("📁 {}", p)
-            };
-            rows.push(vec![InlineKeyboardButton::callback(label, format!("set_project:{}", p))]);
+                let label = if p.chars().count() > 10 {
+                    format!("📁 {}…", p.chars().take(9).collect::<String>())
+                } else {
+                    format!("📁 {}", p)
+                };
+                pending_pair.push(InlineKeyboardButton::callback(label, format!("set_project:{}", p)));
+                if pending_pair.len() == 2 {
+                    rows.push(std::mem::take(&mut pending_pair));
+                }
+            }
+        }
+        if !pending_pair.is_empty() {
+            rows.push(pending_pair);
         }
 
         (text, InlineKeyboardMarkup::new(rows))
+    }
+
+    /// 卡片 5-B: 搜索多项结果候选卡片
+    pub fn projects_search_card(keyword: &str, candidates: &[(&str, &str)]) -> (String, InlineKeyboardMarkup) {
+        let text = format!(
+            "🔍 *工作空间搜索结果*\n\
+            > ├─ 搜索关键词: `{}`\n\
+            > └─ 匹配到 `{}` 个候选项目\n\n\
+            请点击下方按钮选择要切换的项目：",
+            keyword,
+            candidates.len()
+        );
+
+        let mut rows = Vec::new();
+        for (name, path) in candidates {
+            let label = if name.chars().count() > 14 {
+                format!("📁 {}…", name.chars().take(13).collect::<String>())
+            } else {
+                format!("📁 {}", name)
+            };
+            rows.push(vec![InlineKeyboardButton::callback(label, format!("set_project:{}", path))]);
+        }
+
+        (text, InlineKeyboardMarkup::new(rows))
+    }
+
+    /// 卡片 5-C: 未找到匹配工作空间
+    pub fn project_not_found_card(keyword: &str) -> String {
+        format!(
+            "⚠️ *未找到匹配的工作空间*\n\
+            > 搜索关键词: `{}`\n\n\
+            系统中未找到包含该名称的工作空间。可发送 `/projects` 查看精选常用项目，或在桌面端「设置 -> Telegram」中添加常用工作区。",
+            keyword
+        )
     }
 
     /// 卡片 6: 项目切换成功确认态
     pub fn project_switch_confirmed(project: &str, timestamp: &str) -> String {
         format!(
             "✅ *工作区已成功切换*\n\
-            > ▫️ 当前项目: `{}`\n\
-            > ▫️ 生效时间: `{}`\n\n\
-            后续下发的需求规划与 Coding 任务将全部作用于该项目。",
+            > ├─ 当前项目: `{}`\n\
+            > └─ 生效时间: `{}`\n\n\
+            后续下发的所有规划流水线与 Coding 任务将全部作用于该项目。",
             project,
             timestamp
         )

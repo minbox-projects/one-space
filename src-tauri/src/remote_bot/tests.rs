@@ -511,3 +511,123 @@ fn test_card_builder_button_length_safety() {
     assert!(label3.ends_with("…"));
     assert!(label3.chars().count() <= 18);
 }
+
+#[test]
+fn test_tier1_config_serialization_and_backward_compatibility() {
+    // 1. 默认值验证
+    let config = RemoteBotConfig::default();
+    assert!(config.enable_natural_dialogue);
+    assert!(config.opencode_bin_path.is_none());
+    assert!(config.workspace_directories.is_empty());
+
+    // 2. 向后兼容性测试：旧版本 JSON 中缺少第一梯队的新增字段
+    let old_json = r#"{
+        "enabled": true,
+        "bot_token": "123:ABC",
+        "allowed_chat_ids": [111, 222],
+        "active_workspace": "onespace-app",
+        "auto_approve_permissions": false,
+        "updated_at": 1700000000
+    }"#;
+
+    let deserialized: RemoteBotConfig = serde_json::from_str(old_json).expect("旧配置必须能成功反序列化");
+    assert_eq!(deserialized.bot_token, "123:ABC");
+    assert_eq!(deserialized.allowed_chat_ids, vec![111, 222]);
+    // 缺省时自动补充默认值
+    assert!(deserialized.enable_natural_dialogue);
+    assert!(deserialized.opencode_bin_path.is_none());
+    assert!(deserialized.workspace_directories.is_empty());
+
+    // 3. 完整序列化与反序列化
+    let mut new_config = RemoteBotConfig::default();
+    new_config.enable_natural_dialogue = false;
+    new_config.opencode_bin_path = Some("/opt/homebrew/bin/opencode".to_string());
+    new_config.workspace_directories = vec!["/Users/alice/projects/app-a".to_string(), "/Users/alice/projects/app-b".to_string()];
+
+    let serialized = serde_json::to_string(&new_config).expect("新配置序列化必须成功");
+    let roundtrip: RemoteBotConfig = serde_json::from_str(&serialized).expect("新配置反序列化必须成功");
+    assert!(!roundtrip.enable_natural_dialogue);
+    assert_eq!(roundtrip.opencode_bin_path.as_deref(), Some("/opt/homebrew/bin/opencode"));
+    assert_eq!(roundtrip.workspace_directories.len(), 2);
+    assert_eq!(roundtrip.workspace_directories[0], "/Users/alice/projects/app-a");
+}
+
+#[test]
+fn test_resolve_executable_path() {
+    use super::commands::resolve_executable_path;
+
+    // 1. 普通绝对路径保持不变
+    assert_eq!(resolve_executable_path("/usr/local/bin/opencode"), "/usr/local/bin/opencode");
+
+    // 2. 命令别名保持不变
+    assert_eq!(resolve_executable_path("opencode"), "opencode");
+
+    // 3. 波浪号展开
+    let tilde_path = "~/bin/opencode";
+    let resolved = resolve_executable_path(tilde_path);
+    if let Some(home) = dirs::home_dir() {
+        assert_eq!(resolved, home.join("bin/opencode").to_string_lossy().to_string());
+    } else {
+        assert_eq!(resolved, tilde_path);
+    }
+}
+
+#[test]
+fn test_resolve_project_dir_multi_workspaces() {
+    use super::router::{resolve_project_dir, collect_all_workspaces, collect_featured_projects};
+    use std::env;
+
+    let current_dir = env::current_dir().unwrap_or_default();
+    let canon_current = std::fs::canonicalize(&current_dir).unwrap_or_else(|_| current_dir.clone());
+    let current_str = canon_current.to_string_lossy().to_string();
+    let folder_name = canon_current.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+
+    let mut config = RemoteBotConfig::default();
+    config.workspace_directories = vec![current_str.clone()];
+
+    // 1. active_workspace 命中 workspace_directories 中的文件夹名
+    if !folder_name.is_empty() {
+        config.active_workspace = Some(folder_name.clone());
+        let resolved = resolve_project_dir(&config);
+        assert_eq!(resolved, canon_current);
+    }
+
+    // 2. active_workspace 直接是绝对路径
+    config.active_workspace = Some(current_str.clone());
+    let resolved = resolve_project_dir(&config);
+    assert_eq!(resolved, canon_current);
+
+    // 3. active_workspace 为 None 时，自动使用 workspace_directories 中的第一个有效目录
+    config.active_workspace = None;
+    let resolved = resolve_project_dir(&config);
+    assert_eq!(resolved, canon_current);
+
+    // 4. 验证 collect_all_workspaces 包含当前工作目录
+    let all = collect_all_workspaces(&config);
+    assert!(all.iter().any(|it| it.path == canon_current));
+
+    // 5. 验证 collect_featured_projects 数量受控（上限不超过 8）
+    let featured = collect_featured_projects(&config);
+    assert!(featured.len() <= 8);
+    assert!(featured.iter().any(|it| it.path == canon_current));
+}
+
+#[test]
+fn test_projects_card_compact_layout() {
+    use super::card_builder::CardBuilder;
+
+    let candidates = vec!["OneSpace", "ShopifyApp", "PaymentService", "AdminDashboard"];
+    let (text, markup) = CardBuilder::projects_card("OneSpace", "/Users/tester/onespace-app", &candidates);
+
+    // 验证包含美化引用块与提示信息
+    assert!(text.contains("> ├─ 当前活跃: `OneSpace`"));
+    assert!(text.contains("💡 *小提示：输入 `/projects <名称>` 可快速搜索全量系统工作空间。*"));
+
+    // 验证按钮排版：当前选中项 OneSpace 独占一行，其余 3 个按双列紧凑排列
+    assert!(markup.inline_keyboard.len() >= 2);
+    // 第一行是当前选中项
+    assert_eq!(markup.inline_keyboard[0].len(), 1);
+    assert!(markup.inline_keyboard[0][0].text.contains("OneSpace (当前选中)"));
+    // 第二行双列
+    assert_eq!(markup.inline_keyboard[1].len(), 2);
+}

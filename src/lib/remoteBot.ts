@@ -6,6 +6,9 @@ export interface RemoteBotConfig {
   allowed_chat_ids: number[];
   active_workspace?: string | null;
   auto_approve_permissions: boolean;
+  enable_natural_dialogue: boolean;
+  opencode_bin_path?: string | null;
+  workspace_directories: string[];
   updated_at: number;
 }
 
@@ -44,4 +47,8 @@ export async function remoteBotGetStatus(): Promise<RemoteBotStatus> {
 
 export async function remoteBotRestart(): Promise<RemoteBotStatus> {
   return await invoke<RemoteBotStatus>("remote_bot_restart");
+}
+
+export async function remoteBotProbeOpencode(binPath?: string): Promise<string> {
+  return await invoke<string>("remote_bot_probe_opencode", { binPath: binPath || null });
 }

@@ -155,7 +155,8 @@ impl OpenCodeBridge {
         }
 
         info!("启动本地 loopback opencode serve 服务...");
-        let mut child = Command::new("opencode")
+        let opencode_bin = resolve_opencode_bin();
+        let mut child = Command::new(&opencode_bin)
             .arg("serve")
             .arg("--print-logs")
             .arg("--port")
@@ -165,7 +166,7 @@ impl OpenCodeBridge {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("无法启动 opencode CLI: {}. 请确认是否已安装 opencode", e))?;
+            .map_err(|e| format!("无法启动 opencode CLI [{}]: {}. 请确认是否已安装 opencode 或在设置中指定正确路径", opencode_bin, e))?;
 
         let stdout = child.stdout.take().ok_or_else(|| "无法获取 opencode stdout".to_string())?;
         let mut reader = BufReader::new(stdout).lines();
@@ -321,7 +322,8 @@ impl OpenCodeBridge {
         ).await?;
 
         // 启动 opencode run 会话
-        let mut cmd = Command::new("opencode");
+        let opencode_bin = resolve_opencode_bin();
+        let mut cmd = Command::new(&opencode_bin);
         cmd.arg("run")
             .arg(&prompt_to_run)
             .arg("--format")
@@ -721,7 +723,8 @@ impl OpenCodeBridge {
             format!("调用 coding 技能，实施 .ai-workflow/plans/{}", clean_plan_id)
         });
 
-        let mut child = Command::new("opencode")
+        let opencode_bin = resolve_opencode_bin();
+        let mut child = Command::new(&opencode_bin)
             .arg("run")
             .arg(&coding_prompt)
             .arg("--format")
@@ -954,4 +957,17 @@ pub fn format_parsed_question_message(question_text: &str, options: &[(usize, St
     }).collect();
     let (msg, _) = CardBuilder::question_card(clean_question, &opt_triplets, None);
     msg
+}
+
+/// 解析当前配置生效的 OpenCode CLI 程序路径（优先采用用户设置，回退系统 PATH 的 "opencode"）
+pub fn resolve_opencode_bin() -> String {
+    if let Ok(config) = super::storage::load_config() {
+        if let Some(ref path) = config.opencode_bin_path {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return super::commands::resolve_executable_path(trimmed);
+            }
+        }
+    }
+    "opencode".to_string()
 }

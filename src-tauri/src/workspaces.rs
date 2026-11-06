@@ -229,6 +229,11 @@ pub(crate) fn workspace_roots() -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// 供外部模块读取所有系统工作空间记录列表
+pub fn workspace_records() -> Vec<WorkspaceRecord> {
+    load_state().map(|s| s.workspaces).unwrap_or_default()
+}
+
 fn save_state(mut state: WorkspacesState) -> Result<WorkspacesState, String> {
     state.revision = state.revision.saturating_add(1);
     let content = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;

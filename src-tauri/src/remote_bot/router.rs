@@ -62,8 +62,10 @@ impl CommandRouter {
             self.client.send_message(chat_id, &help_text, None, Some("Markdown")).await?;
         } else if text == "/status" {
             self.handle_status_command(chat_id).await?;
-        } else if text == "/projects" {
-            self.handle_projects_command(chat_id).await?;
+        } else if text == "/projects" || text.starts_with("/projects ") {
+            let arg = text.trim_start_matches("/projects").trim();
+            let opt_arg = if arg.is_empty() { None } else { Some(arg) };
+            self.handle_projects_command(chat_id, opt_arg).await?;
         } else if text == "/plans" {
             self.handle_plans_command(chat_id).await?;
         } else if text.starts_with("/progress") {
@@ -129,7 +131,24 @@ impl CommandRouter {
                     ).await?;
                 }
             } else {
-                // 空闲状态下，直接作为自然语言对话/需求接入！随时随地与 OpenCode 交流
+                // 空闲状态下：检查是否开启自然语言自由对话
+                if !config.enable_natural_dialogue {
+                    let project_dir = resolve_project_dir(&config);
+                    let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
+                    let guard_text = format!(
+                        "💡 *自然语言对话模式已关闭*\n\
+                        > ▫️ 防误触保护: `已开启`\n\
+                        > ▫️ 生效工作区: `{}`\n\n\
+                        若要唤起 OpenCode 开始新需求规划，请使用指令：\n\
+                        `/newfeat <需求描述>`\n\n\
+                        _（可在 Mac 端 OneSpace 设置 -> 远程工作台中重新开启自由对话）_",
+                        project_name
+                    );
+                    self.client.send_message(chat_id, &guard_text, None, Some("Markdown")).await?;
+                    return Ok(());
+                }
+
+                // 开启时，直接作为自然语言对话/需求接入！随时随地与 OpenCode 交流
                 let project_dir = resolve_project_dir(&config);
                 let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
                 let (ack_text, markup) = CardBuilder::new_feature_ack_card(&project_name, text);
@@ -371,19 +390,72 @@ impl CommandRouter {
         Ok(())
     }
 
-    async fn handle_projects_command(&self, chat_id: i64) -> Result<(), String> {
-        let config = load_config()?;
-        let active = config.active_workspace.as_deref().unwrap_or("未设定");
-        let project_dir = resolve_project_dir(&config);
-        let default_project = "onespace-app";
+    async fn handle_projects_command(&self, chat_id: i64, arg: Option<&str>) -> Result<(), String> {
+        let mut config = load_config()?;
+        let all = collect_all_workspaces(&config);
+        let featured = collect_featured_projects(&config);
+        let active_path = resolve_project_dir(&config);
+        let active_name = all.iter()
+            .find(|it| it.path == active_path)
+            .map(|it| it.name.as_str())
+            .unwrap_or_else(|| {
+                active_path.file_name().and_then(|n| n.to_str()).unwrap_or("onespace-app")
+            });
 
-        let (text, markup) = CardBuilder::projects_card(
-            active,
-            &project_dir.display().to_string(),
-            &[default_project],
-        );
+        // 1. 若没有带参数，展示精选常用项目卡片
+        let Some(raw_arg) = arg.map(str::trim).filter(|s| !s.is_empty()) else {
+            let candidate_refs: Vec<&str> = featured.iter().map(|it| it.name.as_str()).collect();
+            let (text, markup) = CardBuilder::projects_card(
+                active_name,
+                &active_path.display().to_string(),
+                &candidate_refs,
+            );
+            self.client.send_message(chat_id, &text, Some(markup), Some("Markdown")).await?;
+            return Ok(());
+        };
 
-        self.client.send_message(chat_id, &text, Some(markup), Some("Markdown")).await?;
+        // 2. 带参数：检查是否为纯数字序号（针对精选列表）
+        let time_now = chrono::Local::now().format("%H:%M:%S").to_string();
+        if let Ok(idx) = raw_arg.parse::<usize>() {
+            if idx >= 1 && idx <= featured.len() {
+                let target = &featured[idx - 1];
+                config.active_workspace = Some(target.path.to_string_lossy().to_string());
+                config.updated_at = chrono::Utc::now().timestamp();
+                save_config(&config)?;
+
+                let confirm_text = CardBuilder::project_switch_confirmed(&target.name, &time_now);
+                self.client.send_message(chat_id, &confirm_text, None, Some("Markdown")).await?;
+                return Ok(());
+            }
+        }
+
+        // 3. 带参数：在全量系统工作空间与自定义目录中进行模糊匹配
+        let kw_lower = raw_arg.to_lowercase();
+        let matched: Vec<&ProjectItem> = all.iter().filter(|it| {
+            it.name.to_lowercase().contains(&kw_lower)
+                || it.path.to_string_lossy().to_lowercase().contains(&kw_lower)
+        }).collect();
+
+        if matched.len() == 1 || matched.iter().any(|it| it.name.to_lowercase() == kw_lower) {
+            let target = matched.iter().find(|it| it.name.to_lowercase() == kw_lower).unwrap_or(&matched[0]);
+            config.active_workspace = Some(target.path.to_string_lossy().to_string());
+            config.updated_at = chrono::Utc::now().timestamp();
+            save_config(&config)?;
+
+            let confirm_text = CardBuilder::project_switch_confirmed(&target.name, &time_now);
+            self.client.send_message(chat_id, &confirm_text, None, Some("Markdown")).await?;
+        } else if matched.len() > 1 {
+            // 匹配到多个，最多展示 6 个候选项供点击
+            let search_candidates: Vec<(&str, &str)> = matched.iter().take(6).map(|it| {
+                (it.name.as_str(), it.name.as_str())
+            }).collect();
+            let (text, markup) = CardBuilder::projects_search_card(raw_arg, &search_candidates);
+            self.client.send_message(chat_id, &text, Some(markup), Some("Markdown")).await?;
+        } else {
+            let not_found_text = CardBuilder::project_not_found_card(raw_arg);
+            self.client.send_message(chat_id, &not_found_text, None, Some("Markdown")).await?;
+        }
+
         Ok(())
     }
 
@@ -571,13 +643,20 @@ impl CommandRouter {
 
         if let Some(project) = data.strip_prefix("set_project:") {
             let mut config = load_config()?;
-            config.active_workspace = Some(project.to_string());
+            let all = collect_all_workspaces(&config);
+            let (target_name, target_path) = if let Some(found) = all.iter().find(|it| it.name == project || it.path.to_string_lossy() == project) {
+                (found.name.clone(), found.path.to_string_lossy().to_string())
+            } else {
+                (project.to_string(), project.to_string())
+            };
+
+            config.active_workspace = Some(target_path);
             config.updated_at = chrono::Utc::now().timestamp();
             save_config(&config)?;
 
             if let Some(msg) = cb.message {
                 let time_now = chrono::Local::now().format("%H:%M:%S").to_string();
-                let update_text = CardBuilder::project_switch_confirmed(project, &time_now);
+                let update_text = CardBuilder::project_switch_confirmed(&target_name, &time_now);
                 self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
@@ -766,7 +845,7 @@ impl CommandRouter {
             }
         } else if data == "open_projects" {
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
-            self.handle_projects_command(chat_id).await?;
+            self.handle_projects_command(chat_id, None).await?;
         } else if data == "open_plans" {
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             self.handle_plans_command(chat_id).await?;
@@ -776,17 +855,141 @@ impl CommandRouter {
     }
 }
 
-/// 解析当前目标工作区真实物理路径
-pub fn resolve_project_dir(config: &super::types::RemoteBotConfig) -> PathBuf {
-    if let Some(ref ws) = config.active_workspace {
-        if !ws.is_empty() && ws != "onespace-app" {
-            let p = PathBuf::from(ws);
-            if p.exists() {
-                return p;
+/// 工作空间项目候选项
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectItem {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// 收集系统中所有的可用工作空间（OneSpace 系统 Workspaces + 自定义路径 + 当前目录）
+pub fn collect_all_workspaces(config: &super::types::RemoteBotConfig) -> Vec<ProjectItem> {
+    let mut items: Vec<ProjectItem> = Vec::new();
+    let mut seen_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    // 1. OneSpace 系统工作空间
+    for w in crate::workspaces::workspace_records() {
+        let p = PathBuf::from(super::commands::resolve_executable_path(&w.root_path));
+        if p.is_dir() {
+            let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+            if seen_paths.insert(canon.clone()) {
+                let name = if w.name.trim().is_empty() {
+                    canon.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "workspace".to_string())
+                } else {
+                    w.name
+                };
+                items.push(ProjectItem { name, path: canon });
             }
         }
     }
 
+    // 2. 自定义路径 (workspace_directories)
+    for dir_str in &config.workspace_directories {
+        let p = PathBuf::from(super::commands::resolve_executable_path(dir_str));
+        if p.is_dir() {
+            let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+            if seen_paths.insert(canon.clone()) {
+                let name = canon.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| dir_str.clone());
+                items.push(ProjectItem { name, path: canon });
+            }
+        }
+    }
+
+    // 3. 当前运行环境所在目录
+    let mut cur = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if cur.ends_with("src-tauri") {
+        if let Some(parent) = cur.parent() {
+            cur = parent.to_path_buf();
+        }
+    }
+    let canon_cur = std::fs::canonicalize(&cur).unwrap_or(cur);
+    if seen_paths.insert(canon_cur.clone()) {
+        let name = canon_cur.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "onespace-app".to_string());
+        items.push(ProjectItem { name, path: canon_cur });
+    }
+
+    items
+}
+
+/// 收集 Telegram 手机端精选常用项目（优先使用 config.workspace_directories，上限 6~8 个以防刷屏）
+pub fn collect_featured_projects(config: &super::types::RemoteBotConfig) -> Vec<ProjectItem> {
+    let all = collect_all_workspaces(config);
+    let mut featured: Vec<ProjectItem> = Vec::new();
+    let mut seen_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    // 如果 config.workspace_directories 有配置，按配置挑选
+    for dir_str in &config.workspace_directories {
+        let p = PathBuf::from(super::commands::resolve_executable_path(dir_str));
+        let canon = std::fs::canonicalize(&p).unwrap_or(p);
+        if let Some(item) = all.iter().find(|it| it.path == canon || it.name == *dir_str) {
+            if seen_paths.insert(item.path.clone()) {
+                featured.push(item.clone());
+            }
+        }
+    }
+
+    // 保证当前活跃项目若有效，优先置入精选列表首位
+    let current_active = resolve_project_dir(config);
+    if let Some(item) = all.iter().find(|it| it.path == current_active) {
+        if seen_paths.insert(item.path.clone()) {
+            featured.insert(0, item.clone());
+        }
+    }
+
+    // 若精选列表依然过少（< 3），从 all 中补充至最多 6 个（避免过多）
+    for it in &all {
+        if featured.len() >= 6 {
+            break;
+        }
+        if seen_paths.insert(it.path.clone()) {
+            featured.push(it.clone());
+        }
+    }
+
+    featured
+}
+
+/// 解析当前目标工作区真实物理路径
+pub fn resolve_project_dir(config: &super::types::RemoteBotConfig) -> PathBuf {
+    let all = collect_all_workspaces(config);
+
+    if let Some(ref ws) = config.active_workspace {
+        if !ws.is_empty() {
+            // 1. 如果是绝对路径且是有效目录
+            let p = PathBuf::from(super::commands::resolve_executable_path(ws));
+            if p.is_dir() {
+                return std::fs::canonicalize(&p).unwrap_or(p);
+            }
+
+            // 2. 匹配已录入项目的名称或文件夹名
+            let ws_lower = ws.to_lowercase();
+            if let Some(item) = all.iter().find(|it| {
+                it.name.to_lowercase() == ws_lower
+                    || it.path.file_name().map(|n| n.to_string_lossy().to_lowercase()) == Some(ws_lower.clone())
+            }) {
+                return item.path.clone();
+            }
+        }
+    }
+
+    // 3. 回退到精选列表第一个
+    if let Some(first_featured) = config.workspace_directories.first() {
+        let p = PathBuf::from(super::commands::resolve_executable_path(first_featured));
+        if p.is_dir() {
+            return std::fs::canonicalize(&p).unwrap_or(p);
+        }
+    }
+
+    // 4. 回退到 all 中的首个
+    if let Some(first) = all.first() {
+        return first.path.clone();
+    }
+
+    // 5. 兜底当前目录
     let mut cur = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if cur.ends_with("src-tauri") {
         if let Some(parent) = cur.parent() {
