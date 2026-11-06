@@ -336,3 +336,58 @@ fn test_plan_id_cleaning_and_resolution() {
         assert_eq!(prompt, "调用 coding 技能，实施 .ai-workflow/plans/20261106-settings-service-categories");
     }
 }
+
+#[test]
+fn test_plan_progress_detection_and_formatting() {
+    use super::plan_progress::{get_plan_progress, format_plan_progress_message, find_active_plan_id, PlanExecutionStatus};
+
+    let temp_root = std::env::temp_dir().join(format!("onespace_progress_test_{}", std::process::id()));
+    let plan_id = "20261106-sample-feature";
+    let plan_dir = temp_root.join(".ai-workflow").join("plans").join(plan_id);
+    let worktree_dir = temp_root.join(".worktrees").join(plan_id);
+
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::create_dir_all(&worktree_dir).unwrap();
+
+    // 写入 plan.md
+    let plan_content = r#"---
+plan_id: 20261106-sample-feature
+status: frozen
+---
+# Sample Plan
+### Step 1: 编写失败测试并实现核心业务
+### Step 2: 跑通全量回归测试与文档登记
+"#;
+    std::fs::write(plan_dir.join("plan.md"), plan_content).unwrap();
+
+    // 写入实施中的 implementation.yaml
+    let impl_content = r#"plan_id: 20261106-sample-feature
+status: in-progress
+started_at: "2026-11-06T10:00:00+08:00"
+"#;
+    std::fs::write(plan_dir.join("implementation.yaml"), impl_content).unwrap();
+
+    // 1. 测试自动查找活跃 planId
+    let active_id = find_active_plan_id(&temp_root);
+    assert_eq!(active_id.as_deref(), Some(plan_id));
+
+    // 2. 测试获取实施进度
+    let progress = get_plan_progress(&temp_root, plan_id).expect("探测进度应成功");
+    assert_eq!(progress.plan_id, plan_id);
+    assert_eq!(progress.status, PlanExecutionStatus::InProgress);
+    assert!(progress.has_worktree);
+    assert_eq!(progress.steps.len(), 2);
+    assert!(progress.steps[0].contains("Step 1"));
+
+    // 3. 测试格式化消息与按钮
+    let (msg, markup) = format_plan_progress_message(&progress);
+    assert!(msg.contains("20261106-sample-feature"));
+    assert!(msg.contains("正在实施中"));
+    assert!(msg.contains("Step 1"));
+    assert!(markup.is_some());
+    let mk = markup.unwrap();
+    assert!(mk.inline_keyboard.iter().any(|row| row.iter().any(|btn| btn.text.contains("刷新进度"))));
+
+    // 清理
+    let _ = std::fs::remove_dir_all(&temp_root);
+}

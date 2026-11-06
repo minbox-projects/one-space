@@ -2,6 +2,7 @@ pub mod auth;
 pub mod client;
 pub mod commands;
 pub mod opencode_bridge;
+pub mod plan_progress;
 pub mod router;
 pub mod storage;
 pub mod types;

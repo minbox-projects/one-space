@@ -71,15 +71,17 @@ impl CommandRouter {
         if text.starts_with("/start") || text.starts_with("/help") {
             let help_text = 
                 "🤖 *OneSpace 移动智能工作台*\n\n\
-                您已通过鉴权，随时可以下发指令：\n\n\
+                您已通过鉴权，随时可以下发指令或直接对话交流：\n\n\
                 📌 *基础运维*\n\
                 • `/status` - 查看 Mac 状态与 AI 网关情况\n\
                 • `/projects` - 查看和选择工作区项目\n\n\
                 🚀 *AI 研发流水线*\n\
                 • `/newfeat <需求内容>` - 启动新需求规划与 OpenCode 编码\n\
-                • `/plans` - 查看工作区已有规划方案列表并直接实施\n\
+                • `/plans` - 查看工作区已有规划方案列表及状态\n\
+                • `/progress [planId]` - 查看指定或当前正在实施方案的进度\n\
                 • `/coding <planId>` - 直接实施指定的已规划方案\n\
-                • `/cancel` - 中断当前正在执行的任务";
+                • `/cancel` - 中断当前正在执行的任务\n\n\
+                💡 *随时自然对话*：在空闲状态下直接发送文字，机器人将基于当前代码库直接解答与思考！";
             self.client.send_message(chat_id, help_text, None, Some("Markdown")).await?;
         } else if text == "/status" {
             self.handle_status_command(chat_id).await?;
@@ -87,6 +89,8 @@ impl CommandRouter {
             self.handle_projects_command(chat_id).await?;
         } else if text == "/plans" {
             self.handle_plans_command(chat_id).await?;
+        } else if text.starts_with("/progress") {
+            self.handle_progress_command(chat_id, text).await?;
         } else if text == "/cancel" {
             self.bridge.cancel_active_task().await;
             self.client.send_message(chat_id, "🛑 当前进行中的任务与多轮规划会话已取消。", None, Some("Markdown")).await?;
@@ -256,18 +260,37 @@ impl CommandRouter {
         let mut msg_lines = Vec::new();
         msg_lines.push("📋 【工作区方案列表 (Plans)】".to_string());
         msg_lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
-        msg_lines.push("点击下方按钮即可直接为指定方案启动 Coding 实施，或使用指令 `/coding <planId>`：\n".to_string());
+        msg_lines.push("点击下方按钮即可查看进度或启动 Coding 实施：\n".to_string());
 
-        // 展示最新的最多 8 个
-        for (idx, (plan_id, _mtime)) in available_plans.iter().take(8).enumerate() {
+        // 展示最新的最多 6 个，每个方案附带实施状态图标与操作按钮
+        for (idx, (plan_id, _mtime)) in available_plans.iter().take(6).enumerate() {
             let num = idx + 1;
-            msg_lines.push(format!("{}. `{}`", num, plan_id));
-            keyboard_rows.push(vec![
-                InlineKeyboardButton::callback(
-                    format!("🚀 实施: {}", plan_id),
+            let status_badge = if let Ok(info) = super::plan_progress::get_plan_progress(&project_dir, plan_id) {
+                match info.status {
+                    super::plan_progress::PlanExecutionStatus::Completed => "🟢 已交付",
+                    super::plan_progress::PlanExecutionStatus::InProgress => "🟡 实施中",
+                    super::plan_progress::PlanExecutionStatus::NotStarted => "⚪ 未实施",
+                    super::plan_progress::PlanExecutionStatus::Failed => "🔴 中断",
+                }
+            } else {
+                "⚪ 未实施"
+            };
+
+            msg_lines.push(format!("{}. `{}` [{}]", num, plan_id, status_badge));
+
+            let short_id = if plan_id.len() > 18 { &plan_id[..18] } else { plan_id };
+            let mut row = Vec::new();
+            if status_badge.contains("未实施") {
+                row.push(InlineKeyboardButton::callback(
+                    format!("🚀 实施: {}", short_id),
                     format!("approve_plan:{}", plan_id),
-                )
-            ]);
+                ));
+            }
+            row.push(InlineKeyboardButton::callback(
+                format!("📊 进度: {}", short_id),
+                format!("check_progress:{}", plan_id),
+            ));
+            keyboard_rows.push(row);
         }
 
         let markup = InlineKeyboardMarkup::new(keyboard_rows);
@@ -277,6 +300,71 @@ impl CommandRouter {
             Some(markup),
             Some("Markdown"),
         ).await?;
+
+        Ok(())
+    }
+
+    async fn handle_progress_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
+        let config = load_config()?;
+        let project_dir = resolve_project_dir(&config);
+
+        let arg = text.trim_start_matches("/progress").trim();
+        let target_plan_id = if !arg.is_empty() {
+            Some(arg.to_string())
+        } else {
+            // 自动寻找正在运行的 planId
+            super::plan_progress::find_active_plan_id(&project_dir)
+                .or_else(|| {
+                    // 若无活跃的，取 plans 目录最近更新的一个方案
+                    let plans_dir = project_dir.join(".ai-workflow").join("plans");
+                    if let Ok(entries) = std::fs::read_dir(&plans_dir) {
+                        let mut candidates: Vec<(String, std::time::SystemTime)> = entries.flatten()
+                            .filter(|e| e.path().join("plan.md").is_file())
+                            .map(|e| {
+                                let mtime = e.path().metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                                (e.file_name().to_string_lossy().to_string(), mtime)
+                            })
+                            .collect();
+                        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+                        candidates.into_iter().next().map(|(id, _)| id)
+                    } else {
+                        None
+                    }
+                })
+        };
+
+        let plan_id = match target_plan_id {
+            Some(id) => id,
+            None => {
+                self.client.send_message(
+                    chat_id,
+                    "📂 当前工作区未检测到任何方案，亦无正在实施中的任务。\n发送 `/help` 查看可用操作指令。",
+                    None,
+                    None,
+                ).await?;
+                return Ok(());
+            }
+        };
+
+        match super::plan_progress::get_plan_progress(&project_dir, &plan_id) {
+            Ok(info) => {
+                let (msg, markup) = super::plan_progress::format_plan_progress_message(&info);
+                self.client.send_message(
+                    chat_id,
+                    &msg,
+                    markup,
+                    Some("Markdown"),
+                ).await?;
+            }
+            Err(e) => {
+                self.client.send_message(
+                    chat_id,
+                    &format!("⚠️ 获取方案进度失败: {}", e),
+                    None,
+                    None,
+                ).await?;
+            }
+        }
 
         Ok(())
     }
@@ -399,6 +487,34 @@ impl CommandRouter {
                     None,
                     None,
                 ).await;
+            }
+        } else if let Some(plan_id) = data.strip_prefix("check_progress:") {
+            let config = load_config()?;
+            let project_dir = resolve_project_dir(&config);
+
+            match super::plan_progress::get_plan_progress(&project_dir, plan_id) {
+                Ok(info) => {
+                    let (msg, markup) = super::plan_progress::format_plan_progress_message(&info);
+                    if let Some(ref m) = cb.message {
+                        let _ = self.client.edit_message_text(
+                            m.chat.id,
+                            m.message_id,
+                            &msg,
+                            markup,
+                            Some("Markdown"),
+                        ).await;
+                    }
+                }
+                Err(e) => {
+                    if let Some(ref m) = cb.message {
+                        let _ = self.client.send_message(
+                            m.chat.id,
+                            &format!("⚠️ 刷新进度失败: {}", e),
+                            None,
+                            None,
+                        ).await;
+                    }
+                }
             }
         } else if let Some(choice_num_str) = data.strip_prefix("ans_choice:") {
             let num: usize = choice_num_str.parse().unwrap_or(0);
