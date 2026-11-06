@@ -12,6 +12,7 @@ mod cli_updates;
 pub mod cloud_agent;
 mod config;
 mod crypto;
+pub mod dns_inspector;
 mod file_sharing;
 mod git;
 pub mod http_client;
@@ -22,6 +23,7 @@ mod mcp_templates;
 mod messages;
 mod protocol_router;
 mod proxy;
+pub mod realtime_client;
 mod runtime_profiles;
 mod secrets;
 mod server_monitor;
@@ -30,6 +32,7 @@ mod short_link;
 mod skills;
 pub mod ssl_certificate;
 pub mod uptime_monitor;
+pub mod url_tracer;
 pub mod webhook_catcher;
 mod ssh_tunnels;
 mod storage;
@@ -70,6 +73,14 @@ pub use ssl_certificate::{
     ssl_certificate_export, ssl_certificate_list, ssl_certificate_verify_and_finalize,
     ssl_check_certificate, ssl_get_config, ssl_save_config, ssl_watchlist_add,
     ssl_watchlist_check_all, ssl_watchlist_list, ssl_watchlist_remove,
+};
+pub use dns_inspector::{
+    dns_inspector_ip_lookup, dns_inspector_query, dns_inspector_tcp_ping,
+    dns_inspector_tcp_ping_stream_start, dns_inspector_tcp_ping_stream_stop,
+};
+pub use url_tracer::commands::url_trace_redirects;
+pub use realtime_client::commands::{
+    realtime_tunnel_start, realtime_tunnel_status, realtime_tunnel_stop,
 };
 pub use uptime_monitor::{
     uptime_clear_history, uptime_delete_monitor, uptime_list_monitors, uptime_save_monitor,

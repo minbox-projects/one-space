@@ -38,6 +38,9 @@ const CANONICAL_HUB_IDS = [
   "uptime-monitor",
   "webhook-catcher",
   "server-monitor",
+  "url-inspector",
+  "realtime-playground",
+  "dns-inspector",
 ] as const;
 
 const NON_HUB_IDS = ["notes", "snippets"] as const;
@@ -332,6 +335,75 @@ describe("server-monitor toolbox entry", () => {
 
   it("lazily loads the ServerMonitor component", async () => {
     const tool = getToolboxTool("server-monitor");
+    expect(tool).toBeDefined();
+    expect(tool).not.toHaveProperty("component");
+    expect(typeof tool!.loadComponent).toBe("function");
+    const resolved = await tool!.loadComponent();
+    expect(resolved).toBeTruthy();
+    expect(["function", "object"]).toContain(typeof resolved.default);
+  });
+});
+
+describe("url-inspector toolbox entry", () => {
+  it("resolves the url-inspector alias to the hub tool", () => {
+    const tool = getToolboxTool("url-inspector");
+    expect(tool).toBeDefined();
+    expect(tool!.defaultVisible).toBe(true);
+    expect(resolveToolboxNavigationAlias("url-inspector")).toEqual({
+      toolId: "url-inspector",
+      tab: "more-tools",
+      moreToolsSection: "url-inspector",
+    });
+  });
+
+  it("lazily loads the UrlInspector component", async () => {
+    const tool = getToolboxTool("url-inspector");
+    expect(tool).toBeDefined();
+    expect(tool).not.toHaveProperty("component");
+    expect(typeof tool!.loadComponent).toBe("function");
+    const resolved = await tool!.loadComponent();
+    expect(resolved).toBeTruthy();
+    expect(["function", "object"]).toContain(typeof resolved.default);
+  });
+});
+
+describe("realtime-playground toolbox entry", () => {
+  it("resolves the realtime-playground alias to the hub tool", () => {
+    const tool = getToolboxTool("realtime-playground");
+    expect(tool).toBeDefined();
+    expect(tool!.defaultVisible).toBe(true);
+    expect(resolveToolboxNavigationAlias("realtime-playground")).toEqual({
+      toolId: "realtime-playground",
+      tab: "more-tools",
+      moreToolsSection: "realtime-playground",
+    });
+  });
+
+  it("lazily loads the RealtimePlayground component", async () => {
+    const tool = getToolboxTool("realtime-playground");
+    expect(tool).toBeDefined();
+    expect(tool).not.toHaveProperty("component");
+    expect(typeof tool!.loadComponent).toBe("function");
+    const resolved = await tool!.loadComponent();
+    expect(resolved).toBeTruthy();
+    expect(["function", "object"]).toContain(typeof resolved.default);
+  });
+});
+
+describe("dns-inspector toolbox entry", () => {
+  it("resolves the dns-inspector alias to the hub tool", () => {
+    const tool = getToolboxTool("dns-inspector");
+    expect(tool).toBeDefined();
+    expect(tool!.defaultVisible).toBe(true);
+    expect(resolveToolboxNavigationAlias("dns-inspector")).toEqual({
+      toolId: "dns-inspector",
+      tab: "more-tools",
+      moreToolsSection: "dns-inspector",
+    });
+  });
+
+  it("lazily loads the DnsInspector component", async () => {
+    const tool = getToolboxTool("dns-inspector");
     expect(tool).toBeDefined();
     expect(tool).not.toHaveProperty("component");
     expect(typeof tool!.loadComponent).toBe("function");

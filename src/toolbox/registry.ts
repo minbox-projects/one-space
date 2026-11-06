@@ -4,6 +4,7 @@ import { aiWorkflowModelSwitcherTool } from "./plugins/ai-workflow-model-switche
 import { bleLockTool } from "./plugins/ble-lock";
 import { bookmarksTool } from "./plugins/bookmarks";
 import { curlPlaygroundTool } from "./plugins/curl-playground";
+import { dnsInspectorTool } from "./plugins/dns-inspector";
 import { fileSharingTool } from "./plugins/file-sharing";
 import { jsonParserTool } from "./plugins/json-parser";
 import { jttDataParserTool } from "./plugins/jtt-data-parser";
@@ -14,11 +15,13 @@ import { portTunnelTool } from "./plugins/port-tunnel";
 import { protocolRouterTool } from "./plugins/protocol-router";
 import { quickSftpTool } from "./plugins/quick-sftp";
 import { randomPasswordTool } from "./plugins/random-password";
+import { realtimePlaygroundTool } from "./plugins/realtime-playground";
 import { serverMonitorTool } from "./plugins/server-monitor";
 import { shortLinkTool } from "./plugins/short-link";
 import { snippetsTool } from "./plugins/snippets";
 import { sslCertificateTool } from "./plugins/ssl-certificate";
 import { uptimeMonitorTool } from "./plugins/uptime-monitor";
+import { urlInspectorTool } from "./plugins/url-inspector";
 import { webhookCatcherTool } from "./plugins/webhook-catcher";
 import { sshServersTool } from "./plugins/ssh-servers";
 import { sshTunnelsTool } from "./plugins/ssh-tunnels";
@@ -50,6 +53,9 @@ export const TOOLBOX_TOOLS: readonly ToolboxToolDescriptor[] = [
   uptimeMonitorTool,
   webhookCatcherTool,
   serverMonitorTool,
+  urlInspectorTool,
+  realtimePlaygroundTool,
+  dnsInspectorTool,
   snippetsTool,
   notesTool,
 ];

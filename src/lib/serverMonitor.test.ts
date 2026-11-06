@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_SERVER_MONITOR_SETTINGS,
-  SERVER_MONITOR_UPDATED_EVENT,
   formatBytes,
   formatMonitorTimestamp,
   formatPercent,
@@ -217,4 +216,3 @@ describe("server monitor validation", () => {
   });
 });
 
-export { SERVER_MONITOR_UPDATED_EVENT };

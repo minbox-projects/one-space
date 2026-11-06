@@ -22,6 +22,16 @@
       ]
     },
     {
+      "id": "src-tauri",
+      "path": "src-tauri",
+      "owner_role": "shared",
+      "responsibility": "Discovered typescript module at src-tauri",
+      "language": "typescript",
+      "entry_kinds": [
+        "exported-symbol"
+      ]
+    },
+    {
       "id": "tools",
       "path": "tools",
       "owner_role": "shared",
@@ -29,16 +39,6 @@
       "language": "typescript",
       "entry_kinds": [
         "exported-symbol"
-      ]
-    },
-    {
-      "id": "src-tauri/src",
-      "path": "src-tauri/src",
-      "owner_role": "backend",
-      "responsibility": "Rust commands, storage engines, runtime and external integrations",
-      "language": "rust",
-      "entry_kinds": [
-        "file"
       ]
     }
   ],
@@ -201,8 +201,25 @@
         "src/components/BackupManager.tsx",
         "src/components/BleLockTool.tsx",
         "src/components/Bookmarks.tsx",
+        "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
+        "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+        "src/components/CloudAgent/components/CloudAgentHeader.tsx",
+        "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
+        "src/components/CloudAgent/components/CloudEmptyState.tsx",
+        "src/components/CloudAgent/components/GatewayPanel.tsx",
+        "src/components/CloudAgent/components/LocalPlanForm.tsx",
+        "src/components/CloudAgent/components/NewSessionDialog.tsx",
+        "src/components/CloudAgent/components/NewSessionModal.tsx",
+        "src/components/CloudAgent/components/PrPipelineTab.tsx",
+        "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
+        "src/components/CloudAgent/hooks/useCloudAgent.ts",
+        "src/components/CloudAgent/index.tsx",
         "src/components/ConfirmDialogProvider.tsx",
         "src/components/CurlPlaygroundTool.tsx",
+        "src/components/DnsInspector/DnsComparisonGrid.tsx",
+        "src/components/DnsInspector/IpDetailDrawer.tsx",
+        "src/components/DnsInspector/TcpPingPePanel.tsx",
+        "src/components/DnsInspector/index.tsx",
         "src/components/Documentation.tsx",
         "src/components/FileSharingTool.tsx",
         "src/components/FishPond.tsx",
@@ -259,6 +276,16 @@
         "src/components/QuickAiSessionBar.tsx",
         "src/components/QuickSftpTool.tsx",
         "src/components/RandomPasswordTool.tsx",
+        "src/components/RealtimePlayground/ConnectionDrawer.tsx",
+        "src/components/RealtimePlayground/MessageInspector.tsx",
+        "src/components/RealtimePlayground/MessageSender.tsx",
+        "src/components/RealtimePlayground/PublicTunnelPanel.tsx",
+        "src/components/RealtimePlayground/TimelineStream.tsx",
+        "src/components/RealtimePlayground/index.tsx",
+        "src/components/ServerMonitor/HistoryChart.tsx",
+        "src/components/ServerMonitor/MetricCards.tsx",
+        "src/components/ServerMonitor/ServerFormDialog.tsx",
+        "src/components/ServerMonitor/index.tsx",
         "src/components/SettingsView.tsx",
         "src/components/ShortLinkTool.tsx",
         "src/components/Skills/SkillsPage.tsx",
@@ -292,6 +319,12 @@
         "src/components/UptimeMonitor/MonitorFormModal.tsx",
         "src/components/UptimeMonitor/index.tsx",
         "src/components/UptimeMonitor/types.ts",
+        "src/components/UrlInspector/ExportDeck.tsx",
+        "src/components/UrlInspector/HopTracerView.tsx",
+        "src/components/UrlInspector/NestedLevelTabs.tsx",
+        "src/components/UrlInspector/QueryGridEditor.tsx",
+        "src/components/UrlInspector/UrlBreadcrumb.tsx",
+        "src/components/UrlInspector/index.tsx",
         "src/components/WebhookCatcher/ReplayDrawer.tsx",
         "src/components/WebhookCatcher/RequestInspector.tsx",
         "src/components/WebhookCatcher/RequestStreamList.tsx",
@@ -354,8 +387,10 @@
         "src/components/settings/sections/DataSecuritySection.tsx",
         "src/components/settings/sections/GeneralSection.tsx",
         "src/components/settings/sections/NewsSection.tsx",
+        "src/components/settings/sections/ServerMonitorSettings.tsx",
         "src/components/settings/sections/ServicesSection.tsx",
         "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx",
+        "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
         "src/components/settings/sections/services/ProtocolRouterSettingsPanel.tsx",
         "src/components/settings/sections/services/ProxySettingsPanel.tsx",
         "src/components/settings/sections/services/SslCertificateSettingsPanel.tsx",
@@ -402,7 +437,6 @@
         "src/components/ui/switch.tsx",
         "src/components/ui/tooltip.tsx",
         "src/components/workspaceCapabilityContext.ts",
-        "src/i18n/index.ts",
         "src/lib/actionDescriptors/appSystemEvents.ts",
         "src/lib/actionDescriptors/backup.ts",
         "src/lib/actionDescriptors/mcpServers.ts",
@@ -414,7 +448,6 @@
         "src/lib/aiGateway/commands.ts",
         "src/lib/aiGateway/context.ts",
         "src/lib/aiGateway/events.ts",
-        "src/lib/aiGateway/index.ts",
         "src/lib/aiGateway/modelPools.ts",
         "src/lib/aiGateway/prices.ts",
         "src/lib/aiGateway/providers.ts",
@@ -428,7 +461,9 @@
         "src/lib/aiWorkflowProfiles.ts",
         "src/lib/appVersion.ts",
         "src/lib/bleLock.ts",
+        "src/lib/cloudAgent.ts",
         "src/lib/curlParser.ts",
+        "src/lib/dnsInspector.ts",
         "src/lib/externalActions.ts",
         "src/lib/fileSharing.ts",
         "src/lib/gmail.ts",
@@ -456,7 +491,10 @@
         "src/lib/portTunnel.ts",
         "src/lib/portTunnelSummary.ts",
         "src/lib/protocolRouter.ts",
+        "src/lib/realtimeClient.ts",
+        "src/lib/realtimeTunnel.ts",
         "src/lib/runtimeStatus.ts",
+        "src/lib/serverMonitor.ts",
         "src/lib/serviceProviders.ts",
         "src/lib/sftp.ts",
         "src/lib/shortLink.ts",
@@ -470,6 +508,8 @@
         "src/lib/terminalPermissions.ts",
         "src/lib/trayMenu.ts",
         "src/lib/updater.ts",
+        "src/lib/urlInspector.ts",
+        "src/lib/urlTracer.ts",
         "src/lib/useCardDragReorder.ts",
         "src/lib/userActions.ts",
         "src/lib/utils.ts",
@@ -484,6 +524,7 @@
         "src/toolbox/plugins/ble-lock.ts",
         "src/toolbox/plugins/bookmarks.ts",
         "src/toolbox/plugins/curl-playground.ts",
+        "src/toolbox/plugins/dns-inspector.ts",
         "src/toolbox/plugins/file-sharing.ts",
         "src/toolbox/plugins/json-parser.ts",
         "src/toolbox/plugins/jtt-data-parser.ts",
@@ -494,12 +535,15 @@
         "src/toolbox/plugins/protocol-router.ts",
         "src/toolbox/plugins/quick-sftp.ts",
         "src/toolbox/plugins/random-password.ts",
+        "src/toolbox/plugins/realtime-playground.ts",
+        "src/toolbox/plugins/server-monitor.ts",
         "src/toolbox/plugins/short-link.ts",
         "src/toolbox/plugins/snippets.ts",
         "src/toolbox/plugins/ssh-servers.ts",
         "src/toolbox/plugins/ssh-tunnels.ts",
         "src/toolbox/plugins/ssl-certificate.ts",
         "src/toolbox/plugins/uptime-monitor.ts",
+        "src/toolbox/plugins/url-inspector.ts",
         "src/toolbox/plugins/webhook-catcher.ts",
         "src/toolbox/registry.ts",
         "src/toolbox/types.ts",
@@ -2477,6 +2521,150 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
+          "name": "ActiveSessionsTab",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+          "name": "CloudAgentDeploymentDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+          "name": "CloudAgentDeploymentDialogProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+          "name": "CloudAgentHostLike",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentHeader.tsx",
+          "name": "CloudAgentHeader",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
+          "name": "CloudAgentRuntimeCard",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudEmptyState.tsx",
+          "name": "CloudEmptyState",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/CloudEmptyState.tsx",
+          "name": "CloudEmptyStateProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/GatewayPanel.tsx",
+          "name": "GatewayPanel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/LocalPlanForm.tsx",
+          "name": "LocalPlanForm",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
+          "name": "NewSessionDialog",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
+          "name": "NewSessionModal",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
+          "name": "NewSessionDialog",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
+          "name": "NewSessionModal",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "PipelineStepItem",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "PrPipelineTab",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "StepState",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "derivePipelineSteps",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
+          "name": "resolveIssueUrl",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
+          "name": "WorktreesHistoryTab",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
+          "name": "CloudAgentHostOption",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
+          "name": "CloudAgentTab",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
+          "name": "useCloudAgent",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/CloudAgent/index.tsx",
+          "name": "CloudAgent",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/ConfirmDialogProvider.tsx",
           "name": "ConfirmDialogProvider",
           "kind": "function",
@@ -2491,6 +2679,30 @@
         {
           "file": "src/components/CurlPlaygroundTool.tsx",
           "name": "CurlPlaygroundTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/DnsInspector/DnsComparisonGrid.tsx",
+          "name": "DnsComparisonGrid",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/DnsInspector/IpDetailDrawer.tsx",
+          "name": "IpDetailDrawer",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/DnsInspector/TcpPingPePanel.tsx",
+          "name": "TcpPingPePanel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/DnsInspector/index.tsx",
+          "name": "DnsInspectorTool",
           "kind": "function",
           "visibility": "public"
         },
@@ -2959,6 +3171,42 @@
         {
           "file": "src/components/RandomPasswordTool.tsx",
           "name": "RandomPasswordTool",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/RealtimePlayground/ConnectionDrawer.tsx",
+          "name": "ConnectionDrawer",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/RealtimePlayground/MessageInspector.tsx",
+          "name": "MessageInspector",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/RealtimePlayground/MessageSender.tsx",
+          "name": "MessageSender",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/RealtimePlayground/PublicTunnelPanel.tsx",
+          "name": "PublicTunnelPanel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/RealtimePlayground/TimelineStream.tsx",
+          "name": "TimelineStream",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/RealtimePlayground/index.tsx",
+          "name": "RealtimePlaygroundTool",
           "kind": "function",
           "visibility": "public"
         },
@@ -3758,6 +4006,42 @@
           "file": "src/components/UptimeMonitor/types.ts",
           "name": "TcpProbeOptions",
           "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UrlInspector/ExportDeck.tsx",
+          "name": "ExportDeck",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UrlInspector/HopTracerView.tsx",
+          "name": "HopTracerView",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UrlInspector/NestedLevelTabs.tsx",
+          "name": "NestedLevelTabs",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UrlInspector/QueryGridEditor.tsx",
+          "name": "QueryGridEditor",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UrlInspector/UrlBreadcrumb.tsx",
+          "name": "UrlBreadcrumb",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/UrlInspector/index.tsx",
+          "name": "UrlInspectorTool",
+          "kind": "function",
           "visibility": "public"
         },
         {
@@ -5113,6 +5397,12 @@
         {
           "file": "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx",
           "name": "AiGatewaySettingsPanel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
+          "name": "CloudAgentSettingsPanel",
           "kind": "function",
           "visibility": "public"
         },
@@ -7026,6 +7316,12 @@
         },
         {
           "file": "src/lib/aiGateway/types.ts",
+          "name": "GatewayTemplateTransportStrategy",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/aiGateway/types.ts",
           "name": "GatewayTerminalContextCoverage",
           "kind": "interface",
           "visibility": "public"
@@ -7961,6 +8257,366 @@
           "visibility": "public"
         },
         {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CLOUD_AGENT_DEPLOY_PROGRESS_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CLOUD_AGENT_SESSIONS_COUNT_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CLOUD_AGENT_SETTINGS_UPDATED_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeployPhase",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeployPhaseStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeploymentProgress",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentDeploymentResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentInstallationInfo",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentInstallationState",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentSettings",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentStatus",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudAgentTask",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudGatewayModel",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudGatewayProvider",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudPlanCapabilities",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudPlanRepository",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudPlanSubmitInput",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudPlanSubmitResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudSession",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CloudWorktree",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "CreateSessionParams",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "DEFAULT_CLOUD_AGENT_SETTINGS",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "DiskUsage",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "GatewayHealth",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "GatewaySyncResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "LastCommit",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "LaunchTerminalParams",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "LocalPlanContext",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "LocalPlanSummary",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "ParsedSemver",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentCreateSession",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentDeploy",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentGetInstallationInfo",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentGetSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentGetStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentKillSession",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentLaunchTerminal",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentListSessions",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentListTasks",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentListWorktrees",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanAttach",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanCancel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanCapabilities",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanContext",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentPlanSubmit",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentSaveSettings",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "cloudAgentSyncGateway",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "compareSemanticVersions",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "compareSemver",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "compareVersions",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "extractPrNumber",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatFriendlyDuration",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatGitCheckoutCommand",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatInstalledAt",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatIssueLabelTail",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "formatWorkingDirTail",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "mapDeploymentProgress",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "parseSemver",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/cloudAgent.ts",
+          "name": "workspacesList",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/lib/curlParser.ts",
           "name": "CodeExportLanguage",
           "kind": "type",
@@ -7999,6 +8655,84 @@
         {
           "file": "src/lib/curlParser.ts",
           "name": "tokenizeCurl",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "DnsCompareReport",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "DnsRecordAnswer",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "DnsServerCompareItem",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "IpIntelligenceResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "TcpPingPacket",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "TcpPingResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "TcpPingStats",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "calculateTcpPingStats",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "dnsIpLookup",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "dnsQuery",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "dnsTcpPing",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "startTcpPingStream",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/dnsInspector.ts",
+          "name": "stopTcpPingStream",
           "kind": "function",
           "visibility": "public"
         },
@@ -9617,6 +10351,90 @@
           "visibility": "public"
         },
         {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "ConnectionStatus",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "HeaderEntry",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "HeartbeatConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "RealtimeMessage",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "RealtimeProtocol",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "SseSessionMetrics",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "formatTime",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "parseSseBlock",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeClient.ts",
+          "name": "tryParseJson",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeTunnel.ts",
+          "name": "REALTIME_TUNNEL_EVENT",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeTunnel.ts",
+          "name": "TunnelRuntimeStatus",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeTunnel.ts",
+          "name": "getRealtimeTunnelStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeTunnel.ts",
+          "name": "startRealtimeTunnel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/realtimeTunnel.ts",
+          "name": "stopRealtimeTunnel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/lib/runtimeStatus.ts",
           "name": "RuntimeService",
           "kind": "type",
@@ -11123,6 +11941,72 @@
           "visibility": "public"
         },
         {
+          "file": "src/lib/urlInspector.ts",
+          "name": "ParsedUrlNode",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlInspector.ts",
+          "name": "QueryParamItem",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlInspector.ts",
+          "name": "UrlHierarchyResult",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlInspector.ts",
+          "name": "generateExportCode",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlInspector.ts",
+          "name": "generateUniqueId",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlInspector.ts",
+          "name": "looksLikeUrl",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlInspector.ts",
+          "name": "parseUrlHierarchy",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlInspector.ts",
+          "name": "rebuildNodeUrl",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlTracer.ts",
+          "name": "UrlHopDetail",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlTracer.ts",
+          "name": "UrlTraceReport",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/urlTracer.ts",
+          "name": "traceRedirectHops",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/lib/useCardDragReorder.ts",
           "name": "useCardDragReorder",
           "kind": "function",
@@ -11501,6 +12385,12 @@
           "visibility": "public"
         },
         {
+          "file": "src/toolbox/plugins/dns-inspector.ts",
+          "name": "dnsInspectorTool",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
           "file": "src/toolbox/plugins/file-sharing.ts",
           "name": "fileSharingTool",
           "kind": "variable",
@@ -11561,6 +12451,12 @@
           "visibility": "public"
         },
         {
+          "file": "src/toolbox/plugins/realtime-playground.ts",
+          "name": "realtimePlaygroundTool",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
           "file": "src/toolbox/plugins/server-monitor.ts",
           "name": "serverMonitorTool",
           "kind": "variable",
@@ -11599,6 +12495,12 @@
         {
           "file": "src/toolbox/plugins/uptime-monitor.ts",
           "name": "uptimeMonitorTool",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/toolbox/plugins/url-inspector.ts",
+          "name": "urlInspectorTool",
           "kind": "variable",
           "visibility": "public"
         },
@@ -11743,11 +12645,6 @@
       ],
       "related_files": [
         "src/App.tsx",
-        "src/components/ServerMonitor/HistoryChart.tsx",
-        "src/components/ServerMonitor/MetricCards.tsx",
-        "src/components/ServerMonitor/ServerFormDialog.tsx",
-        "src/components/ServerMonitor/index.tsx",
-        "src/components/settings/sections/ServerMonitorSettings.tsx",
         "src/i18n/index.ts",
         "src/i18n/locales/en/about.ts",
         "src/i18n/locales/en/aiEnvironments.ts",
@@ -11756,6 +12653,7 @@
         "src/i18n/locales/en/aiUsage.ts",
         "src/i18n/locales/en/aiWorkflow.ts",
         "src/i18n/locales/en/bleLock.ts",
+        "src/i18n/locales/en/cloudAgent.ts",
         "src/i18n/locales/en/common.ts",
         "src/i18n/locales/en/docs.ts",
         "src/i18n/locales/en/fileSharing.ts",
@@ -11785,6 +12683,7 @@
         "src/i18n/locales/zh/aiUsage.ts",
         "src/i18n/locales/zh/aiWorkflow.ts",
         "src/i18n/locales/zh/bleLock.ts",
+        "src/i18n/locales/zh/cloudAgent.ts",
         "src/i18n/locales/zh/common.ts",
         "src/i18n/locales/zh/docs.ts",
         "src/i18n/locales/zh/fileSharing.ts",
@@ -11808,9 +12707,7 @@
         "src/i18n/locales/zh/uptimeMonitor.ts",
         "src/i18n/locales/zh/workspaces.ts",
         "src/lib/aiGateway/index.ts",
-        "src/lib/serverMonitor.ts",
-        "src/test/setup.ts",
-        "src/toolbox/plugins/server-monitor.ts"
+        "src/test/setup.ts"
       ],
       "tests": [
         "src/App.aiGatewayHeader.test.tsx",
@@ -11860,6 +12757,13 @@
         "src/components/AiWorkflowModelSwitcher/AiWorkflowModelSwitcher.test.tsx",
         "src/components/BackupManager.test.tsx",
         "src/components/BleLockTool.test.tsx",
+        "src/components/CloudAgent/CloudAgent.test.tsx",
+        "src/components/CloudAgent/CloudAgentDeploymentDialog.test.tsx",
+        "src/components/CloudAgent/GatewayPanel.test.tsx",
+        "src/components/CloudAgent/LocalPlanForm.test.tsx",
+        "src/components/CloudAgent/PlanPipeline.test.tsx",
+        "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
+        "src/components/CloudAgent/components/PrPipelineTab.test.tsx",
         "src/components/CurlPlaygroundTool.test.tsx",
         "src/components/FileSharingTool.test.tsx",
         "src/components/JsonParserTool.test.tsx",
@@ -11871,6 +12775,7 @@
         "src/components/MoreToolsHub.test.tsx",
         "src/components/OmniSearch.test.tsx",
         "src/components/PortTunnelTool/LogViewer.test.tsx",
+        "src/components/PortTunnelTool/TunnelConfigDialog.test.tsx",
         "src/components/PortTunnelTool/index.test.tsx",
         "src/components/ProtocolRouterTool.test.tsx",
         "src/components/QuickAiSessionBar.test.tsx",
@@ -11882,6 +12787,7 @@
         "src/components/SshServers.test.tsx",
         "src/components/SshTunnels.test.tsx",
         "src/components/SslCertificateTool.test.tsx",
+        "src/components/Subagents/hooks/useSubagentsData.test.tsx",
         "src/components/UptimeMonitor/UptimeMonitor.test.tsx",
         "src/components/WebhookCatcher/WebhookCatcher.test.tsx",
         "src/components/Workspaces/WorkspaceSkillsPanel.test.tsx",
@@ -11893,6 +12799,7 @@
         "src/components/modelOptions.test.ts",
         "src/components/settings/common/SettingSelect.test.tsx",
         "src/components/settings/sections/ServerMonitorSettings.test.tsx",
+        "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
         "src/components/sshTunnels/SshCommonPortManagerDialog.test.tsx",
         "src/components/toolbox/ToolShell.test.tsx",
         "src/components/toolbox/ToolStatusBadge.test.tsx",
@@ -11905,7 +12812,10 @@
         "src/lib/aiWorkflowProfiles.test.ts",
         "src/lib/appVersion.test.ts",
         "src/lib/bleLock.test.ts",
+        "src/lib/cloudAgent.plan.test.ts",
+        "src/lib/cloudAgent.test.ts",
         "src/lib/curlParser.test.ts",
+        "src/lib/dnsInspector.test.ts",
         "src/lib/externalActions.test.ts",
         "src/lib/fileSharing.test.ts",
         "src/lib/jttDataParser/hex.test.ts",
@@ -11924,6 +12834,7 @@
         "src/lib/messageSubscriptions.test.ts",
         "src/lib/messages.test.ts",
         "src/lib/navigation.test.ts",
+        "src/lib/realtimeClient.test.ts",
         "src/lib/runtimeStatus.test.ts",
         "src/lib/serverMonitor.test.ts",
         "src/lib/serviceProviders.test.ts",
@@ -11934,6 +12845,7 @@
         "src/lib/sshTunnelSummary.test.ts",
         "src/lib/trayMenu.test.ts",
         "src/lib/updater.test.ts",
+        "src/lib/urlInspector.test.ts",
         "src/lib/useCardDragReorder.test.tsx",
         "src/lib/userActions.test.ts",
         "src/toolbox/invoke.test.ts",
@@ -13427,8 +14339,103 @@
         },
         {
           "kind": "imports",
+          "from": "src/components/CloudAgent/components/ActiveSessionsTab.tsx#ActiveSessionsTab",
+          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog",
+          "to": "src/components/CloudAgent/components/LocalPlanForm.tsx#LocalPlanForm"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/PrPipelineTab.tsx#PrPipelineTab",
+          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx#WorktreesHistoryTab",
+          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/ActiveSessionsTab.tsx#ActiveSessionsTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx#CloudAgentDeploymentDialog"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/CloudAgentHeader.tsx#CloudAgentHeader"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx#CloudAgentRuntimeCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/GatewayPanel.tsx#GatewayPanel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/PrPipelineTab.tsx#PrPipelineTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx#WorktreesHistoryTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/hooks/useCloudAgent.ts#CloudAgentTab"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/CloudAgent/hooks/useCloudAgent.ts#useCloudAgent"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
+          "to": "src/components/ToastProvider.tsx#useToast"
+        },
+        {
+          "kind": "imports",
           "from": "src/components/CurlPlaygroundTool.tsx#CurlPlaygroundTool",
           "to": "src/components/ToastProvider.tsx#useToast"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/DnsInspector/index.tsx#DnsInspectorTool",
+          "to": "src/components/DnsInspector/DnsComparisonGrid.tsx#DnsComparisonGrid"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/DnsInspector/index.tsx#DnsInspectorTool",
+          "to": "src/components/DnsInspector/IpDetailDrawer.tsx#IpDetailDrawer"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/DnsInspector/index.tsx#DnsInspectorTool",
+          "to": "src/components/DnsInspector/TcpPingPePanel.tsx#TcpPingPePanel"
         },
         {
           "kind": "imports",
@@ -14012,6 +15019,31 @@
         },
         {
           "kind": "imports",
+          "from": "src/components/RealtimePlayground/index.tsx#RealtimePlaygroundTool",
+          "to": "src/components/RealtimePlayground/ConnectionDrawer.tsx#ConnectionDrawer"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/RealtimePlayground/index.tsx#RealtimePlaygroundTool",
+          "to": "src/components/RealtimePlayground/MessageInspector.tsx#MessageInspector"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/RealtimePlayground/index.tsx#RealtimePlaygroundTool",
+          "to": "src/components/RealtimePlayground/MessageSender.tsx#MessageSender"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/RealtimePlayground/index.tsx#RealtimePlaygroundTool",
+          "to": "src/components/RealtimePlayground/PublicTunnelPanel.tsx#PublicTunnelPanel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/RealtimePlayground/index.tsx#RealtimePlaygroundTool",
+          "to": "src/components/RealtimePlayground/TimelineStream.tsx#TimelineStream"
+        },
+        {
+          "kind": "imports",
           "from": "src/components/ServerMonitor/index.tsx#ServerMonitorTool",
           "to": "src/components/ServerMonitor/HistoryChart.tsx#HistoryChart"
         },
@@ -14144,11 +15176,6 @@
           "kind": "imports",
           "from": "src/components/Skills/components/SkillsDialogs.tsx#SkillsInstallDialog",
           "to": "src/components/Skills/view.ts#SkillsView"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/Skills/components/SkillsDialogs.tsx#SkillsInstallDialog",
-          "to": "src/components/skillsModelOptions.ts#skillModelOptions"
         },
         {
           "kind": "imports",
@@ -14344,11 +15371,6 @@
           "kind": "imports",
           "from": "src/components/Skills/helpers.tsx#modelTabs",
           "to": "src/components/Skills/types.ts#ModelType"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/Skills/hooks/useSkillsActions.ts#useSkillsActions",
-          "to": "src/components/Skills/helpers.tsx#allModels"
         },
         {
           "kind": "imports",
@@ -15219,6 +16241,31 @@
           "kind": "imports",
           "from": "src/components/UptimeMonitor/index.tsx#UptimeMonitorTool",
           "to": "src/components/UptimeMonitor/types.ts#ProbeTestResult"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UrlInspector/index.tsx#UrlInspectorTool",
+          "to": "src/components/UrlInspector/ExportDeck.tsx#ExportDeck"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UrlInspector/index.tsx#UrlInspectorTool",
+          "to": "src/components/UrlInspector/HopTracerView.tsx#HopTracerView"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UrlInspector/index.tsx#UrlInspectorTool",
+          "to": "src/components/UrlInspector/NestedLevelTabs.tsx#NestedLevelTabs"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UrlInspector/index.tsx#UrlInspectorTool",
+          "to": "src/components/UrlInspector/QueryGridEditor.tsx#QueryGridEditor"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/UrlInspector/index.tsx#UrlInspectorTool",
+          "to": "src/components/UrlInspector/UrlBreadcrumb.tsx#UrlBreadcrumb"
         },
         {
           "kind": "imports",
@@ -17238,6 +18285,11 @@
         {
           "kind": "imports",
           "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
+          "to": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
           "to": "src/components/settings/sections/services/ProtocolRouterSettingsPanel.tsx#ProtocolRouterSettingsPanel"
         },
         {
@@ -17249,11 +18301,6 @@
           "kind": "imports",
           "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
           "to": "src/components/settings/sections/services/SslCertificateSettingsPanel.tsx#SslCertificateSettingsPanel"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
-          "to": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel"
         },
         {
           "kind": "imports",
@@ -17279,6 +18326,11 @@
           "kind": "imports",
           "from": "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx#AiGatewaySettingsPanel",
           "to": "src/components/settings/common/SettingSelect.tsx#SettingSelect"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
         },
         {
           "kind": "imports",
@@ -19222,6 +20274,11 @@
         },
         {
           "kind": "imports",
+          "from": "src/toolbox/plugins/dns-inspector.ts#dnsInspectorTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
           "from": "src/toolbox/plugins/file-sharing.ts#fileSharingTool",
           "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
         },
@@ -19272,6 +20329,11 @@
         },
         {
           "kind": "imports",
+          "from": "src/toolbox/plugins/realtime-playground.ts#realtimePlaygroundTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
           "from": "src/toolbox/plugins/server-monitor.ts#serverMonitorTool",
           "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
         },
@@ -19307,6 +20369,11 @@
         },
         {
           "kind": "imports",
+          "from": "src/toolbox/plugins/url-inspector.ts#urlInspectorTool",
+          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
+        },
+        {
+          "kind": "imports",
           "from": "src/toolbox/plugins/webhook-catcher.ts#webhookCatcherTool",
           "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
         },
@@ -19329,6 +20396,11 @@
           "kind": "imports",
           "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
           "to": "src/toolbox/plugins/curl-playground.ts#curlPlaygroundTool"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/dns-inspector.ts#dnsInspectorTool"
         },
         {
           "kind": "imports",
@@ -19383,6 +20455,11 @@
         {
           "kind": "imports",
           "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/realtime-playground.ts#realtimePlaygroundTool"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
           "to": "src/toolbox/plugins/server-monitor.ts#serverMonitorTool"
         },
         {
@@ -19414,6 +20491,11 @@
           "kind": "imports",
           "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
           "to": "src/toolbox/plugins/uptime-monitor.ts#uptimeMonitorTool"
+        },
+        {
+          "kind": "imports",
+          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
+          "to": "src/toolbox/plugins/url-inspector.ts#urlInspectorTool"
         },
         {
           "kind": "imports",
@@ -19636,9 +20718,33 @@
         "src/components/BleLockTool.test.tsx",
         "src/components/BleLockTool.tsx",
         "src/components/Bookmarks.tsx",
+        "src/components/CloudAgent/CloudAgent.test.tsx",
+        "src/components/CloudAgent/CloudAgentDeploymentDialog.test.tsx",
+        "src/components/CloudAgent/GatewayPanel.test.tsx",
+        "src/components/CloudAgent/LocalPlanForm.test.tsx",
+        "src/components/CloudAgent/PlanPipeline.test.tsx",
+        "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
+        "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
+        "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
+        "src/components/CloudAgent/components/CloudAgentHeader.tsx",
+        "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
+        "src/components/CloudAgent/components/CloudEmptyState.tsx",
+        "src/components/CloudAgent/components/GatewayPanel.tsx",
+        "src/components/CloudAgent/components/LocalPlanForm.tsx",
+        "src/components/CloudAgent/components/NewSessionDialog.tsx",
+        "src/components/CloudAgent/components/NewSessionModal.tsx",
+        "src/components/CloudAgent/components/PrPipelineTab.test.tsx",
+        "src/components/CloudAgent/components/PrPipelineTab.tsx",
+        "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
+        "src/components/CloudAgent/hooks/useCloudAgent.ts",
+        "src/components/CloudAgent/index.tsx",
         "src/components/ConfirmDialogProvider.tsx",
         "src/components/CurlPlaygroundTool.test.tsx",
         "src/components/CurlPlaygroundTool.tsx",
+        "src/components/DnsInspector/DnsComparisonGrid.tsx",
+        "src/components/DnsInspector/IpDetailDrawer.tsx",
+        "src/components/DnsInspector/TcpPingPePanel.tsx",
+        "src/components/DnsInspector/index.tsx",
         "src/components/Documentation.tsx",
         "src/components/FileSharingTool.test.tsx",
         "src/components/FileSharingTool.tsx",
@@ -19699,6 +20805,7 @@
         "src/components/PortTunnelTool/LogViewer.test.tsx",
         "src/components/PortTunnelTool/LogViewer.tsx",
         "src/components/PortTunnelTool/QrCodeModal.tsx",
+        "src/components/PortTunnelTool/TunnelConfigDialog.test.tsx",
         "src/components/PortTunnelTool/TunnelConfigDialog.tsx",
         "src/components/PortTunnelTool/index.test.tsx",
         "src/components/PortTunnelTool/index.tsx",
@@ -19710,6 +20817,12 @@
         "src/components/QuickSftpTool.tsx",
         "src/components/RandomPasswordTool.test.tsx",
         "src/components/RandomPasswordTool.tsx",
+        "src/components/RealtimePlayground/ConnectionDrawer.tsx",
+        "src/components/RealtimePlayground/MessageInspector.tsx",
+        "src/components/RealtimePlayground/MessageSender.tsx",
+        "src/components/RealtimePlayground/PublicTunnelPanel.tsx",
+        "src/components/RealtimePlayground/TimelineStream.tsx",
+        "src/components/RealtimePlayground/index.tsx",
         "src/components/ServerMonitor/HistoryChart.tsx",
         "src/components/ServerMonitor/MetricCards.tsx",
         "src/components/ServerMonitor/ServerFormDialog.tsx",
@@ -19740,6 +20853,7 @@
         "src/components/Subagents/components/SubagentsSections.tsx",
         "src/components/Subagents/helpers.tsx",
         "src/components/Subagents/hooks/useSubagentsActions.ts",
+        "src/components/Subagents/hooks/useSubagentsData.test.tsx",
         "src/components/Subagents/hooks/useSubagentsData.ts",
         "src/components/Subagents/index.tsx",
         "src/components/Subagents/types.ts",
@@ -19754,6 +20868,12 @@
         "src/components/UptimeMonitor/UptimeMonitor.test.tsx",
         "src/components/UptimeMonitor/index.tsx",
         "src/components/UptimeMonitor/types.ts",
+        "src/components/UrlInspector/ExportDeck.tsx",
+        "src/components/UrlInspector/HopTracerView.tsx",
+        "src/components/UrlInspector/NestedLevelTabs.tsx",
+        "src/components/UrlInspector/QueryGridEditor.tsx",
+        "src/components/UrlInspector/UrlBreadcrumb.tsx",
+        "src/components/UrlInspector/index.tsx",
         "src/components/WebhookCatcher/ReplayDrawer.tsx",
         "src/components/WebhookCatcher/RequestInspector.tsx",
         "src/components/WebhookCatcher/RequestStreamList.tsx",
@@ -19829,6 +20949,8 @@
         "src/components/settings/sections/ServerMonitorSettings.tsx",
         "src/components/settings/sections/ServicesSection.tsx",
         "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx",
+        "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
+        "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
         "src/components/settings/sections/services/ProtocolRouterSettingsPanel.tsx",
         "src/components/settings/sections/services/ProxySettingsPanel.tsx",
         "src/components/settings/sections/services/SslCertificateSettingsPanel.tsx",
@@ -19889,6 +21011,7 @@
         "src/i18n/locales/en/aiUsage.ts",
         "src/i18n/locales/en/aiWorkflow.ts",
         "src/i18n/locales/en/bleLock.ts",
+        "src/i18n/locales/en/cloudAgent.ts",
         "src/i18n/locales/en/common.ts",
         "src/i18n/locales/en/docs.ts",
         "src/i18n/locales/en/fileSharing.ts",
@@ -19918,6 +21041,7 @@
         "src/i18n/locales/zh/aiUsage.ts",
         "src/i18n/locales/zh/aiWorkflow.ts",
         "src/i18n/locales/zh/bleLock.ts",
+        "src/i18n/locales/zh/cloudAgent.ts",
         "src/i18n/locales/zh/common.ts",
         "src/i18n/locales/zh/docs.ts",
         "src/i18n/locales/zh/fileSharing.ts",
@@ -19971,8 +21095,13 @@
         "src/lib/appVersion.ts",
         "src/lib/bleLock.test.ts",
         "src/lib/bleLock.ts",
+        "src/lib/cloudAgent.plan.test.ts",
+        "src/lib/cloudAgent.test.ts",
+        "src/lib/cloudAgent.ts",
         "src/lib/curlParser.test.ts",
         "src/lib/curlParser.ts",
+        "src/lib/dnsInspector.test.ts",
+        "src/lib/dnsInspector.ts",
         "src/lib/externalActions.test.ts",
         "src/lib/externalActions.ts",
         "src/lib/fileSharing.test.ts",
@@ -20018,6 +21147,9 @@
         "src/lib/portTunnel.ts",
         "src/lib/portTunnelSummary.ts",
         "src/lib/protocolRouter.ts",
+        "src/lib/realtimeClient.test.ts",
+        "src/lib/realtimeClient.ts",
+        "src/lib/realtimeTunnel.ts",
         "src/lib/runtimeStatus.test.ts",
         "src/lib/runtimeStatus.ts",
         "src/lib/serverMonitor.test.ts",
@@ -20043,6 +21175,9 @@
         "src/lib/trayMenu.ts",
         "src/lib/updater.test.ts",
         "src/lib/updater.ts",
+        "src/lib/urlInspector.test.ts",
+        "src/lib/urlInspector.ts",
+        "src/lib/urlTracer.ts",
         "src/lib/useCardDragReorder.test.tsx",
         "src/lib/useCardDragReorder.ts",
         "src/lib/userActions.test.ts",
@@ -20062,6 +21197,7 @@
         "src/toolbox/plugins/ble-lock.ts",
         "src/toolbox/plugins/bookmarks.ts",
         "src/toolbox/plugins/curl-playground.ts",
+        "src/toolbox/plugins/dns-inspector.ts",
         "src/toolbox/plugins/file-sharing.ts",
         "src/toolbox/plugins/json-parser.ts",
         "src/toolbox/plugins/jtt-data-parser.ts",
@@ -20072,6 +21208,7 @@
         "src/toolbox/plugins/protocol-router.ts",
         "src/toolbox/plugins/quick-sftp.ts",
         "src/toolbox/plugins/random-password.ts",
+        "src/toolbox/plugins/realtime-playground.ts",
         "src/toolbox/plugins/server-monitor.ts",
         "src/toolbox/plugins/short-link.ts",
         "src/toolbox/plugins/snippets.ts",
@@ -20079,6 +21216,7 @@
         "src/toolbox/plugins/ssh-tunnels.ts",
         "src/toolbox/plugins/ssl-certificate.ts",
         "src/toolbox/plugins/uptime-monitor.ts",
+        "src/toolbox/plugins/url-inspector.ts",
         "src/toolbox/plugins/webhook-catcher.ts",
         "src/toolbox/registry.test.ts",
         "src/toolbox/registry.ts",
@@ -20089,6 +21227,26 @@
         "src/toolbox/useTauriEvent.ts",
         "src/toolbox/useVisibleInterval.test.tsx",
         "src/toolbox/useVisibleInterval.ts"
+      ],
+      "shared_entry": false
+    },
+    {
+      "id": "src-tauri",
+      "name": "src-tauri",
+      "aliases": [],
+      "module_root": "src-tauri",
+      "entries": [
+        "src-tauri/scripts/build-zen-relay.mjs"
+      ],
+      "symbols": [],
+      "related_files": [],
+      "tests": [],
+      "depends_on": [],
+      "relations": [],
+      "owner_role": "shared",
+      "responsibility": "Discovered typescript module at src-tauri",
+      "read_scope": [
+        "src-tauri/scripts/build-zen-relay.mjs"
       ],
       "shared_entry": false
     },
@@ -20174,1929 +21332,6 @@
         "tools/measure-ai-gateway.mjs",
         "tools/measure-ai-gateway.test.mjs",
         "tools/measure-core-workflows.mjs"
-      ],
-      "shared_entry": false
-    },
-    {
-      "id": "ai-gateway-context-limits",
-      "name": "AI Gateway Context Limits",
-      "aliases": [],
-      "module_root": "src-tauri/src",
-      "entries": [
-        "src-tauri/src/ai_gateway.rs",
-        "src-tauri/src/ai_gateway/commands.rs",
-        "src-tauri/src/ai_gateway/context_limits.rs",
-        "src-tauri/src/ai_gateway/templates.rs",
-        "src-tauri/src/ai_gateway/types_config.rs"
-      ],
-      "symbols": [
-        {
-          "file": "src-tauri/src/ai_gateway/commands.rs",
-          "name": "TerminalContextCoverage",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/ai_gateway/commands.rs",
-          "name": "TerminalContextSummary",
-          "kind": "struct",
-          "visibility": "public"
-        }
-      ],
-      "related_files": [
-        "src-tauri/src/ai_gateway/model_pools.rs",
-        "src-tauri/src/ai_gateway/provider_templates.json",
-        "src-tauri/src/ai_gateway/reasoning.rs",
-        "src-tauri/src/ai_gateway/selection.rs",
-        "src-tauri/src/ai_gateway/storage.rs",
-        "src-tauri/src/app_store/provider_projection/claude.rs",
-        "src-tauri/src/app_store/provider_projection/codex.rs",
-        "src-tauri/src/claude_profiles.rs"
-      ],
-      "tests": [
-        "src-tauri/src/ai_gateway/tests/context_limits.rs",
-        "src-tauri/src/ai_gateway/tests/context_terminal_sync.rs",
-        "src-tauri/src/ai_gateway/tests/templates.rs",
-        "src-tauri/src/app_store/tests/gateway_context_projection.rs"
-      ],
-      "depends_on": [],
-      "relations": [],
-      "owner_role": "backend",
-      "responsibility": "Declared AI Gateway model context windows, strict template inheritance, conservative public resolution and native terminal adaptation",
-      "read_scope": [
-        "src-tauri/src/ai_gateway.rs",
-        "src-tauri/src/ai_gateway/commands.rs",
-        "src-tauri/src/ai_gateway/context_limits.rs",
-        "src-tauri/src/ai_gateway/model_pools.rs",
-        "src-tauri/src/ai_gateway/provider_templates.json",
-        "src-tauri/src/ai_gateway/reasoning.rs",
-        "src-tauri/src/ai_gateway/selection.rs",
-        "src-tauri/src/ai_gateway/storage.rs",
-        "src-tauri/src/ai_gateway/templates.rs",
-        "src-tauri/src/ai_gateway/tests/context_limits.rs",
-        "src-tauri/src/ai_gateway/tests/context_terminal_sync.rs",
-        "src-tauri/src/ai_gateway/tests/templates.rs",
-        "src-tauri/src/ai_gateway/types_config.rs",
-        "src-tauri/src/app_store/provider_projection/claude.rs",
-        "src-tauri/src/app_store/provider_projection/codex.rs",
-        "src-tauri/src/app_store/tests/gateway_context_projection.rs",
-        "src-tauri/src/claude_profiles.rs"
-      ],
-      "shared_entry": false
-    },
-    {
-      "id": "ai-gateway-zen-sidecar",
-      "name": "AI Gateway OpenCode Zen Sidecar",
-      "aliases": [],
-      "module_root": "src-tauri/src",
-      "entries": [
-        "src-tauri/src/ai_gateway/zen_sidecar.rs",
-        "src-tauri/src/ai_gateway/forwarding.rs",
-        "src-tauri/src/ai_gateway/migration.rs",
-        "src-tauri/src/ai_gateway/types_config/template.rs"
-      ],
-      "symbols": [
-        {
-          "file": "src-tauri/src/ai_gateway/types_config/protocol.rs",
-          "name": "TransportStrategy",
-          "kind": "enum",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/aiGateway/types.ts",
-          "name": "GatewayTemplateTransportStrategy",
-          "kind": "type",
-          "visibility": "public"
-        }
-      ],
-      "related_files": [
-        "src/lib/aiGateway/types.ts",
-        "src-tauri/src/ai_gateway/provider_templates.json",
-        "src-tauri/src/ai_gateway/storage.rs",
-        "src-tauri/src/ai_gateway/templates/source.rs",
-        "src-tauri/src/ai_gateway/templates/state.rs",
-        "src-tauri/src/ai_gateway/types_config/config.rs",
-        "src-tauri/src/ai_gateway/types_config/protocol.rs",
-        "src-tauri/src/ai_gateway/types_config/provider.rs",
-        "src-tauri/zen-relay/Cargo.toml",
-        "src-tauri/zen-relay/src/lib.rs",
-        "src-tauri/zen-relay/src/main.rs",
-        "src-tauri/scripts/build-zen-relay.mjs",
-        "src-tauri/tauri.conf.json",
-        ".github/workflows/release.yml"
-      ],
-      "tests": [
-        "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
-        "src-tauri/src/ai_gateway/tests/migration.rs",
-        "src-tauri/src/ai_gateway/tests/templates.rs"
-      ],
-      "depends_on": [],
-      "relations": [],
-      "owner_role": "backend",
-      "responsibility": "Template-bound OpenCode Zen Free transport through an isolated BoringSSL loopback relay using the official /inference/openai/v1 base, with a one-time schema-5 binding, schema-7 saved-template transport repair, schema-8 canonical models_url repair, schema-9 persisted template and bound-provider base migration and a free-only upstream model-list sync",
-      "read_scope": [
-        ".github/workflows/release.yml",
-        "src-tauri/scripts/build-zen-relay.mjs",
-        "src-tauri/src/ai_gateway/forwarding.rs",
-        "src-tauri/src/ai_gateway/migration.rs",
-        "src-tauri/src/ai_gateway/provider_templates.json",
-        "src-tauri/src/ai_gateway/storage.rs",
-        "src-tauri/src/ai_gateway/templates/source.rs",
-        "src-tauri/src/ai_gateway/templates/state.rs",
-        "src-tauri/src/ai_gateway/tests/migration.rs",
-        "src-tauri/src/ai_gateway/tests/templates.rs",
-        "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
-        "src-tauri/src/ai_gateway/types_config/config.rs",
-        "src-tauri/src/ai_gateway/types_config/protocol.rs",
-        "src-tauri/src/ai_gateway/types_config/provider.rs",
-        "src-tauri/src/ai_gateway/types_config/template.rs",
-        "src-tauri/src/ai_gateway/zen_sidecar.rs",
-        "src-tauri/tauri.conf.json",
-        "src-tauri/zen-relay/Cargo.toml",
-        "src-tauri/zen-relay/src/lib.rs",
-        "src-tauri/zen-relay/src/main.rs",
-        "src/lib/aiGateway/types.ts"
-      ],
-      "shared_entry": false
-    },
-    {
-      "id": "ai-gateway-pool-reasoning-history",
-      "name": "AI Gateway Pool Reasoning History",
-      "aliases": [],
-      "module_root": "src-tauri/src",
-      "entries": [
-        "src-tauri/src/ai_gateway/reasoning_history.rs"
-      ],
-      "symbols": [],
-      "related_files": [
-        "src-tauri/src/ai_gateway/forwarding.rs",
-        "src-tauri/src/ai_gateway/model_pools.rs"
-      ],
-      "tests": [
-        "src-tauri/src/ai_gateway/tests/model_pools.rs"
-      ],
-      "depends_on": [],
-      "relations": [],
-      "owner_role": "backend",
-      "responsibility": "Bounded Reflection/Beam historical reasoning repair for Chat Completions requests whose resolved upstream model is in the reflection/ namespace, covering ordinary routes and prepared model-pool candidates",
-      "read_scope": [
-        "src-tauri/src/ai_gateway/forwarding.rs",
-        "src-tauri/src/ai_gateway/model_pools.rs",
-        "src-tauri/src/ai_gateway/reasoning_history.rs",
-        "src-tauri/src/ai_gateway/tests/model_pools.rs"
-      ],
-      "shared_entry": false
-    },
-    {
-      "id": "server-monitor",
-      "name": "Server Monitor Collection",
-      "aliases": [
-        "server-monitor",
-        "server-monitor-collection",
-        "linux-resource-collection",
-        "server-metrics"
-      ],
-      "module_root": "src-tauri/src",
-      "entries": [
-        "src-tauri/src/server_monitor.rs",
-        "src-tauri/src/server_monitor/collector.sh",
-        "src-tauri/src/server_monitor/commands.rs",
-        "src-tauri/src/server_monitor/metrics.rs",
-        "src-tauri/src/server_monitor/runtime.rs",
-        "src-tauri/src/server_monitor/storage.rs",
-        "src-tauri/src/server_monitor/transport.rs",
-        "src-tauri/src/server_monitor/types.rs",
-        "src-tauri/src/ssh_tunnels/monitor_transport.rs",
-        "src/lib/serverMonitor.ts",
-        "src/toolbox/plugins/server-monitor.ts",
-        "src/components/ServerMonitor/index.tsx",
-        "src/components/ServerMonitor/ServerFormDialog.tsx",
-        "src/components/ServerMonitor/MetricCards.tsx",
-        "src/components/ServerMonitor/HistoryChart.tsx",
-        "src/components/settings/sections/ServerMonitorSettings.tsx"
-      ],
-      "symbols": [
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_snapshot",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_upsert",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_delete",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_set_enabled",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_refresh",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_test_connection",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_history",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_get_settings",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/commands.rs",
-          "name": "server_monitor_save_settings",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/metrics.rs",
-          "name": "build_collection",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/metrics.rs",
-          "name": "parse_sections",
-          "kind": "function",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/transport.rs",
-          "name": "COLLECTION_DEADLINE",
-          "kind": "variable",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/transport.rs",
-          "name": "KEEPALIVE_INTERVAL",
-          "kind": "variable",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/transport.rs",
-          "name": "MonitorConnection",
-          "kind": "trait",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/transport.rs",
-          "name": "MonitorConnector",
-          "kind": "trait",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/transport.rs",
-          "name": "MonitorSession",
-          "kind": "struct",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/types.rs",
-          "name": "CollectionOutcome",
-          "kind": "enum",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/types.rs",
-          "name": "MetricSnapshot",
-          "kind": "struct",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/server_monitor/types.rs",
-          "name": "SessionLifetime",
-          "kind": "enum",
-          "visibility": "private"
-        },
-        {
-          "file": "src-tauri/src/ssh_tunnels/monitor_transport.rs",
-          "name": "SshMonitorConnector",
-          "kind": "struct",
-          "visibility": "private"
-        },
-        {
-          "file": "src/components/ServerMonitor/index.tsx",
-          "name": "ServerMonitorTool",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ServerMonitor/index.tsx",
-          "name": "ServerMonitorToolProps",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ServerMonitor/ServerFormDialog.tsx",
-          "name": "ServerFormDialog",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ServerMonitor/ServerFormDialog.tsx",
-          "name": "ServerFormDialogProps",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ServerMonitor/MetricCards.tsx",
-          "name": "MetricCards",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ServerMonitor/MetricCards.tsx",
-          "name": "MetricCardsProps",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ServerMonitor/HistoryChart.tsx",
-          "name": "HistoryChart",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/ServerMonitor/HistoryChart.tsx",
-          "name": "HistoryChartProps",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/settings/sections/ServerMonitorSettings.tsx",
-          "name": "ServerMonitorSettingsView",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/settings/sections/ServerMonitorSettings.tsx",
-          "name": "ServerMonitorSettingsViewProps",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "SERVER_MONITOR_UPDATED_EVENT",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "isServerMonitorAvailable",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorSnapshot",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorUpsert",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorDelete",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorSetEnabled",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorRefresh",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorTestConnection",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorHistory",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorGetSettings",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "serverMonitorSaveSettings",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "formatPercent",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "formatBytes",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "formatRate",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "formatMonitorTimestamp",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "sampleOutcome",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "sampleMetrics",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "latestGoodSample",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "selectNetworkInterface",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "isValidDailyTime",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "validateServerMonitorSettings",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "validateServerMonitorDraft",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "normalizeServerMonitorSettings",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorHistoryRange",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorScheduleMode",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorSourceKind",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorAuthKind",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorFailureKind",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorOutcome",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "CpuMetric",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "MemoryMetric",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "DiskMetric",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "NetworkMetric",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "MetricSnapshot",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorSample",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorSettings",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorTargetView",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorState",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorCustomDraft",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorTargetDraft",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "ServerMonitorTestResult",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.ts",
-          "name": "DEFAULT_SERVER_MONITOR_SETTINGS",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/serverMonitor.test.ts",
-          "name": "SERVER_MONITOR_UPDATED_EVENT",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/toolbox/plugins/server-monitor.ts",
-          "name": "serverMonitorTool",
-          "kind": "variable",
-          "visibility": "public"
-        }
-      ],
-      "related_files": [
-        "src-tauri/src/lib.rs",
-        "src-tauri/src/server_monitor/tests/fixtures/sample.txt",
-        "src-tauri/src/ssh_tunnels.rs",
-        "src-tauri/src/ssh_tunnels/validation_ssh_config.rs",
-        "src-tauri/src/app_runtime/run_app.rs",
-        "src-tauri/src/app_runtime/shortcuts_tray.rs",
-        "src/components/settings/sections/ServicesSection.tsx",
-        "src/components/settings/SettingsContainer.tsx",
-        "src/components/settings/types.ts",
-        "src/i18n/index.ts",
-        "src/toolbox/registry.ts",
-        "src/toolbox/types.ts",
-        "docs/server-monitor.md",
-        "docs/server-monitor.zh.md",
-        "en_keys.txt",
-        "zh_keys.txt"
-      ],
-      "tests": [
-        "src-tauri/src/server_monitor/tests.rs",
-        "src-tauri/src/server_monitor/tests/metrics.rs",
-        "src-tauri/src/server_monitor/tests/transport.rs",
-        "src-tauri/src/server_monitor/tests/storage.rs",
-        "src-tauri/src/server_monitor/tests/runtime.rs",
-        "src-tauri/src/server_monitor/tests/commands.rs",
-        "src/components/ServerMonitor/ServerMonitor.test.tsx",
-        "src/lib/serverMonitor.test.ts",
-        "src/components/settings/sections/ServerMonitorSettings.test.tsx",
-        "src/components/SettingsView.test.tsx",
-        "src/toolbox/registry.test.ts"
-      ],
-      "depends_on": [],
-      "relations": [
-        {
-          "kind": "imports",
-          "from": "src/components/ServerMonitor/index.tsx#ServerMonitorTool",
-          "to": "src/components/ServerMonitor/MetricCards.tsx#MetricCards"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/ServerMonitor/index.tsx#ServerMonitorTool",
-          "to": "src/components/ServerMonitor/HistoryChart.tsx#HistoryChart"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/ServerMonitor/index.tsx#ServerMonitorTool",
-          "to": "src/components/ServerMonitor/ServerFormDialog.tsx#ServerFormDialog"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/settings/sections/ServerMonitorSettings.tsx#ServerMonitorSettingsView",
-          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
-          "to": "src/components/settings/sections/ServerMonitorSettings.tsx#ServerMonitorSettingsView"
-        },
-        {
-          "kind": "imports",
-          "from": "src/toolbox/plugins/server-monitor.ts#serverMonitorTool",
-          "to": "src/toolbox/types.ts#ToolboxToolDescriptor"
-        },
-        {
-          "kind": "imports",
-          "from": "src/toolbox/registry.ts#TOOLBOX_TOOLS",
-          "to": "src/toolbox/plugins/server-monitor.ts#serverMonitorTool"
-        }
-      ],
-      "owner_role": "backend",
-      "responsibility": "Persisted monitor targets and interval/daily backend scheduling over owned SSH sessions with encrypted local configuration, SQLite samples and slot claims, honest partial metrics and safe state publication, plus the existing-style monitoring interface, gap-aware history and independently saved scheduling settings",
-      "read_scope": [
-        "docs/server-monitor.md",
-        "docs/server-monitor.zh.md",
-        "en_keys.txt",
-        "src-tauri/src/app_runtime/run_app.rs",
-        "src-tauri/src/app_runtime/shortcuts_tray.rs",
-        "src-tauri/src/lib.rs",
-        "src-tauri/src/server_monitor.rs",
-        "src-tauri/src/server_monitor/collector.sh",
-        "src-tauri/src/server_monitor/commands.rs",
-        "src-tauri/src/server_monitor/metrics.rs",
-        "src-tauri/src/server_monitor/runtime.rs",
-        "src-tauri/src/server_monitor/storage.rs",
-        "src-tauri/src/server_monitor/tests.rs",
-        "src-tauri/src/server_monitor/tests/commands.rs",
-        "src-tauri/src/server_monitor/tests/fixtures/sample.txt",
-        "src-tauri/src/server_monitor/tests/metrics.rs",
-        "src-tauri/src/server_monitor/tests/runtime.rs",
-        "src-tauri/src/server_monitor/tests/storage.rs",
-        "src-tauri/src/server_monitor/tests/transport.rs",
-        "src-tauri/src/server_monitor/transport.rs",
-        "src-tauri/src/server_monitor/types.rs",
-        "src-tauri/src/ssh_tunnels.rs",
-        "src-tauri/src/ssh_tunnels/monitor_transport.rs",
-        "src-tauri/src/ssh_tunnels/validation_ssh_config.rs",
-        "src/components/ServerMonitor/HistoryChart.tsx",
-        "src/components/ServerMonitor/MetricCards.tsx",
-        "src/components/ServerMonitor/ServerFormDialog.tsx",
-        "src/components/ServerMonitor/ServerMonitor.test.tsx",
-        "src/components/ServerMonitor/index.tsx",
-        "src/components/SettingsView.test.tsx",
-        "src/components/settings/SettingsContainer.tsx",
-        "src/components/settings/sections/ServerMonitorSettings.test.tsx",
-        "src/components/settings/sections/ServerMonitorSettings.tsx",
-        "src/components/settings/sections/ServicesSection.tsx",
-        "src/components/settings/types.ts",
-        "src/i18n/index.ts",
-        "src/lib/serverMonitor.test.ts",
-        "src/lib/serverMonitor.ts",
-        "src/toolbox/plugins/server-monitor.ts",
-        "src/toolbox/registry.test.ts",
-        "src/toolbox/registry.ts",
-        "src/toolbox/types.ts",
-        "zh_keys.txt"
-      ],
-      "shared_entry": false
-    },
-    {
-      "id": "cloud-agent",
-      "name": "Cloud Agent Management",
-      "aliases": [
-        "cloud-agent",
-        "cloud-session",
-        "opencode-cloud"
-      ],
-      "module_root": "src",
-      "entries": [
-        "src/components/CloudAgent/index.tsx",
-        "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
-        "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
-        "src/components/CloudAgent/components/PrPipelineTab.tsx",
-        "src/components/CloudAgent/components/GatewayPanel.tsx",
-        "src/components/CloudAgent/components/NewSessionDialog.tsx",
-        "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
-        "src/components/CloudAgent/components/LocalPlanForm.tsx",
-        "src/components/CloudAgent/components/NewSessionModal.tsx",
-        "src/components/CloudAgent/components/CloudAgentHeader.tsx",
-        "src/components/CloudAgent/hooks/useCloudAgent.ts",
-        "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
-        "src/lib/cloudAgent.ts",
-        "src-tauri/src/cloud_agent.rs",
-        "src-tauri/src/cloud_agent/commands.rs",
-        "src-tauri/src/cloud_agent/deployment.rs",
-        "src-tauri/src/cloud_agent/deployment_tests.rs",
-        "src-tauri/src/cloud_agent/types.rs",
-        "src-tauri/src/cloud_agent/settings.rs",
-        "src-tauri/src/cloud_agent/ssh.rs",
-        "src-tauri/src/cloud_agent/local_plans.rs",
-        "src-tauri/src/cloud_agent/plan_transfer.rs",
-        "src-tauri/src/cloud_agent/terminal.rs",
-        "src-tauri/src/cloud_agent/gateway_sync.rs",
-        "server/onespace-cloud-agent/agent.py",
-        "server/onespace-cloud-agent/core/plan_execution.py",
-        "server/onespace-cloud-agent/core/plan_opencode.py",
-        "server/onespace-cloud-agent/core/plan_tasks.py",
-        "server/onespace-cloud-agent/core/plan_workspace.py",
-        "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
-        "src/components/CloudAgent/components/CloudEmptyState.tsx"
-      ],
-      "symbols": [
-        {
-          "file": "src-tauri/src/cloud_agent/commands.rs",
-          "name": "cloud_agent_deploy",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/commands.rs",
-          "name": "cloud_agent_get_installation_info",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "DeploymentRegistry",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "RemoteShell",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "SshRemoteShell",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "build_status_command",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "classify_payload",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "inspect_installation",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "parse_install_metadata",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "parse_phase_line",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "read_install_metadata",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "run_deploy_process",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "run_deploy_process_async",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/deployment.rs",
-          "name": "validate_local_payload",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentDeployPhase",
-          "kind": "enum",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentDeployPhaseStatus",
-          "kind": "enum",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentDeploymentProgress",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentDeploymentResult",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentInstallationInfo",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/cloud_agent/types.rs",
-          "name": "CloudAgentInstallationState",
-          "kind": "enum",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
-          "name": "ActiveSessionsTab",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
-          "name": "CloudAgentDeploymentDialog",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
-          "name": "CloudAgentDeploymentDialogProps",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
-          "name": "CloudAgentHostLike",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/CloudAgentHeader.tsx",
-          "name": "CloudAgentHeader",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
-          "name": "CloudAgentRuntimeCard",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/CloudEmptyState.tsx",
-          "name": "CloudEmptyState",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/CloudEmptyState.tsx",
-          "name": "CloudEmptyStateProps",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/GatewayPanel.tsx",
-          "name": "GatewayPanel",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/LocalPlanForm.tsx",
-          "name": "LocalPlanForm",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
-          "name": "NewSessionDialog",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/NewSessionDialog.tsx",
-          "name": "NewSessionModal",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
-          "name": "NewSessionDialog",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/NewSessionModal.tsx",
-          "name": "NewSessionModal",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
-          "name": "PipelineStepItem",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
-          "name": "PrPipelineTab",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
-          "name": "StepState",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
-          "name": "derivePipelineSteps",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/PrPipelineTab.tsx",
-          "name": "resolveIssueUrl",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
-          "name": "WorktreesHistoryTab",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
-          "name": "CloudAgentHostOption",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
-          "name": "CloudAgentTab",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/hooks/useCloudAgent.ts",
-          "name": "useCloudAgent",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/CloudAgent/index.tsx",
-          "name": "CloudAgent",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
-          "name": "CloudAgentSettingsPanel",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CLOUD_AGENT_DEPLOY_PROGRESS_EVENT",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CLOUD_AGENT_SESSIONS_COUNT_EVENT",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CLOUD_AGENT_SETTINGS_UPDATED_EVENT",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentDeployPhase",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentDeployPhaseStatus",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentDeploymentProgress",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentDeploymentResult",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentInstallationInfo",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentInstallationState",
-          "kind": "type",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentSettings",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentStatus",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudAgentTask",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudGatewayModel",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudGatewayProvider",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudPlanCapabilities",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudPlanRepository",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudPlanSubmitInput",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudPlanSubmitResult",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudSession",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CloudWorktree",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "CreateSessionParams",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "DEFAULT_CLOUD_AGENT_SETTINGS",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "DiskUsage",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "GatewayHealth",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "GatewaySyncResult",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "LastCommit",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "LaunchTerminalParams",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "LocalPlanContext",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "LocalPlanSummary",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "ParsedSemver",
-          "kind": "interface",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentCreateSession",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentDeploy",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentGetInstallationInfo",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentGetSettings",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentGetStatus",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentKillSession",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentLaunchTerminal",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentListSessions",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentListTasks",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentListWorktrees",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanAttach",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanCancel",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanCapabilities",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanContext",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanList",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentPlanSubmit",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentSaveSettings",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "cloudAgentSyncGateway",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "compareSemanticVersions",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "compareSemver",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "compareVersions",
-          "kind": "variable",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "extractPrNumber",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "formatFriendlyDuration",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "formatGitCheckoutCommand",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "formatInstalledAt",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "formatIssueLabelTail",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "formatWorkingDirTail",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "mapDeploymentProgress",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "parseSemver",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/cloudAgent.ts",
-          "name": "workspacesList",
-          "kind": "function",
-          "visibility": "public"
-        }
-      ],
-      "related_files": [
-        "src/i18n/locales/en/cloudAgent.ts",
-        "src/i18n/locales/zh/cloudAgent.ts",
-        "server/onespace-cloud-agent/deploy.sh",
-        "server/onespace-cloud-agent/bootstrap.sh",
-        "server/onespace-cloud-agent/VERSION",
-        "server/onespace-cloud-agent/config.default.json",
-        "server/onespace-cloud-agent/config.example.json",
-        "server/onespace-cloud-agent/agent.py",
-        "server/onespace-cloud-agent/core/__init__.py",
-        "server/onespace-cloud-agent/core/disk_guardian.py",
-        "server/onespace-cloud-agent/core/gateway.py",
-        "server/onespace-cloud-agent/core/issue_worker.py",
-        "server/onespace-cloud-agent/core/notifier.py",
-        "server/onespace-cloud-agent/core/session_runner.py",
-        "server/onespace-cloud-agent/systemd/onespace-cloud-agent.service",
-        "src-tauri/tauri.conf.json",
-        "src-tauri/src/app_runtime/run_app.rs"
-      ],
-      "tests": [
-        "src/components/CloudAgent/CloudAgent.test.tsx",
-        "src/components/CloudAgent/CloudAgentDeploymentDialog.test.tsx",
-        "src/components/CloudAgent/GatewayPanel.test.tsx",
-        "src/components/CloudAgent/components/PrPipelineTab.test.tsx",
-        "src/lib/cloudAgent.test.ts",
-        "src/lib/cloudAgent.plan.test.ts",
-        "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
-        "src/components/CloudAgent/LocalPlanForm.test.tsx",
-        "src/components/CloudAgent/PlanPipeline.test.tsx",
-        "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
-        "src-tauri/src/cloud_agent/tests.rs",
-        "src-tauri/src/cloud_agent/deployment_tests.rs",
-        "server/onespace-cloud-agent/tests/test_plan_execution.py",
-        "server/onespace-cloud-agent/tests/test_plan_flow.py",
-        "server/onespace-cloud-agent/tests/test_plan_opencode.py",
-        "server/onespace-cloud-agent/tests/test_plan_tasks.py",
-        "server/onespace-cloud-agent/tests/test_plan_workspace.py"
-      ],
-      "depends_on": [],
-      "relations": [
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/ToastProvider.tsx#useToast"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/hooks/useCloudAgent.ts#useCloudAgent"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/CloudAgentHeader.tsx#CloudAgentHeader"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/ActiveSessionsTab.tsx#ActiveSessionsTab"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx#WorktreesHistoryTab"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/PrPipelineTab.tsx#PrPipelineTab"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/GatewayPanel.tsx#GatewayPanel"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel",
-          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx#CloudAgentDeploymentDialog"
-        },
-        {
-          "kind": "imports",
-          "from": "src-tauri/src/cloud_agent/commands.rs#cloud_agent_get_installation_info",
-          "to": "src-tauri/src/cloud_agent/deployment.rs#inspect_installation"
-        },
-        {
-          "kind": "imports",
-          "from": "src-tauri/src/cloud_agent/commands.rs#cloud_agent_deploy",
-          "to": "src-tauri/src/cloud_agent/deployment.rs#run_deploy_process_async"
-        },
-        {
-          "kind": "imports",
-          "from": "src-tauri/src/cloud_agent/ssh.rs#get_cloud_status",
-          "to": "src-tauri/src/cloud_agent/deployment.rs#build_status_command"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/components/NewSessionDialog.tsx#NewSessionDialog",
-          "to": "src/components/CloudAgent/components/LocalPlanForm.tsx#LocalPlanForm"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/components/ActiveSessionsTab.tsx#ActiveSessionsTab",
-          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/components/PrPipelineTab.tsx#PrPipelineTab",
-          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/components/WorktreesHistoryTab.tsx#WorktreesHistoryTab",
-          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/hooks/useCloudAgent.ts#CloudAgentTab"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx#CloudAgentRuntimeCard"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/CloudAgent/index.tsx#CloudAgent",
-          "to": "src/components/CloudAgent/components/CloudEmptyState.tsx#CloudEmptyState"
-        }
-      ],
-      "owner_role": "shared",
-      "responsibility": "OneSpace桌面端与OneSpace Cloud Agent深度协同管理套件，包括云端长程编程会话看板、macOS本地原生终端一键直连、AI网关安全双端同步、24/7自动PR流水线监控、OpenCode yolo授权配置、本地冻结计划提交与云端计划执行及接管，以及一键安装检查与部署交接",
-      "read_scope": [
-        "src/components/CloudAgent/index.tsx",
-        "src/components/CloudAgent/components/ActiveSessionsTab.tsx",
-        "src/components/CloudAgent/components/WorktreesHistoryTab.tsx",
-        "src/components/CloudAgent/components/PrPipelineTab.tsx",
-        "src/components/CloudAgent/components/GatewayPanel.tsx",
-        "src/components/CloudAgent/components/NewSessionDialog.tsx",
-        "src/components/CloudAgent/components/LocalPlanForm.tsx",
-        "src/components/CloudAgent/components/NewSessionModal.tsx",
-        "src/components/CloudAgent/components/CloudAgentHeader.tsx",
-        "src/components/CloudAgent/hooks/useCloudAgent.ts",
-        "src/components/CloudAgent/components/CloudAgentDeploymentDialog.tsx",
-        "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
-        "src/lib/cloudAgent.ts",
-        "src/components/CloudAgent/CloudAgent.test.tsx",
-        "src/components/CloudAgent/WorktreesHistoryTab.test.tsx",
-        "src/components/CloudAgent/CloudAgentDeploymentDialog.test.tsx",
-        "src/lib/cloudAgent.test.ts",
-        "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
-        "src/i18n/locales/en/cloudAgent.ts",
-        "src/i18n/locales/zh/cloudAgent.ts",
-        "src-tauri/src/cloud_agent.rs",
-        "src-tauri/src/cloud_agent/commands.rs",
-        "src-tauri/src/cloud_agent/types.rs",
-        "src-tauri/src/cloud_agent/settings.rs",
-        "src-tauri/src/cloud_agent/ssh.rs",
-        "src-tauri/src/cloud_agent/local_plans.rs",
-        "src-tauri/src/cloud_agent/plan_transfer.rs",
-        "src-tauri/src/cloud_agent/terminal.rs",
-        "src-tauri/src/cloud_agent/gateway_sync.rs",
-        "src-tauri/src/cloud_agent/tests.rs",
-        "src-tauri/src/cloud_agent/deployment.rs",
-        "src-tauri/src/cloud_agent/deployment_tests.rs",
-        "server/onespace-cloud-agent/deploy.sh",
-        "server/onespace-cloud-agent/bootstrap.sh",
-        "server/onespace-cloud-agent/VERSION",
-        "server/onespace-cloud-agent/config.default.json",
-        "server/onespace-cloud-agent/config.example.json",
-        "server/onespace-cloud-agent/agent.py",
-        "server/onespace-cloud-agent/core/__init__.py",
-        "server/onespace-cloud-agent/core/disk_guardian.py",
-        "server/onespace-cloud-agent/core/gateway.py",
-        "server/onespace-cloud-agent/core/issue_worker.py",
-        "server/onespace-cloud-agent/core/notifier.py",
-        "server/onespace-cloud-agent/core/session_runner.py",
-        "server/onespace-cloud-agent/systemd/onespace-cloud-agent.service",
-        "src-tauri/tauri.conf.json",
-        "src-tauri/src/app_runtime/run_app.rs",
-        "server/onespace-cloud-agent/tests/test_plan_execution.py",
-        "server/onespace-cloud-agent/tests/test_plan_flow.py",
-        "server/onespace-cloud-agent/tests/test_plan_opencode.py",
-        "server/onespace-cloud-agent/tests/test_plan_tasks.py",
-        "server/onespace-cloud-agent/tests/test_plan_workspace.py",
-        "server/onespace-cloud-agent/core/plan_execution.py",
-        "server/onespace-cloud-agent/core/plan_opencode.py",
-        "server/onespace-cloud-agent/core/plan_tasks.py",
-        "server/onespace-cloud-agent/core/plan_workspace.py",
-        "src/components/CloudAgent/GatewayPanel.test.tsx",
-        "src/components/CloudAgent/LocalPlanForm.test.tsx",
-        "src/components/CloudAgent/PlanPipeline.test.tsx",
-        "src/components/CloudAgent/components/CloudAgentRuntimeCard.tsx",
-        "src/components/CloudAgent/components/CloudEmptyState.tsx",
-        "src/components/CloudAgent/components/PrPipelineTab.test.tsx",
-        "src/lib/cloudAgent.plan.test.ts"
-      ],
-      "shared_entry": false
-    },
-    {
-      "id": "network-proxy",
-      "name": "Unified Network Proxy",
-      "aliases": [
-        "network-proxy",
-        "global-network-proxy",
-        "application-network-proxy"
-      ],
-      "module_root": "src-tauri/src",
-      "entries": [
-        "src-tauri/src/proxy.rs",
-        "src-tauri/src/config/commands.rs",
-        "src-tauri/src/config/types.rs",
-        "src-tauri/src/app_runtime/runtime_services.rs",
-        "src-tauri/src/app_runtime/run_app.rs",
-        "src-tauri/src/updater.rs",
-        "src-tauri/src/ssl_certificate/acme_http.rs"
-      ],
-      "symbols": [
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "PROXY_CONFIG_UPDATED_EVENT",
-          "kind": "const",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "PROXY_MANAGER",
-          "kind": "static",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "PreparedProxy",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "ProxyManager",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "ProxySnapshot",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "ProxyStatus",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "apply_current_proxy_env_to_command",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "apply_current_proxy_to_builder",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "apply_process_proxy_env",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "apply_proxy_env_to_command",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "apply_proxy_policy",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "current_client",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "proxy_env_vars",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "proxy_generation",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/proxy.rs",
-          "name": "test_proxy_connection",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/ssl_certificate/acme_http.rs",
-          "name": "AcmeHttpClient",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "APP_UPDATER_DOWNLOAD_EVENT",
-          "kind": "const",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "AppUpdateMetadata",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "AppUpdaterDownloadEvent",
-          "kind": "enum",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "AppUpdaterState",
-          "kind": "struct",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "app_updater_check",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "app_updater_discard",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "app_updater_download",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "app_updater_install",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src-tauri/src/updater.rs",
-          "name": "app_updater_shutdown",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/components/settings/sections/services/ProxySettingsPanel.tsx",
-          "name": "ProxySettingsPanel",
-          "kind": "function",
-          "visibility": "public"
-        },
-        {
-          "file": "src/lib/updater.ts",
-          "name": "invalidateUpdaterTransport",
-          "kind": "function",
-          "visibility": "public"
-        }
-      ],
-      "related_files": [
-        "docs/network-proxy.md",
-        "package.json",
-        "src-tauri/Cargo.toml",
-        "src-tauri/capabilities/default.json",
-        "src-tauri/src/ai_gateway.rs",
-        "src-tauri/src/ai_gateway/auto_refresh.rs",
-        "src-tauri/src/ai_gateway/commands.rs",
-        "src-tauri/src/ai_gateway/forwarding.rs",
-        "src-tauri/src/ai_gateway/go_usage.rs",
-        "src-tauri/src/ai_gateway/migration.rs",
-        "src-tauri/src/ai_gateway/quota.rs",
-        "src-tauri/src/ai_gateway/templates/source.rs",
-        "src-tauri/src/ai_gateway/zen_sidecar.rs",
-        "src-tauri/src/app_runtime/shortcuts_tray.rs",
-        "src-tauri/src/config/storage.rs",
-        "src-tauri/src/lib.rs",
-        "src-tauri/src/proxy/test_support.rs",
-        "src-tauri/src/ssl_certificate/acme.rs",
-        "src-tauri/tauri.conf.json",
-        "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx",
-        "src/components/settings/sections/services/ProxySettingsPanel.tsx",
-        "src/components/settings/settingsContainer/save.ts",
-        "src/lib/updater.ts",
-        "src/test/mocks/tauri.ts"
-      ],
-      "tests": [
-        "src-tauri/src/ai_gateway/tests/auto_refresh.rs",
-        "src-tauri/src/ai_gateway/tests/go_usage.rs",
-        "src-tauri/src/ai_gateway/tests/migration.rs",
-        "src-tauri/src/ai_gateway/tests/proxy_switch.rs",
-        "src-tauri/src/ai_gateway/tests/quota.rs",
-        "src-tauri/src/ai_gateway/tests/templates.rs",
-        "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
-        "src-tauri/src/proxy/tests.rs",
-        "src-tauri/src/ssl_certificate/tests.rs",
-        "src-tauri/src/updater/tests.rs",
-        "src/components/AboutModal.test.tsx",
-        "src/components/SettingsView.test.tsx",
-        "src/lib/aiGateway.test.ts",
-        "src/lib/updater.test.ts"
-      ],
-      "depends_on": [],
-      "relations": [],
-      "owner_role": "backend",
-      "responsibility": "One global proxy snapshot with atomic publication, generation-scoped transport caches and flights, draining Zen relay leases, per-request ACME transport and a native updater facade over the official SDK",
-      "read_scope": [
-        "docs/network-proxy.md",
-        "package.json",
-        "src-tauri/Cargo.toml",
-        "src-tauri/capabilities/default.json",
-        "src-tauri/src/ai_gateway.rs",
-        "src-tauri/src/ai_gateway/auto_refresh.rs",
-        "src-tauri/src/ai_gateway/commands.rs",
-        "src-tauri/src/ai_gateway/forwarding.rs",
-        "src-tauri/src/ai_gateway/go_usage.rs",
-        "src-tauri/src/ai_gateway/migration.rs",
-        "src-tauri/src/ai_gateway/quota.rs",
-        "src-tauri/src/ai_gateway/templates/source.rs",
-        "src-tauri/src/ai_gateway/tests/auto_refresh.rs",
-        "src-tauri/src/ai_gateway/tests/go_usage.rs",
-        "src-tauri/src/ai_gateway/tests/migration.rs",
-        "src-tauri/src/ai_gateway/tests/proxy_switch.rs",
-        "src-tauri/src/ai_gateway/tests/quota.rs",
-        "src-tauri/src/ai_gateway/tests/templates.rs",
-        "src-tauri/src/ai_gateway/tests/zen_sidecar.rs",
-        "src-tauri/src/ai_gateway/zen_sidecar.rs",
-        "src-tauri/src/app_runtime/run_app.rs",
-        "src-tauri/src/app_runtime/runtime_services.rs",
-        "src-tauri/src/app_runtime/shortcuts_tray.rs",
-        "src-tauri/src/config/commands.rs",
-        "src-tauri/src/config/storage.rs",
-        "src-tauri/src/config/types.rs",
-        "src-tauri/src/lib.rs",
-        "src-tauri/src/proxy.rs",
-        "src-tauri/src/proxy/test_support.rs",
-        "src-tauri/src/proxy/tests.rs",
-        "src-tauri/src/ssl_certificate/acme.rs",
-        "src-tauri/src/ssl_certificate/acme_http.rs",
-        "src-tauri/src/ssl_certificate/tests.rs",
-        "src-tauri/src/updater.rs",
-        "src-tauri/src/updater/tests.rs",
-        "src-tauri/tauri.conf.json",
-        "src/components/AboutModal.test.tsx",
-        "src/components/SettingsView.test.tsx",
-        "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx",
-        "src/components/settings/sections/services/ProxySettingsPanel.tsx",
-        "src/components/settings/settingsContainer/save.ts",
-        "src/lib/aiGateway.test.ts",
-        "src/lib/updater.test.ts",
-        "src/lib/updater.ts",
-        "src/test/mocks/tauri.ts"
       ],
       "shared_entry": false
     }
