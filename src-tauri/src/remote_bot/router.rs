@@ -77,15 +77,21 @@ impl CommandRouter {
                 • `/projects` - 查看和选择工作区项目\n\n\
                 🚀 *AI 研发流水线*\n\
                 • `/newfeat <需求内容>` - 启动新需求规划与 OpenCode 编码\n\
+                • `/plans` - 查看工作区已有规划方案列表并直接实施\n\
+                • `/coding <planId>` - 直接实施指定的已规划方案\n\
                 • `/cancel` - 中断当前正在执行的任务";
             self.client.send_message(chat_id, help_text, None, Some("Markdown")).await?;
         } else if text == "/status" {
             self.handle_status_command(chat_id).await?;
         } else if text == "/projects" {
             self.handle_projects_command(chat_id).await?;
+        } else if text == "/plans" {
+            self.handle_plans_command(chat_id).await?;
         } else if text == "/cancel" {
             self.bridge.cancel_active_task().await;
             self.client.send_message(chat_id, "🛑 当前进行中的任务与多轮规划会话已取消。", None, Some("Markdown")).await?;
+        } else if text.starts_with("/coding") || text.starts_with("/implement") {
+            self.handle_coding_command(chat_id, text).await?;
         } else if text.starts_with("/newfeat") {
             let prompt = text.trim_start_matches("/newfeat").trim();
             if prompt.is_empty() {
@@ -198,6 +204,122 @@ impl CommandRouter {
         );
 
         self.client.send_message(chat_id, &text, Some(markup), Some("Markdown")).await?;
+        Ok(())
+    }
+
+    async fn handle_plans_command(&self, chat_id: i64) -> Result<(), String> {
+        let config = load_config()?;
+        let project_dir = resolve_project_dir(&config);
+        let plans_dir = project_dir.join(".ai-workflow").join("plans");
+
+        let mut available_plans: Vec<(String, std::time::SystemTime)> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&plans_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() && path.join("plan.md").is_file() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let mtime = path.join("plan.md").metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    available_plans.push((name, mtime));
+                }
+            }
+        }
+
+        if available_plans.is_empty() {
+            self.client.send_message(
+                chat_id,
+                "📂 当前工作区的 `.ai-workflow/plans/` 下未检测到任何方案。\n输入 `/newfeat <需求描述>` 可开始新方案规划。",
+                None,
+                None,
+            ).await?;
+            return Ok(());
+        }
+
+        // 按修改时间降序排序，最新的排在最前
+        available_plans.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut keyboard_rows = Vec::new();
+        let mut msg_lines = Vec::new();
+        msg_lines.push("📋 【工作区方案列表 (Plans)】".to_string());
+        msg_lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
+        msg_lines.push("点击下方按钮即可直接为指定方案启动 Coding 实施，或使用指令 `/coding <planId>`：\n".to_string());
+
+        // 展示最新的最多 8 个
+        for (idx, (plan_id, _mtime)) in available_plans.iter().take(8).enumerate() {
+            let num = idx + 1;
+            msg_lines.push(format!("{}. `{}`", num, plan_id));
+            keyboard_rows.push(vec![
+                InlineKeyboardButton::callback(
+                    format!("🚀 实施: {}", plan_id),
+                    format!("approve_plan:{}", plan_id),
+                )
+            ]);
+        }
+
+        let markup = InlineKeyboardMarkup::new(keyboard_rows);
+        self.client.send_message(
+            chat_id,
+            &msg_lines.join("\n"),
+            Some(markup),
+            Some("Markdown"),
+        ).await?;
+
+        Ok(())
+    }
+
+    async fn handle_coding_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
+        let config = load_config()?;
+        let project_dir = resolve_project_dir(&config);
+
+        let arg = if let Some(stripped) = text.strip_prefix("/coding") {
+            stripped.trim()
+        } else if let Some(stripped) = text.strip_prefix("/implement") {
+            stripped.trim()
+        } else {
+            ""
+        };
+
+        if arg.is_empty() {
+            self.client.send_message(
+                chat_id,
+                "⚠️ 请指定要实施的方案标识 (planId)，例如：\n`/coding 20261106-settings-service-categories`\n\n或输入 `/plans` 查看当前可选方案列表。",
+                None,
+                None,
+            ).await?;
+            return Ok(());
+        }
+
+        let clean_plan_id = arg
+            .trim_start_matches(".ai-workflow/plans/")
+            .trim_start_matches("plans/")
+            .trim_matches('/')
+            .to_string();
+
+        let plan_file = project_dir.join(".ai-workflow").join("plans").join(&clean_plan_id).join("plan.md");
+        if !plan_file.is_file() {
+            let not_found_msg = format!(
+                "⚠️ 未找到方案 `{}`\n文件不存在: `{}`\n\n输入 `/plans` 可查看当前工作区所有可用方案。",
+                clean_plan_id,
+                plan_file.display()
+            );
+            self.client.send_message(chat_id, &not_found_msg, None, Some("Markdown")).await?;
+            return Ok(());
+        }
+
+        let ack_text = format!(
+            "🚀 确认启动指定方案的 Coding 实施\n\
+            ━━━━━━━━━━━━━━━━━━━━\n\
+            📋 方案: {}\n\
+            📂 目标项目: {}\n\n\
+            正在拉起全新独立会话启动 Coding 实施...",
+            clean_plan_id,
+            project_dir.display()
+        );
+        self.client.send_message(chat_id, &ack_text, None, None).await?;
+
+        if let Err(e) = self.bridge.execute_coding(chat_id, project_dir, &clean_plan_id).await {
+            self.client.send_message(chat_id, &format!("❌ 启动 Coding 实施失败: {}", e), None, None).await?;
+        }
+
         Ok(())
     }
 

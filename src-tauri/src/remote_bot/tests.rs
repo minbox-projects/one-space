@@ -158,7 +158,10 @@ async fn test_locate_new_plan_file_filter_history() {
     let start_time = SystemTime::now();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let tg_client = Arc::new(TelegramClient::new("dummy_token"));
+    // 从环境变量读取 Bot Token（若未设置则安全 fallback）
+    let test_token = std::env::var("TELEGRAM_BOT_TOKEN")
+        .unwrap_or_else(|_| "env_test_token".to_string());
+    let tg_client = Arc::new(TelegramClient::new(test_token));
     let bridge = OpenCodeBridge::new(tg_client);
 
     // 此时应该找不到新方案
@@ -286,4 +289,50 @@ fn test_plan_confirmation_buttons_and_coding_prompt() {
         .trim_matches('/');
     let coding_prompt = format!("调用 coding 技能，实施 .ai-workflow/plans/{}", clean_plan_id);
     assert_eq!(coding_prompt, "调用 coding 技能，实施 .ai-workflow/plans/20261106-network-settings");
+}
+
+#[tokio::test]
+async fn test_telegram_client_token_from_env() {
+    use super::client::TelegramClient;
+
+    // 优先通过环境变量 TELEGRAM_BOT_TOKEN 进行客户端初始化
+    let token = std::env::var("TELEGRAM_BOT_TOKEN")
+        .unwrap_or_else(|_| "env_test_token".to_string());
+    assert!(!token.is_empty());
+
+    let client = TelegramClient::new(&token);
+    assert_eq!(client.token(), token);
+
+    // 若环境变量中配置了有效的 Bot Token，则自动化执行连通性真实校验
+    if let Ok(live_token) = std::env::var("TELEGRAM_BOT_TOKEN") {
+        let trimmed = live_token.trim();
+        if !trimmed.is_empty() {
+            let live_client = TelegramClient::new(trimmed);
+            let res = live_client.get_me().await;
+            assert!(res.is_ok(), "配置了 TELEGRAM_BOT_TOKEN 环境变量时，测试连接应成功: {:?}", res.err());
+            let user = res.unwrap();
+            assert!(user.is_bot);
+        }
+    }
+}
+
+#[test]
+fn test_plan_id_cleaning_and_resolution() {
+    let raw_inputs = [
+        "20261106-settings-service-categories",
+        ".ai-workflow/plans/20261106-settings-service-categories",
+        "plans/20261106-settings-service-categories/",
+        "/20261106-settings-service-categories/",
+    ];
+
+    for input in &raw_inputs {
+        let clean = input
+            .trim_start_matches(".ai-workflow/plans/")
+            .trim_start_matches("plans/")
+            .trim_matches('/');
+        assert_eq!(clean, "20261106-settings-service-categories");
+
+        let prompt = format!("调用 coding 技能，实施 .ai-workflow/plans/{}", clean);
+        assert_eq!(prompt, "调用 coding 技能，实施 .ai-workflow/plans/20261106-settings-service-categories");
+    }
 }
