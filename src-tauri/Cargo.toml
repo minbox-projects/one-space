@@ -1,6 +1,6 @@
 [package]
 name = "OneSpace"
-version = "0.1.59-beta.2"
+version = "0.1.59"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
