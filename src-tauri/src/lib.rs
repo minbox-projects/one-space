@@ -24,6 +24,7 @@ mod messages;
 mod protocol_router;
 mod proxy;
 pub mod realtime_client;
+pub mod remote_bot;
 mod runtime_profiles;
 mod secrets;
 mod server_monitor;
