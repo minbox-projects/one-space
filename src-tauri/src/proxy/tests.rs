@@ -23,6 +23,7 @@ fn cfg_auth(enabled: bool, ty: &str, host: &str, port: u16, user: &str, pass: &s
 
 fn port_of(url: &str) -> u16 {
     url.trim_start_matches("http://")
+        .trim_start_matches("socks5h://")
         .trim_start_matches("socks5://")
         .split(':')
         .nth(1)
