@@ -98,6 +98,26 @@ impl RemoteBotManager {
                 status.bot_name = Some(user.first_name.clone());
                 status.last_error = None;
                 info!("Remote Bot 连通成功: @{:?} ({})", user.username, user.first_name);
+
+                // 注册 Telegram 官方原生菜单按钮 (setMyCommands)
+                let default_commands = vec![
+                    BotCommand { command: "plans".to_string(), description: "查看工作区方案列表及状态".to_string() },
+                    BotCommand { command: "progress".to_string(), description: "查看当前或指定方案的实施进度".to_string() },
+                    BotCommand { command: "diff".to_string(), description: "查看最新代码改动对比或方案差异".to_string() },
+                    BotCommand { command: "coding".to_string(), description: "直接实施指定的已规划方案".to_string() },
+                    BotCommand { command: "status".to_string(), description: "查看主机状态、Git分支与系统信息".to_string() },
+                    BotCommand { command: "projects".to_string(), description: "切换目标项目工作区".to_string() },
+                    BotCommand { command: "cancel".to_string(), description: "中断当前正在执行的任务或会话".to_string() },
+                    BotCommand { command: "help".to_string(), description: "查看使用说明与指令指南".to_string() },
+                ];
+                let client_cmd = client.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = client_cmd.set_my_commands(default_commands).await {
+                        warn!("注册 Telegram 原生 Bot 菜单失败 (不影响核心通信): {}", e);
+                    } else {
+                        info!("Telegram 原生 Bot 菜单注册成功！");
+                    }
+                });
             }
             Err(e) => {
                 let mut status = self.status.write().await;

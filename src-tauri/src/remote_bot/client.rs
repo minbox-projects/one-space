@@ -260,4 +260,57 @@ impl TelegramClient {
             Err(body.description.unwrap_or_else(|| "answerCallbackQuery 失败".to_string()))
         }
     }
+
+    /// 向 Telegram 注册官方 Bot 快捷命令菜单
+    pub async fn set_my_commands(&self, commands: Vec<super::types::BotCommand>) -> Result<bool, String> {
+        let client = self.http_client(Duration::from_secs(15))?;
+        let url = format!("{}/setMyCommands", self.base_url);
+        let payload = super::types::SetMyCommandsPayload { commands };
+
+        let resp = client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("setMyCommands 失败: {}", e))?;
+
+        let body: TelegramResponse<bool> = resp
+            .json()
+            .await
+            .map_err(|e| format!("解析 setMyCommands 响应失败: {}", e))?;
+
+        if body.ok {
+            Ok(body.result.unwrap_or(true))
+        } else {
+            Err(body.description.unwrap_or_else(|| "setMyCommands 失败".to_string()))
+        }
+    }
+
+    /// 发送聊天状态心跳（如 typing 表示正在输入/思考中）
+    pub async fn send_chat_action(&self, chat_id: i64, action: &str) -> Result<bool, String> {
+        let client = self.http_client(Duration::from_secs(10))?;
+        let url = format!("{}/sendChatAction", self.base_url);
+        let payload = super::types::SendChatActionPayload {
+            chat_id,
+            action: action.to_string(),
+        };
+
+        let resp = client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("sendChatAction 失败: {}", e))?;
+
+        let body: TelegramResponse<bool> = resp
+            .json()
+            .await
+            .map_err(|e| format!("解析 sendChatAction 响应失败: {}", e))?;
+
+        if body.ok {
+            Ok(body.result.unwrap_or(true))
+        } else {
+            Err(body.description.unwrap_or_else(|| "sendChatAction 失败".to_string()))
+        }
+    }
 }

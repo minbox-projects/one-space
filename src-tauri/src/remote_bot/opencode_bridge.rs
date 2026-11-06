@@ -343,7 +343,7 @@ impl OpenCodeBridge {
 
         let stdout = child.stdout.take().ok_or_else(|| "无法获取 opencode stdout".to_string())?;
 
-        // 启动提问与权限轮询守卫
+        // 启动提问与权限轮询守卫，并维持 typing 状态心跳
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let poll_guard = self.spawn_question_and_permission_poller(
             chat_id,
@@ -351,6 +351,7 @@ impl OpenCodeBridge {
             server_url.clone(),
             cancel_flag.clone(),
         );
+        let typing_guard = self.spawn_typing_heartbeat(chat_id, cancel_flag.clone());
 
         let mut reader = BufReader::new(stdout).lines();
         let mut captured_session_id: Option<String> = session_id_opt.clone();
@@ -380,6 +381,7 @@ impl OpenCodeBridge {
 
         cancel_flag.store(true, Ordering::SeqCst);
         let _ = poll_guard.await;
+        let _ = typing_guard.await;
 
         if let Some(ref sid) = captured_session_id {
             *self.active_session_id.write().await = Some(sid.clone());
@@ -569,6 +571,22 @@ impl OpenCodeBridge {
         })
     }
 
+    /// 维持 Telegram 聊天窗口中持续的 typing 输入态心跳（每 4 秒触发一次）
+    fn spawn_typing_heartbeat(
+        &self,
+        chat_id: i64,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> tokio::task::JoinHandle<()> {
+        let tg = self.telegram_client.clone();
+
+        tokio::spawn(async move {
+            while !cancel_flag.load(Ordering::Relaxed) {
+                let _ = tg.send_chat_action(chat_id, "typing").await;
+                tokio::time::sleep(Duration::from_millis(4000)).await;
+            }
+        })
+    }
+
     /// 回复指定的 OpenCode 提问
     pub async fn reply_question(&self, request_id: &str, answer: &str) -> Result<(), String> {
         let server_url = self.ensure_server().await?;
@@ -646,6 +664,17 @@ impl OpenCodeBridge {
         project_dir: PathBuf,
         plan_identifier: &str,
     ) -> Result<(), String> {
+        self.execute_coding_with_prompt(chat_id, project_dir, plan_identifier, None).await
+    }
+
+    /// 在全新独立会话中拉起 OpenCode 执行指定提示词的 coding 技能实施（支持自愈修复提示词）
+    pub async fn execute_coding_with_prompt(
+        self: &Arc<Self>,
+        chat_id: i64,
+        project_dir: PathBuf,
+        plan_identifier: &str,
+        custom_prompt: Option<String>,
+    ) -> Result<(), String> {
         if self.is_busy.swap(true, Ordering::SeqCst) {
             return Err("已有正在运行的任务，请等待当前任务完成".to_string());
         }
@@ -658,15 +687,33 @@ impl OpenCodeBridge {
         let plan_tag = plan_identifier.to_string();
 
         tokio::spawn(async move {
-            let res = bridge.run_coding_inner(chat_id, project_dir, &plan_tag).await;
+            let res = bridge.run_coding_inner(chat_id, project_dir, &plan_tag, custom_prompt).await;
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("Coding 实施失败: {}", e);
-                let error_text = format!("❌ 【Coding 实施中断】\n\n原因:\n{}", e);
+                let clean_plan = plan_tag
+                    .trim_start_matches(".ai-workflow/plans/")
+                    .trim_start_matches("plans/")
+                    .trim_matches('/');
+
+                let error_text = format!(
+                    "❌ 【Coding 实施中断或未通过审核】\n\
+                    ━━━━━━━━━━━━━━━━━━━━\n\
+                    {}\n\
+                    ━━━━━━━━━━━━━━━━━━━━\n\
+                    👉 您可以点击下方按钮尝试自愈修复，或查看诊断日志：",
+                    e
+                );
+
+                let markup = InlineKeyboardMarkup::new(vec![vec![
+                    InlineKeyboardButton::callback("🔁 携带报错继续修复", format!("retry_repair:{}", clean_plan)),
+                    InlineKeyboardButton::callback("📄 查看诊断日志", format!("view_failure_log:{}", clean_plan)),
+                ]]);
+
                 let _ = bridge.telegram_client.send_message(
                     chat_id,
                     &error_text,
-                    None,
+                    Some(markup),
                     None,
                 ).await;
             }
@@ -680,23 +727,33 @@ impl OpenCodeBridge {
         chat_id: i64,
         project_dir: PathBuf,
         plan_identifier: &str,
+        custom_prompt: Option<String>,
     ) -> Result<(), String> {
         let server_url = self.ensure_server().await?;
-
-        let status_msg = self.telegram_client.send_message(
-            chat_id,
-            "🚀 【全新会话已创建】OpenCode 正在实施编码...\n━━━━━━━━━━━━━━━━━━━━\n⏳ 状态: 基于当前分支创建本地临时 worktree 并实施任务...",
-            None,
-            None,
-        ).await?;
 
         let clean_plan_id = plan_identifier
             .trim_start_matches(".ai-workflow/plans/")
             .trim_start_matches("plans/")
-            .trim_matches('/');
+            .trim_matches('/')
+            .to_string();
 
-        // 用户明确指定提示词：调用 coding 技能，实施 .ai-workflow/plans/{planId}
-        let coding_prompt = format!("调用 coding 技能，实施 .ai-workflow/plans/{}", clean_plan_id);
+        let status_desc = if custom_prompt.is_some() {
+            "🔄 【修复会话已启动】OpenCode 正在排查并实施自愈修复...\n━━━━━━━━━━━━━━━━━━━━\n⏳ 状态: 针对上一轮验证未通过项正在调整代码与测试..."
+        } else {
+            "🚀 【全新会话已创建】OpenCode 正在实施编码...\n━━━━━━━━━━━━━━━━━━━━\n⏳ 状态: 基于当前分支创建本地临时 worktree 并实施任务..."
+        };
+
+        let status_msg = self.telegram_client.send_message(
+            chat_id,
+            status_desc,
+            None,
+            None,
+        ).await?;
+
+        // 默认提示词：调用 coding 技能，实施 .ai-workflow/plans/{planId}
+        let coding_prompt = custom_prompt.unwrap_or_else(|| {
+            format!("调用 coding 技能，实施 .ai-workflow/plans/{}", clean_plan_id)
+        });
 
         let mut child = Command::new("opencode")
             .arg("run")
@@ -722,6 +779,7 @@ impl OpenCodeBridge {
             server_url.clone(),
             cancel_flag.clone(),
         );
+        let typing_guard = self.spawn_typing_heartbeat(chat_id, cancel_flag.clone());
 
         let mut reader = BufReader::new(stdout).lines();
         let mut text_parts: Vec<String> = Vec::new();
@@ -745,6 +803,7 @@ impl OpenCodeBridge {
 
         cancel_flag.store(true, Ordering::SeqCst);
         let _ = poll_guard.await;
+        let _ = typing_guard.await;
 
         let accumulated_text = text_parts.join("\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -757,6 +816,7 @@ impl OpenCodeBridge {
             output.status.success(),
             &accumulated_text,
             &stderr,
+            &clean_plan_id,
         ).await
     }
 
@@ -769,6 +829,7 @@ impl OpenCodeBridge {
         process_success: bool,
         stdout: &str,
         stderr: &str,
+        clean_plan_id: &str,
     ) -> Result<(), String> {
         // 1. 进程退出码
         if !process_success {
@@ -811,7 +872,7 @@ impl OpenCodeBridge {
             _ => "变更文件已由 Git Operator 记录".to_string(),
         };
 
-        // 4. 发送成功卡片
+        // 4. 发送成功卡片，增加 [🔍 查看改动 Diff] 和 [📊 实施报告] 按钮
         let success_text = format!(
             "🎉 *【Coding 实施圆满完成】*\n\
             ━━━━━━━━━━━━━━━━━━━━\n\
@@ -837,10 +898,15 @@ impl OpenCodeBridge {
             Some("Markdown"),
         ).await;
 
+        let markup = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("🔍 查看改动 Diff", format!("view_diff:{}", clean_plan_id)),
+            InlineKeyboardButton::callback("📊 实施报告", format!("check_progress:{}", clean_plan_id)),
+        ]]);
+
         self.telegram_client.send_message(
             chat_id,
             &success_text,
-            None,
+            Some(markup),
             Some("Markdown"),
         ).await?;
 

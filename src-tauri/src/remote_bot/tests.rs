@@ -391,3 +391,53 @@ started_at: "2026-11-06T10:00:00+08:00"
     // 清理
     let _ = std::fs::remove_dir_all(&temp_root);
 }
+
+#[test]
+fn test_bot_command_and_chat_action_serialization() {
+    use super::types::{BotCommand, SetMyCommandsPayload, SendChatActionPayload};
+
+    let cmd1 = BotCommand { command: "plans".to_string(), description: "查看方案".to_string() };
+    let cmd2 = BotCommand { command: "diff".to_string(), description: "查看差异".to_string() };
+    let payload = SetMyCommandsPayload { commands: vec![cmd1, cmd2] };
+
+    let json = serde_json::to_string(&payload).expect("序列化 setMyCommands payload 成功");
+    assert!(json.contains("plans"));
+    assert!(json.contains("diff"));
+
+    let action_payload = SendChatActionPayload {
+        chat_id: 1234567,
+        action: "typing".to_string(),
+    };
+    let action_json = serde_json::to_string(&action_payload).expect("序列化 sendChatAction payload 成功");
+    assert!(action_json.contains("1234567"));
+    assert!(action_json.contains("typing"));
+}
+
+#[test]
+fn test_diff_snippet_truncation() {
+    let raw_diff = "diff --git a/file.rs b/file.rs\n+ line 1\n".repeat(100);
+    let limit = 1200;
+    let snippet = if raw_diff.len() > limit {
+        format!("{}\n\n...（差异较大，已截取前 1200 字符）...", &raw_diff[..limit])
+    } else {
+        raw_diff.clone()
+    };
+
+    assert!(snippet.len() > limit);
+    assert!(snippet.contains("差异较大，已截取前 1200 字符"));
+}
+
+#[test]
+fn test_failure_log_tail_extraction() {
+    let sample_logs = (1..=50).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+    let lines: Vec<&str> = sample_logs.lines().collect();
+    let tail_lines = if lines.len() > 30 {
+        lines[lines.len() - 30..].to_vec()
+    } else {
+        lines
+    };
+
+    assert_eq!(tail_lines.len(), 30);
+    assert_eq!(tail_lines[0], "Line 21");
+    assert_eq!(tail_lines[29], "Line 50");
+}

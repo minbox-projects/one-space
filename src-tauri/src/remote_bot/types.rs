@@ -164,3 +164,20 @@ pub struct AnswerCallbackQueryPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_alert: Option<bool>,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BotCommand {
+    pub command: String,
+    pub description: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SetMyCommandsPayload {
+    pub commands: Vec<BotCommand>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SendChatActionPayload {
+    pub chat_id: i64,
+    pub action: String,
+}

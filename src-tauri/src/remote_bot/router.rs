@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use log::{info, warn};
+use tokio::process::Command;
 
 use super::auth::AuthGuard;
 use super::client::TelegramClient;
@@ -73,12 +74,13 @@ impl CommandRouter {
                 "🤖 *OneSpace 移动智能工作台*\n\n\
                 您已通过鉴权，随时可以下发指令或直接对话交流：\n\n\
                 📌 *基础运维*\n\
-                • `/status` - 查看 Mac 状态与 AI 网关情况\n\
+                • `/status` - 查看 Mac 状态、Git 分支与最新提交\n\
                 • `/projects` - 查看和选择工作区项目\n\n\
                 🚀 *AI 研发流水线*\n\
                 • `/newfeat <需求内容>` - 启动新需求规划与 OpenCode 编码\n\
                 • `/plans` - 查看工作区已有规划方案列表及状态\n\
                 • `/progress [planId]` - 查看指定或当前正在实施方案的进度\n\
+                • `/diff [planId]` - 查看最新代码改动对比或方案差异\n\
                 • `/coding <planId>` - 直接实施指定的已规划方案\n\
                 • `/cancel` - 中断当前正在执行的任务\n\n\
                 💡 *随时自然对话*：在空闲状态下直接发送文字，机器人将基于当前代码库直接解答与思考！";
@@ -91,6 +93,8 @@ impl CommandRouter {
             self.handle_plans_command(chat_id).await?;
         } else if text.starts_with("/progress") {
             self.handle_progress_command(chat_id, text).await?;
+        } else if text.starts_with("/diff") {
+            self.handle_diff_command(chat_id, text).await?;
         } else if text == "/cancel" {
             self.bridge.cancel_active_task().await;
             self.client.send_message(chat_id, "🛑 当前进行中的任务与多轮规划会话已取消。", None, Some("Markdown")).await?;
@@ -176,26 +180,257 @@ impl CommandRouter {
 
     async fn handle_status_command(&self, chat_id: i64) -> Result<(), String> {
         let config = load_config()?;
+        let project_dir = resolve_project_dir(&config);
         let hostname = crate::get_hostname();
         let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        // 探测 Git 分支
+        let git_branch = Command::new("git")
+            .current_dir(&project_dir)
+            .args(["branch", "--show-current"])
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "detached / 未知".to_string());
+
+        // 探测 Git 工作区变更状态
+        let git_status = Command::new("git")
+            .current_dir(&project_dir)
+            .args(["status", "--porcelain"])
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let lines_count = stdout.lines().count();
+                if lines_count == 0 {
+                    "干净 (Clean)".to_string()
+                } else {
+                    format!("存在 {} 处未提交变更", lines_count)
+                }
+            })
+            .unwrap_or_else(|| "无法获取状态".to_string());
+
+        // 探测最新 Git 提交记录
+        let git_latest_commit = Command::new("git")
+            .current_dir(&project_dir)
+            .args(["log", "-1", "--pretty=format:%h - %s (%cr)"])
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "暂无提交记录".to_string());
 
         let status_text = format!(
             "🖥️ *OneSpace 工作台运行状态*\n\
             ━━━━━━━━━━━━━━━━━━━━\n\
             • 主机设备: `{}`\n\
             • 系统时间: `{}`\n\
-            • 当前活跃项目: `{}`\n\
+            • 活跃工作区: `{}`\n\
+            • Git 分支: `{}` ({})\n\
+            • 最新提交: `{}`\n\
             • 权限自动审批: `{}`\n\
             • 通信延迟: 正常 (长轮询在线)\n\
             ━━━━━━━━━━━━━━━━━━━━\n\
-            输入 `/projects` 可切换项目，输入 `/newfeat` 可派发任务。",
+            输入 `/diff` 可查看代码变更，`/plans` 可查看方案。",
             hostname,
             current_time,
-            config.active_workspace.as_deref().unwrap_or("未指定"),
+            config.active_workspace.as_deref().unwrap_or("onespace-app"),
+            git_branch,
+            git_status,
+            git_latest_commit,
             if config.auto_approve_permissions { "已启用" } else { "手动确认" }
         );
 
         self.client.send_message(chat_id, &status_text, None, Some("Markdown")).await?;
+        Ok(())
+    }
+
+    async fn handle_diff_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
+        let config = load_config()?;
+        let project_dir = resolve_project_dir(&config);
+        let arg = text.trim_start_matches("/diff").trim();
+        self.send_diff_view(chat_id, &project_dir, if arg.is_empty() { None } else { Some(arg) }).await
+    }
+
+    pub async fn send_diff_view(&self, chat_id: i64, project_dir: &std::path::Path, plan_id_opt: Option<&str>) -> Result<(), String> {
+        let mut target_scope = "HEAD~1..HEAD".to_string();
+
+        if let Some(plan_id) = plan_id_opt {
+            let clean_id = plan_id
+                .trim_start_matches(".ai-workflow/plans/")
+                .trim_start_matches("plans/")
+                .trim_matches('/');
+
+            let mut found_commit = false;
+            let yaml_path = project_dir.join(".ai-workflow").join("plans").join(clean_id).join("implementation.yaml");
+            if yaml_path.is_file() {
+                if let Ok(content) = tokio::fs::read_to_string(&yaml_path).await {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("commit:") {
+                            let c = trimmed.trim_start_matches("commit:").trim().trim_matches('\'').trim_matches('"');
+                            if !c.is_empty() {
+                                target_scope = format!("{}~1..{}", c, c);
+                                found_commit = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !found_commit {
+                let branch_name = format!("ai-workflow/{}", clean_id);
+                let check_branch = Command::new("git")
+                    .current_dir(project_dir)
+                    .args(["rev-parse", "--verify", &branch_name])
+                    .output()
+                    .await;
+                if let Ok(out) = check_branch {
+                    if out.status.success() {
+                        target_scope = format!("HEAD..{}", branch_name);
+                    }
+                }
+            }
+        }
+
+        // 1. 获取 diff stat 统计
+        let stat_out = Command::new("git")
+            .current_dir(project_dir)
+            .args(["diff", &target_scope, "--stat"])
+            .output()
+            .await;
+
+        let stat_text = match stat_out {
+            Ok(ref out) if out.status.success() => {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if s.is_empty() {
+                    let uncommitted_stat = Command::new("git")
+                        .current_dir(project_dir)
+                        .args(["diff", "--stat"])
+                        .output()
+                        .await;
+                    match uncommitted_stat {
+                        Ok(ref u_out) if !u_out.stdout.is_empty() => {
+                            target_scope = "工作区未提交修改".to_string();
+                            String::from_utf8_lossy(&u_out.stdout).trim().to_string()
+                        }
+                        _ => "暂无代码改动".to_string(),
+                    }
+                } else {
+                    s
+                }
+            }
+            _ => "暂无代码改动或无法执行 diff".to_string(),
+        };
+
+        // 2. 获取具体代码差异内容片段
+        let diff_args = if target_scope == "工作区未提交修改" {
+            vec!["diff".to_string()]
+        } else {
+            vec!["diff".to_string(), target_scope.clone()]
+        };
+
+        let diff_content_out = Command::new("git")
+            .current_dir(project_dir)
+            .args(&diff_args)
+            .output()
+            .await;
+
+        let raw_diff = match diff_content_out {
+            Ok(ref out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            _ => String::new(),
+        };
+
+        let snippet = if raw_diff.is_empty() {
+            "（无具体变更行差异）".to_string()
+        } else {
+            let limit = 1200;
+            if raw_diff.len() > limit {
+                format!("{}\n\n...（差异较大，已截取前 1200 字符）...", &raw_diff[..limit])
+            } else {
+                raw_diff
+            }
+        };
+
+        let title_plan = plan_id_opt.unwrap_or("最新提交对比");
+        let diff_msg = format!(
+            "🔍 【代码改动 Diff 预览】\n\
+            ━━━━━━━━━━━━━━━━━━━━\n\
+            📋 方案/范围: `{}`\n\
+            🎯 比较基准: `{}`\n\n\
+            📊 *文件改动统计*:\n\
+            ```\n\
+            {}\n\
+            ```\n\n\
+            📝 *代码变更摘要*:\n\
+            ```diff\n\
+            {}\n\
+            ```\n\
+            ━━━━━━━━━━━━━━━━━━━━\n\
+            输入 `/plans` 可继续查看其他方案。",
+            title_plan,
+            target_scope,
+            stat_text,
+            snippet
+        );
+
+        self.client.send_message(chat_id, &diff_msg, None, Some("Markdown")).await?;
+        Ok(())
+    }
+
+    pub async fn send_failure_log_view(&self, chat_id: i64, project_dir: &std::path::Path, plan_id: &str) -> Result<(), String> {
+        let clean_id = plan_id
+            .trim_start_matches(".ai-workflow/plans/")
+            .trim_start_matches("plans/")
+            .trim_matches('/');
+
+        let reports_dir = project_dir.join(".ai-workflow").join("plans").join(clean_id).join("reports");
+        let mut log_content: Option<String> = None;
+
+        if let Ok(entries) = std::fs::read_dir(&reports_dir) {
+            let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            files.sort_by(|a, b| {
+                let ma = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                let mb = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                mb.cmp(&ma)
+            });
+
+            for f in files {
+                if let Ok(content) = tokio::fs::read_to_string(&f).await {
+                    let lines: Vec<&str> = content.lines().collect();
+                    let tail_lines: Vec<&str> = if lines.len() > 30 {
+                        lines[lines.len() - 30..].to_vec()
+                    } else {
+                        lines
+                    };
+                    log_content = Some(format!("📄 来自 `{}`:\n\n{}", f.file_name().unwrap_or_default().to_string_lossy(), tail_lines.join("\n")));
+                    break;
+                }
+            }
+        }
+
+        let body = log_content.unwrap_or_else(|| {
+            format!("未能找到方案 `{}` 的详细报告日志文件。\n建议通过 `/status` 检查 Git 状态或点击重试按钮继续修复。", clean_id)
+        });
+
+        let msg = format!(
+            "📄 【方案诊断日志】\n\
+            ━━━━━━━━━━━━━━━━━━━━\n\
+            📋 方案: `{}`\n\n\
+            {}\n\
+            ━━━━━━━━━━━━━━━━━━━━",
+            clean_id,
+            body
+        );
+
+        self.client.send_message(chat_id, &msg, None, None).await?;
         Ok(())
     }
 
@@ -567,6 +802,54 @@ impl CommandRouter {
                         None,
                     ).await;
                 }
+            }
+        } else if let Some(plan_id) = data.strip_prefix("view_diff:") {
+            let config = load_config()?;
+            let project_dir = resolve_project_dir(&config);
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            if let Err(e) = self.send_diff_view(chat_id, &project_dir, Some(plan_id)).await {
+                let _ = self.client.send_message(chat_id, &format!("⚠️ 查看代码改动 Diff 失败: {}", e), None, None).await;
+            }
+        } else if let Some(plan_id) = data.strip_prefix("view_failure_log:") {
+            let config = load_config()?;
+            let project_dir = resolve_project_dir(&config);
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            if let Err(e) = self.send_failure_log_view(chat_id, &project_dir, plan_id).await {
+                let _ = self.client.send_message(chat_id, &format!("⚠️ 查看诊断日志失败: {}", e), None, None).await;
+            }
+        } else if let Some(plan_id) = data.strip_prefix("retry_repair:") {
+            let config = load_config()?;
+            let project_dir = resolve_project_dir(&config);
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+
+            let clean_id = plan_id
+                .trim_start_matches(".ai-workflow/plans/")
+                .trim_start_matches("plans/")
+                .trim_matches('/')
+                .to_string();
+
+            if let Some(ref msg) = cb.message {
+                let _ = self.client.edit_message_text(
+                    msg.chat.id,
+                    msg.message_id,
+                    &format!("🔄 正在携带上一轮异常启动自愈修复: `{}`...", clean_id),
+                    None,
+                    None,
+                ).await;
+            }
+
+            let repair_prompt = format!(
+                "调用 coding 技能，实施 .ai-workflow/plans/{}，重点排查并修复上一轮测试或规范审核未通过的异常问题",
+                clean_id
+            );
+
+            if let Err(e) = self.bridge.execute_coding_with_prompt(chat_id, project_dir, &clean_id, Some(repair_prompt)).await {
+                let _ = self.client.send_message(
+                    chat_id,
+                    &format!("❌ 启动自愈修复失败: {}", e),
+                    None,
+                    None,
+                ).await;
             }
         } else if data == "cancel_task" {
             self.bridge.cancel_active_task().await;
