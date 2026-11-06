@@ -20,10 +20,19 @@ pub async fn remote_bot_save_config(config: RemoteBotConfig) -> Result<(), Strin
 
 #[tauri::command]
 pub async fn remote_bot_test_connection(bot_token: String) -> Result<TelegramUser, String> {
-    if bot_token.trim().is_empty() {
+    let token = if !bot_token.trim().is_empty() {
+        bot_token.trim().to_string()
+    } else if let Ok(env_token) = std::env::var("TELEGRAM_BOT_TOKEN") {
+        env_token.trim().to_string()
+    } else {
+        return Err("Bot Token 不能为空".to_string());
+    };
+
+    if token.is_empty() {
         return Err("Bot Token 不能为空".to_string());
     }
-    let client = TelegramClient::new(bot_token.trim());
+
+    let client = TelegramClient::new(token);
     client.get_me().await
 }
 

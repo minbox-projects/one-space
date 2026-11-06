@@ -8,6 +8,9 @@ import {
 } from "./remoteBot";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
+// 移除明文 Token，改为从环境变量 TELEGRAM_BOT_TOKEN 中安全读取
+const TEST_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "env_test_token";
+
 describe("remoteBot IPC", () => {
   beforeEach(() => {
     resetTauriMocks();
@@ -16,7 +19,7 @@ describe("remoteBot IPC", () => {
   it("remoteBotGetConfig 调用 remote_bot_get_config", async () => {
     const mockConfig = {
       enabled: true,
-      bot_token: "test_token",
+      bot_token: TEST_BOT_TOKEN,
       allowed_chat_ids: [123456],
       active_workspace: "onespace-app",
       auto_approve_permissions: true,
@@ -32,7 +35,7 @@ describe("remoteBot IPC", () => {
   it("remoteBotSaveConfig 调用 remote_bot_save_config", async () => {
     const mockConfig = {
       enabled: true,
-      bot_token: "test_token",
+      bot_token: TEST_BOT_TOKEN,
       allowed_chat_ids: [123456],
       active_workspace: "onespace-app",
       auto_approve_permissions: true,
@@ -48,9 +51,9 @@ describe("remoteBot IPC", () => {
     const mockUser = { id: 999, is_bot: true, first_name: "TestBot", username: "test_bot" };
     invokeMock.mockResolvedValueOnce(mockUser);
 
-    const res = await remoteBotTestConnection("mock_token");
+    const res = await remoteBotTestConnection(TEST_BOT_TOKEN);
     expect(res).toEqual(mockUser);
-    expect(invokeMock).toHaveBeenCalledWith("remote_bot_test_connection", { botToken: "mock_token" });
+    expect(invokeMock).toHaveBeenCalledWith("remote_bot_test_connection", { botToken: TEST_BOT_TOKEN });
   });
 
   it("remoteBotGetStatus 调用 remote_bot_get_status", async () => {
