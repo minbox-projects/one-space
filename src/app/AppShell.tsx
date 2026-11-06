@@ -770,8 +770,8 @@ export function AppShell(props: AppController) {
                     remoteBotHeaderStatus.last_error
                       ? "text-destructive hover:bg-destructive/10 dark:text-destructive"
                       : remoteBotHeaderStatus.active_task_id
-                        ? "text-amber-500 hover:bg-amber-500/10 dark:text-amber-400"
-                        : "text-sky-500 hover:bg-sky-500/10 dark:text-sky-400"
+                        ? "text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
+                        : "text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
                   }`}
                   title={
                     remoteBotHeaderStatus.last_error
