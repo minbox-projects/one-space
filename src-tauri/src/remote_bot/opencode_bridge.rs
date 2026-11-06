@@ -78,6 +78,9 @@ pub struct OpenCodeBridge {
     telegram_client: Arc<TelegramClient>,
     #[allow(dead_code)]
     active_question: RwLock<Option<OpenCodeQuestionRequest>>,
+    active_session_id: RwLock<Option<String>>,
+    active_project_dir: RwLock<Option<PathBuf>>,
+    active_options: RwLock<std::collections::HashMap<usize, String>>,
     is_busy: Arc<AtomicBool>,
 }
 
@@ -92,8 +95,29 @@ impl OpenCodeBridge {
                 .unwrap_or_else(|_| Client::new()),
             telegram_client,
             active_question: RwLock::new(None),
+            active_session_id: RwLock::new(None),
+            active_project_dir: RwLock::new(None),
+            active_options: RwLock::new(std::collections::HashMap::new()),
             is_busy: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 检查当前是否正有活跃的多轮会话进行中
+    pub async fn has_active_session(&self) -> bool {
+        self.active_session_id.read().await.is_some()
+    }
+
+    /// 获取特定选项的文本
+    pub async fn get_option_text(&self, num: usize) -> Option<String> {
+        self.active_options.read().await.get(&num).cloned()
+    }
+
+    /// 取消当前正在进行的任务与会话
+    pub async fn cancel_active_task(&self) {
+        *self.active_session_id.write().await = None;
+        *self.active_project_dir.write().await = None;
+        self.active_options.write().await.clear();
+        self.is_busy.store(false, Ordering::SeqCst);
     }
 
     /// 确保后台 opencode serve 进程正在运行并返回服务基础 URL
@@ -175,11 +199,16 @@ impl OpenCodeBridge {
             return Err("已有正在运行的任务，请等待当前任务完成或执行 /cancel".to_string());
         }
 
+        // 清理旧会话状态并保存目标工作区
+        *self.active_session_id.write().await = None;
+        *self.active_project_dir.write().await = Some(project_dir.clone());
+        self.active_options.write().await.clear();
+
         let bridge = self.clone();
         let prompt_string = prompt.to_string();
 
         tokio::spawn(async move {
-            let res = bridge.run_planning_inner(chat_id, project_dir, &prompt_string).await;
+            let res = bridge.run_planning_cycle(chat_id, project_dir, &prompt_string, None).await;
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("Planning 任务失败: {}", e);
@@ -196,41 +225,106 @@ impl OpenCodeBridge {
         Ok(())
     }
 
-    async fn run_planning_inner(
+    /// 在已有规划会话中继续推进交互 (Continue Planning)
+    pub async fn continue_planning(
+        self: &Arc<Self>,
+        chat_id: i64,
+        user_input: &str,
+    ) -> Result<(), String> {
+        if self.is_busy.swap(true, Ordering::SeqCst) {
+            return Err("已有正在运行的任务，请等待当前轮次完成".to_string());
+        }
+
+        let session_id = self.active_session_id.read().await.clone()
+            .ok_or_else(|| "当前没有活跃的规划会话，请先使用 /newfeat 发起需求".to_string())?;
+        let project_dir = self.active_project_dir.read().await.clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        let bridge = self.clone();
+        let input_text = user_input.to_string();
+
+        let _ = bridge.telegram_client.send_message(
+            chat_id,
+            "⏳ *正在将您的决策同步给 OpenCode 并继续规划...*",
+            None,
+            Some("Markdown"),
+        ).await;
+
+        tokio::spawn(async move {
+            let res = bridge.run_planning_cycle(chat_id, project_dir, &input_text, Some(session_id)).await;
+            bridge.is_busy.store(false, Ordering::SeqCst);
+            if let Err(e) = res {
+                error!("推进规划失败: {}", e);
+                let error_text = format!("❌ *推进规划异常中断*\n\n原因:\n```\n{}\n```", e);
+                let _ = bridge.telegram_client.send_message(
+                    chat_id,
+                    &error_text,
+                    None,
+                    Some("Markdown"),
+                ).await;
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn run_planning_cycle(
         &self,
         chat_id: i64,
         project_dir: PathBuf,
-        prompt: &str,
+        input_prompt: &str,
+        session_id_opt: Option<String>,
     ) -> Result<(), String> {
         let server_url = self.ensure_server().await?;
+        let start_time = std::time::SystemTime::now();
 
-        // 构造规划提示词，明确指导调用 planning 技能
-        let planning_prompt = format!(
-            "用户提出新需求：{}\n\n\
-            请遵循项目工程规范，使用 planning 技能进行深入调研与方案规划。\n\
-            如遇到实现分歧，请调用提问工具澄清；规划完成后，请生成并确认 spec.md 和 plan.md。",
-            prompt
-        );
+        // 初次规划提示词增加工程规范引导，后续交互则直接传递用户决策
+        let prompt_to_run = if session_id_opt.is_none() {
+            format!(
+                "用户提出新需求：{}\n\n\
+                请遵循项目工程规范，使用 planning 技能进行深入调研与方案规划。\n\
+                如遇到实现分歧，请按照规约提出编号问题（问题 N：...）及选项（1、... 2、...）进行澄清；规划确认后，请生成并确认 spec.md 和 plan.md。",
+                input_prompt
+            )
+        } else {
+            input_prompt.to_string()
+        };
+
+        let status_desc = if session_id_opt.is_none() {
+            "🔍 *OpenCode 正在进行方案规划 (Planning)...*\n_正在分析代码库与依赖关系..._"
+        } else {
+            "🔍 *OpenCode 正在根据您的答复深入分析与推进规划...*"
+        };
 
         let status_msg = self.telegram_client.send_message(
             chat_id,
-            "🔍 *OpenCode 正在进行方案规划 (Planning)...*\n_正在分析代码库与依赖关系..._",
+            status_desc,
             None,
             Some("Markdown"),
         ).await?;
 
         // 启动 opencode run 会话
-        let child = Command::new("opencode")
-            .arg("run")
-            .arg(&planning_prompt)
+        let mut cmd = Command::new("opencode");
+        cmd.arg("run")
+            .arg(&prompt_to_run)
+            .arg("--format")
+            .arg("json")
+            .arg("--auto")
             .arg("--attach")
             .arg(&server_url)
             .arg("--dir")
             .arg(&project_dir)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+
+        if let Some(ref sid) = session_id_opt {
+            cmd.arg("--session").arg(sid);
+        }
+
+        let mut child = cmd.spawn()
             .map_err(|e| format!("启动 OpenCode Planning 失败: {}", e))?;
+
+        let stdout = child.stdout.take().ok_or_else(|| "无法获取 opencode stdout".to_string())?;
 
         // 启动提问与权限轮询守卫
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -241,69 +335,163 @@ impl OpenCodeBridge {
             cancel_flag.clone(),
         );
 
+        let mut reader = BufReader::new(stdout).lines();
+        let mut captured_session_id: Option<String> = session_id_opt.clone();
+        let mut text_parts: Vec<String> = Vec::new();
+
+        while let Ok(Some(line)) = reader.next_line().await {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(sid) = v.get("sessionID").and_then(|s| s.as_str()) {
+                    if !sid.is_empty() {
+                        captured_session_id = Some(sid.to_string());
+                    }
+                }
+                if v.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
+                        text_parts.push(text.to_string());
+                    }
+                }
+            }
+        }
+
         let output = child.wait_with_output().await
             .map_err(|e| format!("OpenCode 规划进程执行异常: {}", e))?;
 
         cancel_flag.store(true, Ordering::SeqCst);
         let _ = poll_guard.await;
 
+        if let Some(ref sid) = captured_session_id {
+            *self.active_session_id.write().await = Some(sid.clone());
+        }
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stdout_str = String::from_utf8_lossy(&output.stdout);
             let raw = if !stderr.trim().is_empty() {
                 stderr.trim()
             } else {
-                stdout.trim()
+                stdout_str.trim()
             };
             return Err(format!("OpenCode 规划非零退出: {}", strip_ansi_escapes(raw)));
         }
 
-        // 规划成功完成，查找产出的 plan.md
-        let plan_path = self.locate_plan_file(&project_dir);
-        let summary = match plan_path {
-            Some(ref p) => self.extract_plan_summary(p).await.unwrap_or_else(|| "方案已生成于工作区。".to_string()),
-            None => "方案规划已完成，未在默认路径检测到独立 plan.md，已就绪可实施。".to_string(),
-        };
+        // 1. 优先检查本次执行是否生成了全新的 plan.md
+        let plan_path = self.locate_new_plan_file(&project_dir, start_time);
 
-        // 提取简要目录名标识，确保 callback_data 绝对不超过 64 字节（Telegram 协议硬限制）
-        let plan_tag = if let Some(ref p) = plan_path {
-            if let Some(folder) = p.parent().and_then(|parent| parent.file_name()) {
+        if let Some(ref p) = plan_path {
+            // 方案已正式生成！清空待答复会话状态
+            *self.active_session_id.write().await = None;
+            self.active_options.write().await.clear();
+
+            let summary = self.extract_plan_summary(p).await
+                .unwrap_or_else(|| "方案已生成于工作区。".to_string());
+
+            let plan_tag = if let Some(folder) = p.parent().and_then(|parent| parent.file_name()) {
                 folder.to_string_lossy().to_string()
             } else {
                 p.file_name().unwrap_or_default().to_string_lossy().to_string()
+            };
+            let safe_plan_tag = if plan_tag.len() > 40 {
+                plan_tag[..40].to_string()
+            } else {
+                plan_tag
+            };
+
+            let review_text = format!(
+                "📋 *【方案规划完成，等待确认】*\n\
+                ━━━━━━━━━━━━━━━━━━━━\n\
+                ```markdown\n\
+                {}\n\
+                ```\n\
+                ━━━━━━━━━━━━━━━━━━━━\n\
+                点击下方按钮确认开始在新会话中编写代码：",
+                summary
+            );
+
+            let markup = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("🚀 确认方案，开始 Coding", format!("approve_plan:{}", safe_plan_tag)),
+                InlineKeyboardButton::callback("❌ 放弃任务", "cancel_task"),
+            ]]);
+
+            self.telegram_client.send_message(
+                chat_id,
+                &review_text,
+                Some(markup),
+                Some("Markdown"),
+            ).await?;
+
+            return Ok(());
+        }
+
+        // 2. 如果未检测到全新 plan.md，说明 OpenCode 处于需求澄清/提问阶段
+        let latest_output = text_parts.join("\n");
+        let (question_text, options) = parse_question_and_options(&latest_output);
+
+        if !options.is_empty() {
+            let mut opt_map = self.active_options.write().await;
+            opt_map.clear();
+            let mut keyboard_rows = Vec::new();
+
+            for (num, full_text) in &options {
+                opt_map.insert(*num, full_text.clone());
+                let btn_text = if full_text.chars().count() > 30 {
+                    format!("{}...", full_text.chars().take(27).collect::<String>())
+                } else {
+                    full_text.clone()
+                };
+                keyboard_rows.push(vec![InlineKeyboardButton::callback(
+                    format!("🔘 {}", btn_text),
+                    format!("ans_choice:{}", num),
+                )]);
             }
+
+            let msg_text = format!(
+                "🤔 *【规划澄清提问】*\n\
+                ━━━━━━━━━━━━━━━━━━━━\n\
+                ```markdown\n\
+                {}\n\
+                ```\n\
+                ━━━━━━━━━━━━━━━━━━━━\n\
+                请点击下方选项进行决策，或直接打字回复：",
+                question_text
+            );
+
+            let markup = InlineKeyboardMarkup::new(keyboard_rows);
+            self.telegram_client.send_message(
+                chat_id,
+                &msg_text,
+                Some(markup),
+                Some("Markdown"),
+            ).await?;
         } else {
-            "default".to_string()
-        };
-        let safe_plan_tag = if plan_tag.len() > 40 {
-            plan_tag[..40].to_string()
-        } else {
-            plan_tag
-        };
+            let clean_text = if latest_output.trim().is_empty() {
+                "OpenCode 调研完毕，请回复更多细节或确认指导意见以继续推进规划。".to_string()
+            } else {
+                latest_output
+            };
 
-        // 将 summary 用代码块包裹，防止原生 markdown 中的不成对下划线等触发解析失败
-        let review_text = format!(
-            "📋 *【方案规划完成，等待确认】*\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            ```markdown\n\
-            {}\n\
-            ```\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            点击下方按钮确认开始在新会话中编写代码：",
-            summary
-        );
+            let msg_text = format!(
+                "💬 *【OpenCode 规划提问/说明】*\n\
+                ━━━━━━━━━━━━━━━━━━━━\n\
+                ```markdown\n\
+                {}\n\
+                ```\n\
+                ━━━━━━━━━━━━━━━━━━━━\n\
+                请直接发送消息回复以继续推进规划。",
+                clean_text
+            );
 
-        let markup = InlineKeyboardMarkup::new(vec![vec![
-            InlineKeyboardButton::callback("🚀 确认方案，开始 Coding", format!("approve_plan:{}", safe_plan_tag)),
-            InlineKeyboardButton::callback("❌ 放弃任务", "cancel_task"),
-        ]]);
-
-        self.telegram_client.send_message(
-            chat_id,
-            &review_text,
-            Some(markup),
-            Some("Markdown"),
-        ).await?;
+            self.telegram_client.send_message(
+                chat_id,
+                &msg_text,
+                None,
+                Some("Markdown"),
+            ).await?;
+        }
 
         Ok(())
     }
@@ -406,29 +594,47 @@ impl OpenCodeBridge {
         }
     }
 
-    fn locate_plan_file(&self, project_dir: &Path) -> Option<PathBuf> {
+    pub fn locate_new_plan_file(&self, project_dir: &Path, start_time: std::time::SystemTime) -> Option<PathBuf> {
         let candidates = vec![
             project_dir.join(".ai-workflow").join("plans"),
             project_dir.to_path_buf(),
         ];
+
+        let mut newest_plan: Option<(PathBuf, std::time::SystemTime)> = None;
 
         for base in candidates {
             if let Ok(entries) = std::fs::read_dir(&base) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_file() && path.file_name().map_or(false, |n| n == "plan.md") {
-                        return Some(path);
-                    }
-                    if path.is_dir() {
+                        if let Ok(meta) = path.metadata() {
+                            if let Ok(modified) = meta.modified() {
+                                if modified >= start_time {
+                                    if newest_plan.as_ref().map_or(true, |(_, t)| modified > *t) {
+                                        newest_plan = Some((path, modified));
+                                    }
+                                }
+                            }
+                        }
+                    } else if path.is_dir() {
                         let sub_plan = path.join("plan.md");
-                        if sub_plan.exists() {
-                            return Some(sub_plan);
+                        if sub_plan.is_file() {
+                            if let Ok(meta) = sub_plan.metadata() {
+                                if let Ok(modified) = meta.modified() {
+                                    if modified >= start_time {
+                                        if newest_plan.as_ref().map_or(true, |(_, t)| modified > *t) {
+                                            newest_plan = Some((sub_plan, modified));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-        None
+
+        newest_plan.map(|(p, _)| p)
     }
 
     async fn extract_plan_summary(&self, plan_path: &Path) -> Option<String> {
@@ -492,9 +698,12 @@ impl OpenCodeBridge {
             plan_identifier
         );
 
-        let child = Command::new("opencode")
+        let mut child = Command::new("opencode")
             .arg("run")
             .arg(&coding_prompt)
+            .arg("--format")
+            .arg("json")
+            .arg("--auto")
             .arg("--attach")
             .arg(&server_url)
             .arg("--dir")
@@ -504,6 +713,8 @@ impl OpenCodeBridge {
             .spawn()
             .map_err(|e| format!("启动 OpenCode Coding 失败: {}", e))?;
 
+        let stdout = child.stdout.take().ok_or_else(|| "无法获取 stdout".to_string())?;
+
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let poll_guard = self.spawn_question_and_permission_poller(
             chat_id,
@@ -512,13 +723,30 @@ impl OpenCodeBridge {
             cancel_flag.clone(),
         );
 
+        let mut reader = BufReader::new(stdout).lines();
+        let mut text_parts: Vec<String> = Vec::new();
+
+        while let Ok(Some(line)) = reader.next_line().await {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
+                        text_parts.push(text.to_string());
+                    }
+                }
+            }
+        }
+
         let output = child.wait_with_output().await
             .map_err(|e| format!("OpenCode Coding 进程执行异常: {}", e))?;
 
         cancel_flag.store(true, Ordering::SeqCst);
         let _ = poll_guard.await;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let accumulated_text = text_parts.join("\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         // 执行严格的四重证据链核验
@@ -527,7 +755,7 @@ impl OpenCodeBridge {
             status_msg.message_id,
             &project_dir,
             output.status.success(),
-            &stdout,
+            &accumulated_text,
             &stderr,
         ).await
     }
@@ -627,4 +855,32 @@ fn strip_ansi_escapes(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// 解析 OpenCode 输出中的问题说明与选项列表
+/// 返回 (提问文本, 选项列表[(选项编号1..N, 选项完整文本)])
+pub fn parse_question_and_options(text: &str) -> (String, Vec<(usize, String)>) {
+    let mut options = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+
+    // 匹配如：1、xxx 或 1. xxx 或 **1、xxx** 或 [1] xxx 或 1) xxx
+    let opt_re = regex::Regex::new(r"^(?:[\*\-_#\s]*)(?:\[?(\d{1,2})[\]\.、\)]|\((\d{1,2})\))\s*(.*)$").unwrap();
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if let Some(caps) = opt_re.captures(trimmed) {
+            let num_str = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str()).unwrap_or("");
+            if let Ok(num) = num_str.parse::<usize>() {
+                if num >= 1 && num <= 10 {
+                    let desc = caps.get(3).map(|m| m.as_str()).unwrap_or("").trim();
+                    let clean_desc = desc.trim_matches('*').trim_matches('`').trim();
+                    let full_label = format!("{}、{}", num, clean_desc);
+                    options.push((num, full_label));
+                }
+            }
+        }
+    }
+
+    let question_body = text.trim().to_string();
+    (question_body, options)
 }

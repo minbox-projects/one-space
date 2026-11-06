@@ -83,6 +83,9 @@ impl CommandRouter {
             self.handle_status_command(chat_id).await?;
         } else if text == "/projects" {
             self.handle_projects_command(chat_id).await?;
+        } else if text == "/cancel" {
+            self.bridge.cancel_active_task().await;
+            self.client.send_message(chat_id, "🛑 当前进行中的任务与多轮规划会话已取消。", None, Some("Markdown")).await?;
         } else if text.starts_with("/newfeat") {
             let prompt = text.trim_start_matches("/newfeat").trim();
             if prompt.is_empty() {
@@ -115,9 +118,20 @@ impl CommandRouter {
                 }
             }
         } else {
-            // 普通文本消息
-            let reply = format!("💡 收到消息: `{}`\n输入 `/help` 查看可用操作指令。", text);
-            self.client.send_message(chat_id, &reply, None, Some("Markdown")).await?;
+            // 普通文本消息：如果正有活跃规划会话，则作为回复继续推进；否则提示帮助
+            if self.bridge.has_active_session().await {
+                if let Err(e) = self.bridge.continue_planning(chat_id, text).await {
+                    self.client.send_message(
+                        chat_id,
+                        &format!("❌ 推进规划失败: `{}`", e),
+                        None,
+                        Some("Markdown"),
+                    ).await?;
+                }
+            } else {
+                let reply = format!("💡 收到消息: `{}`\n输入 `/help` 查看可用操作指令。", text);
+                self.client.send_message(chat_id, &reply, None, Some("Markdown")).await?;
+            }
         }
 
         Ok(())
@@ -220,6 +234,30 @@ impl CommandRouter {
                     Some("Markdown"),
                 ).await;
             }
+        } else if let Some(choice_num_str) = data.strip_prefix("ans_choice:") {
+            let num: usize = choice_num_str.parse().unwrap_or(0);
+            let choice_text = self.bridge.get_option_text(num).await
+                .unwrap_or_else(|| format!("选项 {}", num));
+
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            if let Some(ref msg) = cb.message {
+                let _ = self.client.edit_message_text(
+                    msg.chat.id,
+                    msg.message_id,
+                    &format!("✅ 您已选择: *{}*", choice_text),
+                    None,
+                    Some("Markdown"),
+                ).await;
+            }
+
+            if let Err(e) = self.bridge.continue_planning(chat_id, &choice_text).await {
+                let _ = self.client.send_message(
+                    chat_id,
+                    &format!("❌ 推进规划失败: `{}`", e),
+                    None,
+                    Some("Markdown"),
+                ).await;
+            }
         } else if let Some(q_info) = data.strip_prefix("ans_q:") {
             // ans_q:<question_id>:<option_index>
             let parts: Vec<&str> = q_info.splitn(2, ':').collect();
@@ -249,6 +287,7 @@ impl CommandRouter {
                 }
             }
         } else if data == "cancel_task" {
+            self.bridge.cancel_active_task().await;
             if let Some(ref msg) = cb.message {
                 let _ = self.client.edit_message_text(
                     msg.chat.id,

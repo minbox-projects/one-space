@@ -23,6 +23,13 @@ impl TelegramClient {
         }
     }
 
+    pub fn with_base_url(token: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self {
+            token: token.into(),
+            base_url: base_url.into(),
+        }
+    }
+
     pub fn token(&self) -> &str {
         &self.token
     }
