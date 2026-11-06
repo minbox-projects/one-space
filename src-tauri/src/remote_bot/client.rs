@@ -132,13 +132,22 @@ impl TelegramClient {
                     chat_id,
                     text: text.to_string(),
                     parse_mode: None,
-                    reply_markup: payload.reply_markup,
+                    reply_markup: payload.reply_markup.clone(),
                 };
-                if let Ok(retry_resp) = client.post(&url).json(&fallback_payload).send().await {
-                    if let Ok(retry_body) = retry_resp.json::<TelegramResponse<TelegramMessage>>().await {
-                        if retry_body.ok {
-                            return retry_body.result.ok_or_else(|| "sendMessage 降级返回内容为空".to_string());
+                match client.post(&url).json(&fallback_payload).send().await {
+                    Ok(retry_resp) => {
+                        if let Ok(retry_body) = retry_resp.json::<TelegramResponse<TelegramMessage>>().await {
+                            if retry_body.ok {
+                                return retry_body.result.ok_or_else(|| "sendMessage 降级返回内容为空".to_string());
+                            } else {
+                                let retry_desc = retry_body.description.unwrap_or_default();
+                                log::error!("Telegram 纯文本降级仍然失败: {}", retry_desc);
+                                return Err(retry_desc);
+                            }
                         }
+                    }
+                    Err(e) => {
+                        log::error!("Telegram 降级请求网络异常: {}", e);
                     }
                 }
             }
@@ -189,13 +198,22 @@ impl TelegramClient {
                     message_id,
                     text: text.to_string(),
                     parse_mode: None,
-                    reply_markup: payload.reply_markup,
+                    reply_markup: payload.reply_markup.clone(),
                 };
-                if let Ok(retry_resp) = client.post(&url).json(&fallback_payload).send().await {
-                    if let Ok(retry_body) = retry_resp.json::<TelegramResponse<TelegramMessage>>().await {
-                        if retry_body.ok {
-                            return retry_body.result.ok_or_else(|| "editMessageText 降级返回内容为空".to_string());
+                match client.post(&url).json(&fallback_payload).send().await {
+                    Ok(retry_resp) => {
+                        if let Ok(retry_body) = retry_resp.json::<TelegramResponse<TelegramMessage>>().await {
+                            if retry_body.ok {
+                                return retry_body.result.ok_or_else(|| "editMessageText 降级返回内容为空".to_string());
+                            } else {
+                                let retry_desc = retry_body.description.unwrap_or_default();
+                                log::error!("Telegram 纯文本编辑降级仍然失败: {}", retry_desc);
+                                return Err(retry_desc);
+                            }
                         }
+                    }
+                    Err(e) => {
+                        log::error!("Telegram 编辑降级请求网络异常: {}", e);
                     }
                 }
             }

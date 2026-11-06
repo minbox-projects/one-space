@@ -265,19 +265,36 @@ impl OpenCodeBridge {
             None => "方案规划已完成，未在默认路径检测到独立 plan.md，已就绪可实施。".to_string(),
         };
 
-        // 推送方案终审卡片
+        // 提取简要目录名标识，确保 callback_data 绝对不超过 64 字节（Telegram 协议硬限制）
+        let plan_tag = if let Some(ref p) = plan_path {
+            if let Some(folder) = p.parent().and_then(|parent| parent.file_name()) {
+                folder.to_string_lossy().to_string()
+            } else {
+                p.file_name().unwrap_or_default().to_string_lossy().to_string()
+            }
+        } else {
+            "default".to_string()
+        };
+        let safe_plan_tag = if plan_tag.len() > 40 {
+            plan_tag[..40].to_string()
+        } else {
+            plan_tag
+        };
+
+        // 将 summary 用代码块包裹，防止原生 markdown 中的不成对下划线等触发解析失败
         let review_text = format!(
             "📋 *【方案规划完成，等待确认】*\n\
             ━━━━━━━━━━━━━━━━━━━━\n\
+            ```markdown\n\
             {}\n\
+            ```\n\
             ━━━━━━━━━━━━━━━━━━━━\n\
             点击下方按钮确认开始在新会话中编写代码：",
             summary
         );
 
-        let plan_id_tag = plan_path.map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "default".to_string());
         let markup = InlineKeyboardMarkup::new(vec![vec![
-            InlineKeyboardButton::callback("🚀 确认方案，开始 Coding", format!("approve_plan:{}", plan_id_tag)),
+            InlineKeyboardButton::callback("🚀 确认方案，开始 Coding", format!("approve_plan:{}", safe_plan_tag)),
             InlineKeyboardButton::callback("❌ 放弃任务", "cancel_task"),
         ]]);
 
