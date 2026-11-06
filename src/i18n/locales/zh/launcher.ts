@@ -79,7 +79,11 @@ const launcher = {
   "launcherSslCertificateDesc": "免费申请域名证书，TLS握手健康检测、证书链分析与到期监控。",
   "launcherPortTunnelRunningAria": "{{count}} 个内网穿透已连接",
   "launcherPortTunnelConnectingAria": "{{count}} 个内网穿透已连接，正在启动...",
-  "launcherPortTunnelErrorAria": "{{count}} 个内网穿透已连接，部分异常"
+  "launcherPortTunnelErrorAria": "{{count}} 个内网穿透已连接，部分异常",
+  "launcherRemoteBotRunningAria": "Telegram 远程工作台在线 (@{{bot}})",
+  "launcherRemoteBotActiveAria": "Telegram 正在执行任务 (@{{bot}})...",
+  "launcherRemoteBotErrorAria": "Telegram 远程工作台连接异常：{{error}}",
+  "launcherRemoteBotStoppedAria": "Telegram 远程工作台已停止"
 };
 
 export default launcher;

@@ -6,6 +6,7 @@ import { protocolRouterStatus } from "@/lib/protocolRouter";
 import { fileSharingStatus } from "@/lib/fileSharing";
 import { tunnelListStatus } from "@/lib/portTunnel";
 import { sshTunnelsSnapshot } from "@/lib/sshTunnels";
+import { remoteBotGetStatus } from "@/lib/remoteBot";
 
 /**
  * Shared runtime-status store (REQ-004 / AC-004).
@@ -22,7 +23,8 @@ export type RuntimeService =
   | "ssh-tunnels"
   | "file-sharing"
   | "ble-lock"
-  | "port-tunnel";
+  | "port-tunnel"
+  | "remote-bot";
 
 export type RuntimeStatusSnapshot<T> = {
   data: T | null;
@@ -50,6 +52,7 @@ const COMMANDS: Record<RuntimeService, () => Promise<unknown>> = {
   "file-sharing": () => fileSharingStatus(),
   "ble-lock": () => bleLockGetStatus(),
   "port-tunnel": () => tunnelListStatus(),
+  "remote-bot": () => remoteBotGetStatus(),
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -76,6 +79,8 @@ const VALIDATORS: Record<RuntimeService, (payload: unknown) => boolean> = {
     isRecord(payload.config) &&
     typeof payload.config.mode === "string",
   "port-tunnel": (payload) => Array.isArray(payload),
+  "remote-bot": (payload) =>
+    isRecord(payload) && typeof payload.running === "boolean",
 };
 
 const entries = new Map<RuntimeService, ServiceEntry>();

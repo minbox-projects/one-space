@@ -79,7 +79,11 @@ const launcher = {
   "launcherSslCertificateDesc": "Free SSL certificate issuance, TLS health check, and expiration alerts.",
   "launcherPortTunnelRunningAria": "{{count}} port tunnel(s) connected",
   "launcherPortTunnelConnectingAria": "{{count}} port tunnel(s) connected, connecting...",
-  "launcherPortTunnelErrorAria": "{{count}} port tunnel(s) connected, with errors"
+  "launcherPortTunnelErrorAria": "{{count}} port tunnel(s) connected, with errors",
+  "launcherRemoteBotRunningAria": "Telegram Remote Workbench online (@{{bot}})",
+  "launcherRemoteBotActiveAria": "Telegram Remote Workbench executing task (@{{bot}})...",
+  "launcherRemoteBotErrorAria": "Telegram Remote Workbench error: {{error}}",
+  "launcherRemoteBotStoppedAria": "Telegram Remote Workbench stopped"
 };
 
 export default launcher;

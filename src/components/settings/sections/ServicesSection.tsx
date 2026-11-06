@@ -6,8 +6,8 @@ import {
   ShieldCheck,
   Server,
   CloudCog,
-  Bot,
 } from "lucide-react";
+import { TelegramIcon } from "@/components/common/TelegramIcon";
 import { SubTabNavigation, type SubTabItem } from "../common/SubTabNavigation";
 import { ServerMonitorSettingsView } from "./ServerMonitorSettings";
 import {
@@ -173,7 +173,7 @@ export function ServicesSection({
       id: "remote-bot",
       titleKey: "remoteBot",
       fallbackTitle: "Telegram 远程工作台",
-      icon: Bot,
+      icon: TelegramIcon,
       dirty: subTabDirtyMap["remote-bot"],
     },
   ];

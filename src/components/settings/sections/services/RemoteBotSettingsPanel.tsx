@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import type { TFunction } from "i18next";
-import { Bot, CheckCircle2, XCircle, RefreshCw, KeyRound, ShieldAlert, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, XCircle, RefreshCw, KeyRound, ShieldAlert, Plus, Trash2 } from "lucide-react";
+import { TelegramIcon } from "@/components/common/TelegramIcon";
+import { refreshRuntimeStatus } from "@/lib/runtimeStatus";
 import { SettingCard } from "../../common/SettingCard";
 import {
   type RemoteBotConfig,
@@ -59,6 +61,7 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
       onShowToast?.("success", t("remoteBotSaved", "设置已保存"));
       const newStatus = await remoteBotGetStatus();
       setStatus(newStatus);
+      void refreshRuntimeStatus("remote-bot");
     } catch (e: any) {
       onShowToast?.("error", `保存失败: ${e?.message || e}`);
     }
@@ -85,6 +88,7 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
       setLoading(true);
       const newStatus = await remoteBotRestart();
       setStatus(newStatus);
+      void refreshRuntimeStatus("remote-bot");
       onShowToast?.("success", "已重启 Telegram 轮询服务");
     } catch (e: any) {
       onShowToast?.("error", `重启失败: ${e?.message || e}`);
@@ -122,7 +126,7 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
   return (
     <SettingCard
       id="section-remote-bot"
-      icon={Bot}
+      icon={TelegramIcon}
       title={t("remoteBotSettings", "Telegram 远程工作台")}
       description={t(
         "remoteBotSettingsDesc",

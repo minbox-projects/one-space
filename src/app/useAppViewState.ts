@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ProtocolRouterStatus } from "@/lib/protocolRouter";
 import type { GatewayStatus } from "@/lib/aiGateway";
+import type { RemoteBotStatus } from "@/lib/remoteBot";
 import type { MoreToolsSection } from "@/lib/navigation";
 import type { JttParserTab } from "@/lib/navigation";
 
@@ -44,6 +45,8 @@ export function useAppViewState() {
     running: boolean;
     fileCount: number;
   } | null>(null);
+  const [remoteBotHeaderStatus, setRemoteBotHeaderStatus] =
+    useState<RemoteBotStatus | null>(null);
 
   return {
     messageUnreadCount,
@@ -78,5 +81,7 @@ export function useAppViewState() {
     setAiGatewayHeaderStatus,
     fileSharingHeaderStatus,
     setFileSharingHeaderStatus,
+    remoteBotHeaderStatus,
+    setRemoteBotHeaderStatus,
   };
 }
