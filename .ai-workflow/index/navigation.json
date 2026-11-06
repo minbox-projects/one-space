@@ -353,6 +353,7 @@
         "src/components/Workspaces/index.tsx",
         "src/components/Workspaces/types.ts",
         "src/components/common/CustomSelect.tsx",
+        "src/components/common/TelegramIcon.tsx",
         "src/components/fileSharing/PasswordField.tsx",
         "src/components/fileSharing/PublicAccessCard.tsx",
         "src/components/launcher/components/LauncherEditor.tsx",
@@ -387,12 +388,14 @@
         "src/components/settings/sections/DataSecuritySection.tsx",
         "src/components/settings/sections/GeneralSection.tsx",
         "src/components/settings/sections/NewsSection.tsx",
+        "src/components/settings/sections/OperationsSection.tsx",
         "src/components/settings/sections/ServerMonitorSettings.tsx",
         "src/components/settings/sections/ServicesSection.tsx",
         "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
         "src/components/settings/sections/services/ProtocolRouterSettingsPanel.tsx",
         "src/components/settings/sections/services/ProxySettingsPanel.tsx",
+        "src/components/settings/sections/services/RemoteBotSettingsPanel.tsx",
         "src/components/settings/sections/services/SslCertificateSettingsPanel.tsx",
         "src/components/settings/settingsContainer/actions.ts",
         "src/components/settings/settingsContainer/constants.ts",
@@ -493,6 +496,7 @@
         "src/lib/protocolRouter.ts",
         "src/lib/realtimeClient.ts",
         "src/lib/realtimeTunnel.ts",
+        "src/lib/remoteBot.ts",
         "src/lib/runtimeStatus.ts",
         "src/lib/serverMonitor.ts",
         "src/lib/serviceProviders.ts",
@@ -4807,6 +4811,18 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/common/TelegramIcon.tsx",
+          "name": "TelegramIcon",
+          "kind": "variable",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/common/TelegramIcon.tsx",
+          "name": "TelegramIconProps",
+          "kind": "type",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/fileSharing/PasswordField.tsx",
           "name": "PasswordField",
           "kind": "function",
@@ -5371,6 +5387,18 @@
           "visibility": "public"
         },
         {
+          "file": "src/components/settings/sections/OperationsSection.tsx",
+          "name": "OperationsSection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/OperationsSection.tsx",
+          "name": "OperationsSectionProps",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
           "file": "src/components/settings/sections/ServerMonitorSettings.tsx",
           "name": "ServerMonitorSettingsView",
           "kind": "function",
@@ -5415,6 +5443,12 @@
         {
           "file": "src/components/settings/sections/services/ProxySettingsPanel.tsx",
           "name": "ProxySettingsPanel",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/components/settings/sections/services/RemoteBotSettingsPanel.tsx",
+          "name": "RemoteBotSettingsPanel",
           "kind": "function",
           "visibility": "public"
         },
@@ -10435,6 +10469,54 @@
           "visibility": "public"
         },
         {
+          "file": "src/lib/remoteBot.ts",
+          "name": "RemoteBotConfig",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/remoteBot.ts",
+          "name": "RemoteBotStatus",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/remoteBot.ts",
+          "name": "TelegramUser",
+          "kind": "interface",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/remoteBot.ts",
+          "name": "remoteBotGetConfig",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/remoteBot.ts",
+          "name": "remoteBotGetStatus",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/remoteBot.ts",
+          "name": "remoteBotRestart",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/remoteBot.ts",
+          "name": "remoteBotSaveConfig",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
+          "file": "src/lib/remoteBot.ts",
+          "name": "remoteBotTestConnection",
+          "kind": "function",
+          "visibility": "public"
+        },
+        {
           "file": "src/lib/runtimeStatus.ts",
           "name": "RuntimeService",
           "kind": "type",
@@ -12796,10 +12878,12 @@
         "src/components/Workspaces/helpers/workspaceCapabilityHelpers.test.ts",
         "src/components/Workspaces/helpers/workspaceHelpers.test.ts",
         "src/components/common/CustomSelect.test.tsx",
+        "src/components/common/TelegramIcon.test.tsx",
         "src/components/modelOptions.test.ts",
         "src/components/settings/common/SettingSelect.test.tsx",
         "src/components/settings/sections/ServerMonitorSettings.test.tsx",
         "src/components/settings/sections/services/CloudAgentSettingsPanel.test.tsx",
+        "src/components/settings/types.test.ts",
         "src/components/sshTunnels/SshCommonPortManagerDialog.test.tsx",
         "src/components/toolbox/ToolShell.test.tsx",
         "src/components/toolbox/ToolStatusBadge.test.tsx",
@@ -12835,6 +12919,7 @@
         "src/lib/messages.test.ts",
         "src/lib/navigation.test.ts",
         "src/lib/realtimeClient.test.ts",
+        "src/lib/remoteBot.test.ts",
         "src/lib/runtimeStatus.test.ts",
         "src/lib/serverMonitor.test.ts",
         "src/lib/serviceProviders.test.ts",
@@ -17805,6 +17890,11 @@
         {
           "kind": "imports",
           "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
+          "to": "src/components/settings/sections/OperationsSection.tsx#OperationsSection"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/SettingsContainer.tsx#SettingsContainer",
           "to": "src/components/settings/sections/ServicesSection.tsx#ServicesSection"
         },
         {
@@ -18259,6 +18349,41 @@
         },
         {
           "kind": "imports",
+          "from": "src/components/settings/sections/OperationsSection.tsx#OperationsSection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabItem"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/OperationsSection.tsx#OperationsSection",
+          "to": "src/components/settings/common/SubTabNavigation.tsx#SubTabNavigation"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/OperationsSection.tsx#OperationsSection",
+          "to": "src/components/settings/sections/ServerMonitorSettings.tsx#ServerMonitorSettingsView"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/OperationsSection.tsx#OperationsSection",
+          "to": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/OperationsSection.tsx#OperationsSection",
+          "to": "src/components/settings/sections/services/RemoteBotSettingsPanel.tsx#RemoteBotSettingsPanel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/OperationsSection.tsx#OperationsSection",
+          "to": "src/components/settings/sections/services/SslCertificateSettingsPanel.tsx#SslCertificateSettingsPanel"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/OperationsSection.tsx#OperationsSectionProps",
+          "to": "src/components/settings/types.ts#LegacySettingsSection"
+        },
+        {
+          "kind": "imports",
           "from": "src/components/settings/sections/ServerMonitorSettings.tsx#ServerMonitorSettingsView",
           "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
         },
@@ -18275,17 +18400,7 @@
         {
           "kind": "imports",
           "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
-          "to": "src/components/settings/sections/ServerMonitorSettings.tsx#ServerMonitorSettingsView"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
           "to": "src/components/settings/sections/services/AiGatewaySettingsPanel.tsx#AiGatewaySettingsPanel"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
-          "to": "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx#CloudAgentSettingsPanel"
         },
         {
           "kind": "imports",
@@ -18296,11 +18411,6 @@
           "kind": "imports",
           "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
           "to": "src/components/settings/sections/services/ProxySettingsPanel.tsx#ProxySettingsPanel"
-        },
-        {
-          "kind": "imports",
-          "from": "src/components/settings/sections/ServicesSection.tsx#ServicesSection",
-          "to": "src/components/settings/sections/services/SslCertificateSettingsPanel.tsx#SslCertificateSettingsPanel"
         },
         {
           "kind": "imports",
@@ -18340,6 +18450,11 @@
         {
           "kind": "imports",
           "from": "src/components/settings/sections/services/ProxySettingsPanel.tsx#ProxySettingsPanel",
+          "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
+        },
+        {
+          "kind": "imports",
+          "from": "src/components/settings/sections/services/RemoteBotSettingsPanel.tsx#RemoteBotSettingsPanel",
           "to": "src/components/settings/common/SettingCard.tsx#SettingCard"
         },
         {
@@ -20909,6 +21024,8 @@
         "src/components/Workspaces/types.ts",
         "src/components/common/CustomSelect.test.tsx",
         "src/components/common/CustomSelect.tsx",
+        "src/components/common/TelegramIcon.test.tsx",
+        "src/components/common/TelegramIcon.tsx",
         "src/components/fileSharing/PasswordField.tsx",
         "src/components/fileSharing/PublicAccessCard.tsx",
         "src/components/launcher/components/LauncherEditor.tsx",
@@ -20945,6 +21062,7 @@
         "src/components/settings/sections/DataSecuritySection.tsx",
         "src/components/settings/sections/GeneralSection.tsx",
         "src/components/settings/sections/NewsSection.tsx",
+        "src/components/settings/sections/OperationsSection.tsx",
         "src/components/settings/sections/ServerMonitorSettings.test.tsx",
         "src/components/settings/sections/ServerMonitorSettings.tsx",
         "src/components/settings/sections/ServicesSection.tsx",
@@ -20953,6 +21071,7 @@
         "src/components/settings/sections/services/CloudAgentSettingsPanel.tsx",
         "src/components/settings/sections/services/ProtocolRouterSettingsPanel.tsx",
         "src/components/settings/sections/services/ProxySettingsPanel.tsx",
+        "src/components/settings/sections/services/RemoteBotSettingsPanel.tsx",
         "src/components/settings/sections/services/SslCertificateSettingsPanel.tsx",
         "src/components/settings/settingsContainer/actions.ts",
         "src/components/settings/settingsContainer/constants.ts",
@@ -20964,6 +21083,7 @@
         "src/components/settings/settingsContainer/save.ts",
         "src/components/settings/settingsContainer/tabDirty.ts",
         "src/components/settings/settingsContainer/types.ts",
+        "src/components/settings/types.test.ts",
         "src/components/settings/types.ts",
         "src/components/skillsModelOptions.ts",
         "src/components/sshTunnels/CommonPortSelectMenu.tsx",
@@ -21150,6 +21270,8 @@
         "src/lib/realtimeClient.test.ts",
         "src/lib/realtimeClient.ts",
         "src/lib/realtimeTunnel.ts",
+        "src/lib/remoteBot.test.ts",
+        "src/lib/remoteBot.ts",
         "src/lib/runtimeStatus.test.ts",
         "src/lib/runtimeStatus.ts",
         "src/lib/serverMonitor.test.ts",

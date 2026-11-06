@@ -1,19 +1,6 @@
 import { useTranslation } from "react-i18next";
-import {
-  Globe,
-  Route,
-  Network,
-  ShieldCheck,
-  Server,
-  CloudCog,
-} from "lucide-react";
-import { TelegramIcon } from "@/components/common/TelegramIcon";
+import { Globe, Route, Network } from "lucide-react";
 import { SubTabNavigation, type SubTabItem } from "../common/SubTabNavigation";
-import { ServerMonitorSettingsView } from "./ServerMonitorSettings";
-import {
-  DEFAULT_SERVER_MONITOR_SETTINGS,
-  type ServerMonitorSettings,
-} from "@/lib/serverMonitor";
 import type {
   ProxyConfig,
   ProxyStatus,
@@ -23,7 +10,6 @@ import type {
   ProtocolRouterConfig,
   ProtocolRouterStatus,
 } from "@/lib/protocolRouter";
-import type { SslConfig } from "@/lib/sslCertificate";
 import {
   type GatewaySettings,
   DEFAULT_GATEWAY_SETTINGS,
@@ -31,13 +17,6 @@ import {
 import { ProxySettingsPanel } from "./services/ProxySettingsPanel";
 import { ProtocolRouterSettingsPanel } from "./services/ProtocolRouterSettingsPanel";
 import { AiGatewaySettingsPanel } from "./services/AiGatewaySettingsPanel";
-import { SslCertificateSettingsPanel } from "./services/SslCertificateSettingsPanel";
-import { CloudAgentSettingsPanel } from "./services/CloudAgentSettingsPanel";
-import { RemoteBotSettingsPanel } from "./services/RemoteBotSettingsPanel";
-import {
-  DEFAULT_CLOUD_AGENT_SETTINGS,
-  type CloudAgentSettings,
-} from "@/lib/cloudAgent";
 
 export interface ServicesSectionProps {
   subTab: LegacySettingsSection;
@@ -62,22 +41,6 @@ export interface ServicesSectionProps {
   setGatewaySettings?: React.Dispatch<React.SetStateAction<GatewaySettings>>;
   gatewayPortInput?: string;
   setGatewayPortInput?: (val: string) => void;
-  sslConfig: SslConfig;
-  setSslConfig: React.Dispatch<React.SetStateAction<SslConfig>>;
-  newCheckTimeInput: string;
-  setNewCheckTimeInput: (val: string) => void;
-  sslAlertDaysInput: string;
-  setSslAlertDaysInput: (val: string) => void;
-  serverMonitorSettings?: ServerMonitorSettings;
-  setServerMonitorSettings?: React.Dispatch<React.SetStateAction<ServerMonitorSettings>>;
-  serverMonitorIntervalInput?: string;
-  setServerMonitorIntervalInput?: (val: string) => void;
-  serverMonitorRetentionInput?: string;
-  setServerMonitorRetentionInput?: (val: string) => void;
-  serverMonitorNewTimeInput?: string;
-  setServerMonitorNewTimeInput?: (val: string) => void;
-  cloudAgentSettings?: CloudAgentSettings;
-  setCloudAgentSettings?: React.Dispatch<React.SetStateAction<CloudAgentSettings>>;
   onShowToast?: (type: "success" | "error", text: string) => void;
   subTabDirtyMap?: Record<string, boolean>;
 }
@@ -105,22 +68,6 @@ export function ServicesSection({
   setGatewaySettings,
   gatewayPortInput = "17688",
   setGatewayPortInput,
-  sslConfig,
-  setSslConfig,
-  newCheckTimeInput,
-  setNewCheckTimeInput,
-  sslAlertDaysInput,
-  setSslAlertDaysInput,
-  serverMonitorSettings = DEFAULT_SERVER_MONITOR_SETTINGS,
-  setServerMonitorSettings,
-  serverMonitorIntervalInput = "5",
-  setServerMonitorIntervalInput,
-  serverMonitorRetentionInput = "7",
-  setServerMonitorRetentionInput,
-  serverMonitorNewTimeInput = "",
-  setServerMonitorNewTimeInput,
-  cloudAgentSettings = DEFAULT_CLOUD_AGENT_SETTINGS,
-  setCloudAgentSettings,
   onShowToast,
   subTabDirtyMap = {},
 }: ServicesSectionProps) {
@@ -147,34 +94,6 @@ export function ServicesSection({
       fallbackTitle: "AI 网关",
       icon: Network,
       dirty: subTabDirtyMap["ai-gateway"],
-    },
-    {
-      id: "ssl-certificate",
-      titleKey: "sslCertificate",
-      fallbackTitle: "SSL 证书",
-      icon: ShieldCheck,
-      dirty: subTabDirtyMap["ssl-certificate"],
-    },
-    {
-      id: "server-monitor",
-      titleKey: "serverMonitor",
-      fallbackTitle: "服务器监控",
-      icon: Server,
-      dirty: subTabDirtyMap["server-monitor"],
-    },
-    {
-      id: "cloud-agent",
-      titleKey: "cloudAgent",
-      fallbackTitle: "AI 云端智能体",
-      icon: CloudCog,
-      dirty: subTabDirtyMap["cloud-agent"],
-    },
-    {
-      id: "remote-bot",
-      titleKey: "remoteBot",
-      fallbackTitle: "Telegram 远程工作台",
-      icon: TelegramIcon,
-      dirty: subTabDirtyMap["remote-bot"],
     },
   ];
 
@@ -226,50 +145,6 @@ export function ServicesSection({
           templateAutoRefreshInput={templateAutoRefreshInput}
           setTemplateAutoRefreshInput={setTemplateAutoRefreshInput}
         />
-      )}
-
-      {/* 4. SSL Certificate */}
-      {subTab === "ssl-certificate" && (
-        <SslCertificateSettingsPanel
-          t={t}
-          sslConfig={sslConfig}
-          setSslConfig={setSslConfig}
-          newCheckTimeInput={newCheckTimeInput}
-          setNewCheckTimeInput={setNewCheckTimeInput}
-          sslAlertDaysInput={sslAlertDaysInput}
-          setSslAlertDaysInput={setSslAlertDaysInput}
-          onShowToast={onShowToast}
-        />
-      )}
-
-      {/* 5. Server Monitor */}
-      {subTab === "server-monitor" && (
-        <ServerMonitorSettingsView
-          settings={serverMonitorSettings}
-          onSettingsChange={(next) => setServerMonitorSettings?.(next)}
-          intervalInput={serverMonitorIntervalInput}
-          onIntervalInputChange={(value) => setServerMonitorIntervalInput?.(value)}
-          retentionInput={serverMonitorRetentionInput}
-          onRetentionInputChange={(value) => setServerMonitorRetentionInput?.(value)}
-          newTimeInput={serverMonitorNewTimeInput}
-          onNewTimeInputChange={(value) => setServerMonitorNewTimeInput?.(value)}
-          onShowToast={onShowToast}
-        />
-      )}
-
-      {/* 6. Cloud Agent */}
-      {subTab === "cloud-agent" && (
-        <CloudAgentSettingsPanel
-          t={t}
-          settings={cloudAgentSettings}
-          setSettings={setCloudAgentSettings || (() => {})}
-          onShowToast={onShowToast}
-        />
-      )}
-
-      {/* 7. Remote Bot (Telegram) */}
-      {subTab === "remote-bot" && (
-        <RemoteBotSettingsPanel t={t} onShowToast={onShowToast} />
       )}
     </div>
   );
