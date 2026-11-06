@@ -76,8 +76,7 @@ pub struct OpenCodeBridge {
     server_url: RwLock<Option<String>>,
     http_client: Client,
     telegram_client: Arc<TelegramClient>,
-    #[allow(dead_code)]
-    active_question: RwLock<Option<OpenCodeQuestionRequest>>,
+    active_question: Arc<RwLock<Option<OpenCodeQuestionRequest>>>,
     active_session_id: RwLock<Option<String>>,
     active_project_dir: RwLock<Option<PathBuf>>,
     active_options: RwLock<std::collections::HashMap<usize, String>>,
@@ -94,7 +93,7 @@ impl OpenCodeBridge {
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             telegram_client,
-            active_question: RwLock::new(None),
+            active_question: Arc::new(RwLock::new(None)),
             active_session_id: RwLock::new(None),
             active_project_dir: RwLock::new(None),
             active_options: RwLock::new(std::collections::HashMap::new()),
@@ -112,10 +111,26 @@ impl OpenCodeBridge {
         self.active_options.read().await.get(&num).cloned()
     }
 
+    /// 获取活跃提问中特定选项的文本标签
+    pub async fn get_question_option_label(&self, request_id: &str, opt_idx: usize) -> Option<String> {
+        let guard = self.active_question.read().await;
+        if let Some(ref q) = *guard {
+            if q.id == request_id {
+                if let Some(first_q) = q.questions.first() {
+                    if let Some(opt) = first_q.options.get(opt_idx) {
+                        return Some(opt.label.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// 取消当前正在进行的任务与会话
     pub async fn cancel_active_task(&self) {
         *self.active_session_id.write().await = None;
         *self.active_project_dir.write().await = None;
+        *self.active_question.write().await = None;
         self.active_options.write().await.clear();
         self.is_busy.store(false, Ordering::SeqCst);
     }
@@ -383,8 +398,7 @@ impl OpenCodeBridge {
         let plan_path = self.locate_new_plan_file(&project_dir, start_time);
 
         if let Some(ref p) = plan_path {
-            // 方案已正式生成！清空待答复会话状态
-            *self.active_session_id.write().await = None;
+            // 方案生成完成，保留活跃会话以便用户选择“补充”时能继续追加意见
             self.active_options.write().await.clear();
 
             let summary = self.extract_plan_summary(p).await
@@ -402,26 +416,24 @@ impl OpenCodeBridge {
             };
 
             let review_text = format!(
-                "📋 *【方案规划完成，等待确认】*\n\
+                "📋 【方案规划完成，等待确认】\n\
                 ━━━━━━━━━━━━━━━━━━━━\n\
-                ```markdown\n\
                 {}\n\
-                ```\n\
                 ━━━━━━━━━━━━━━━━━━━━\n\
-                点击下方按钮确认开始在新会话中编写代码：",
-                summary
+                👉 请点击下方按钮进行选择（确认即可开始编码实施，补充可打字输入修改意见）：",
+                summary.trim()
             );
 
             let markup = InlineKeyboardMarkup::new(vec![vec![
-                InlineKeyboardButton::callback("🚀 确认方案，开始 Coding", format!("approve_plan:{}", safe_plan_tag)),
-                InlineKeyboardButton::callback("❌ 放弃任务", "cancel_task"),
+                InlineKeyboardButton::callback("✅ 确认", format!("approve_plan:{}", safe_plan_tag)),
+                InlineKeyboardButton::callback("✏️ 补充", format!("revise_plan:{}", safe_plan_tag)),
             ]]);
 
             self.telegram_client.send_message(
                 chat_id,
                 &review_text,
                 Some(markup),
-                Some("Markdown"),
+                None,
             ).await?;
 
             return Ok(());
@@ -438,50 +450,40 @@ impl OpenCodeBridge {
 
             for (num, full_text) in &options {
                 opt_map.insert(*num, full_text.clone());
-                let btn_text = if full_text.chars().count() > 30 {
-                    format!("{}...", full_text.chars().take(27).collect::<String>())
-                } else {
-                    full_text.clone()
-                };
+                let btn_text = extract_button_label(*num, full_text);
                 keyboard_rows.push(vec![InlineKeyboardButton::callback(
-                    format!("🔘 {}", btn_text),
+                    btn_text,
                     format!("ans_choice:{}", num),
                 )]);
             }
 
-            let msg_text = format!(
-                "🤔 *【规划澄清提问】*\n\
-                ━━━━━━━━━━━━━━━━━━━━\n\
-                ```markdown\n\
-                {}\n\
-                ```\n\
-                ━━━━━━━━━━━━━━━━━━━━\n\
-                请点击下方选项进行决策，或直接打字回复：",
-                question_text
-            );
+            let msg_text = format_parsed_question_message(&question_text, &options);
 
             let markup = InlineKeyboardMarkup::new(keyboard_rows);
             self.telegram_client.send_message(
                 chat_id,
                 &msg_text,
                 Some(markup),
-                Some("Markdown"),
+                None,
             ).await?;
         } else {
             let clean_text = if latest_output.trim().is_empty() {
                 "OpenCode 调研完毕，请回复更多细节或确认指导意见以继续推进规划。".to_string()
             } else {
-                latest_output
+                strip_ansi_escapes(latest_output.trim())
+                    .trim_start_matches("```markdown")
+                    .trim_start_matches("```")
+                    .trim_end_matches("```")
+                    .trim()
+                    .to_string()
             };
 
             let msg_text = format!(
-                "💬 *【OpenCode 规划提问/说明】*\n\
+                "💬 【OpenCode 规划提问/说明】\n\
                 ━━━━━━━━━━━━━━━━━━━━\n\
-                ```markdown\n\
                 {}\n\
-                ```\n\
                 ━━━━━━━━━━━━━━━━━━━━\n\
-                请直接发送消息回复以继续推进规划。",
+                👉 请直接发送消息回复以继续推进规划。",
                 clean_text
             );
 
@@ -489,7 +491,7 @@ impl OpenCodeBridge {
                 chat_id,
                 &msg_text,
                 None,
-                Some("Markdown"),
+                None,
             ).await?;
         }
 
@@ -506,6 +508,7 @@ impl OpenCodeBridge {
     ) -> tokio::task::JoinHandle<()> {
         let http = self.http_client.clone();
         let tg = self.telegram_client.clone();
+        let active_q_holder = self.active_question.clone();
 
         tokio::spawn(async move {
             let mut asked_questions = std::collections::HashSet::new();
@@ -521,30 +524,21 @@ impl OpenCodeBridge {
                                 continue;
                             }
                             asked_questions.insert(q.id.clone());
+                            *active_q_holder.write().await = Some(q.clone());
 
                             if let Some(first_q) = q.questions.first() {
                                 let mut buttons = Vec::new();
                                 for (idx, opt) in first_q.options.iter().enumerate() {
-                                    let btn_text = if opt.label.len() > 30 {
-                                        format!("{}...", &opt.label[..27])
-                                    } else {
-                                        opt.label.clone()
-                                    };
+                                    let btn_text = extract_button_label(idx + 1, &opt.label);
                                     buttons.push(vec![InlineKeyboardButton::callback(
-                                        format!("🔘 {}", btn_text),
+                                        btn_text,
                                         format!("ans_q:{}:{}", q.id, idx),
                                     )]);
                                 }
 
-                                let text = format!(
-                                    "🤔 *【规划澄清提问】*\n\n\
-                                    问题: *{}*\n\n\
-                                    请点击下方选项进行决策：",
-                                    first_q.question
-                                );
-
+                                let text = format_question_request_message(first_q);
                                 let markup = InlineKeyboardMarkup::new(buttons);
-                                let _ = tg.send_message(chat_id, &text, Some(markup), Some("Markdown")).await;
+                                let _ = tg.send_message(chat_id, &text, Some(markup), None).await;
                             }
                         }
                     }
@@ -654,6 +648,10 @@ impl OpenCodeBridge {
             return Err("已有正在运行的任务，请等待当前任务完成".to_string());
         }
 
+        // 方案已获确认开始实施，清空旧的规划会话
+        *self.active_session_id.write().await = None;
+        self.active_options.write().await.clear();
+
         let bridge = self.clone();
         let plan_tag = plan_identifier.to_string();
 
@@ -662,12 +660,12 @@ impl OpenCodeBridge {
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("Coding 实施失败: {}", e);
-                let error_text = format!("❌ *Coding 阶段未达成完成标准*\n\n原因:\n```\n{}\n```", e);
+                let error_text = format!("❌ 【Coding 实施中断】\n\n原因:\n{}", e);
                 let _ = bridge.telegram_client.send_message(
                     chat_id,
                     &error_text,
                     None,
-                    Some("Markdown"),
+                    None,
                 ).await;
             }
         });
@@ -685,18 +683,18 @@ impl OpenCodeBridge {
 
         let status_msg = self.telegram_client.send_message(
             chat_id,
-            "🚀 *【全新会话已创建】OpenCode 正在实施编码...*\n━━━━━━━━━━━━━━━━━━━━\n⏳ 状态: 加载 coding 技能与任务步骤...",
+            "🚀 【全新会话已创建】OpenCode 正在实施编码...\n━━━━━━━━━━━━━━━━━━━━\n⏳ 状态: 基于当前分支创建本地临时 worktree 并实施任务...",
             None,
-            Some("Markdown"),
+            None,
         ).await?;
 
-        // 构造实施指令，要求使用 coding 技能并提供清晰依据
-        let coding_prompt = format!(
-            "用户已批准实施方案 [{}]。\n\n\
-            请在新会话中严格按照该方案，调用 coding 技能进行 TDD 开发与验证。\n\
-            要求：编写失败测试 -> 最小化实现 -> 跑通验证 -> 按照标准交付清单输出 ## Output checklist 与 ### Status: done。",
-            plan_identifier
-        );
+        let clean_plan_id = plan_identifier
+            .trim_start_matches(".ai-workflow/plans/")
+            .trim_start_matches("plans/")
+            .trim_matches('/');
+
+        // 用户明确指定提示词：调用 coding 技能，实施 .ai-workflow/plans/{planId}
+        let coding_prompt = format!("调用 coding 技能，实施 .ai-workflow/plans/{}", clean_plan_id);
 
         let mut child = Command::new("opencode")
             .arg("run")
@@ -883,4 +881,149 @@ pub fn parse_question_and_options(text: &str) -> (String, Vec<(usize, String)>) 
 
     let question_body = text.trim().to_string();
     (question_body, options)
+}
+
+/// 提取内联按钮展示的紧凑标签（带数字 Emoji 徽章，<=16 字符，移动端防截断）
+pub fn extract_button_label(num: usize, full_text: &str) -> String {
+    let num_emojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+    let badge = if num <= 10 {
+        num_emojis[num]
+    } else {
+        "🔘"
+    };
+
+    let mut cleaned = full_text.trim();
+
+    // 移除前导序号标记，例如 "1、", "1. ", "[1] ", "(1) " 等
+    if let Ok(prefix_re) = regex::Regex::new(r"^(?:\[?(\d{1,2})[\]\.、\)]|\((\d{1,2})\))\s*") {
+        if let Some(m) = prefix_re.find(cleaned) {
+            cleaned = cleaned[m.end()..].trim();
+        }
+    }
+
+    // 移除“推荐：”、“推荐:”等前缀词
+    for prefix in &["推荐：", "推荐:", "【推荐】", "[推荐]", "推荐 - ", "推荐-", "建议：", "建议:"] {
+        if let Some(stripped) = cleaned.strip_prefix(prefix) {
+            cleaned = stripped.trim();
+        }
+    }
+
+    // 遇到长破折号、冒号、括号等解释性分隔符，截取前半部分作为按钮短标题
+    let separators = [" —— ", "——", " — ", "—", " - ", "：", ": ", " (", "（", "，", ", ", "；", "; "];
+    for sep in &separators {
+        if let Some(pos) = cleaned.find(sep) {
+            let part = cleaned[..pos].trim();
+            if !part.is_empty() {
+                cleaned = part;
+                break;
+            }
+        }
+    }
+
+    // 清理 markdown 符号
+    cleaned = cleaned.trim_matches('*').trim_matches('`').trim_matches('_').trim();
+
+    // 限制字符长度（以 unicode 字符数计算），保证手机屏幕上单个按钮绝对不会被截断
+    let max_chars = 12;
+    let label = if cleaned.chars().count() > max_chars {
+        let truncated: String = cleaned.chars().take(max_chars - 1).collect();
+        format!("{}…", truncated)
+    } else if cleaned.is_empty() {
+        format!("选项 {}", num)
+    } else {
+        cleaned.to_string()
+    };
+
+    format!("{} {}", badge, label)
+}
+
+/// 将选项文本拆分为标题与补充说明
+pub fn split_option_detail(full_text: &str) -> (String, Option<String>) {
+    let mut cleaned = full_text.trim();
+    if let Ok(prefix_re) = regex::Regex::new(r"^(?:\[?(\d{1,2})[\]\.、\)]|\((\d{1,2})\))\s*") {
+        if let Some(m) = prefix_re.find(cleaned) {
+            cleaned = cleaned[m.end()..].trim();
+        }
+    }
+    cleaned = cleaned.trim_matches('*').trim_matches('`').trim();
+
+    let separators = [" —— ", "——", " — ", "—", " - ", "：", ": "];
+    for sep in &separators {
+        if let Some(pos) = cleaned.find(sep) {
+            let title = cleaned[..pos].trim().trim_matches('*').trim();
+            let detail = cleaned[pos + sep.len()..].trim().trim_matches('*').trim();
+            if !title.is_empty() && !detail.is_empty() {
+                return (title.to_string(), Some(detail.to_string()));
+            }
+        }
+    }
+
+    (cleaned.to_string(), None)
+}
+
+/// 格式化 /question 端点请求为移动端友好的大字号正文展示（不使用 markdown 代码块）
+pub fn format_question_request_message(q: &OpenCodeQuestionItem) -> String {
+    let mut lines = Vec::new();
+    lines.push("🤔 【规划澄清提问】".to_string());
+    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
+    lines.push(format!("❓ 提问说明：\n{}", q.question.trim()));
+    lines.push("".to_string());
+
+    if !q.options.is_empty() {
+        lines.push("📋 备选方案：".to_string());
+        let num_emojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+        for (idx, opt) in q.options.iter().enumerate() {
+            let num = idx + 1;
+            let badge = if num <= 10 { num_emojis[num] } else { "🔘" };
+            lines.push(format!("{} {}", badge, opt.label.trim()));
+            if let Some(ref desc) = opt.description {
+                let trimmed_desc = desc.trim();
+                if !trimmed_desc.is_empty() {
+                    lines.push(format!("   {}", trimmed_desc));
+                }
+            }
+            lines.push("".to_string());
+        }
+    }
+
+    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
+    lines.push("👉 请点击下方按钮选择，或直接输入选项数字回复：".to_string());
+
+    lines.join("\n")
+}
+
+/// 格式化 stdout 解析提问为移动端友好的大字号正文展示（不使用 markdown 代码块）
+pub fn format_parsed_question_message(question_text: &str, options: &[(usize, String)]) -> String {
+    let mut lines = Vec::new();
+    lines.push("🤔 【规划澄清提问】".to_string());
+    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
+
+    let raw_clean = strip_ansi_escapes(question_text.trim());
+    let clean_question = raw_clean
+        .trim_start_matches("```markdown")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    lines.push(format!("❓ 提问说明：\n{}", clean_question));
+    lines.push("".to_string());
+
+    if !options.is_empty() {
+        lines.push("📋 备选方案：".to_string());
+        let num_emojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+        for (num, full_text) in options {
+            let badge = if *num <= 10 { num_emojis[*num] } else { "🔘" };
+            let (title, detail) = split_option_detail(full_text);
+            lines.push(format!("{} {}", badge, title));
+            if let Some(d) = detail {
+                lines.push(format!("   {}", d));
+            }
+            lines.push("".to_string());
+        }
+    }
+
+    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
+    lines.push("👉 请点击下方按钮选择，或直接输入选项数字/回复建议：".to_string());
+
+    lines.join("\n")
 }

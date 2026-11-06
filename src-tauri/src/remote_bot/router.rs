@@ -120,16 +120,28 @@ impl CommandRouter {
         } else {
             // 普通文本消息：如果正有活跃规划会话，则作为回复继续推进；否则提示帮助
             if self.bridge.has_active_session().await {
-                if let Err(e) = self.bridge.continue_planning(chat_id, text).await {
+                // 如果用户输入的是纯数字序号（如 "1" 或 "1." 或 "1、"），优先映射为对应的 active_options 完整文本
+                let trimmed = text.trim();
+                let resolved_text = if let Ok(num) = trimmed.trim_end_matches('.').trim_end_matches('、').parse::<usize>() {
+                    if let Some(opt_text) = self.bridge.get_option_text(num).await {
+                        opt_text
+                    } else {
+                        text.to_string()
+                    }
+                } else {
+                    text.to_string()
+                };
+
+                if let Err(e) = self.bridge.continue_planning(chat_id, &resolved_text).await {
                     self.client.send_message(
                         chat_id,
-                        &format!("❌ 推进规划失败: `{}`", e),
+                        &format!("❌ 推进规划失败: {}", e),
                         None,
-                        Some("Markdown"),
+                        None,
                     ).await?;
                 }
             } else {
-                let reply = format!("💡 收到消息: `{}`\n输入 `/help` 查看可用操作指令。", text);
+                let reply = format!("💡 收到消息: {}\n输入 `/help` 查看可用操作指令。", text);
                 self.client.send_message(chat_id, &reply, None, Some("Markdown")).await?;
             }
         }
@@ -220,18 +232,35 @@ impl CommandRouter {
                 let _ = self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
-                    "⏳ 方案已获批准，正在拉起全新独立会话启动 Coding 实施...",
+                    "⏳ 方案已确认，正在拉起全新独立会话启动 Coding 实施...",
                     None,
-                    Some("Markdown"),
+                    None,
                 ).await;
             }
 
             if let Err(e) = self.bridge.execute_coding(chat_id, project_dir, plan_tag).await {
                 let _ = self.client.send_message(
                     chat_id,
-                    &format!("❌ 启动 Coding 实施失败: `{}`", e),
+                    &format!("❌ 启动 Coding 实施失败: {}", e),
                     None,
-                    Some("Markdown"),
+                    None,
+                ).await;
+            }
+        } else if let Some(plan_tag) = data.strip_prefix("revise_plan:") {
+            if let Some(ref msg) = cb.message {
+                let prompt_text = format!(
+                    "✏️ 【方案补充】\n\
+                    ━━━━━━━━━━━━━━━━━━━━\n\
+                    目标方案: {}\n\n\
+                    请直接打字回复您希望补充或修改的内容，OpenCode 将据此继续完善规划方案。",
+                    plan_tag
+                );
+                let _ = self.client.edit_message_text(
+                    msg.chat.id,
+                    msg.message_id,
+                    &prompt_text,
+                    None,
+                    None,
                 ).await;
             }
         } else if let Some(choice_num_str) = data.strip_prefix("ans_choice:") {
@@ -244,18 +273,18 @@ impl CommandRouter {
                 let _ = self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
-                    &format!("✅ 您已选择: *{}*", choice_text),
+                    &format!("✅ 您已选择: {}", choice_text),
                     None,
-                    Some("Markdown"),
+                    None,
                 ).await;
             }
 
             if let Err(e) = self.bridge.continue_planning(chat_id, &choice_text).await {
                 let _ = self.client.send_message(
                     chat_id,
-                    &format!("❌ 推进规划失败: `{}`", e),
+                    &format!("❌ 推进规划失败: {}", e),
                     None,
-                    Some("Markdown"),
+                    None,
                 ).await;
             }
         } else if let Some(q_info) = data.strip_prefix("ans_q:") {
@@ -265,24 +294,24 @@ impl CommandRouter {
                 let q_id = parts[0];
                 let opt_idx: usize = parts[1].parse().unwrap_or(0);
                 
-                // 默认回复选项索引对应的决策（或者直接使用选中的文本）
-                let answer_label = format!("Option {}", opt_idx + 1);
+                let answer_label = self.bridge.get_question_option_label(q_id, opt_idx).await
+                    .unwrap_or_else(|| format!("Option {}", opt_idx + 1));
                 if let Err(e) = self.bridge.reply_question(q_id, &answer_label).await {
                     if let Some(ref msg) = cb.message {
                         let _ = self.client.send_message(
                             msg.chat.id,
-                            &format!("⚠️ 提交提问应答失败: `{}`", e),
+                            &format!("⚠️ 提交提问应答失败: {}", e),
                             None,
-                            Some("Markdown"),
+                            None,
                         ).await;
                     }
                 } else if let Some(ref msg) = cb.message {
                     let _ = self.client.edit_message_text(
                         msg.chat.id,
                         msg.message_id,
-                        &format!("✅ 已选择并提交决策: *{}*", answer_label),
+                        &format!("✅ 已选择并提交决策: {}", answer_label),
                         None,
-                        Some("Markdown"),
+                        None,
                     ).await;
                 }
             }

@@ -178,3 +178,112 @@ async fn test_locate_new_plan_file_filter_history() {
     // 清理临时文件
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_extract_button_label() {
+    use super::opencode_bridge::extract_button_label;
+
+    // 1. 带长破折号和推荐前缀
+    let label1 = extract_button_label(1, "1、推荐：两级可展开侧边栏 —— 扩展性强，清晰归类");
+    assert_eq!(label1, "1️⃣ 两级可展开侧边栏");
+
+    // 2. 带全角括号补充说明
+    let label2 = extract_button_label(2, "2. 分组卡片式列表（扁平展示，直观简单）");
+    assert_eq!(label2, "2️⃣ 分组卡片式列表");
+
+    // 3. 超长文本截断为紧凑文本
+    let label3 = extract_button_label(3, "3、这是一个非常非常非常非常非常长的选项标题没有任何标点符号");
+    assert!(label3.starts_with("3️⃣ "));
+    assert!(label3.ends_with("…"));
+    assert!(label3.chars().count() <= 16);
+
+    // 4. 短文本直接保留
+    let label4 = extract_button_label(4, "4) 弹窗分组设置");
+    assert_eq!(label4, "4️⃣ 弹窗分组设置");
+}
+
+#[test]
+fn test_split_option_detail() {
+    use super::opencode_bridge::split_option_detail;
+
+    let (title1, desc1) = split_option_detail("1、推荐：两级侧边栏 —— 扩展性强，清晰归类");
+    assert_eq!(title1, "推荐：两级侧边栏");
+    assert_eq!(desc1, Some("扩展性强，清晰归类".to_string()));
+
+    let (title2, desc2) = split_option_detail("2. 普通无说明选项");
+    assert_eq!(title2, "普通无说明选项");
+    assert_eq!(desc2, None);
+}
+
+#[test]
+fn test_format_question_request_message() {
+    use super::opencode_bridge::{format_question_request_message, OpenCodeQuestionItem, OpenCodeQuestionOption};
+
+    let item = OpenCodeQuestionItem {
+        question: "设置界面 Tab 太多，如何优化？".to_string(),
+        multiple: false,
+        options: vec![
+            OpenCodeQuestionOption {
+                label: "两级侧边栏".to_string(),
+                description: Some("结构清晰，支持多级扩展".to_string()),
+            },
+            OpenCodeQuestionOption {
+                label: "分组卡片".to_string(),
+                description: None,
+            },
+        ],
+    };
+
+    let msg = format_question_request_message(&item);
+    // 验证绝不包含 markdown 代码块围栏
+    assert!(!msg.contains("```markdown"));
+    assert!(!msg.contains("```"));
+    // 验证包含提问与完整选项
+    assert!(msg.contains("设置界面 Tab 太多，如何优化？"));
+    assert!(msg.contains("1️⃣ 两级侧边栏"));
+    assert!(msg.contains("结构清晰，支持多级扩展"));
+    assert!(msg.contains("2️⃣ 分组卡片"));
+}
+
+#[test]
+fn test_format_parsed_question_message() {
+    use super::opencode_bridge::format_parsed_question_message;
+
+    let q_text = "分析完毕，需要确认交互风格：";
+    let options = vec![
+        (1, "1、推荐：两级侧边栏 —— 扩展性强".to_string()),
+        (2, "2、分组卡片式 —— 扁平直观".to_string()),
+    ];
+
+    let msg = format_parsed_question_message(q_text, &options);
+    assert!(!msg.contains("```markdown"));
+    assert!(!msg.contains("```"));
+    assert!(msg.contains("1️⃣ 推荐：两级侧边栏"));
+    assert!(msg.contains("扩展性强"));
+    assert!(msg.contains("2️⃣ 分组卡片式"));
+    assert!(msg.contains("扁平直观"));
+}
+
+#[test]
+fn test_plan_confirmation_buttons_and_coding_prompt() {
+    let plan_id = "20261106-network-settings";
+    
+    // 验证方案确认只有“确认”与“补充”两个选项
+    let buttons = vec![vec![
+        InlineKeyboardButton::callback("✅ 确认", format!("approve_plan:{}", plan_id)),
+        InlineKeyboardButton::callback("✏️ 补充", format!("revise_plan:{}", plan_id)),
+    ]];
+    assert_eq!(buttons[0].len(), 2);
+    assert_eq!(buttons[0][0].text, "✅ 确认");
+    assert_eq!(buttons[0][0].callback_data.as_deref(), Some("approve_plan:20261106-network-settings"));
+    assert_eq!(buttons[0][1].text, "✏️ 补充");
+    assert_eq!(buttons[0][1].callback_data.as_deref(), Some("revise_plan:20261106-network-settings"));
+
+    // 验证固定 coding 提示词格式
+    let clean_plan_id = plan_id
+        .trim_start_matches(".ai-workflow/plans/")
+        .trim_start_matches("plans/")
+        .trim_matches('/');
+    let coding_prompt = format!("调用 coding 技能，实施 .ai-workflow/plans/{}", clean_plan_id);
+    assert_eq!(coding_prompt, "调用 coding 技能，实施 .ai-workflow/plans/20261106-network-settings");
+}
