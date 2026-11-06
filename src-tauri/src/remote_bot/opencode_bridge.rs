@@ -293,12 +293,14 @@ impl OpenCodeBridge {
         let server_url = self.ensure_server().await?;
         let start_time = std::time::SystemTime::now();
 
-        // 初次规划提示词增加工程规范引导，后续交互则直接传递用户决策
+        // 初次对话/规划提示词增加工程规范引导，后续交互则直接传递用户决策
         let prompt_to_run = if session_id_opt.is_none() {
             format!(
-                "用户提出新需求：{}\n\n\
-                请遵循项目工程规范，使用 planning 技能进行深入调研与方案规划。\n\
-                如遇到实现分歧，请按照规约提出编号问题（问题 N：...）及选项（1、... 2、...）进行澄清；规划确认后，请生成并确认 spec.md 和 plan.md。",
+                "用户在当前工作区发来消息：{}\n\n\
+                请基于当前工作区代码库进行解答或处理：\n\
+                1. 若用户是在提问、咨询代码实现、查询当前架构或探讨方案思路，请直接清晰、专业地用中文给出解答；\n\
+                2. 若用户提出的是具体的新功能开发、重构或缺陷修复需求，请遵循项目工程规范，使用 planning 技能展开深入调研与方案规划。\n\
+                   如遇实现分歧，请按照规约提出编号问题（问题 N：...）及选项（1、... 2、...）进行澄清；规划确认后，请生成并确认 spec.md 和 plan.md。",
                 input_prompt
             )
         } else {
@@ -306,9 +308,9 @@ impl OpenCodeBridge {
         };
 
         let status_desc = if session_id_opt.is_none() {
-            "🔍 *OpenCode 正在进行方案规划 (Planning)...*\n_正在分析代码库与依赖关系..._"
+            "🔍 *OpenCode 正在思考与分析工作区...*\n_结合代码库与依赖关系分析中..._"
         } else {
-            "🔍 *OpenCode 正在根据您的答复深入分析与推进规划...*"
+            "🔍 *OpenCode 正在根据您的答复深入分析与推进...*"
         };
 
         let status_msg = self.telegram_client.send_message(
@@ -468,7 +470,7 @@ impl OpenCodeBridge {
             ).await?;
         } else {
             let clean_text = if latest_output.trim().is_empty() {
-                "OpenCode 调研完毕，请回复更多细节或确认指导意见以继续推进规划。".to_string()
+                "OpenCode 分析完毕，请回复更多细节或确认指导意见以继续推进。".to_string()
             } else {
                 strip_ansi_escapes(latest_output.trim())
                     .trim_start_matches("```markdown")
@@ -479,11 +481,11 @@ impl OpenCodeBridge {
             };
 
             let msg_text = format!(
-                "💬 【OpenCode 规划提问/说明】\n\
+                "💬 【OpenCode 回复与分析】\n\
                 ━━━━━━━━━━━━━━━━━━━━\n\
                 {}\n\
                 ━━━━━━━━━━━━━━━━━━━━\n\
-                👉 请直接发送消息回复以继续推进规划。",
+                👉 请直接发送消息继续交流推进，或输入 /cancel 结束会话。",
                 clean_text
             );
 

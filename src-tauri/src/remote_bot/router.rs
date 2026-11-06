@@ -147,8 +147,23 @@ impl CommandRouter {
                     ).await?;
                 }
             } else {
-                let reply = format!("💡 收到消息: {}\n输入 `/help` 查看可用操作指令。", text);
-                self.client.send_message(chat_id, &reply, None, Some("Markdown")).await?;
+                // 空闲状态下，直接作为自然语言对话/需求接入！随时随地与 OpenCode 交流
+                let project_dir = resolve_project_dir(&config);
+                let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
+                let ack_text = format!(
+                    "💬 收到消息，正在基于工作区 `{}` 思考与分析...\n\n_发送 `/help` 可查看快捷指令，发送 `/cancel` 可随时中断。_",
+                    project_name
+                );
+                self.client.send_message(chat_id, &ack_text, None, Some("Markdown")).await?;
+
+                if let Err(e) = self.bridge.execute_planning(chat_id, project_dir, text).await {
+                    self.client.send_message(
+                        chat_id,
+                        &format!("❌ 启动处理失败: {}", e),
+                        None,
+                        None,
+                    ).await?;
+                }
             }
         }
 
