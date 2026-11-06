@@ -1,6 +1,6 @@
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use super::types::{InlineKeyboardButton, InlineKeyboardMarkup};
+use super::types::InlineKeyboardMarkup;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanExecutionStatus {
@@ -215,100 +215,25 @@ fn extract_plan_steps(plan_file: &Path) -> Vec<String> {
 
 /// 格式化进度为移动端友好的展示消息及操作按钮
 pub fn format_plan_progress_message(info: &PlanProgressInfo) -> (String, Option<InlineKeyboardMarkup>) {
-    let mut lines = Vec::new();
-    lines.push("📊 【Plan 实施进度报告】".to_string());
-    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
-    lines.push(format!("📋 方案标识: `{}`", info.plan_id));
-
     let (status_text, can_run, can_refresh) = match info.status {
-        PlanExecutionStatus::Completed => ("🟢 已圆满交付 (Completed)", false, true),
-        PlanExecutionStatus::InProgress => ("🟡 正在实施中 (In-Progress)", false, true),
-        PlanExecutionStatus::NotStarted => ("⚪ 尚未实施 (Not Started)", true, false),
-        PlanExecutionStatus::Failed => ("🔴 实施中断/失败 (Failed)", true, true),
-    };
-    lines.push(format!("🏷️ 实施状态: {}", status_text));
-
-    if let Some(ref elapsed) = info.elapsed_desc {
-        if info.status == PlanExecutionStatus::Completed {
-            lines.push(format!("⏱️ 交付总耗时: {}", elapsed));
-        } else {
-            lines.push(format!("⏳ 运行已耗时: {}", elapsed));
-        }
-    }
-
-    if let Some(ref commit) = info.commit_hash {
-        let short = if commit.len() > 8 { &commit[..8] } else { commit };
-        lines.push(format!("🎯 交付提交: `{}`", short));
-    }
-
-    if info.has_worktree {
-        lines.push("".to_string());
-        lines.push("🌿 隔离构建环境 (Worktree):".to_string());
-        lines.push(format!("• 路径: `.worktrees/{}`", info.plan_id));
-        if let Some(ref br) = info.worktree_branch {
-            lines.push(format!("• 分支: `{}`", br));
-        }
-    }
-
-    if !info.steps.is_empty() {
-        lines.push("".to_string());
-        lines.push(format!("📝 规划实施步骤 (共 {} 步):", info.steps.len()));
-        for (idx, step) in info.steps.iter().enumerate() {
-            let prefix = match info.status {
-                PlanExecutionStatus::Completed => "✅",
-                PlanExecutionStatus::InProgress => if idx == 0 { "⏳" } else { "•" },
-                _ => "•",
-            };
-            lines.push(format!("{} {}", prefix, step));
-        }
-    }
-
-    if !info.report_files.is_empty() {
-        lines.push("".to_string());
-        lines.push(format!("📁 验证与测试证据 (已产出 {} 份):", info.report_files.len()));
-        for (name, time) in info.report_files.iter().take(5) {
-            lines.push(format!("• `{}` ({})", name, time));
-        }
-        if info.report_files.len() > 5 {
-            lines.push(format!("• ...以及其余 {} 份日志", info.report_files.len() - 5));
-        }
-    }
-
-    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
-
-    let mut buttons = Vec::new();
-    let mut row = Vec::new();
-
-    if can_refresh {
-        row.push(InlineKeyboardButton::callback(
-            format!("🔄 刷新进度"),
-            format!("check_progress:{}", info.plan_id),
-        ));
-    }
-
-    if can_run {
-        row.push(InlineKeyboardButton::callback(
-            format!("🚀 启动 Coding 实施"),
-            format!("approve_plan:{}", info.plan_id),
-        ));
-    }
-
-    if info.status == PlanExecutionStatus::InProgress {
-        row.push(InlineKeyboardButton::callback(
-            "🛑 中断任务",
-            "cancel_task",
-        ));
-    }
-
-    if !row.is_empty() {
-        buttons.push(row);
-    }
-
-    let markup = if !buttons.is_empty() {
-        Some(InlineKeyboardMarkup::new(buttons))
-    } else {
-        None
+        PlanExecutionStatus::Completed => ("🟢 `已圆满交付 (Completed)`", false, true),
+        PlanExecutionStatus::InProgress => ("🟡 `正在实施中 (In-Progress)`", false, true),
+        PlanExecutionStatus::NotStarted => ("⚪ `尚未实施 (Not Started)`", true, false),
+        PlanExecutionStatus::Failed => ("🔴 `实施中断/失败 (Failed)`", true, true),
     };
 
-    (lines.join("\n"), markup)
+    let is_in_progress = info.status == PlanExecutionStatus::InProgress;
+
+    super::card_builder::CardBuilder::plan_progress_card(
+        &info.plan_id,
+        status_text,
+        info.elapsed_desc.as_deref(),
+        info.commit_hash.as_deref(),
+        info.worktree_branch.as_deref(),
+        &info.steps,
+        &info.report_files,
+        can_run,
+        can_refresh,
+        is_in_progress,
+    )
 }

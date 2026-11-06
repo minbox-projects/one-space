@@ -4,10 +4,11 @@ use log::{info, warn};
 use tokio::process::Command;
 
 use super::auth::AuthGuard;
+use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
 use super::opencode_bridge::OpenCodeBridge;
 use super::storage::{load_config, save_config};
-use super::types::{InlineKeyboardButton, InlineKeyboardMarkup, TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
+use super::types::{TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
 
 pub struct CommandRouter {
     client: Arc<TelegramClient>,
@@ -43,48 +44,22 @@ impl CommandRouter {
                 save_config(&config)?;
 
                 info!("Telegram 远程控制已成功绑定首个管理员 Chat ID: {}", chat_id);
-                let welcome = format!(
-                    "🎉 *OneSpace 远程控制已成功绑定！*\n\n\
-                    您的 Chat ID `{}` 已登记为授权管理员。\n\n\
-                    支持的基础指令：\n\
-                    • `/status` - 查看 Mac 本地工作台状态\n\
-                    • `/projects` - 切换或查看工作区项目\n\
-                    • `/newfeat <需求>` - 启动需求规划与实施\n\
-                    • `/help` - 查看帮助文档",
-                    chat_id
-                );
+                let hostname = crate::get_hostname();
+                let welcome = CardBuilder::welcome_card(chat_id, &hostname);
                 self.client.send_message(chat_id, &welcome, None, Some("Markdown")).await?;
                 return Ok(());
             }
 
             warn!("拒绝未授权的 Telegram 访问请求，Chat ID: {}", chat_id);
-            let reject_text = format!(
-                "⛔ *未授权的访问*\n\n\
-                您的 Chat ID 为 `{}`。\n\
-                请在 Mac 端的 OneSpace -> 设置 -> 远程控制 中将此 ID 加入白名单。",
-                chat_id
-            );
+            let reject_text = CardBuilder::unauthorized_card(chat_id);
             self.client.send_message(chat_id, &reject_text, None, Some("Markdown")).await?;
             return Ok(());
         }
 
         // 授权用户的命令路由
         if text.starts_with("/start") || text.starts_with("/help") {
-            let help_text = 
-                "🤖 *OneSpace 移动智能工作台*\n\n\
-                您已通过鉴权，随时可以下发指令或直接对话交流：\n\n\
-                📌 *基础运维*\n\
-                • `/status` - 查看 Mac 状态、Git 分支与最新提交\n\
-                • `/projects` - 查看和选择工作区项目\n\n\
-                🚀 *AI 研发流水线*\n\
-                • `/newfeat <需求内容>` - 启动新需求规划与 OpenCode 编码\n\
-                • `/plans` - 查看工作区已有规划方案列表及状态\n\
-                • `/progress [planId]` - 查看指定或当前正在实施方案的进度\n\
-                • `/diff [planId]` - 查看最新代码改动对比或方案差异\n\
-                • `/coding <planId>` - 直接实施指定的已规划方案\n\
-                • `/cancel` - 中断当前正在执行的任务\n\n\
-                💡 *随时自然对话*：在空闲状态下直接发送文字，机器人将基于当前代码库直接解答与思考！";
-            self.client.send_message(chat_id, help_text, None, Some("Markdown")).await?;
+            let help_text = CardBuilder::help_card();
+            self.client.send_message(chat_id, &help_text, None, Some("Markdown")).await?;
         } else if text == "/status" {
             self.handle_status_command(chat_id).await?;
         } else if text == "/projects" {
@@ -97,30 +72,29 @@ impl CommandRouter {
             self.handle_diff_command(chat_id, text).await?;
         } else if text == "/cancel" {
             self.bridge.cancel_active_task().await;
-            self.client.send_message(chat_id, "🛑 当前进行中的任务与多轮规划会话已取消。", None, Some("Markdown")).await?;
+            let cancel_text = CardBuilder::task_cancelled_card();
+            self.client.send_message(chat_id, &cancel_text, None, Some("Markdown")).await?;
         } else if text.starts_with("/coding") || text.starts_with("/implement") {
             self.handle_coding_command(chat_id, text).await?;
         } else if text.starts_with("/newfeat") {
             let prompt = text.trim_start_matches("/newfeat").trim();
             if prompt.is_empty() {
+                let err_text = CardBuilder::argument_error_card(
+                    "/newfeat",
+                    "未提供需求描述文本",
+                    "/newfeat 为项目增加 Telegram 登录认证",
+                );
                 self.client.send_message(
                     chat_id,
-                    "⚠️ 请在 `/newfeat` 后附带需求描述，例如：\n`/newfeat 为项目增加 Telegram 登录认证`",
+                    &err_text,
                     None,
                     Some("Markdown")
                 ).await?;
             } else {
                 let project_dir = resolve_project_dir(&config);
-
-                let ack_text = format!(
-                    "🚀 *收到新需求任务*\n\n\
-                    📝 描述: {}\n\
-                    📂 目标项目: `{}`\n\n\
-                    _正在拉起 OpenCode 执行方案规划 (Planning)..._",
-                    prompt,
-                    project_dir.display()
-                );
-                self.client.send_message(chat_id, &ack_text, None, Some("Markdown")).await?;
+                let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
+                let (ack_text, markup) = CardBuilder::new_feature_ack_card(&project_name, prompt);
+                self.client.send_message(chat_id, &ack_text, Some(markup), Some("Markdown")).await?;
 
                 if let Err(e) = self.bridge.execute_planning(chat_id, project_dir, prompt).await {
                     self.client.send_message(
@@ -158,11 +132,8 @@ impl CommandRouter {
                 // 空闲状态下，直接作为自然语言对话/需求接入！随时随地与 OpenCode 交流
                 let project_dir = resolve_project_dir(&config);
                 let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
-                let ack_text = format!(
-                    "💬 收到消息，正在基于工作区 `{}` 思考与分析...\n\n_发送 `/help` 可查看快捷指令，发送 `/cancel` 可随时中断。_",
-                    project_name
-                );
-                self.client.send_message(chat_id, &ack_text, None, Some("Markdown")).await?;
+                let (ack_text, markup) = CardBuilder::new_feature_ack_card(&project_name, text);
+                self.client.send_message(chat_id, &ack_text, Some(markup), Some("Markdown")).await?;
 
                 if let Err(e) = self.bridge.execute_planning(chat_id, project_dir, text).await {
                     self.client.send_message(
@@ -226,28 +197,17 @@ impl CommandRouter {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_else(|| "暂无提交记录".to_string());
 
-        let status_text = format!(
-            "🖥️ *OneSpace 工作台运行状态*\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            • 主机设备: `{}`\n\
-            • 系统时间: `{}`\n\
-            • 活跃工作区: `{}`\n\
-            • Git 分支: `{}` ({})\n\
-            • 最新提交: `{}`\n\
-            • 权限自动审批: `{}`\n\
-            • 通信延迟: 正常 (长轮询在线)\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            输入 `/diff` 可查看代码变更，`/plans` 可查看方案。",
-            hostname,
-            current_time,
+        let (status_text, markup) = CardBuilder::status_card(
+            &hostname,
+            &current_time,
             config.active_workspace.as_deref().unwrap_or("onespace-app"),
-            git_branch,
-            git_status,
-            git_latest_commit,
-            if config.auto_approve_permissions { "已启用" } else { "手动确认" }
+            &git_branch,
+            &git_status,
+            &git_latest_commit,
+            config.auto_approve_permissions,
         );
 
-        self.client.send_message(chat_id, &status_text, None, Some("Markdown")).await?;
+        self.client.send_message(chat_id, &status_text, markup, Some("Markdown")).await?;
         Ok(())
     }
 
@@ -360,25 +320,11 @@ impl CommandRouter {
         };
 
         let title_plan = plan_id_opt.unwrap_or("最新提交对比");
-        let diff_msg = format!(
-            "🔍 【代码改动 Diff 预览】\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            📋 方案/范围: `{}`\n\
-            🎯 比较基准: `{}`\n\n\
-            📊 *文件改动统计*:\n\
-            ```\n\
-            {}\n\
-            ```\n\n\
-            📝 *代码变更摘要*:\n\
-            ```diff\n\
-            {}\n\
-            ```\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            输入 `/plans` 可继续查看其他方案。",
+        let diff_msg = CardBuilder::diff_preview_card(
             title_plan,
-            target_scope,
-            stat_text,
-            snippet
+            &target_scope,
+            &stat_text,
+            &snippet,
         );
 
         self.client.send_message(chat_id, &diff_msg, None, Some("Markdown")).await?;
@@ -420,41 +366,21 @@ impl CommandRouter {
             format!("未能找到方案 `{}` 的详细报告日志文件。\n建议通过 `/status` 检查 Git 状态或点击重试按钮继续修复。", clean_id)
         });
 
-        let msg = format!(
-            "📄 【方案诊断日志】\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            📋 方案: `{}`\n\n\
-            {}\n\
-            ━━━━━━━━━━━━━━━━━━━━",
-            clean_id,
-            body
-        );
-
-        self.client.send_message(chat_id, &msg, None, None).await?;
+        let (msg, markup) = CardBuilder::diagnostic_log_card(clean_id, None, &body);
+        self.client.send_message(chat_id, &msg, Some(markup), Some("Markdown")).await?;
         Ok(())
     }
 
     async fn handle_projects_command(&self, chat_id: i64) -> Result<(), String> {
         let config = load_config()?;
         let active = config.active_workspace.as_deref().unwrap_or("未设定");
-        
-        let mut keyboard_rows = Vec::new();
-        // 尝试获取当前 app_dir 或项目目录
+        let project_dir = resolve_project_dir(&config);
         let default_project = "onespace-app";
-        let row = vec![
-            InlineKeyboardButton::callback(
-                format!("📁 {} (当前默认)", default_project),
-                format!("set_project:{}", default_project),
-            )
-        ];
-        keyboard_rows.push(row);
 
-        let markup = InlineKeyboardMarkup::new(keyboard_rows);
-        let text = format!(
-            "📂 *工作区项目管理*\n\n\
-            当前绑定的活跃项目: `{}`\n\
-            点击下方按钮可切换操作的目标项目：",
-            active
+        let (text, markup) = CardBuilder::projects_card(
+            active,
+            &project_dir.display().to_string(),
+            &[default_project],
         );
 
         self.client.send_message(chat_id, &text, Some(markup), Some("Markdown")).await?;
@@ -491,47 +417,26 @@ impl CommandRouter {
         // 按修改时间降序排序，最新的排在最前
         available_plans.sort_by(|a, b| b.1.cmp(&a.1));
 
-        let mut keyboard_rows = Vec::new();
-        let mut msg_lines = Vec::new();
-        msg_lines.push("📋 【工作区方案列表 (Plans)】".to_string());
-        msg_lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
-        msg_lines.push("点击下方按钮即可查看进度或启动 Coding 实施：\n".to_string());
-
-        // 展示最新的最多 6 个，每个方案附带实施状态图标与操作按钮
-        for (idx, (plan_id, _mtime)) in available_plans.iter().take(6).enumerate() {
-            let num = idx + 1;
-            let status_badge = if let Ok(info) = super::plan_progress::get_plan_progress(&project_dir, plan_id) {
+        let mut plan_triplets = Vec::new();
+        for (plan_id, _) in available_plans.iter().take(6) {
+            let (status_badge, can_run) = if let Ok(info) = super::plan_progress::get_plan_progress(&project_dir, plan_id) {
                 match info.status {
-                    super::plan_progress::PlanExecutionStatus::Completed => "🟢 已交付",
-                    super::plan_progress::PlanExecutionStatus::InProgress => "🟡 实施中",
-                    super::plan_progress::PlanExecutionStatus::NotStarted => "⚪ 未实施",
-                    super::plan_progress::PlanExecutionStatus::Failed => "🔴 中断",
+                    super::plan_progress::PlanExecutionStatus::Completed => ("🟢 `已交付`".to_string(), false),
+                    super::plan_progress::PlanExecutionStatus::InProgress => ("🟡 `实施中`".to_string(), false),
+                    super::plan_progress::PlanExecutionStatus::NotStarted => ("⚪ `未实施`".to_string(), true),
+                    super::plan_progress::PlanExecutionStatus::Failed => ("🔴 `中断/失败`".to_string(), true),
                 }
             } else {
-                "⚪ 未实施"
+                ("⚪ `未实施`".to_string(), true)
             };
-
-            msg_lines.push(format!("{}. `{}` [{}]", num, plan_id, status_badge));
-
-            let short_id = if plan_id.len() > 18 { &plan_id[..18] } else { plan_id };
-            let mut row = Vec::new();
-            if status_badge.contains("未实施") {
-                row.push(InlineKeyboardButton::callback(
-                    format!("🚀 实施: {}", short_id),
-                    format!("approve_plan:{}", plan_id),
-                ));
-            }
-            row.push(InlineKeyboardButton::callback(
-                format!("📊 进度: {}", short_id),
-                format!("check_progress:{}", plan_id),
-            ));
-            keyboard_rows.push(row);
+            plan_triplets.push((plan_id.clone(), status_badge, can_run));
         }
 
-        let markup = InlineKeyboardMarkup::new(keyboard_rows);
+        let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
+        let (msg, markup) = CardBuilder::plans_list_card(&project_name, &plan_triplets);
         self.client.send_message(
             chat_id,
-            &msg_lines.join("\n"),
+            &msg,
             Some(markup),
             Some("Markdown"),
         ).await?;
@@ -617,11 +522,16 @@ impl CommandRouter {
         };
 
         if arg.is_empty() {
+            let err_text = CardBuilder::argument_error_card(
+                "/coding",
+                "请指定要实施的方案标识 (planId)",
+                "/coding 20261106-settings-service-categories",
+            );
             self.client.send_message(
                 chat_id,
-                "⚠️ 请指定要实施的方案标识 (planId)，例如：\n`/coding 20261106-settings-service-categories`\n\n或输入 `/plans` 查看当前可选方案列表。",
+                &err_text,
                 None,
-                None,
+                Some("Markdown"),
             ).await?;
             return Ok(());
         }
@@ -643,16 +553,8 @@ impl CommandRouter {
             return Ok(());
         }
 
-        let ack_text = format!(
-            "🚀 确认启动指定方案的 Coding 实施\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            📋 方案: {}\n\
-            📂 目标项目: {}\n\n\
-            正在拉起全新独立会话启动 Coding 实施...",
-            clean_plan_id,
-            project_dir.display()
-        );
-        self.client.send_message(chat_id, &ack_text, None, None).await?;
+        let (ack_text, _) = CardBuilder::coding_running_card(&clean_plan_id, false);
+        self.client.send_message(chat_id, &ack_text, None, Some("Markdown")).await?;
 
         if let Err(e) = self.bridge.execute_coding(chat_id, project_dir, &clean_plan_id).await {
             self.client.send_message(chat_id, &format!("❌ 启动 Coding 实施失败: {}", e), None, None).await?;
@@ -674,7 +576,8 @@ impl CommandRouter {
             save_config(&config)?;
 
             if let Some(msg) = cb.message {
-                let update_text = format!("✅ 已成功将当前活跃项目切换为: `{}`", project);
+                let time_now = chrono::Local::now().format("%H:%M:%S").to_string();
+                let update_text = CardBuilder::project_switch_confirmed(project, &time_now);
                 self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
@@ -689,12 +592,13 @@ impl CommandRouter {
 
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             if let Some(ref msg) = cb.message {
+                let (loading_text, _) = CardBuilder::coding_running_card(plan_tag, false);
                 let _ = self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
-                    "⏳ 方案已确认，正在拉起全新独立会话启动 Coding 实施...",
+                    &loading_text,
                     None,
-                    None,
+                    Some("Markdown"),
                 ).await;
             }
 
@@ -708,19 +612,13 @@ impl CommandRouter {
             }
         } else if let Some(plan_tag) = data.strip_prefix("revise_plan:") {
             if let Some(ref msg) = cb.message {
-                let prompt_text = format!(
-                    "✏️ 【方案补充】\n\
-                    ━━━━━━━━━━━━━━━━━━━━\n\
-                    目标方案: {}\n\n\
-                    请直接打字回复您希望补充或修改的内容，OpenCode 将据此继续完善规划方案。",
-                    plan_tag
-                );
+                let prompt_text = CardBuilder::revise_prompt_card(plan_tag);
                 let _ = self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
                     &prompt_text,
                     None,
-                    None,
+                    Some("Markdown"),
                 ).await;
             }
         } else if let Some(plan_id) = data.strip_prefix("check_progress:") {
@@ -758,12 +656,13 @@ impl CommandRouter {
 
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             if let Some(ref msg) = cb.message {
+                let update_text = CardBuilder::question_answered_card(&choice_text);
                 let _ = self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
-                    &format!("✅ 您已选择: {}", choice_text),
+                    &update_text,
                     None,
-                    None,
+                    Some("Markdown"),
                 ).await;
             }
 
@@ -794,12 +693,13 @@ impl CommandRouter {
                         ).await;
                     }
                 } else if let Some(ref msg) = cb.message {
+                    let update_text = CardBuilder::question_answered_card(&answer_label);
                     let _ = self.client.edit_message_text(
                         msg.chat.id,
                         msg.message_id,
-                        &format!("✅ 已选择并提交决策: {}", answer_label),
+                        &update_text,
                         None,
-                        None,
+                        Some("Markdown"),
                     ).await;
                 }
             }
@@ -829,12 +729,13 @@ impl CommandRouter {
                 .to_string();
 
             if let Some(ref msg) = cb.message {
+                let update_text = CardBuilder::self_repair_running_card(&clean_id);
                 let _ = self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
-                    &format!("🔄 正在携带上一轮异常启动自愈修复: `{}`...", clean_id),
+                    &update_text,
                     None,
-                    None,
+                    Some("Markdown"),
                 ).await;
             }
 
@@ -854,14 +755,21 @@ impl CommandRouter {
         } else if data == "cancel_task" {
             self.bridge.cancel_active_task().await;
             if let Some(ref msg) = cb.message {
+                let update_text = CardBuilder::task_cancelled_card();
                 let _ = self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,
-                    "🛑 任务已取消。",
+                    &update_text,
                     None,
                     Some("Markdown"),
                 ).await;
             }
+        } else if data == "open_projects" {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            self.handle_projects_command(chat_id).await?;
+        } else if data == "open_plans" {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            self.handle_plans_command(chat_id).await?;
         }
 
         Ok(())

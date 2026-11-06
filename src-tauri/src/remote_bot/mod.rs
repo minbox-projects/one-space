@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod card_builder;
 pub mod client;
 pub mod commands;
 pub mod opencode_bridge;

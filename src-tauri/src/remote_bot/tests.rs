@@ -441,3 +441,73 @@ fn test_failure_log_tail_extraction() {
     assert_eq!(tail_lines[0], "Line 21");
     assert_eq!(tail_lines[29], "Line 50");
 }
+
+#[test]
+fn test_card_builder_cards() {
+    use super::card_builder::CardBuilder;
+
+    // 1. 欢迎卡片包含原生引用与 Chat ID
+    let welcome = CardBuilder::welcome_card(999888, "MacBook-Test.local");
+    assert!(welcome.contains("999888"));
+    assert!(welcome.contains("> ├─ 管理员 ID: `999888`"));
+    assert!(welcome.contains("> └─ 通信状态: `🟢 活跃连接 (Long-Polling)`"));
+
+    // 2. 状态卡片包含树形分支与操作按钮
+    let (status, markup) = CardBuilder::status_card(
+        "MacBook.local",
+        "2026-11-06 17:40:00",
+        "onespace-app",
+        "main",
+        "干净 Clean",
+        "a1b2c3d",
+        true,
+    );
+    assert!(status.contains("> ├─ 设备主机: `MacBook.local`"));
+    assert!(status.contains("⚡ 自动确认 (Auto-Approve)"));
+    assert!(markup.is_some());
+    let mk = markup.unwrap();
+    assert_eq!(mk.inline_keyboard[0].len(), 2);
+
+    // 3. 规划完成卡片包含方案摘要与确认按钮
+    let (review, review_markup) = CardBuilder::plan_review_card(
+        "20261106-sample-feature",
+        "1. 编写测试\n2. 实施业务",
+        Some(2),
+    );
+    assert!(review.contains("20261106-sample-feature"));
+    assert!(review.contains("> 1. 编写测试"));
+    assert_eq!(review_markup.inline_keyboard[0].len(), 2);
+    assert_eq!(review_markup.inline_keyboard[0][0].text, "✅ 确认启动实施");
+
+    // 4. 四重审核成功卡片包含四重证据项与统计
+    let (success, success_mk) = CardBuilder::coding_success_card(
+        "20261106-sample-feature",
+        Some("3 分 12 秒"),
+        "c8d9e0f feat: sample",
+        "1 file changed, 10 insertions(+)",
+    );
+    assert!(success.contains("✅ *四重证据链严格核验全部达标*："));
+    assert!(success.contains("交付耗时: `3 分 12 秒`"));
+    assert_eq!(success_mk.inline_keyboard[0].len(), 2);
+    assert_eq!(success_mk.inline_keyboard[0][0].text, "🔍 查看改动 Diff");
+}
+
+#[test]
+fn test_card_builder_button_length_safety() {
+    use super::card_builder::CardBuilder;
+
+    // 短文本 (7 <= 8) 完整保留，不截断
+    let label1 = CardBuilder::format_button_label(Some(1), "1、推荐：两级可展开侧边栏 —— 扩展性强", 8);
+    assert_eq!(label1, "1️⃣ 两级可展开侧边栏");
+    assert!(label1.chars().count() <= 12);
+
+    // 超长文本截断 (max_chars = 6, 取前 5 字 + 省略号)
+    let label2 = CardBuilder::format_button_label(Some(2), "2. 两级可展开侧边栏", 6);
+    assert_eq!(label2, "2️⃣ 两级可展开…");
+
+    // 单列按钮超长截断 (超过 14 字，max_chars = 14)
+    let label3 = CardBuilder::format_button_label(Some(3), "3. 这是一个非常非常非常非常非常长的选项标题没有任何标点符号", 14);
+    assert!(label3.starts_with("3️⃣ "));
+    assert!(label3.ends_with("…"));
+    assert!(label3.chars().count() <= 18);
+}

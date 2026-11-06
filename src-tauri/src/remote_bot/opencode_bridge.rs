@@ -10,6 +10,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 
+use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
 use super::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
@@ -307,15 +308,14 @@ impl OpenCodeBridge {
             input_prompt.to_string()
         };
 
-        let status_desc = if session_id_opt.is_none() {
-            "🔍 *OpenCode 正在思考与分析工作区...*\n_结合代码库与依赖关系分析中..._"
-        } else {
-            "🔍 *OpenCode 正在根据您的答复深入分析与推进...*"
-        };
+        let status_desc = CardBuilder::planning_thinking_card(
+            session_id_opt.is_none(),
+            session_id_opt.as_deref(),
+        );
 
         let status_msg = self.telegram_client.send_message(
             chat_id,
-            status_desc,
+            &status_desc,
             None,
             Some("Markdown"),
         ).await?;
@@ -419,25 +419,13 @@ impl OpenCodeBridge {
                 plan_tag
             };
 
-            let review_text = format!(
-                "📋 【方案规划完成，等待确认】\n\
-                ━━━━━━━━━━━━━━━━━━━━\n\
-                {}\n\
-                ━━━━━━━━━━━━━━━━━━━━\n\
-                👉 请点击下方按钮进行选择（确认即可开始编码实施，补充可打字输入修改意见）：",
-                summary.trim()
-            );
-
-            let markup = InlineKeyboardMarkup::new(vec![vec![
-                InlineKeyboardButton::callback("✅ 确认", format!("approve_plan:{}", safe_plan_tag)),
-                InlineKeyboardButton::callback("✏️ 补充", format!("revise_plan:{}", safe_plan_tag)),
-            ]]);
+            let (review_text, markup) = CardBuilder::plan_review_card(&safe_plan_tag, &summary, None);
 
             self.telegram_client.send_message(
                 chat_id,
                 &review_text,
                 Some(markup),
-                None,
+                Some("Markdown"),
             ).await?;
 
             return Ok(());
@@ -468,7 +456,7 @@ impl OpenCodeBridge {
                 chat_id,
                 &msg_text,
                 Some(markup),
-                None,
+                Some("Markdown"),
             ).await?;
         } else {
             let clean_text = if latest_output.trim().is_empty() {
@@ -482,20 +470,14 @@ impl OpenCodeBridge {
                     .to_string()
             };
 
-            let msg_text = format!(
-                "💬 【OpenCode 回复与分析】\n\
-                ━━━━━━━━━━━━━━━━━━━━\n\
-                {}\n\
-                ━━━━━━━━━━━━━━━━━━━━\n\
-                👉 请直接发送消息继续交流推进，或输入 /cancel 结束会话。",
-                clean_text
-            );
+            let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
+            let msg_text = CardBuilder::analysis_reply_card(&project_name, &clean_text);
 
             self.telegram_client.send_message(
                 chat_id,
                 &msg_text,
                 None,
-                None,
+                Some("Markdown"),
             ).await?;
         }
 
@@ -696,25 +678,13 @@ impl OpenCodeBridge {
                     .trim_start_matches("plans/")
                     .trim_matches('/');
 
-                let error_text = format!(
-                    "❌ 【Coding 实施中断或未通过审核】\n\
-                    ━━━━━━━━━━━━━━━━━━━━\n\
-                    {}\n\
-                    ━━━━━━━━━━━━━━━━━━━━\n\
-                    👉 您可以点击下方按钮尝试自愈修复，或查看诊断日志：",
-                    e
-                );
-
-                let markup = InlineKeyboardMarkup::new(vec![vec![
-                    InlineKeyboardButton::callback("🔁 携带报错继续修复", format!("retry_repair:{}", clean_plan)),
-                    InlineKeyboardButton::callback("📄 查看诊断日志", format!("view_failure_log:{}", clean_plan)),
-                ]]);
+                let (error_text, markup) = CardBuilder::coding_failed_card(&clean_plan, "实施与规范审查", &e);
 
                 let _ = bridge.telegram_client.send_message(
                     chat_id,
                     &error_text,
                     Some(markup),
-                    None,
+                    Some("Markdown"),
                 ).await;
             }
         });
@@ -737,17 +707,13 @@ impl OpenCodeBridge {
             .trim_matches('/')
             .to_string();
 
-        let status_desc = if custom_prompt.is_some() {
-            "🔄 【修复会话已启动】OpenCode 正在排查并实施自愈修复...\n━━━━━━━━━━━━━━━━━━━━\n⏳ 状态: 针对上一轮验证未通过项正在调整代码与测试..."
-        } else {
-            "🚀 【全新会话已创建】OpenCode 正在实施编码...\n━━━━━━━━━━━━━━━━━━━━\n⏳ 状态: 基于当前分支创建本地临时 worktree 并实施任务..."
-        };
+        let (status_desc, _) = CardBuilder::coding_running_card(&clean_plan_id, custom_prompt.is_some());
 
         let status_msg = self.telegram_client.send_message(
             chat_id,
-            status_desc,
+            &status_desc,
             None,
-            None,
+            Some("Markdown"),
         ).await?;
 
         // 默认提示词：调用 coding 技能，实施 .ai-workflow/plans/{planId}
@@ -873,21 +839,11 @@ impl OpenCodeBridge {
         };
 
         // 4. 发送成功卡片，增加 [🔍 查看改动 Diff] 和 [📊 实施报告] 按钮
-        let success_text = format!(
-            "🎉 *【Coding 实施圆满完成】*\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            ✅ *四重证据链审核全部通过*：\n\
-            • 进程状态: Exit 0 (正常退出)\n\
-            • 交付契约: `### Status: done` 达标\n\
-            • Git 提交: `{}`\n\n\
-            📊 *变更统计*:\n\
-            ```\n\
-            {}\n\
-            ```\n\
-            ━━━━━━━━━━━━━━━━━━━━\n\
-            已安全合入工作区分支！",
-            commit_summary,
-            if stat_text.len() > 300 { format!("{}...", &stat_text[..300]) } else { stat_text }
+        let (success_text, markup) = CardBuilder::coding_success_card(
+            clean_plan_id,
+            None,
+            &commit_summary,
+            &stat_text,
         );
 
         let _ = self.telegram_client.edit_message_text(
@@ -897,11 +853,6 @@ impl OpenCodeBridge {
             None,
             Some("Markdown"),
         ).await;
-
-        let markup = InlineKeyboardMarkup::new(vec![vec![
-            InlineKeyboardButton::callback("🔍 查看改动 Diff", format!("view_diff:{}", clean_plan_id)),
-            InlineKeyboardButton::callback("📊 实施报告", format!("check_progress:{}", clean_plan_id)),
-        ]]);
 
         self.telegram_client.send_message(
             chat_id,
@@ -953,56 +904,7 @@ pub fn parse_question_and_options(text: &str) -> (String, Vec<(usize, String)>) 
 
 /// 提取内联按钮展示的紧凑标签（带数字 Emoji 徽章，<=16 字符，移动端防截断）
 pub fn extract_button_label(num: usize, full_text: &str) -> String {
-    let num_emojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-    let badge = if num <= 10 {
-        num_emojis[num]
-    } else {
-        "🔘"
-    };
-
-    let mut cleaned = full_text.trim();
-
-    // 移除前导序号标记，例如 "1、", "1. ", "[1] ", "(1) " 等
-    if let Ok(prefix_re) = regex::Regex::new(r"^(?:\[?(\d{1,2})[\]\.、\)]|\((\d{1,2})\))\s*") {
-        if let Some(m) = prefix_re.find(cleaned) {
-            cleaned = cleaned[m.end()..].trim();
-        }
-    }
-
-    // 移除“推荐：”、“推荐:”等前缀词
-    for prefix in &["推荐：", "推荐:", "【推荐】", "[推荐]", "推荐 - ", "推荐-", "建议：", "建议:"] {
-        if let Some(stripped) = cleaned.strip_prefix(prefix) {
-            cleaned = stripped.trim();
-        }
-    }
-
-    // 遇到长破折号、冒号、括号等解释性分隔符，截取前半部分作为按钮短标题
-    let separators = [" —— ", "——", " — ", "—", " - ", "：", ": ", " (", "（", "，", ", ", "；", "; "];
-    for sep in &separators {
-        if let Some(pos) = cleaned.find(sep) {
-            let part = cleaned[..pos].trim();
-            if !part.is_empty() {
-                cleaned = part;
-                break;
-            }
-        }
-    }
-
-    // 清理 markdown 符号
-    cleaned = cleaned.trim_matches('*').trim_matches('`').trim_matches('_').trim();
-
-    // 限制字符长度（以 unicode 字符数计算），保证手机屏幕上单个按钮绝对不会被截断
-    let max_chars = 12;
-    let label = if cleaned.chars().count() > max_chars {
-        let truncated: String = cleaned.chars().take(max_chars - 1).collect();
-        format!("{}…", truncated)
-    } else if cleaned.is_empty() {
-        format!("选项 {}", num)
-    } else {
-        cleaned.to_string()
-    };
-
-    format!("{} {}", badge, label)
+    CardBuilder::format_button_label(Some(num), full_text, 12)
 }
 
 /// 将选项文本拆分为标题与补充说明
@@ -1029,69 +931,27 @@ pub fn split_option_detail(full_text: &str) -> (String, Option<String>) {
     (cleaned.to_string(), None)
 }
 
-/// 格式化 /question 端点请求为移动端友好的大字号正文展示（不使用 markdown 代码块）
+/// 格式化 /question 端点请求为移动端友好的大字号正文展示
 pub fn format_question_request_message(q: &OpenCodeQuestionItem) -> String {
-    let mut lines = Vec::new();
-    lines.push("🤔 【规划澄清提问】".to_string());
-    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
-    lines.push(format!("❓ 提问说明：\n{}", q.question.trim()));
-    lines.push("".to_string());
-
-    if !q.options.is_empty() {
-        lines.push("📋 备选方案：".to_string());
-        let num_emojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-        for (idx, opt) in q.options.iter().enumerate() {
-            let num = idx + 1;
-            let badge = if num <= 10 { num_emojis[num] } else { "🔘" };
-            lines.push(format!("{} {}", badge, opt.label.trim()));
-            if let Some(ref desc) = opt.description {
-                let trimmed_desc = desc.trim();
-                if !trimmed_desc.is_empty() {
-                    lines.push(format!("   {}", trimmed_desc));
-                }
-            }
-            lines.push("".to_string());
-        }
-    }
-
-    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
-    lines.push("👉 请点击下方按钮选择，或直接输入选项数字回复：".to_string());
-
-    lines.join("\n")
+    let opt_triplets: Vec<(usize, String, Option<String>)> = q.options.iter().enumerate().map(|(idx, opt)| {
+        (idx + 1, opt.label.clone(), opt.description.clone())
+    }).collect();
+    let (msg, _) = CardBuilder::question_card(&q.question, &opt_triplets, None);
+    msg
 }
 
-/// 格式化 stdout 解析提问为移动端友好的大字号正文展示（不使用 markdown 代码块）
+/// 格式化 stdout 解析提问为移动端友好的大字号正文展示
 pub fn format_parsed_question_message(question_text: &str, options: &[(usize, String)]) -> String {
-    let mut lines = Vec::new();
-    lines.push("🤔 【规划澄清提问】".to_string());
-    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
-
     let raw_clean = strip_ansi_escapes(question_text.trim());
     let clean_question = raw_clean
         .trim_start_matches("```markdown")
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
-
-    lines.push(format!("❓ 提问说明：\n{}", clean_question));
-    lines.push("".to_string());
-
-    if !options.is_empty() {
-        lines.push("📋 备选方案：".to_string());
-        let num_emojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-        for (num, full_text) in options {
-            let badge = if *num <= 10 { num_emojis[*num] } else { "🔘" };
-            let (title, detail) = split_option_detail(full_text);
-            lines.push(format!("{} {}", badge, title));
-            if let Some(d) = detail {
-                lines.push(format!("   {}", d));
-            }
-            lines.push("".to_string());
-        }
-    }
-
-    lines.push("━━━━━━━━━━━━━━━━━━━━".to_string());
-    lines.push("👉 请点击下方按钮选择，或直接输入选项数字/回复建议：".to_string());
-
-    lines.join("\n")
+    let opt_triplets: Vec<(usize, String, Option<String>)> = options.iter().map(|(num, full)| {
+        let (t, d) = split_option_detail(full);
+        (*num, t, d)
+    }).collect();
+    let (msg, _) = CardBuilder::question_card(clean_question, &opt_triplets, None);
+    msg
 }
