@@ -183,9 +183,10 @@ impl OpenCodeBridge {
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("Planning 任务失败: {}", e);
+                let error_text = format!("❌ *规划阶段异常中断*\n\n原因:\n```\n{}\n```", e);
                 let _ = bridge.telegram_client.send_message(
                     chat_id,
-                    &format!("❌ *规划阶段异常中断*\n\n原因: `{}`", e),
+                    &error_text,
                     None,
                     Some("Markdown"),
                 ).await;
@@ -438,9 +439,10 @@ impl OpenCodeBridge {
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("Coding 实施失败: {}", e);
+                let error_text = format!("❌ *Coding 阶段未达成完成标准*\n\n原因:\n```\n{}\n```", e);
                 let _ = bridge.telegram_client.send_message(
                     chat_id,
-                    &format!("❌ *Coding 阶段未达成完成标准*\n\n原因: `{}`", e),
+                    &error_text,
                     None,
                     Some("Markdown"),
                 ).await;

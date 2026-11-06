@@ -124,7 +124,25 @@ impl TelegramClient {
         if body.ok {
             body.result.ok_or_else(|| "sendMessage 返回内容为空".to_string())
         } else {
-            Err(body.description.unwrap_or_else(|| "sendMessage 失败".to_string()))
+            let desc = body.description.unwrap_or_else(|| "sendMessage 失败".to_string());
+            // 如果遇到 Telegram Markdown 实体解析异常，自动降级为纯文本重发，确保消息 100% 成功触达
+            if parse_mode.is_some() && desc.contains("can't parse entities") {
+                log::warn!("Telegram Markdown 实体解析失败，自动降级为纯文本重新发送: {}", desc);
+                let fallback_payload = SendMessagePayload {
+                    chat_id,
+                    text: text.to_string(),
+                    parse_mode: None,
+                    reply_markup: payload.reply_markup,
+                };
+                if let Ok(retry_resp) = client.post(&url).json(&fallback_payload).send().await {
+                    if let Ok(retry_body) = retry_resp.json::<TelegramResponse<TelegramMessage>>().await {
+                        if retry_body.ok {
+                            return retry_body.result.ok_or_else(|| "sendMessage 降级返回内容为空".to_string());
+                        }
+                    }
+                }
+            }
+            Err(desc)
         }
     }
 
@@ -162,7 +180,26 @@ impl TelegramClient {
         if body.ok {
             body.result.ok_or_else(|| "editMessageText 返回内容为空".to_string())
         } else {
-            Err(body.description.unwrap_or_else(|| "editMessageText 失败".to_string()))
+            let desc = body.description.unwrap_or_else(|| "editMessageText 失败".to_string());
+            // 如果遇到 Telegram Markdown 实体解析异常，自动降级为纯文本重发
+            if parse_mode.is_some() && desc.contains("can't parse entities") {
+                log::warn!("Telegram Markdown 编辑实体解析失败，自动降级为纯文本重试: {}", desc);
+                let fallback_payload = EditMessageTextPayload {
+                    chat_id,
+                    message_id,
+                    text: text.to_string(),
+                    parse_mode: None,
+                    reply_markup: payload.reply_markup,
+                };
+                if let Ok(retry_resp) = client.post(&url).json(&fallback_payload).send().await {
+                    if let Ok(retry_body) = retry_resp.json::<TelegramResponse<TelegramMessage>>().await {
+                        if retry_body.ok {
+                            return retry_body.result.ok_or_else(|| "editMessageText 降级返回内容为空".to_string());
+                        }
+                    }
+                }
+            }
+            Err(desc)
         }
     }
 
