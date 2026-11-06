@@ -78,13 +78,20 @@ impl CommandRouter {
             self.client.send_message(chat_id, &cancel_text, None, Some("Markdown")).await?;
         } else if text.starts_with("/coding") || text.starts_with("/implement") {
             self.handle_coding_command(chat_id, text).await?;
-        } else if text.starts_with("/newfeat") {
-            let prompt = text.trim_start_matches("/newfeat").trim();
+        } else if text == "/planning" || text.starts_with("/planning ") || text == "/plan" || text.starts_with("/plan ") {
+            let prompt = if let Some(stripped) = text.strip_prefix("/planning") {
+                stripped.trim()
+            } else if let Some(stripped) = text.strip_prefix("/plan") {
+                stripped.trim()
+            } else {
+                ""
+            };
+
             if prompt.is_empty() {
                 let err_text = CardBuilder::argument_error_card(
-                    "/newfeat",
+                    "/planning",
                     "未提供需求描述文本",
-                    "/newfeat 为项目增加 Telegram 登录认证",
+                    "/planning 为项目增加 Telegram 登录认证",
                 );
                 self.client.send_message(
                     chat_id,
@@ -95,10 +102,10 @@ impl CommandRouter {
             } else {
                 let project_dir = resolve_project_dir(&config);
                 let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
-                let (ack_text, markup) = CardBuilder::new_feature_ack_card(&project_name, prompt);
+                let (ack_text, markup) = CardBuilder::new_feature_ack_card(&project_name, prompt, true);
                 self.client.send_message(chat_id, &ack_text, Some(markup), Some("Markdown")).await?;
 
-                if let Err(e) = self.bridge.execute_planning(chat_id, project_dir, prompt).await {
+                if let Err(e) = self.bridge.execute_task(chat_id, project_dir, prompt, true).await {
                     self.client.send_message(
                         chat_id,
                         &format!("❌ 启动规划任务失败: `{}`", e),
@@ -125,7 +132,7 @@ impl CommandRouter {
                 if let Err(e) = self.bridge.continue_planning(chat_id, &resolved_text).await {
                     self.client.send_message(
                         chat_id,
-                        &format!("❌ 推进规划失败: {}", e),
+                        &format!("❌ 推进处理失败: {}", e),
                         None,
                         None,
                     ).await?;
@@ -136,25 +143,25 @@ impl CommandRouter {
                     let project_dir = resolve_project_dir(&config);
                     let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
                     let guard_text = format!(
-                        "💡 *自然语言对话模式已关闭*\n\
+                        "💡 *自然语言自由对话已关闭*\n\
                         > ▫️ 防误触保护: `已开启`\n\
                         > ▫️ 生效工作区: `{}`\n\n\
                         若要唤起 OpenCode 开始新需求规划，请使用指令：\n\
-                        `/newfeat <需求描述>`\n\n\
-                        _（可在 Mac 端 OneSpace 设置 -> 远程工作台中重新开启自由对话）_",
+                        `/planning <需求描述>`\n\n\
+                        _（可在 Mac 端 OneSpace 设置 -> 远程工作台中开启自由对话）_",
                         project_name
                     );
                     self.client.send_message(chat_id, &guard_text, None, Some("Markdown")).await?;
                     return Ok(());
                 }
 
-                // 开启时，直接作为自然语言对话/需求接入！随时随地与 OpenCode 交流
+                // 开启时，普通聊天对话开始新会话，遵循 OpenCode 自身工作流自主选择 coding 或 planning
                 let project_dir = resolve_project_dir(&config);
                 let project_name = project_dir.file_name().unwrap_or_default().to_string_lossy();
-                let (ack_text, markup) = CardBuilder::new_feature_ack_card(&project_name, text);
+                let (ack_text, markup) = CardBuilder::new_feature_ack_card(&project_name, text, false);
                 self.client.send_message(chat_id, &ack_text, Some(markup), Some("Markdown")).await?;
 
-                if let Err(e) = self.bridge.execute_planning(chat_id, project_dir, text).await {
+                if let Err(e) = self.bridge.execute_task(chat_id, project_dir, text, false).await {
                     self.client.send_message(
                         chat_id,
                         &format!("❌ 启动处理失败: {}", e),
@@ -479,7 +486,7 @@ impl CommandRouter {
         if available_plans.is_empty() {
             self.client.send_message(
                 chat_id,
-                "📂 当前工作区的 `.ai-workflow/plans/` 下未检测到任何方案。\n输入 `/newfeat <需求描述>` 可开始新方案规划。",
+                "📂 当前工作区的 `.ai-workflow/plans/` 下未检测到任何方案。\n输入 `/planning <需求描述>` 可开始新方案规划。",
                 None,
                 None,
             ).await?;

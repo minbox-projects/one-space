@@ -101,7 +101,7 @@ impl CardBuilder {
             📌 *常用快捷指令*\n\
             • `/status` ── 查看 Mac 状态与 Git 变更\n\
             • `/projects` ── 切换当前目标项目\n\
-            • `/newfeat <需求>` ── 唤起需求规划与实施\n\
+            • `/planning <需求>` ── 唤起需求规划与方案制定\n\
             • `/plans` ── 查看工作区方案进度\n\n\
             _💡 提示：平时直接发送文字，机器人将直接基于代码库为您分析与解答。_",
             chat_id,
@@ -133,13 +133,13 @@ impl CardBuilder {
         • `/status` ── Mac 本地状态与 Git 提交\n\
         • `/projects` ── 切换活跃工作区项目\n\n\
         🚀 *AI 研发流水线*\n\
-        • `/newfeat <需求>` ── 启动需求调研与方案规划\n\
+        • `/planning <需求>` ── 唤起需求调研与方案规划\n\
         • `/plans` ── 查看所有规划方案与状态\n\
         • `/progress [id]` ── 查看指定方案实施进度\n\
         • `/coding <id>` ── 直接实施指定的已规划方案\n\
         • `/diff [id]` ── 查看最新代码改动对比\n\
         • `/cancel` ── 随时紧急中断当前任务\n\n\
-        _💬 自然对话：直接发送任何技术问题，OpenCode 结合项目代码为您解答！_".to_string()
+        _💬 自然对话：直接发送任何技术问题，OpenCode 自动结合项目代码进行解答、小改动实施或方案规划！_".to_string()
     }
 
     // =========================================================================
@@ -281,17 +281,37 @@ impl CardBuilder {
     // 3. 规划 (Planning) 流水线卡片 (7 个)
     // =========================================================================
 
-    /// 卡片 7: 新需求接收确认卡片
-    pub fn new_feature_ack_card(project_name: &str, prompt: &str) -> (String, InlineKeyboardMarkup) {
+    /// 卡片 7: 需求/对话接收确认卡片
+    pub fn new_feature_ack_card(project_name: &str, prompt: &str, is_explicit_planning: bool) -> (String, InlineKeyboardMarkup) {
+        let (header, mode, label, hint) = if is_explicit_planning {
+            (
+                "🚀 *已开启需求规划流程 (Planning)*",
+                "方案调研与规划 (Planning 技能)",
+                "📝 *规划目标*：",
+                "⏳ _正在拉起 OpenCode 执行深入分析与规划，请稍候..._",
+            )
+        } else {
+            (
+                "💬 *已接收对话消息*",
+                "自然对话 (遵循 OpenCode 流程)",
+                "📝 *消息内容*：",
+                "⏳ _OpenCode 正在分析处理中，请稍候..._",
+            )
+        };
+
         let text = format!(
-            "🚀 *已接收新需求任务*\n\
+            "{}\n\
             > ├─ 目标项目: `{}`\n\
-            > └─ 任务模式: `方案调研与规划 (Planning)`\n\n\
-            📝 *需求描述*：\n\
+            > └─ 任务模式: `{}`\n\n\
+            {}\n\
             > {}\n\n\
-            ⏳ _正在拉起 OpenCode 执行深入分析，请稍候..._",
+            {}",
+            header,
             project_name,
-            prompt.trim()
+            mode,
+            label,
+            prompt.trim(),
+            hint
         );
 
         let markup = InlineKeyboardMarkup::new(vec![vec![
@@ -744,7 +764,7 @@ impl CardBuilder {
         "🛑 *任务已终止取消*\n\
         > ▫️ 当前状态: `进行中的任务与规划会话已安全退出`\n\
         > ▫️ 工作区: `已复位至空闲状态，无悬挂进程`\n\n\
-        您现在可以随时发起新任务（如 `/newfeat <需求>`）或输入 `/help` 查看说明。".to_string()
+        您现在可以随时发起新任务（如 `/planning <需求>`）或输入 `/help` 查看说明。".to_string()
     }
 
     /// 卡片 23: 通用校验与异常报错卡片

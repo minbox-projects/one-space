@@ -212,6 +212,17 @@ impl OpenCodeBridge {
         project_dir: PathBuf,
         prompt: &str,
     ) -> Result<(), String> {
+        self.execute_task(chat_id, project_dir, prompt, true).await
+    }
+
+    /// 执行任务会话（支持显式 Planning 规划与普通自由对话）
+    pub async fn execute_task(
+        self: &Arc<Self>,
+        chat_id: i64,
+        project_dir: PathBuf,
+        prompt: &str,
+        is_explicit_planning: bool,
+    ) -> Result<(), String> {
         if self.is_busy.swap(true, Ordering::SeqCst) {
             return Err("已有正在运行的任务，请等待当前任务完成或执行 /cancel".to_string());
         }
@@ -225,11 +236,11 @@ impl OpenCodeBridge {
         let prompt_string = prompt.to_string();
 
         tokio::spawn(async move {
-            let res = bridge.run_planning_cycle(chat_id, project_dir, &prompt_string, None).await;
+            let res = bridge.run_planning_cycle(chat_id, project_dir, &prompt_string, None, is_explicit_planning).await;
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
-                error!("Planning 任务失败: {}", e);
-                let error_text = format!("❌ *规划阶段异常中断*\n\n原因:\n```\n{}\n```", e);
+                error!("任务执行失败: {}", e);
+                let error_text = format!("❌ *执行阶段异常中断*\n\n原因:\n```\n{}\n```", e);
                 let _ = bridge.telegram_client.send_message(
                     chat_id,
                     &error_text,
@@ -253,7 +264,7 @@ impl OpenCodeBridge {
         }
 
         let session_id = self.active_session_id.read().await.clone()
-            .ok_or_else(|| "当前没有活跃的规划会话，请先使用 /newfeat 发起需求".to_string())?;
+            .ok_or_else(|| "当前没有活跃的会话，请先使用 /planning 发起需求或直接发送文字".to_string())?;
         let project_dir = self.active_project_dir.read().await.clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
@@ -262,13 +273,13 @@ impl OpenCodeBridge {
 
         let _ = bridge.telegram_client.send_message(
             chat_id,
-            "⏳ *正在将您的决策同步给 OpenCode 并继续规划...*",
+            "⏳ *正在将您的决策同步给 OpenCode 并继续推进...*",
             None,
             Some("Markdown"),
         ).await;
 
         tokio::spawn(async move {
-            let res = bridge.run_planning_cycle(chat_id, project_dir, &input_text, Some(session_id)).await;
+            let res = bridge.run_planning_cycle(chat_id, project_dir, &input_text, Some(session_id), false).await;
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("推进规划失败: {}", e);
@@ -291,20 +302,33 @@ impl OpenCodeBridge {
         project_dir: PathBuf,
         input_prompt: &str,
         session_id_opt: Option<String>,
+        is_explicit_planning: bool,
     ) -> Result<(), String> {
         let server_url = self.ensure_server().await?;
         let start_time = std::time::SystemTime::now();
 
-        // 初次对话/规划提示词增加工程规范引导，后续交互则直接传递用户决策
+        // 初次对话/规划提示词
         let prompt_to_run = if session_id_opt.is_none() {
-            format!(
-                "用户在当前工作区发来消息：{}\n\n\
-                请基于当前工作区代码库进行解答或处理：\n\
-                1. 若用户是在提问、咨询代码实现、查询当前架构或探讨方案思路，请直接清晰、专业地用中文给出解答；\n\
-                2. 若用户提出的是具体的新功能开发、重构或缺陷修复需求，请遵循项目工程规范，使用 planning 技能展开深入调研与方案规划。\n\
-                   如遇实现分歧，请按照规约提出编号问题（问题 N：...）及选项（1、... 2、...）进行澄清；规划确认后，请生成并确认 spec.md 和 plan.md。",
-                input_prompt
-            )
+            if is_explicit_planning {
+                // 显式 /planning 指令：明确指定使用 planning 技能展开规划
+                format!(
+                    "使用 planning 技能，开始规划：{}\n\n\
+                    请遵循项目工程规范展开深入调研与方案规划：\n\
+                    1. 如遇实现分歧或需用户决策，请通过提问方式提出编号问题（问题 N：...）及选项（1、... 2、...）进行澄清；\n\
+                    2. 规划完成后，请生成并确认规范的 spec.md 和 plan.md 方案文件。",
+                    input_prompt.trim()
+                )
+            } else {
+                // 普通聊天对话：遵循 OpenCode 自身工作流，不强加规划，由模型自主选择
+                format!(
+                    "用户发来消息：{}\n\n\
+                    请遵循 OpenCode 标准工程流程进行处理：\n\
+                    - 若为提问、代码咨询或思路探讨，请直接清晰专业地用中文解答；\n\
+                    - 若为明确的小改动、Bug 修复或实现需求，可直接调用 coding 技能进行实施；\n\
+                    - 若为需要详细调研与方案设计的复杂需求，可调用 planning 技能开始规划。",
+                    input_prompt.trim()
+                )
+            }
         } else {
             input_prompt.to_string()
         };

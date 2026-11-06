@@ -102,12 +102,13 @@ impl RemoteBotManager {
 
                 // 注册 Telegram 官方原生菜单按钮 (setMyCommands)
                 let default_commands = vec![
+                    BotCommand { command: "planning".to_string(), description: "启动需求调研与方案规划 (Planning)".to_string() },
                     BotCommand { command: "plans".to_string(), description: "查看工作区方案列表及状态".to_string() },
                     BotCommand { command: "progress".to_string(), description: "查看当前或指定方案的实施进度".to_string() },
                     BotCommand { command: "diff".to_string(), description: "查看最新代码改动对比或方案差异".to_string() },
                     BotCommand { command: "coding".to_string(), description: "直接实施指定的已规划方案".to_string() },
-                    BotCommand { command: "status".to_string(), description: "查看主机状态、Git分支与系统信息".to_string() },
                     BotCommand { command: "projects".to_string(), description: "切换目标项目工作区".to_string() },
+                    BotCommand { command: "status".to_string(), description: "查看主机状态、Git分支与系统信息".to_string() },
                     BotCommand { command: "cancel".to_string(), description: "中断当前正在执行的任务或会话".to_string() },
                     BotCommand { command: "help".to_string(), description: "查看使用说明与指令指南".to_string() },
                 ];

@@ -631,3 +631,29 @@ fn test_projects_card_compact_layout() {
     // 第二行双列
     assert_eq!(markup.inline_keyboard[1].len(), 2);
 }
+
+#[test]
+fn test_planning_command_and_dialogue_cards() {
+    use super::card_builder::CardBuilder;
+
+    // 1. 帮助与欢迎卡片包含 /planning 指令
+    let help = CardBuilder::help_card();
+    assert!(help.contains("/planning <需求>"));
+    assert!(!help.contains("/newfeat"));
+
+    let welcome = CardBuilder::welcome_card(123456, "MacBook.local");
+    assert!(welcome.contains("/planning <需求>"));
+    assert!(!welcome.contains("/newfeat"));
+
+    // 2. 显式 /planning 发起的卡片模式
+    let (plan_text, _) = CardBuilder::new_feature_ack_card("onespace-app", "支持暗黑主题切换", true);
+    assert!(plan_text.contains("已开启需求规划流程 (Planning)"));
+    assert!(plan_text.contains("方案调研与规划 (Planning 技能)"));
+    assert!(plan_text.contains("📝 *规划目标*："));
+
+    // 3. 普通自然语言对话的卡片模式
+    let (chat_text, _) = CardBuilder::new_feature_ack_card("onespace-app", "帮我查一下为什么构建失败", false);
+    assert!(chat_text.contains("已接收对话消息"));
+    assert!(chat_text.contains("自然对话 (遵循 OpenCode 流程)"));
+    assert!(chat_text.contains("📝 *消息内容*："));
+}

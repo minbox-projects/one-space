@@ -497,7 +497,7 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
         <div>
           <div className="text-sm font-medium">允许空闲状态下的自然语言自由对话</div>
           <div className="text-xs text-muted-foreground">
-            开启时直接发送一段文字即可进入 Planning 规划；关闭后空闲状态仅响应 <code>/plan</code>、<code>/help</code> 等显式指令，防止移动端误触打字意外触发任务。
+            开启后直接发送一段文字即可与 OpenCode 自由对话（遵循其标准流程，自主选择 coding 实施或 planning 规划）；关闭后空闲状态仅响应 <code>/planning</code>、<code>/help</code> 等显式指令，防止移动端误触打字意外触发任务。
           </div>
         </div>
         <button
