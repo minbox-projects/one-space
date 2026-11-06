@@ -6,6 +6,7 @@ import {
   ShieldCheck,
   Server,
   CloudCog,
+  Bot,
 } from "lucide-react";
 import { SubTabNavigation, type SubTabItem } from "../common/SubTabNavigation";
 import { ServerMonitorSettingsView } from "./ServerMonitorSettings";
@@ -32,6 +33,7 @@ import { ProtocolRouterSettingsPanel } from "./services/ProtocolRouterSettingsPa
 import { AiGatewaySettingsPanel } from "./services/AiGatewaySettingsPanel";
 import { SslCertificateSettingsPanel } from "./services/SslCertificateSettingsPanel";
 import { CloudAgentSettingsPanel } from "./services/CloudAgentSettingsPanel";
+import { RemoteBotSettingsPanel } from "./services/RemoteBotSettingsPanel";
 import {
   DEFAULT_CLOUD_AGENT_SETTINGS,
   type CloudAgentSettings,
@@ -167,6 +169,13 @@ export function ServicesSection({
       icon: CloudCog,
       dirty: subTabDirtyMap["cloud-agent"],
     },
+    {
+      id: "remote-bot",
+      titleKey: "remoteBot",
+      fallbackTitle: "Telegram 远程工作台",
+      icon: Bot,
+      dirty: subTabDirtyMap["remote-bot"],
+    },
   ];
 
   return (
@@ -256,6 +265,11 @@ export function ServicesSection({
           setSettings={setCloudAgentSettings || (() => {})}
           onShowToast={onShowToast}
         />
+      )}
+
+      {/* 7. Remote Bot (Telegram) */}
+      {subTab === "remote-bot" && (
+        <RemoteBotSettingsPanel t={t} onShowToast={onShowToast} />
       )}
     </div>
   );

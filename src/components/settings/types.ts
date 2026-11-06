@@ -25,6 +25,7 @@ export type LegacySettingsSection =
   | "ssl-certificate"
   | "server-monitor"
   | "cloud-agent"
+  | "remote-bot"
   | "shortcuts"
   | "ai"
   | "appearance"
@@ -66,6 +67,8 @@ export function resolveSettingsTab(input?: string): ResolvedSettingsRoute {
       return { mainTab: "services", subTab: "server-monitor" };
     case "cloud-agent":
       return { mainTab: "services", subTab: "cloud-agent" };
+    case "remote-bot":
+      return { mainTab: "services", subTab: "remote-bot" };
     case "services":
       return { mainTab: "services", subTab: "proxy" };
 
