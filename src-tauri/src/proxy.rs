@@ -427,7 +427,7 @@ fn effective_identity(config: Option<&ProxyConfig>) -> Result<ProxyIdentity, Str
 fn normalized_proxy_type(config: &ProxyConfig) -> Result<String, String> {
     let proxy_type = config.proxy_type.trim().to_ascii_lowercase();
     match proxy_type.as_str() {
-        "http" | "https" | "socks5" => Ok(proxy_type),
+        "http" | "https" | "socks5" | "socks5h" => Ok(proxy_type),
         _ => Err(format!("Unsupported proxy type: {}", config.proxy_type)),
     }
 }
@@ -442,7 +442,13 @@ fn proxy_url(config: &ProxyConfig) -> Result<String, String> {
         return Err("Proxy port must be greater than 0".to_string());
     }
 
-    Ok(format!("{}://{}:{}", proxy_type, host, config.proxy_port))
+    let scheme = if proxy_type == "socks5" {
+        "socks5h"
+    } else {
+        proxy_type.as_str()
+    };
+
+    Ok(format!("{}://{}:{}", scheme, host, config.proxy_port))
 }
 
 fn proxy_url_with_auth(config: &ProxyConfig) -> Result<String, String> {

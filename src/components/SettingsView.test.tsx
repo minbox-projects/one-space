@@ -70,6 +70,58 @@ const baseStorageConfig = {
   },
 };
 
+const englishCategoryLabels = [
+  "General & System",
+  "AI & Ecosystem",
+  "Network & Connectivity",
+  "Operations & Automation",
+  "Data & Security",
+  "News & Feeds",
+];
+
+const chineseCategoryLabels = [
+  "常规与系统",
+  "AI 与扩展生态",
+  "网络与连接",
+  "运维与自动化",
+  "数据与安全",
+  "资讯与订阅",
+];
+
+const categoryTitleKeys = [
+  "categoryGeneral",
+  "categoryAi",
+  "categoryNetwork",
+  "categoryOperations",
+  "categoryDataSecurity",
+  "categoryNews",
+];
+
+const networkSubTabLabels = ["Network Proxy", "Protocol Router", "AI Gateway"];
+
+const operationsSubTabLabels = [
+  "SSL Certificates",
+  "Server Monitor",
+  "AI Cloud Agent",
+  "Telegram Remote Workbench",
+];
+
+/**
+ * The sub-tab bar has no stable accessible container name, so a known sub-tab
+ * button identifies it. Its parent is the rendered bar; only that parent's
+ * buttons are compared, without relying on layout or CSS class names.
+ */
+function getSubTabBarLabels(knownButtonName: string | RegExp): string[] {
+  const knownButton = screen.getByRole("button", { name: knownButtonName });
+  const subTabBar = knownButton.parentElement;
+  if (!subTabBar) {
+    throw new Error("Sub-tab bar container was not rendered");
+  }
+  return Array.from(subTabBar.querySelectorAll("button")).map((button) =>
+    (button.textContent ?? "").trim(),
+  );
+}
+
 describe("SettingsView", () => {
   let currentTemplateAutoRefreshMinutes = 60;
   let templateAutoRefreshSaveError: Error | null = null;
@@ -221,6 +273,53 @@ describe("SettingsView", () => {
       }
       if (command === "ssl_save_config") {
         return (args as { config: unknown }).config;
+      }
+      if (command === "server_monitor_get_settings") {
+        return {
+          autoCollectEnabled: true,
+          scheduleMode: "interval",
+          intervalMinutes: 5,
+          dailyTimes: ["09:00"],
+          retentionDays: 7,
+          alertEnabled: true,
+          cpuThresholdPercent: 80,
+          memoryThresholdPercent: 85,
+          diskThresholdPercent: 85,
+          alertCooldownMinutes: 60,
+        };
+      }
+      if (command === "cloud_agent_get_settings") {
+        return {
+          default_host: "",
+          remote_workspace_root: "/root/cloud-agent-workspaces",
+          remote_agent_dir: "/root/onespace-cloud-agent",
+          opencode_yolo_mode: true,
+          opencode_extra_args: "",
+          auto_refresh_interval_seconds: 10,
+          disk_alert_threshold_percent: 80,
+          terminal_app: "auto",
+        };
+      }
+      if (command === "remote_bot_get_config") {
+        return {
+          enabled: false,
+          bot_token: "",
+          allowed_chat_ids: [],
+          active_workspace: null,
+          auto_approve_permissions: true,
+          updated_at: 0,
+        };
+      }
+      if (command === "remote_bot_get_status") {
+        return {
+          running: false,
+          bot_username: null,
+          bot_name: null,
+          last_poll_time: null,
+          last_error: null,
+          active_task_id: null,
+          pending_question_id: null,
+        };
       }
       throw new Error(`Unhandled command: ${command}`);
     });
@@ -880,24 +979,193 @@ describe("SettingsView", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders 5 main categories in the sidebar and supports navigation", async () => {
-    const user = userEvent.setup();
+  it("renders the six main categories in order and defaults to the general panel", async () => {
     renderWithProviders(<SettingsView initialTab="general" onBack={() => {}} />);
 
-    // 5 main categories in the sidebar
-    expect(await screen.findByText(/常规与系统|General & System/i)).toBeInTheDocument();
-    expect(screen.getByText(/AI 与扩展生态|AI & Ecosystem/i)).toBeInTheDocument();
-    expect(screen.getByText(/网络与服务|Network & Services/i)).toBeInTheDocument();
-    expect(screen.getByText(/数据与安全|Data & Security/i)).toBeInTheDocument();
-    expect(screen.getByText(/资讯与订阅|News & Feeds|News/i)).toBeInTheDocument();
+    for (const label of englishCategoryLabels) {
+      expect(
+        await screen.findByRole("button", { name: label }),
+      ).toBeInTheDocument();
+    }
+    expect(
+      screen.queryByRole("button", { name: "Network & Services" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Network & Services")).not.toBeInTheDocument();
 
-    // Click on AI category
-    await user.click(screen.getByText(/AI 与扩展生态|AI & Ecosystem/i));
-    expect(await screen.findByText(/Default Model|默认模型/i)).toBeInTheDocument();
+    const renderedButtons = englishCategoryLabels.map((label) =>
+      screen.getByRole("button", { name: label }),
+    );
+    for (let index = 1; index < renderedButtons.length; index += 1) {
+      expect(
+        renderedButtons[index - 1].compareDocumentPosition(
+          renderedButtons[index],
+        ) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).not.toBe(0);
+    }
 
-    // Click on Network & Services category
-    await user.click(screen.getByText(/网络与服务|Network & Services/i));
-    expect(await screen.findByText(/Network Proxy Settings|网络代理/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/SFTP Default Download Directory/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows only the network sub-tabs when Network & Connectivity is active", async () => {
+    renderWithProviders(<SettingsView initialTab="proxy" onBack={() => {}} />);
+
+    expect(
+      await screen.findByText("Network Proxy Settings"),
+    ).toBeInTheDocument();
+    expect(getSubTabBarLabels("Network Proxy")).toEqual(networkSubTabLabels);
+    for (const label of operationsSubTabLabels) {
+      expect(
+        screen.queryByRole("button", { name: label }),
+      ).not.toBeInTheDocument();
+    }
+  });
+
+  it("switches through the operations sub-tabs and renders each panel", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="proxy" onBack={() => {}} />);
+    await screen.findByText("Network Proxy Settings");
+
+    await user.click(
+      screen.getByRole("button", { name: "Operations & Automation" }),
+    );
+
+    expect(getSubTabBarLabels("SSL Certificates")).toEqual(
+      operationsSubTabLabels,
+    );
+    for (const label of networkSubTabLabels) {
+      expect(
+        screen.queryByRole("button", { name: label }),
+      ).not.toBeInTheDocument();
+    }
+    expect(
+      await screen.findByText(
+        "SSL Certificate Inspection & Alert Settings",
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Server Monitor" }));
+    expect(
+      await screen.findByText(/Collection schedule/),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/server monitor/i).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "AI Cloud Agent" }));
+    expect(
+      await screen.findByText("OpenCode Permission & Execution Policy"),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Telegram Remote Workbench" }),
+    );
+    expect(
+      await screen.findByText(
+        /Remotely trigger Planning requirement clarification/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ["proxy", "Network Proxy Settings"],
+    ["protocol-router", "Protocol Router Settings"],
+    ["ai-gateway", "Network & Access Control"],
+    ["ssl-certificate", "SSL Certificate Inspection & Alert Settings"],
+    ["server-monitor", /server monitor/i],
+    ["cloud-agent", "OpenCode Permission & Execution Policy"],
+    ["remote-bot", /Remotely trigger Planning requirement clarification/],
+    ["services", "Network Proxy Settings"],
+  ])("keeps the %s deep link rendering its panel", async (initialTab, content) => {
+    renderWithProviders(
+      <SettingsView initialTab={initialTab} onBack={() => {}} />,
+    );
+
+    expect(await screen.findByText(content)).toBeInTheDocument();
+
+    const isNetworkDeepLink = [
+      "proxy",
+      "protocol-router",
+      "ai-gateway",
+      "services",
+    ].includes(initialTab);
+    const expectedSubTabs = isNetworkDeepLink
+      ? networkSubTabLabels
+      : operationsSubTabLabels;
+    expect(getSubTabBarLabels(expectedSubTabs[0])).toEqual(expectedSubTabs);
+
+    if (initialTab === "server-monitor") {
+      expect(
+        await screen.findByText(/Collection schedule/),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("keeps category switches valid when the active sub-tab leaves the category", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SettingsView initialTab="proxy" onBack={() => {}} />);
+    await screen.findByText("Network Proxy Settings");
+
+    await user.click(
+      screen.getByRole("button", { name: "Operations & Automation" }),
+    );
+    expect(
+      await screen.findByText(
+        "SSL Certificate Inspection & Alert Settings",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Network Proxy Settings")).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Network & Connectivity" }),
+    );
+    expect(
+      await screen.findByText("Network Proxy Settings"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("SSL Certificate Inspection & Alert Settings"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Data & Security" }));
+    expect((await screen.findAllByText("Data Storage")).length).toBeGreaterThan(
+      0,
+    );
+    expect(await screen.findByText("Storage Type")).toBeInTheDocument();
+    expect(screen.queryByText("Network Proxy Settings")).not.toBeInTheDocument();
+  });
+
+  it("renders all six category labels in English and Chinese without key leakage", async () => {
+    try {
+      renderWithProviders(
+        <SettingsView initialTab="general" onBack={() => {}} />,
+      );
+
+      for (const label of englishCategoryLabels) {
+        expect(
+          await screen.findByRole("button", { name: label }),
+        ).toBeInTheDocument();
+      }
+      for (const key of categoryTitleKeys) {
+        expect(screen.queryByText(key)).not.toBeInTheDocument();
+      }
+
+      await act(async () => {
+        await i18n.changeLanguage("zh");
+      });
+      await waitFor(() => {
+        for (const label of chineseCategoryLabels) {
+          expect(
+            screen.getByRole("button", { name: label }),
+          ).toBeInTheDocument();
+        }
+      });
+      for (const key of categoryTitleKeys) {
+        expect(screen.queryByText(key)).not.toBeInTheDocument();
+      }
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
   });
 
   it("renders the global Network Proxy panel with scope and next-request copy", async () => {

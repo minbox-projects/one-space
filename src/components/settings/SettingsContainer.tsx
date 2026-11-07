@@ -30,6 +30,7 @@ import { SettingsSidebar } from "./SettingsSidebar";
 import { GeneralSection } from "./sections/GeneralSection";
 import { AiEcoSection } from "./sections/AiEcoSection";
 import { ServicesSection } from "./sections/ServicesSection";
+import { OperationsSection } from "./sections/OperationsSection";
 import { DataSecuritySection } from "./sections/DataSecuritySection";
 import { NewsSection } from "./sections/NewsSection";
 import { createSettingsLoaders } from "./settingsContainer/loaders";
@@ -526,7 +527,7 @@ export function SettingsContainer({
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Left 5-category Sidebar */}
+        {/* Left 6-category Sidebar */}
         <SettingsSidebar
           activeMainTab={activeMainTab}
           onSelectMainTab={handleSelectMainTab}
@@ -641,6 +642,18 @@ export function SettingsContainer({
                   setGatewaySettings={setGatewaySettings}
                   gatewayPortInput={gatewayPortInput}
                   setGatewayPortInput={setGatewayPortInput}
+                  onShowToast={(type, text) => {
+                    setMessage({ type, text });
+                    setTimeout(() => setMessage({ type: "", text: "" }), 3000);
+                  }}
+                  subTabDirtyMap={tabDirtyMap}
+                />
+              )}
+
+              {activeMainTab === "operations" && (
+                <OperationsSection
+                  subTab={activeSubTab}
+                  onSubTabChange={setActiveSubTab}
                   sslConfig={sslConfig}
                   setSslConfig={setSslConfig}
                   newCheckTimeInput={newCheckTimeInput}

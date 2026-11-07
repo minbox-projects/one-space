@@ -7,6 +7,7 @@ import type { ProtocolRouterStatus } from "@/lib/protocolRouter";
 import type { SshTunnelsSnapshot } from "@/components/sshTunnels/types";
 import type { FileSharingSnapshot } from "@/lib/fileSharing";
 import type { TunnelRuntimeStatus } from "@/lib/portTunnel";
+import type { RemoteBotStatus } from "@/lib/remoteBot";
 import type { TrayMenuState } from "@/lib/trayMenu";
 import type { BleLockStatus } from "@/lib/bleLock";
 import type { MessageCreateInput } from "@/lib/messages";
@@ -34,6 +35,7 @@ type UseAppRuntimeSummaryParams = {
     running: boolean;
     fileCount: number;
   } | null) => void;
+  setRemoteBotHeaderStatus: (status: RemoteBotStatus | null) => void;
   setSshTunnelSummary: (
     summary: {
       connectedCount: number;
@@ -59,6 +61,7 @@ export function useAppRuntimeSummary({
   setProtocolRouterHeaderStatus,
   setAiGatewayHeaderStatus,
   setFileSharingHeaderStatus,
+  setRemoteBotHeaderStatus,
   setSshTunnelSummary,
   setTrayState,
   pushToast,
@@ -81,6 +84,9 @@ export function useAppRuntimeSummary({
     enabled: runtimeEnabled,
   });
   const portTunnelRuntime = useRuntimeStatus<TunnelRuntimeStatus[]>("port-tunnel", {
+    enabled: runtimeEnabled,
+  });
+  const remoteBotRuntime = useRuntimeStatus<RemoteBotStatus>("remote-bot", {
     enabled: runtimeEnabled,
   });
   const portTunnelSummary = derivePortTunnelHeaderSummary(portTunnelRuntime.data || []);
@@ -152,6 +158,12 @@ export function useAppRuntimeSummary({
     );
   }, [sharingRuntime.data]);
 
+  useEffect(() => {
+    const status = remoteBotRuntime.data;
+    if (!status) return;
+    setRemoteBotHeaderStatus(status);
+  }, [remoteBotRuntime.data]);
+
   // The tray-only BLE Lock projection lives in a dedicated null-render child
   // (TrayBleLockBridge) so a live RSSI stream never re-renders the whole shell.
   // This callback is stable and is only invoked when a tray-visible field moves.
@@ -170,6 +182,7 @@ export function useAppRuntimeSummary({
     tunnelsRuntime,
     sharingRuntime,
     portTunnelRuntime,
+    remoteBotRuntime,
     portTunnelSummary,
     handleTrayBleLockStatus,
   };

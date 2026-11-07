@@ -32,6 +32,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { OmniSearch } from "@/components/OmniSearch";
 import { AboutModal } from "@/components/AboutModal";
 import { ToolStatusDot } from "@/components/toolbox/ToolStatusDot";
+import { TelegramIcon } from "@/components/common/TelegramIcon";
 import { UpdateUpgradeModal } from "@/components/UpdateUpgradeModal";
 import { MessageCenter } from "@/components/MessageCenter";
 import { NETWORK_CIRCUIT_MESSAGE } from "@/lib/networkCircuitBreaker";
@@ -103,6 +104,7 @@ export function AppShell(props: AppController) {
     protocolRouterHeaderStatus,
     aiGatewayHeaderStatus,
     fileSharingHeaderStatus,
+    remoteBotHeaderStatus,
     mountedTabs,
   } = view;
 
@@ -752,6 +754,65 @@ export function AppShell(props: AppController) {
                       portTunnelSummary.hasErrors
                         ? "error"
                         : portTunnelSummary.hasStarting
+                          ? "warning"
+                          : "success"
+                    }
+                  />
+                </button>
+              )}
+              {remoteBotHeaderStatus && (remoteBotHeaderStatus.running || remoteBotHeaderStatus.last_error) && (
+                <button
+                  onClick={() => {
+                    setSettingsInitialTab("remote-bot");
+                    navigateToTab("settings");
+                  }}
+                  className={`relative p-2.5 rounded-md transition-colors ${
+                    remoteBotHeaderStatus.last_error
+                      ? "text-destructive hover:bg-destructive/10 dark:text-destructive"
+                      : remoteBotHeaderStatus.active_task_id
+                        ? "text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
+                        : "text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                  }`}
+                  title={
+                    remoteBotHeaderStatus.last_error
+                      ? t("launcherRemoteBotErrorAria", {
+                          error: remoteBotHeaderStatus.last_error,
+                          defaultValue: `Telegram 连接异常: ${remoteBotHeaderStatus.last_error}`,
+                        })
+                      : remoteBotHeaderStatus.active_task_id
+                        ? t("launcherRemoteBotActiveAria", {
+                            bot: remoteBotHeaderStatus.bot_username || "Bot",
+                            defaultValue: `Telegram 正在执行任务 (@${remoteBotHeaderStatus.bot_username || "Bot"})...`,
+                          })
+                        : t("launcherRemoteBotRunningAria", {
+                            bot: remoteBotHeaderStatus.bot_username || "Bot",
+                            defaultValue: `Telegram 远程工作台在线 (@${remoteBotHeaderStatus.bot_username || "Bot"})`,
+                          })
+                  }
+                  aria-label={
+                    remoteBotHeaderStatus.last_error
+                      ? t("launcherRemoteBotErrorAria", {
+                          error: remoteBotHeaderStatus.last_error,
+                          defaultValue: `Telegram 连接异常: ${remoteBotHeaderStatus.last_error}`,
+                        })
+                      : remoteBotHeaderStatus.active_task_id
+                        ? t("launcherRemoteBotActiveAria", {
+                            bot: remoteBotHeaderStatus.bot_username || "Bot",
+                            defaultValue: `Telegram 正在执行任务 (@${remoteBotHeaderStatus.bot_username || "Bot"})...`,
+                          })
+                        : t("launcherRemoteBotRunningAria", {
+                            bot: remoteBotHeaderStatus.bot_username || "Bot",
+                            defaultValue: `Telegram 远程工作台在线 (@${remoteBotHeaderStatus.bot_username || "Bot"})`,
+                          })
+                  }
+                  data-testid="header-remote-bot-status"
+                >
+                  <TelegramIcon className="w-5 h-5" />
+                  <ToolStatusDot
+                    tone={
+                      remoteBotHeaderStatus.last_error
+                        ? "error"
+                        : remoteBotHeaderStatus.active_task_id
                           ? "warning"
                           : "success"
                     }

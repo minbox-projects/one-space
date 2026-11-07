@@ -76,6 +76,7 @@ export function useAppController({
     setProtocolRouterHeaderStatus: view.setProtocolRouterHeaderStatus,
     setAiGatewayHeaderStatus: view.setAiGatewayHeaderStatus,
     setFileSharingHeaderStatus: view.setFileSharingHeaderStatus,
+    setRemoteBotHeaderStatus: view.setRemoteBotHeaderStatus,
     setSshTunnelSummary: view.setSshTunnelSummary,
     setTrayState: tray.setTrayState,
     pushToast,

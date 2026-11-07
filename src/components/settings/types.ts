@@ -1,7 +1,7 @@
 import type { ProtocolRouterConfig, ProtocolRouterStatus } from "@/lib/protocolRouter";
 import type { SslConfig } from "@/lib/sslCertificate";
 import type { AiModelPermissionModes } from "@/lib/terminalPermissions";
-import { Settings, Bot, Network, ShieldCheck, Newspaper } from "lucide-react";
+import { Settings, Bot, Network, ShieldCheck, Newspaper, Wrench } from "lucide-react";
 
 export type { ProtocolRouterConfig, ProtocolRouterStatus, SslConfig, AiModelPermissionModes };
 
@@ -9,6 +9,7 @@ export type MainSettingsTab =
   | "general"
   | "ai"
   | "services"
+  | "operations"
   | "data-security"
   | "news";
 
@@ -25,6 +26,7 @@ export type LegacySettingsSection =
   | "ssl-certificate"
   | "server-monitor"
   | "cloud-agent"
+  | "remote-bot"
   | "shortcuts"
   | "ai"
   | "appearance"
@@ -61,13 +63,17 @@ export function resolveSettingsTab(input?: string): ResolvedSettingsRoute {
     case "ai-gateway":
       return { mainTab: "services", subTab: "ai-gateway" };
     case "ssl-certificate":
-      return { mainTab: "services", subTab: "ssl-certificate" };
+      return { mainTab: "operations", subTab: "ssl-certificate" };
     case "server-monitor":
-      return { mainTab: "services", subTab: "server-monitor" };
+      return { mainTab: "operations", subTab: "server-monitor" };
     case "cloud-agent":
-      return { mainTab: "services", subTab: "cloud-agent" };
+      return { mainTab: "operations", subTab: "cloud-agent" };
+    case "remote-bot":
+      return { mainTab: "operations", subTab: "remote-bot" };
     case "services":
       return { mainTab: "services", subTab: "proxy" };
+    case "operations":
+      return { mainTab: "operations", subTab: "ssl-certificate" };
 
     case "storage":
       return { mainTab: "data-security", subTab: "storage" };
@@ -313,16 +319,25 @@ export const MAIN_SETTINGS_CATEGORIES: {
   },
   {
     id: "services",
-    titleKey: "categoryServices",
-    fallbackTitle: "网络与服务",
+    titleKey: "categoryNetwork",
+    fallbackTitle: "网络与连接",
     icon: Network,
     subTabs: [
       { id: "proxy", titleKey: "proxy", fallbackTitle: "网络代理" },
       { id: "protocol-router", titleKey: "protocolRouter", fallbackTitle: "协议路由" },
       { id: "ai-gateway", titleKey: "aiGatewaySettings", fallbackTitle: "AI 网关" },
+    ],
+  },
+  {
+    id: "operations",
+    titleKey: "categoryOperations",
+    fallbackTitle: "运维与自动化",
+    icon: Wrench,
+    subTabs: [
       { id: "ssl-certificate", titleKey: "sslCertificate", fallbackTitle: "SSL 证书" },
       { id: "server-monitor", titleKey: "serverMonitor", fallbackTitle: "服务器监控" },
       { id: "cloud-agent", titleKey: "cloudAgent", fallbackTitle: "AI 云端智能体" },
+      { id: "remote-bot", titleKey: "remoteBot", fallbackTitle: "Telegram 远程工作台" },
     ],
   },
   {
@@ -337,7 +352,7 @@ export const MAIN_SETTINGS_CATEGORIES: {
   },
   {
     id: "news",
-    titleKey: "newsSettingsMenu",
+    titleKey: "categoryNews",
     fallbackTitle: "资讯与订阅",
     icon: Newspaper,
     subTabs: [

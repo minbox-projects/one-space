@@ -3,6 +3,7 @@ use crate::{
     cloud_agent, config, file_sharing, http_client, mcp_export,
     mcp_servers, mcp_templates, messages, protocol_router, proxy, secrets, server_monitor, sftp,
     short_link, skills, ssl_certificate, ssh_tunnels, storage, subagents, uptime_monitor,
+    remote_bot,
     version_detect, webhook_catcher, workspaces,
 };
 use std::path::Path;
@@ -130,6 +131,10 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 uptime_monitor::scheduler::UptimeScheduler::init_global(uptime_app_handle);
             });
+            let remote_bot_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                remote_bot::RemoteBotManager::init_global(remote_bot_handle).await;
+            });
             ssh_tunnels::start_system_wake_observer();
             ssh_tunnels::start_sleep_resume_monitor();
             ssh_tunnels::start_tunnel_watchdog(app.handle().clone());
@@ -254,6 +259,15 @@ pub fn run() {
             uptime_monitor::uptime_toggle_monitor,
             uptime_monitor::uptime_test_probe,
             uptime_monitor::uptime_clear_history,
+            remote_bot::remote_bot_get_config,
+            remote_bot::remote_bot_save_config,
+            remote_bot::remote_bot_test_connection,
+            remote_bot::remote_bot_get_status,
+            remote_bot::remote_bot_restart,
+            remote_bot::remote_bot_probe_opencode,
+            remote_bot::remote_bot_list_installed_opencode,
+            remote_bot::remote_bot_get_running_opencode_sessions,
+            remote_bot::remote_bot_get_hosted_sessions,
             server_monitor::commands::server_monitor_snapshot,
             server_monitor::commands::server_monitor_upsert,
             server_monitor::commands::server_monitor_delete,
