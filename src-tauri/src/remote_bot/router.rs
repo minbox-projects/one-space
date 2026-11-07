@@ -8,16 +8,28 @@ use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
 use super::opencode_bridge::OpenCodeBridge;
 use super::storage::{load_config, save_config};
-use super::types::{TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
+use super::types::{InlineKeyboardButton, InlineKeyboardMarkup, PromptTargetSession, TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
 
 pub struct CommandRouter {
     client: Arc<TelegramClient>,
     bridge: Arc<OpenCodeBridge>,
+    pub supervisor: Arc<super::session_supervisor::SessionSupervisor>,
+    pending_prompt_targets: tokio::sync::RwLock<std::collections::HashMap<i64, PromptTargetSession>>,
 }
 
 impl CommandRouter {
     pub fn new(client: Arc<TelegramClient>, bridge: Arc<OpenCodeBridge>) -> Self {
-        Self { client, bridge }
+        let supervisor = Arc::new(super::session_supervisor::SessionSupervisor::new(
+            client.clone(),
+            bridge.clone(),
+        ));
+
+        Self {
+            client,
+            bridge,
+            supervisor,
+            pending_prompt_targets: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        }
     }
 
     /// 分发处理单条 Telegram Update
@@ -56,10 +68,30 @@ impl CommandRouter {
             return Ok(());
         }
 
+        // 检查该用户是否正处于“向特定外部会话发送提示词”的等待输入状态
+        let pending_target = {
+            let mut lock = self.pending_prompt_targets.write().await;
+            lock.remove(&chat_id)
+        };
+
+        if let Some(target) = pending_target {
+            if !text.starts_with('/') {
+                return self.dispatch_prompt_to_session(chat_id, target, text).await;
+            }
+        }
+
         // 授权用户的命令路由
         if text.starts_with("/start") || text.starts_with("/help") {
             let help_text = CardBuilder::help_card();
             self.client.send_message(chat_id, &help_text, None, Some("Markdown")).await?;
+        } else if text == "/running" || text.starts_with("/running") || text == "/sessions" || text.starts_with("/sessions") {
+            self.handle_running_command(chat_id).await?;
+        } else if text == "/host" || text.starts_with("/host ") || text == "/hosts" {
+            self.handle_host_command(chat_id, text).await?;
+        } else if text == "/unhost" {
+            self.handle_unhost_command(chat_id).await?;
+        } else if text.starts_with("/prompt") || text.starts_with("/send") {
+            self.handle_prompt_command(chat_id, text).await?;
         } else if text == "/status" {
             self.handle_status_command(chat_id).await?;
         } else if text == "/projects" || text.starts_with("/projects ") {
@@ -115,6 +147,40 @@ impl CommandRouter {
                 }
             }
         } else {
+            // 托管模式优先处理：检查当前是否存在完全托管中的会话
+            let hosted_sessions = self.supervisor.list_hosted_sessions(Some(chat_id)).await;
+            if let Some(hosted) = hosted_sessions.first() {
+                let trimmed = text.trim();
+                let parsed_num_opt = trimmed.trim_end_matches('.').trim_end_matches('、').parse::<usize>().ok();
+
+                // 1. 若当前会话正阻塞在提问等待应答，且用户回复了数字序号
+                if let Some(opt_idx) = parsed_num_opt {
+                    if self.supervisor.get_active_question(&hosted.session_id).await.is_some() {
+                        match self.supervisor.handle_answer_question(chat_id, &hosted.session_id, opt_idx).await {
+                            Ok(chosen) => {
+                                let confirm = format!("✅ *已代决断*：已采纳方案「{}」\n_OpenCode 正在继续推进..._", chosen);
+                                self.client.send_message(chat_id, &confirm, None, Some("Markdown")).await?;
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                self.client.send_message(chat_id, &format!("⚠️ 决断提交失败: {}", e), None, None).await?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                // 2. 托管状态下的自由动态输入：直接将自然语言作为提示词注入该托管会话
+                let target = PromptTargetSession {
+                    pid: hosted.pid,
+                    session_id: hosted.session_id.clone(),
+                    cwd: hosted.cwd.clone(),
+                    project_name: hosted.project_name.clone(),
+                };
+                self.dispatch_prompt_to_session(chat_id, target, text).await?;
+                return Ok(());
+            }
+
             // 普通文本消息：如果正有活跃规划会话，则作为回复继续推进；否则提示帮助
             if self.bridge.has_active_session().await {
                 // 如果用户输入的是纯数字序号（如 "1" 或 "1." 或 "1、"），优先映射为对应的 active_options 完整文本
@@ -181,6 +247,9 @@ impl CommandRouter {
         let hostname = crate::get_hostname();
         let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
+        // 探测外部运行中的 OpenCode 会话
+        let ext_sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+
         // 探测 Git 分支
         let git_branch = Command::new("git")
             .current_dir(&project_dir)
@@ -223,7 +292,7 @@ impl CommandRouter {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_else(|| "暂无提交记录".to_string());
 
-        let (status_text, markup) = CardBuilder::status_card(
+        let (status_text, markup) = CardBuilder::status_card_with_sessions(
             &hostname,
             &current_time,
             config.active_workspace.as_deref().unwrap_or("onespace-app"),
@@ -231,9 +300,210 @@ impl CommandRouter {
             &git_status,
             &git_latest_commit,
             config.auto_approve_permissions,
+            ext_sessions.len(),
         );
 
         self.client.send_message(chat_id, &status_text, markup, Some("Markdown")).await?;
+        Ok(())
+    }
+
+    async fn handle_running_command(&self, chat_id: i64) -> Result<(), String> {
+        let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+        if sessions.is_empty() {
+            let hostname = crate::get_hostname();
+            let (text, markup) = CardBuilder::no_external_session_card(&hostname);
+            self.client.send_message(chat_id, &text, markup, Some("Markdown")).await?;
+        } else if sessions.len() == 1 {
+            let (text, markup) = CardBuilder::external_session_card(&sessions[0]);
+            self.client.send_message(chat_id, &text, markup, Some("Markdown")).await?;
+        } else {
+            let (text, markup) = CardBuilder::multiple_external_sessions_card(&sessions);
+            self.client.send_message(chat_id, &text, Some(markup), Some("Markdown")).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_host_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
+        let arg = text.trim_start_matches("/host").trim_start_matches("s").trim();
+
+        // 1. 若带参数（PID 或 SessionID 或项目名称）
+        if !arg.is_empty() {
+            let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+            let matched = sessions.into_iter().find(|s| {
+                s.pid.to_string() == arg || s.session_id.as_deref() == Some(arg) || s.project_name.to_lowercase() == arg.to_lowercase()
+            });
+
+            if let Some(session) = matched {
+                let mode = super::types::SessionHostingDecisionMode::Manual;
+                match self.supervisor.start_hosting(chat_id, session, mode).await {
+                    Ok(msg) => info!("{}", msg),
+                    Err(e) => {
+                        self.client.send_message(chat_id, &format!("❌ 启动托管失败: {}", e), None, None).await?;
+                    }
+                }
+                return Ok(());
+            } else {
+                self.client.send_message(chat_id, &format!("⚠️ 未找到匹配 `{}` 的正在运行会话。\n输入 `/running` 查看当前活跃会话。", arg), None, None).await?;
+                return Ok(());
+            }
+        }
+
+        // 2. 无参数：检查当前是否已有托管中的会话
+        let current_hosted = self.supervisor.list_hosted_sessions(Some(chat_id)).await;
+        if !current_hosted.is_empty() {
+            let mut summary = "🤖 *当前正在完全托管的会话*：\n\n".to_string();
+            let mut buttons = Vec::new();
+            for (idx, h) in current_hosted.iter().enumerate() {
+                let mode_str = match h.mode {
+                    super::types::SessionHostingDecisionMode::Manual => "🎯 手动决断",
+                    super::types::SessionHostingDecisionMode::AutoRecommended => "⚡ 自动推荐",
+                };
+                summary.push_str(&format!(
+                    "{} *{}* (PID: {})\n> ├─ 会话: `{}`\n> ├─ 模式: `{}`\n> └─ 进度: Step {} · Todos {}/{} 完成\n\n",
+                    CardBuilder::number_badge(idx + 1),
+                    h.project_name,
+                    h.pid,
+                    h.session_id,
+                    mode_str,
+                    h.last_observed_step,
+                    h.completed_todos_count,
+                    h.total_todos_count
+                ));
+                buttons.push(vec![
+                    InlineKeyboardButton::callback(format!("⚙️ 切换模式 ({})", h.project_name), format!("toggle_host_mode:{}", h.session_id)),
+                    InlineKeyboardButton::callback(format!("🛑 退出托管 ({})", h.project_name), format!("stop_host:{}", h.session_id)),
+                ]);
+            }
+            summary.push_str("_可在聊天框直接回复以注入指令，或发送 `/unhost` 退出托管。_");
+            self.client.send_message(chat_id, &summary, Some(InlineKeyboardMarkup::new(buttons)), Some("Markdown")).await?;
+            return Ok(());
+        }
+
+        // 3. 无托管会话时：扫描当前外部会话并提供一键托管按钮
+        let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+        if sessions.is_empty() {
+            let hostname = crate::get_hostname();
+            let (no_sess, markup) = CardBuilder::no_external_session_card(&hostname);
+            self.client.send_message(chat_id, &no_sess, markup, Some("Markdown")).await?;
+            return Ok(());
+        }
+
+        if sessions.len() == 1 {
+            let sess = sessions.into_iter().next().unwrap();
+            let mode = super::types::SessionHostingDecisionMode::Manual;
+            self.supervisor.start_hosting(chat_id, sess, mode).await?;
+        } else {
+            let mut host_buttons = Vec::new();
+            for (idx, sess) in sessions.iter().enumerate() {
+                let label = format!("{} 托管: {} (PID: {})", CardBuilder::number_badge(idx + 1), sess.project_name, sess.pid);
+                host_buttons.push(vec![
+                    InlineKeyboardButton::callback(label, format!("start_host:{}", sess.pid)),
+                ]);
+            }
+            let choose_text = "🤖 *请选择要交由 OneSpace + Telegram 完全托管的运行中会话*：\n\n\
+            托管后将自动监听进展、主动通知待办完成、接管提问决策并支持随时动态干预。";
+            self.client.send_message(chat_id, choose_text, Some(InlineKeyboardMarkup::new(host_buttons)), Some("Markdown")).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_unhost_command(&self, chat_id: i64) -> Result<(), String> {
+        let count = self.supervisor.stop_all_for_chat(chat_id).await;
+        if count > 0 {
+            self.client.send_message(chat_id, &format!("🛑 已成功停止针对 {} 个会话的完全托管守护。", count), None, None).await?;
+        } else {
+            self.client.send_message(chat_id, "ℹ️ 当前没有处于托管守护状态的会话。", None, None).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_prompt_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
+        let raw_prompt = if let Some(stripped) = text.strip_prefix("/prompt") {
+            stripped.trim()
+        } else if let Some(stripped) = text.strip_prefix("/send") {
+            stripped.trim()
+        } else {
+            ""
+        };
+
+        let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+
+        if sessions.is_empty() {
+            let hostname = crate::get_hostname();
+            let (empty_text, markup) = CardBuilder::no_external_session_card(&hostname);
+            self.client.send_message(chat_id, &empty_text, markup, Some("Markdown")).await?;
+            return Ok(());
+        }
+
+        if sessions.len() == 1 {
+            let session = &sessions[0];
+            let sid = match session.session_id.clone() {
+                Some(s) => s,
+                None => {
+                    self.client.send_message(chat_id, "⚠️ 运行中的 OpenCode 尚未初始化 session_id，请稍候再试。", None, None).await?;
+                    return Ok(());
+                }
+            };
+
+            let target = PromptTargetSession {
+                pid: session.pid,
+                session_id: sid,
+                cwd: session.cwd.clone(),
+                project_name: session.project_name.clone(),
+            };
+
+            if raw_prompt.is_empty() {
+                self.pending_prompt_targets.write().await.insert(chat_id, target);
+                let (req_text, markup) = CardBuilder::prompt_input_request_card(session);
+                self.client.send_message(chat_id, &req_text, Some(markup), Some("Markdown")).await?;
+            } else {
+                self.dispatch_prompt_to_session(chat_id, target, raw_prompt).await?;
+            }
+        } else {
+            // 多个外部会话
+            if raw_prompt.is_empty() {
+                let (list_text, markup) = CardBuilder::multiple_external_sessions_card(&sessions);
+                self.client.send_message(chat_id, &list_text, Some(markup), Some("Markdown")).await?;
+            } else {
+                let mut prompt_buttons = Vec::new();
+                for (idx, sess) in sessions.iter().enumerate() {
+                    let label = format!("{} 投递给: {} (PID: {})", CardBuilder::number_badge(idx + 1), sess.project_name, sess.pid);
+                    prompt_buttons.push(vec![
+                        InlineKeyboardButton::callback(label, format!("prompt_ext_session:{}", sess.pid)),
+                    ]);
+                }
+                let choose_text = format!(
+                    "💬 *检测到多个运行中的外部会话*\n\
+                    > 准备发送提示词: `{}`\n\n\
+                    请点击下方按钮选择目标会话：",
+                    raw_prompt
+                );
+                self.client.send_message(chat_id, &choose_text, Some(InlineKeyboardMarkup::new(prompt_buttons)), Some("Markdown")).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn dispatch_prompt_to_session(
+        &self,
+        chat_id: i64,
+        target: PromptTargetSession,
+        prompt: &str,
+    ) -> Result<(), String> {
+        let ack = CardBuilder::prompt_dispatched_ack_card(&target, prompt);
+        self.client.send_message(chat_id, &ack, None, Some("Markdown")).await?;
+
+        if let Err(e) = self.bridge.execute_prompt_for_session(
+            chat_id,
+            PathBuf::from(&target.cwd),
+            &target.session_id,
+            prompt,
+        ).await {
+            self.client.send_message(chat_id, &format!("❌ 发送提示词失败: {}", e), None, None).await?;
+        }
+
         Ok(())
     }
 
@@ -555,9 +825,15 @@ impl CommandRouter {
         let plan_id = match target_plan_id {
             Some(id) => id,
             None => {
+                // 如果当前工作区无方案，但检测到终端有外部运行中的 OpenCode 会话，则直接展示外部会话进度
+                let ext_sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                if !ext_sessions.is_empty() {
+                    return self.handle_running_command(chat_id).await;
+                }
+
                 self.client.send_message(
                     chat_id,
-                    "📂 当前工作区未检测到任何方案，亦无正在实施中的任务。\n发送 `/help` 查看可用操作指令。",
+                    "📂 当前工作区未检测到任何方案，亦无正在实施中的任务。\n发送 `/running` 可探测终端运行中的会话，发送 `/help` 查看说明。",
                     None,
                     None,
                 ).await?;
@@ -856,6 +1132,254 @@ impl CommandRouter {
         } else if data == "open_plans" {
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             self.handle_plans_command(chat_id).await?;
+        } else if data == "view_ext_session" {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            self.handle_running_command(chat_id).await?;
+        } else if data == "refresh_ext_list" {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            if let Some(ref msg) = cb.message {
+                let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                let (text, markup) = if sessions.is_empty() {
+                    let hostname = crate::get_hostname();
+                    CardBuilder::no_external_session_card(&hostname)
+                } else if sessions.len() == 1 {
+                    CardBuilder::external_session_card(&sessions[0])
+                } else {
+                    let (t, m) = CardBuilder::multiple_external_sessions_card(&sessions);
+                    (t, Some(m))
+                };
+                let _ = self.client.edit_message_text(
+                    msg.chat.id,
+                    msg.message_id,
+                    &text,
+                    markup,
+                    Some("Markdown"),
+                ).await;
+            } else {
+                self.handle_running_command(chat_id).await?;
+            }
+        } else if let Some(pid_str) = data.strip_prefix("refresh_ext_session:") {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                if let Some(ref msg) = cb.message {
+                    let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                    if let Some(session) = sessions.into_iter().find(|s| s.pid == pid) {
+                        let (text, markup) = CardBuilder::external_session_card(&session);
+                        let _ = self.client.edit_message_text(
+                            msg.chat.id,
+                            msg.message_id,
+                            &text,
+                            markup,
+                            Some("Markdown"),
+                        ).await;
+                    } else {
+                        let _ = self.client.edit_message_text(
+                            msg.chat.id,
+                            msg.message_id,
+                            &format!("⚠️ PID `{}` 的外部 OpenCode 会话已退出或结束运行。\n发送 `/running` 可重新扫描会话列表。", pid),
+                            None,
+                            Some("Markdown"),
+                        ).await;
+                    }
+                }
+            }
+        } else if let Some(pid_str) = data.strip_prefix("logs_ext_session:") {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                if let Some(ref msg) = cb.message {
+                    let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                    if let Some(session) = sessions.into_iter().find(|s| s.pid == pid) {
+                        let (text, markup) = CardBuilder::external_session_logs_card(&session);
+                        let _ = self.client.edit_message_text(
+                            msg.chat.id,
+                            msg.message_id,
+                            &text,
+                            Some(markup),
+                            Some("Markdown"),
+                        ).await;
+                    }
+                }
+            }
+        } else if let Some(pid_str) = data.strip_prefix("select_ext_session:") {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                if let Some(ref msg) = cb.message {
+                    let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                    if let Some(session) = sessions.into_iter().find(|s| s.pid == pid) {
+                        let (text, markup) = CardBuilder::external_session_card(&session);
+                        let _ = self.client.edit_message_text(
+                            msg.chat.id,
+                            msg.message_id,
+                            &text,
+                            markup,
+                            Some("Markdown"),
+                        ).await;
+                    }
+                }
+            }
+        } else if let Some(pid_str) = data.strip_prefix("diff_ext_session:") {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+                let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                if let Some(session) = sessions.into_iter().find(|s| s.pid == pid) {
+                    self.send_diff_view(chat_id, std::path::Path::new(&session.cwd), None).await?;
+                }
+            }
+        } else if let Some(pid_str) = data.strip_prefix("switch_ext_ws:") {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+                let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                if let Some(session) = sessions.into_iter().find(|s| s.pid == pid) {
+                    let mut config = load_config()?;
+                    config.active_workspace = Some(session.project_name.clone());
+                    if !config.workspace_directories.contains(&session.cwd) {
+                        config.workspace_directories.push(session.cwd.clone());
+                    }
+                    config.updated_at = chrono::Utc::now().timestamp();
+                    save_config(&config)?;
+
+                    let confirm_text = format!(
+                        "✅ *已成功将 OneSpace 活跃工作区切换至*：\n\
+                        > ├─ 项目名称: `{}`\n\
+                        > └─ 物理路径: `{}`\n\n\
+                        后续输入的 `/status`、`/diff` 或 `/coding` 将默认作用于该项目。",
+                        session.project_name,
+                        session.cwd
+                    );
+                    self.client.send_message(chat_id, &confirm_text, None, Some("Markdown")).await?;
+                }
+            }
+        } else if let Some(pid_str) = data.strip_prefix("start_host:") {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+                let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                if let Some(session) = sessions.into_iter().find(|s| s.pid == pid) {
+                    let mode = super::types::SessionHostingDecisionMode::Manual;
+                    if let Err(e) = self.supervisor.start_hosting(chat_id, session, mode).await {
+                        self.client.send_message(chat_id, &format!("❌ 开启托管失败: {}", e), None, None).await?;
+                    }
+                } else {
+                    self.client.send_message(chat_id, &format!("⚠️ PID `{}` 会话已结束或无法被托管。", pid), None, None).await?;
+                }
+            }
+        } else if let Some(sid) = data.strip_prefix("stop_host:") {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            if self.supervisor.stop_hosting(sid).await {
+                if let Some(ref msg) = cb.message {
+                    let text = format!("🛑 *已退出对会话 `{}` 的完全托管*\n\n会话已恢复为普通外部运行状态。", sid);
+                    let _ = self.client.edit_message_text(
+                        msg.chat.id,
+                        msg.message_id,
+                        &text,
+                        None,
+                        Some("Markdown"),
+                    ).await;
+                }
+            } else {
+                self.client.send_message(chat_id, &format!("ℹ️ 会话 `{}` 并未在托管中或已结束。", sid), None, None).await?;
+            }
+        } else if let Some(sid) = data.strip_prefix("toggle_host_mode:") {
+            if let Some(new_mode) = self.supervisor.toggle_decision_mode(sid).await {
+                let mode_str = match new_mode {
+                    super::types::SessionHostingDecisionMode::Manual => "🎯 人工决断优先",
+                    super::types::SessionHostingDecisionMode::AutoRecommended => "⚡ 自动推荐优先",
+                };
+                if let Some(ref msg) = cb.message {
+                    let notice = format!("🔄 会话 `{}` 的托管决策模式已切换为：*{}*", sid, mode_str);
+                    self.client.send_message(msg.chat.id, &notice, None, Some("Markdown")).await?;
+                }
+            }
+        } else if let Some(ans_payload) = data.strip_prefix("host_ans:") {
+            // host_ans:<session_id>:<opt_idx>
+            let parts: Vec<&str> = ans_payload.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                let sid = parts[0];
+                let opt_idx: usize = parts[1].parse().unwrap_or(0);
+                let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+
+                match self.supervisor.handle_answer_question(chat_id, sid, opt_idx).await {
+                    Ok(label) => {
+                        if let Some(ref msg) = cb.message {
+                            let updated_card = format!(
+                                "✅ *已决断提问并注入应答*\n\
+                                > ├─ 目标会话: `{}`\n\
+                                > └─ 采纳方案: `{}`\n\n\
+                                ⏳ _外部 OpenCode 正在继续推进执行..._",
+                                sid,
+                                label
+                            );
+                            let _ = self.client.edit_message_text(
+                                msg.chat.id,
+                                msg.message_id,
+                                &updated_card,
+                                None,
+                                Some("Markdown"),
+                            ).await;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = self.client.send_message(
+                            chat_id,
+                            &format!("⚠️ 提交选项答复失败: {}", e),
+                            None,
+                            None,
+                        ).await;
+                    }
+                }
+            }
+        } else if let Some(pid_str) = data.strip_prefix("prompt_ext_session:") {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+                let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+                if let Some(session) = sessions.into_iter().find(|s| s.pid == pid) {
+                    if let Some(ref sid) = session.session_id {
+                        let target = PromptTargetSession {
+                            pid: session.pid,
+                            session_id: sid.clone(),
+                            cwd: session.cwd.clone(),
+                            project_name: session.project_name.clone(),
+                        };
+                        self.pending_prompt_targets.write().await.insert(chat_id, target);
+
+                        let (text, markup) = CardBuilder::prompt_input_request_card(&session);
+                        if let Some(ref msg) = cb.message {
+                            let _ = self.client.edit_message_text(
+                                msg.chat.id,
+                                msg.message_id,
+                                &text,
+                                Some(markup),
+                                Some("Markdown"),
+                            ).await;
+                        } else {
+                            let _ = self.client.send_message(
+                                chat_id,
+                                &text,
+                                Some(markup),
+                                Some("Markdown"),
+                            ).await;
+                        }
+                    } else {
+                        let err_msg = format!("⚠️ PID `{}` 会话尚未分配 Session ID，暂无法注入提示词。", pid);
+                        let _ = self.client.send_message(chat_id, &err_msg, None, None).await;
+                    }
+                } else {
+                    let err_msg = format!("⚠️ PID `{}` 的外部会话已结束或不存在。", pid);
+                    let _ = self.client.send_message(chat_id, &err_msg, None, None).await;
+                }
+            }
+        } else if data == "cancel_prompt_target" {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            self.pending_prompt_targets.write().await.remove(&chat_id);
+            if let Some(ref msg) = cb.message {
+                let cancel_text = "❎ *已取消向会话发送提示词*\n\n您可以随时发送 `/running` 查看会话进度或重新发起交互。";
+                let _ = self.client.edit_message_text(
+                    msg.chat.id,
+                    msg.message_id,
+                    cancel_text,
+                    None,
+                    Some("Markdown"),
+                ).await;
+            }
+        } else if data == "open_status" {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            self.handle_status_command(chat_id).await?;
         }
 
         Ok(())

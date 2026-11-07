@@ -657,3 +657,412 @@ fn test_planning_command_and_dialogue_cards() {
     assert!(chat_text.contains("自然对话 (遵循 OpenCode 流程)"));
     assert!(chat_text.contains("📝 *消息内容*："));
 }
+
+#[test]
+fn test_external_opencode_inspector_and_token_formatting() {
+    use super::opencode_inspector::format_token_count;
+
+    assert_eq!(format_token_count(950), "950");
+    assert_eq!(format_token_count(1_500), "1.5K");
+    assert_eq!(format_token_count(125_000), "125.0K");
+    assert_eq!(format_token_count(1_830_000), "1.83M");
+    assert_eq!(format_token_count(133_374_080), "133.37M");
+}
+
+#[test]
+fn test_external_session_cards_rendering() {
+    use super::card_builder::CardBuilder;
+    use super::types::{ExternalOpenCodeSessionInfo, OpenCodeTodoInfo};
+
+    let session = ExternalOpenCodeSessionInfo {
+        pid: 45652,
+        ppid: 1234,
+        elapsed: "11:34:15".to_string(),
+        command: "opencode --yolo".to_string(),
+        cwd: "/Users/tester/Work/isp-repos".to_string(),
+        project_name: "isp-repos".to_string(),
+        session_id: Some("ses_e4f5239b5ffe3ngM8wNMo9E367".to_string()),
+        title: Some("本地联调测试剩余项执行与对账".to_string()),
+        model: Some("deepseek-v4.1-flash".to_string()),
+        agent: Some("build".to_string()),
+        is_busy: true,
+        current_step: Some(379),
+        last_tool: Some("bash".to_string()),
+        last_tool_status: Some("completed".to_string()),
+        last_tool_input_preview: Some("for p in 17043 77275; do kill $p; done".to_string()),
+        last_reasoning: Some("Need stop all. Note the command output exposed...".to_string()),
+        todos: vec![
+            OpenCodeTodoInfo {
+                position: 0,
+                status: "completed".to_string(),
+                content: "数据中心文档中文重命名".to_string(),
+            },
+            OpenCodeTodoInfo {
+                position: 1,
+                status: "in_progress".to_string(),
+                content: "清理后台占用端口".to_string(),
+            },
+        ],
+        tokens_input: 1_829_949,
+        tokens_output: 136_820,
+        tokens_reasoning: 126_397,
+        tokens_cache_read: 133_374_080,
+        updated_at: Some(1794007043904),
+    };
+
+    // 1. 验证单会话卡片渲染
+    let (card_text, markup_opt) = CardBuilder::external_session_card(&session);
+    assert!(card_text.contains("🚀 *外部 OpenCode 运行中会话*"));
+    assert!(card_text.contains("PID 45652"));
+    assert!(card_text.contains("opencode --yolo"));
+    assert!(card_text.contains("本地联调测试剩余项执行与对账"));
+    assert!(card_text.contains("🟢 `正在处理 (Busy)` · Step 379"));
+    assert!(card_text.contains("deepseek-v4.1-flash"));
+    assert!(card_text.contains("🛠 工具调用: `bash` (状态: `completed`)"));
+    assert!(card_text.contains("💭 推理思考: Need stop all."));
+    assert!(card_text.contains("▫️ *任务清单 (Todos)*: 1/2 完成"));
+    assert!(card_text.contains("✅ 数据中心文档中文重命名"));
+    assert!(card_text.contains("▶️ 清理后台占用端口"));
+    assert!(card_text.contains("1.83M"));
+
+    let markup = markup_opt.expect("必须包含操作按钮");
+    assert_eq!(markup.inline_keyboard.len(), 3);
+    assert!(markup.inline_keyboard[0][0].text.contains("刷新进度"));
+    assert_eq!(markup.inline_keyboard[0][0].callback_data.as_deref(), Some("refresh_ext_session:45652"));
+    assert!(markup.inline_keyboard[0][1].text.contains("发送提示词"));
+    assert_eq!(markup.inline_keyboard[0][1].callback_data.as_deref(), Some("prompt_ext_session:45652"));
+    assert!(markup.inline_keyboard[2][0].text.contains("完全托管"));
+    assert_eq!(markup.inline_keyboard[2][0].callback_data.as_deref(), Some("start_host:45652"));
+    assert_eq!(markup.inline_keyboard[2][1].callback_data.as_deref(), Some("switch_ext_ws:45652"));
+
+    // 2. 验证多会话列表卡片
+    let session2 = ExternalOpenCodeSessionInfo {
+        pid: 88888,
+        ppid: 1234,
+        elapsed: "05:20".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/Users/tester/Work/other-repo".to_string(),
+        project_name: "other-repo".to_string(),
+        session_id: Some("ses_123".to_string()),
+        title: Some("修复网络路由".to_string()),
+        model: Some("claude-3-7-sonnet".to_string()),
+        agent: Some("code".to_string()),
+        is_busy: false,
+        current_step: Some(5),
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 10_000,
+        tokens_output: 500,
+        tokens_reasoning: 0,
+        tokens_cache_read: 20_000,
+        updated_at: None,
+    };
+
+    let (multi_text, multi_markup) = CardBuilder::multiple_external_sessions_card(&[session.clone(), session2]);
+    assert!(multi_text.contains("检测到多个终端正在运行 OpenCode 会话"));
+    assert!(multi_text.contains("1️⃣ *isp-repos*"));
+    assert!(multi_text.contains("2️⃣ *other-repo*"));
+    assert_eq!(multi_markup.inline_keyboard.len(), 3); // 2 个会话 + 1 个刷新列表
+
+    // 3. 验证无会话提示卡片
+    let (empty_text, empty_markup) = CardBuilder::no_external_session_card("MacBook.local");
+    assert!(empty_text.contains("当前未检测到正在运行的外部 OpenCode 会话"));
+    assert!(empty_text.contains("MacBook.local"));
+    assert!(empty_markup.is_some());
+
+    // 4. 验证详细日志卡片
+    let (log_text, log_markup) = CardBuilder::external_session_logs_card(&session);
+    assert!(log_text.contains("📝 *外部会话详细动态与思考*"));
+    assert!(log_text.contains("工具: bash"));
+    assert!(log_text.contains("for p in 17043"));
+    assert!(log_markup.inline_keyboard[0][0].text.contains("返回会话进度"));
+
+    // 5. 验证主机状态卡片带外部会话探测
+    let (status_text_with_sess, status_markup) = CardBuilder::status_card_with_sessions(
+        "MacBook.local",
+        "2026-11-07 07:00:00",
+        "OneSpace",
+        "main",
+        "Clean",
+        "abc1234 - update",
+        true,
+        1,
+    );
+    assert!(status_text_with_sess.contains("终端 OpenCode: `🚀 1 个会话运行中`"));
+    let btns = status_markup.unwrap().inline_keyboard[0].clone();
+    assert!(btns.iter().any(|b| b.text.contains("运行中会话")));
+}
+
+#[test]
+fn test_prompt_input_and_dispatch_cards() {
+    use super::card_builder::CardBuilder;
+    use super::types::{ExternalOpenCodeSessionInfo, PromptTargetSession};
+
+    let session = ExternalOpenCodeSessionInfo {
+        pid: 54321,
+        ppid: 1000,
+        elapsed: "10:00".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/Users/tester/Work/my-project".to_string(),
+        project_name: "my-project".to_string(),
+        session_id: Some("ses_abc123".to_string()),
+        title: Some("重构认证中间件".to_string()),
+        model: Some("claude-3-7-sonnet".to_string()),
+        agent: Some("code".to_string()),
+        is_busy: false,
+        current_step: Some(12),
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 1000,
+        tokens_output: 100,
+        tokens_reasoning: 0,
+        tokens_cache_read: 2000,
+        updated_at: None,
+    };
+
+    // 1. 测试提示词输入请求引导卡片
+    let (req_text, markup) = CardBuilder::prompt_input_request_card(&session);
+    assert!(req_text.contains("向正在运行的 OpenCode 会话发送提示词"));
+    assert!(req_text.contains("my-project"));
+    assert!(req_text.contains("PID: 54321"));
+    assert!(req_text.contains("重构认证中间件"));
+    assert!(req_text.contains("ses_abc123"));
+    assert_eq!(markup.inline_keyboard.len(), 1);
+    assert_eq!(markup.inline_keyboard[0].len(), 2);
+    assert_eq!(markup.inline_keyboard[0][0].text, "❌ 取消发送");
+    assert_eq!(markup.inline_keyboard[0][0].callback_data.as_deref(), Some("cancel_prompt_target"));
+    assert_eq!(markup.inline_keyboard[0][1].text, "⬅️ 返回进度卡片");
+    assert_eq!(markup.inline_keyboard[0][1].callback_data.as_deref(), Some("select_ext_session:54321"));
+
+    // 2. 测试提示词投递确认卡片
+    let target = PromptTargetSession {
+        pid: 54321,
+        session_id: "ses_abc123".to_string(),
+        cwd: "/Users/tester/Work/my-project".to_string(),
+        project_name: "my-project".to_string(),
+    };
+    let ack_text = CardBuilder::prompt_dispatched_ack_card(&target, "请增加针对密码强度的校验逻辑并跑通测试");
+    assert!(ack_text.contains("提示词已投递给 OpenCode 会话"));
+    assert!(ack_text.contains("`my-project` (PID: 54321)"));
+    assert!(ack_text.contains("ses_abc123"));
+    assert!(ack_text.contains("请增加针对密码强度的校验逻辑并跑通测试"));
+}
+
+#[test]
+fn test_filter_idle_and_subagent_sessions() {
+    use super::types::ExternalOpenCodeSessionInfo;
+
+    // 1. 主代理会话 - 正在进行 (Busy) -> 应该被保留
+    let main_busy = ExternalOpenCodeSessionInfo {
+        pid: 101,
+        ppid: 1,
+        elapsed: "01:00".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/Users/tester/Work/main-repo".to_string(),
+        project_name: "main-repo".to_string(),
+        session_id: Some("ses_main_1".to_string()),
+        title: Some("实施主功能模块开发".to_string()),
+        model: Some("claude-3-7-sonnet".to_string()),
+        agent: Some("code".to_string()),
+        is_busy: true,
+        current_step: Some(10),
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 100,
+        tokens_output: 100,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: Some(1000),
+    };
+
+    // 2. 主代理会话 - 已空闲 (Idle) -> 应该被过滤掉
+    let main_idle = ExternalOpenCodeSessionInfo {
+        pid: 102,
+        ppid: 1,
+        elapsed: "10:00".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/Users/tester/Work/idle-repo".to_string(),
+        project_name: "idle-repo".to_string(),
+        session_id: Some("ses_main_2".to_string()),
+        title: Some("已完工任务".to_string()),
+        model: Some("claude-3-7-sonnet".to_string()),
+        agent: Some("code".to_string()),
+        is_busy: false,
+        current_step: Some(20),
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 100,
+        tokens_output: 100,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: Some(900),
+    };
+
+    // 3. 子代理会话 (subagent) - 正在进行 (Busy) -> 应该被过滤掉（仅允许主代理）
+    let subagent_busy = ExternalOpenCodeSessionInfo {
+        pid: 103,
+        ppid: 101,
+        elapsed: "00:30".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/Users/tester/Work/main-repo".to_string(),
+        project_name: "main-repo".to_string(),
+        session_id: Some("ses_sub_1".to_string()),
+        title: Some("Commit root workspace changes (@git-operator subagent)".to_string()),
+        model: Some("claude-3-7-sonnet".to_string()),
+        agent: Some("git-operator".to_string()),
+        is_busy: true,
+        current_step: Some(2),
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 50,
+        tokens_output: 50,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: Some(1010),
+    };
+
+    // 4. 无有效 session_id 的悬空进程 -> 应该被过滤掉
+    let no_session_busy = ExternalOpenCodeSessionInfo {
+        pid: 104,
+        ppid: 1,
+        elapsed: "00:05".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/Users/tester/Work/temp-repo".to_string(),
+        project_name: "temp-repo".to_string(),
+        session_id: None,
+        title: None,
+        model: None,
+        agent: None,
+        is_busy: true,
+        current_step: None,
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 0,
+        tokens_output: 0,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: None,
+    };
+
+    let mut sessions = vec![main_busy, main_idle, subagent_busy, no_session_busy];
+
+    // 执行同款过滤规则
+    sessions.retain(|sess| sess.is_busy);
+    sessions.retain(|sess| {
+        if sess.session_id.is_none() {
+            return false;
+        }
+        if let Some(ref t) = sess.title {
+            if t.contains("(@") && t.contains("subagent)") {
+                return false;
+            }
+        }
+        true
+    });
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].pid, 101);
+    assert_eq!(sessions[0].session_id.as_deref(), Some("ses_main_1"));
+    assert_eq!(sessions[0].title.as_deref(), Some("实施主功能模块开发"));
+}
+
+#[test]
+fn test_session_hosting_cards_rendering() {
+    use super::card_builder::CardBuilder;
+    use super::types::{HostedOptionItem, SessionHostingDecisionMode};
+
+    // 1. 验证启动完全托管卡片
+    let (started_text, started_markup) = CardBuilder::hosted_session_started_card(
+        "isp-repos",
+        45652,
+        "ses_e4f5239b5ffe",
+        &SessionHostingDecisionMode::Manual,
+    );
+    assert!(started_text.contains("会话已成功交由 OneSpace + Telegram 完全托管"));
+    assert!(started_text.contains("isp-repos"));
+    assert!(started_text.contains("PID: 45652"));
+    assert!(started_text.contains("ses_e4f5239b5ffe"));
+    assert!(started_text.contains("人工决断优先 (Manual)"));
+    assert_eq!(started_markup.inline_keyboard[0][0].callback_data.as_deref(), Some("toggle_host_mode:ses_e4f5239b5ffe"));
+    assert_eq!(started_markup.inline_keyboard[0][1].callback_data.as_deref(), Some("stop_host:ses_e4f5239b5ffe"));
+
+    // 2. 验证待办完成通知
+    let notice = CardBuilder::hosted_todo_completed_notice("isp-repos", "优化数据库索引并迁移", 3, 5);
+    assert!(notice.contains("任务待办已达成"));
+    assert!(notice.contains("isp-repos"));
+    assert!(notice.contains("优化数据库索引并迁移"));
+    assert!(notice.contains("`3/5` 项已完成"));
+
+    // 3. 验证提问与决策卡片
+    let options = vec![
+        HostedOptionItem {
+            index: 1,
+            label: "方案 A：采用 JWT 认证中间件 (Recommended)".to_string(),
+            description: Some("轻量无状态，扩展性好".to_string()),
+            is_recommended: true,
+        },
+        HostedOptionItem {
+            index: 2,
+            label: "方案 B：采用 Redis Session".to_string(),
+            description: Some("集中式会话，可主动吊销".to_string()),
+            is_recommended: false,
+        },
+    ];
+    let (q_text, q_markup) = CardBuilder::hosted_question_card(
+        "isp-repos",
+        "ses_e4f5239b5ffe",
+        "请确认接下来采用的身份认证方案：",
+        &options,
+    );
+    assert!(q_text.contains("OpenCode 提问与决策确认"));
+    assert!(q_text.contains("请确认接下来采用的身份认证方案"));
+    assert!(q_text.contains("方案 A：采用 JWT 认证中间件"));
+    assert_eq!(q_markup.inline_keyboard.len(), 3);
+    assert_eq!(q_markup.inline_keyboard[0][0].callback_data.as_deref(), Some("host_ans:ses_e4f5239b5ffe:1"));
+    assert_eq!(q_markup.inline_keyboard[1][0].callback_data.as_deref(), Some("host_ans:ses_e4f5239b5ffe:2"));
+    assert_eq!(q_markup.inline_keyboard[2][0].callback_data.as_deref(), Some("stop_host:ses_e4f5239b5ffe"));
+
+    // 4. 验证托管自主决策通知
+    let auto_text = CardBuilder::hosted_auto_decision_card(
+        "isp-repos",
+        "请选择数据库驱动",
+        "方案 A (Recommended)",
+    );
+    assert!(auto_text.contains("托管决策代执行 (Auto-Approve)"));
+    assert!(auto_text.contains("方案 A (Recommended)"));
+
+    // 5. 验证托管会话圆满交付卡片
+    let (done_text, done_markup) = CardBuilder::hosted_session_completed_card(
+        "isp-repos",
+        45652,
+        "ses_e4f5239b5ffe",
+        "5 分 12 秒",
+        18,
+        150_000,
+        12_000,
+    );
+    assert!(done_text.contains("外部 OpenCode 会话圆满交付"));
+    assert!(done_text.contains("交付耗时: `5 分 12 秒`"));
+    assert!(done_text.contains("总执行步数: `Step 18`"));
+    assert!(done_text.contains("150.0K"));
+    assert_eq!(done_markup.inline_keyboard[0][0].callback_data.as_deref(), Some("diff_ext_session:45652"));
+}
+

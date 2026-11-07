@@ -190,3 +190,97 @@ pub struct SendChatActionPayload {
     pub chat_id: i64,
     pub action: String,
 }
+
+// =========================================================================
+// 外部 OpenCode 运行中会话模型 (External Running Session)
+// =========================================================================
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PromptTargetSession {
+    pub pid: u32,
+    pub session_id: String,
+    pub cwd: String,
+    pub project_name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OpenCodeTodoInfo {
+    pub position: i32,
+    pub status: String,
+    pub content: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ExternalOpenCodeSessionInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    pub elapsed: String,
+    pub command: String,
+    pub cwd: String,
+    pub project_name: String,
+    pub session_id: Option<String>,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub agent: Option<String>,
+    pub is_busy: bool,
+    pub current_step: Option<u32>,
+    pub last_tool: Option<String>,
+    pub last_tool_status: Option<String>,
+    pub last_tool_input_preview: Option<String>,
+    pub last_reasoning: Option<String>,
+    pub todos: Vec<OpenCodeTodoInfo>,
+    pub tokens_input: i64,
+    pub tokens_output: i64,
+    pub tokens_reasoning: i64,
+    pub tokens_cache_read: i64,
+    pub updated_at: Option<i64>,
+}
+
+/// 会话托管决策模式
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum SessionHostingDecisionMode {
+    /// 人工决断：提问推送到 Telegram 等待用户点击选项
+    Manual,
+    /// 自动推荐：存在 (Recommended) 选项时自动代选并通知，其余等待人工决断
+    AutoRecommended,
+}
+
+impl Default for SessionHostingDecisionMode {
+    fn default() -> Self {
+        SessionHostingDecisionMode::Manual
+    }
+}
+
+/// 托管提问候选项
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct HostedOptionItem {
+    pub index: usize,
+    pub label: String,
+    pub description: Option<String>,
+    pub is_recommended: bool,
+}
+
+/// 托管提问信息
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct HostedQuestionItem {
+    pub call_id: String,
+    pub question_text: String,
+    pub options: Vec<HostedOptionItem>,
+}
+
+/// 处于完全托管中的会话状态快照
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct HostedSessionInfo {
+    pub session_id: String,
+    pub pid: u32,
+    pub cwd: String,
+    pub project_name: String,
+    pub chat_id: i64,
+    pub mode: SessionHostingDecisionMode,
+    pub started_at: i64,
+    pub last_observed_step: u32,
+    pub completed_todos_count: usize,
+    pub total_todos_count: usize,
+    pub active_question_summary: Option<String>,
+}
+

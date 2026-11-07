@@ -296,6 +296,44 @@ impl OpenCodeBridge {
         Ok(())
     }
 
+    /// 向指定外部 OpenCode 会话投递提示词并推进执行
+    pub async fn execute_prompt_for_session(
+        self: &Arc<Self>,
+        chat_id: i64,
+        project_dir: PathBuf,
+        session_id: &str,
+        prompt: &str,
+    ) -> Result<(), String> {
+        if self.is_busy.swap(true, Ordering::SeqCst) {
+            return Err("已有正在运行的任务，请等待当前轮次完成或发送 /cancel".to_string());
+        }
+
+        *self.active_session_id.write().await = Some(session_id.to_string());
+        *self.active_project_dir.write().await = Some(project_dir.clone());
+        self.active_options.write().await.clear();
+
+        let bridge = self.clone();
+        let prompt_string = prompt.to_string();
+        let sid = session_id.to_string();
+
+        tokio::spawn(async move {
+            let res = bridge.run_planning_cycle(chat_id, project_dir, &prompt_string, Some(sid), false).await;
+            bridge.is_busy.store(false, Ordering::SeqCst);
+            if let Err(e) = res {
+                error!("向 OpenCode 会话投递提示词失败: {}", e);
+                let error_text = format!("❌ *执行阶段异常中断*\n\n原因:\n```\n{}\n```", e);
+                let _ = bridge.telegram_client.send_message(
+                    chat_id,
+                    &error_text,
+                    None,
+                    Some("Markdown"),
+                ).await;
+            }
+        });
+
+        Ok(())
+    }
+
     async fn run_planning_cycle(
         &self,
         chat_id: i64,

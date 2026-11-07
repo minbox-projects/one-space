@@ -1,4 +1,5 @@
-use super::types::{InlineKeyboardButton, InlineKeyboardMarkup};
+use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup};
+use super::opencode_inspector;
 
 /// Telegram 移动端高可读性卡片构建器
 pub struct CardBuilder;
@@ -131,6 +132,10 @@ impl CardBuilder {
         > 💡 *已通过授权认证，随时可以下发指令或直接交流*\n\n\
         🛠️ *工作台运维*\n\
         • `/status` ── Mac 本地状态与 Git 提交\n\
+        • `/running` ── 查看终端中正在运行的 OpenCode 会话进度\n\
+        • `/host [id]` ── 完全托管会话 (交互提问/主动通知/智能决策)\n\
+        • `/unhost` ── 退出当前会话托管守护\n\
+        • `/prompt <内容>` ── 向运行中的 OpenCode 会话发送提示词\n\
         • `/projects` ── 切换活跃工作区项目\n\n\
         🚀 *AI 研发流水线*\n\
         • `/planning <需求>` ── 唤起需求调研与方案规划\n\
@@ -156,6 +161,35 @@ impl CardBuilder {
         latest_commit: &str,
         auto_approve: bool,
     ) -> (String, Option<InlineKeyboardMarkup>) {
+        Self::status_card_with_sessions(
+            hostname,
+            current_time,
+            project,
+            git_branch,
+            git_status,
+            latest_commit,
+            auto_approve,
+            0,
+        )
+    }
+
+    /// 卡片 4 扩展: Mac 工作台运行状态卡片（带外部会话探测）
+    pub fn status_card_with_sessions(
+        hostname: &str,
+        current_time: &str,
+        project: &str,
+        git_branch: &str,
+        git_status: &str,
+        latest_commit: &str,
+        auto_approve: bool,
+        ext_sessions_count: usize,
+    ) -> (String, Option<InlineKeyboardMarkup>) {
+        let ext_session_line = if ext_sessions_count > 0 {
+            format!("\n> └─ 终端 OpenCode: `🚀 {} 个会话运行中`", ext_sessions_count)
+        } else {
+            String::new()
+        };
+
         let text = format!(
             "🖥️ *Mac 本地工作台状态*\n\
             > 🟢 *系统运行平稳 ╎ 实时长轮询在线*\n\
@@ -165,21 +199,28 @@ impl CardBuilder {
             📁 *当前活跃工作区*\n\
             > ├─ 项目名称: `{}`\n\
             > ├─ Git 分支: `{}` ({})\n\
-            > └─ 最新提交: `{}`\n\n\
-            _👉 输入 `/diff` 可查看代码变更，`/plans` 可查看方案。_",
+            > └─ 最新提交: `{}`{}\n\n\
+            _👉 输入 `/running` 查看终端会话，`/diff` 查看代码变更。_",
             hostname,
             current_time,
             if auto_approve { "⚡ 自动确认 (Auto-Approve)" } else { "🔒 手动审批" },
             project,
             git_branch,
             git_status,
-            latest_commit
+            latest_commit,
+            ext_session_line
         );
 
-        let markup = InlineKeyboardMarkup::new(vec![vec![
+        let mut row = vec![
             InlineKeyboardButton::callback("📁 切换项目", "open_projects"),
             InlineKeyboardButton::callback("📋 查看方案", "open_plans"),
-        ]]);
+        ];
+
+        if ext_sessions_count > 0 {
+            row.push(InlineKeyboardButton::callback("🚀 运行中会话", "view_ext_session"));
+        }
+
+        let markup = InlineKeyboardMarkup::new(vec![row]);
 
         (text, Some(markup))
     }
@@ -780,5 +821,427 @@ impl CardBuilder {
             reason,
             example
         )
+    }
+
+    // =========================================================================
+    // 7. 外部 OpenCode 运行中会话卡片 (4 个)
+    // =========================================================================
+
+    /// 辅助方法：生成数字图标
+    pub fn number_badge(num: usize) -> &'static str {
+        match num {
+            1 => "1️⃣",
+            2 => "2️⃣",
+            3 => "3️⃣",
+            4 => "4️⃣",
+            5 => "5️⃣",
+            6 => "6️⃣",
+            7 => "7️⃣",
+            8 => "8️⃣",
+            9 => "9️⃣",
+            10 => "🔟",
+            _ => "🔘",
+        }
+    }
+
+    /// 卡片 24: 外部 OpenCode 会话实时进度卡片
+    pub fn external_session_card(session: &ExternalOpenCodeSessionInfo) -> (String, Option<InlineKeyboardMarkup>) {
+        let status_emoji = if session.is_busy { "🟢" } else { "🟡" };
+        let status_desc = if session.is_busy { "正在处理 (Busy)" } else { "空闲等待 (Idle)" };
+        let step_badge = session.current_step.map(|s| format!(" · Step {}", s)).unwrap_or_default();
+
+        let title_line = session.title.as_deref().unwrap_or("未命名会话");
+        let model_line = session.model.as_deref().unwrap_or("默认模型");
+        let agent_line = session.agent.as_deref().unwrap_or("default");
+
+        let mut text = format!(
+            "🚀 *外部 OpenCode 运行中会话*\n\
+            > ├─ 目标项目: `{}`\n\
+            > ├─ 进程信息: `PID {}` · `{}` (已运行 {})\n\
+            > ├─ 会话标题: {}\n\
+            > ├─ 当前状态: {} `{}`{}\n\
+            > └─ 采用模型: `{}` (Agent: {})\n\n",
+            session.project_name,
+            session.pid,
+            session.command,
+            session.elapsed,
+            title_line,
+            status_emoji,
+            status_desc,
+            step_badge,
+            model_line,
+            agent_line
+        );
+
+        // 最新动态 (工具与思考)
+        text.push_str("▫️ *最新动态 (Latest Action)*\n");
+        if let Some(ref tool) = session.last_tool {
+            let st = session.last_tool_status.as_deref().unwrap_or("active");
+            text.push_str(&format!("> 🛠 工具调用: `{}` (状态: `{}`)\n", tool, st));
+            if let Some(ref prev) = session.last_tool_input_preview {
+                text.push_str(&format!("> ↳ `{}`\n", prev));
+            }
+        }
+        if let Some(ref reasoning) = session.last_reasoning {
+            text.push_str(&format!("> 💭 推理思考: {}\n", reasoning));
+        }
+        if session.last_tool.is_none() && session.last_reasoning.is_none() {
+            text.push_str("> ⏳ 等待执行下一轮操作...\n");
+        }
+        text.push('\n');
+
+        // 待办任务进展 (若有)
+        if !session.todos.is_empty() {
+            let completed = session.todos.iter().filter(|t| t.status == "completed").count();
+            let total = session.todos.len();
+            text.push_str(&format!("▫️ *任务清单 (Todos)*: {}/{} 完成\n", completed, total));
+            for todo in session.todos.iter().take(5) {
+                let icon = match todo.status.as_str() {
+                    "completed" => "✅",
+                    "in_progress" => "▶️",
+                    _ => "▫️",
+                };
+                text.push_str(&format!("> {} {}\n", icon, todo.content));
+            }
+            if session.todos.len() > 5 {
+                text.push_str(&format!("> _（还有 {} 项待办）_\n", session.todos.len() - 5));
+            }
+            text.push('\n');
+        }
+
+        // 资源消耗
+        let tokens_str = format!(
+            "输入 {} · 输出 {} · 思考 {} (缓存读 {})",
+            opencode_inspector::format_token_count(session.tokens_input),
+            opencode_inspector::format_token_count(session.tokens_output),
+            opencode_inspector::format_token_count(session.tokens_reasoning),
+            opencode_inspector::format_token_count(session.tokens_cache_read),
+        );
+        text.push_str(&format!("▫️ *资源用量*: {}\n\n", tokens_str));
+        text.push_str(&format!("_👉 工作目录：`{}`_", session.cwd));
+
+        // 操作按钮
+        let buttons = vec![
+            vec![
+                InlineKeyboardButton::callback("🔄 刷新进度", format!("refresh_ext_session:{}", session.pid)),
+                InlineKeyboardButton::callback("💬 发送提示词", format!("prompt_ext_session:{}", session.pid)),
+            ],
+            vec![
+                InlineKeyboardButton::callback("📝 详细动态", format!("logs_ext_session:{}", session.pid)),
+                InlineKeyboardButton::callback("📊 差异对比 /diff", format!("diff_ext_session:{}", session.pid)),
+            ],
+            vec![
+                InlineKeyboardButton::callback("🤖 完全托管", format!("start_host:{}", session.pid)),
+                InlineKeyboardButton::callback("📂 设为当前工作区", format!("switch_ext_ws:{}", session.pid)),
+            ],
+        ];
+
+        (text, Some(InlineKeyboardMarkup::new(buttons)))
+    }
+
+    /// 卡片 25: 多个外部会话列表卡片
+    pub fn multiple_external_sessions_card(sessions: &[ExternalOpenCodeSessionInfo]) -> (String, InlineKeyboardMarkup) {
+        let mut text = "🚀 *检测到多个终端正在运行 OpenCode 会话*\n\
+        > 💡 点击下方对应按钮查看该会话的详细进度：\n\n".to_string();
+
+        let mut buttons = Vec::new();
+
+        for (idx, sess) in sessions.iter().enumerate() {
+            let status_emoji = if sess.is_busy { "🟢" } else { "🟡" };
+            let title = sess.title.as_deref().unwrap_or("未命名会话");
+            let step = sess.current_step.map(|s| format!("Step {}", s)).unwrap_or_else(|| "启动中".to_string());
+
+            text.push_str(&format!(
+                "{} *{}* · `{}`\n> ├─ 项目: `{}` (PID: {})\n> └─ 状态: {} `{}` · {}\n\n",
+                Self::number_badge(idx + 1),
+                sess.project_name,
+                title,
+                sess.cwd,
+                sess.pid,
+                status_emoji,
+                if sess.is_busy { "Busy" } else { "Idle" },
+                step
+            ));
+
+            let btn_label = format!("{} {} ({})", Self::number_badge(idx + 1), sess.project_name, sess.pid);
+            buttons.push(vec![
+                InlineKeyboardButton::callback(btn_label, format!("select_ext_session:{}", sess.pid)),
+            ]);
+        }
+
+        buttons.push(vec![
+            InlineKeyboardButton::callback("🔄 刷新会话列表", "refresh_ext_list".to_string()),
+        ]);
+
+        (text, InlineKeyboardMarkup::new(buttons))
+    }
+
+    /// 卡片 26: 无外部会话卡片
+    pub fn no_external_session_card(hostname: &str) -> (String, Option<InlineKeyboardMarkup>) {
+        let text = format!(
+            "💡 *当前未检测到正在运行的外部 OpenCode 会话*\n\
+            > ▫️ 宿主主机: `{}`\n\
+            > ▫️ 探测范围: 终端 (Terminal / tmux) 及系统后台进程\n\n\
+            若您在终端启动了 `opencode` 或 `opencode --yolo`，在此发送 `/running` 即可实时查看会话进度、工具调用与任务清单。",
+            hostname
+        );
+        let markup = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("🔄 重新探测", "refresh_ext_list".to_string()),
+            InlineKeyboardButton::callback("🖥️ 主机状态", "open_status".to_string()),
+        ]]);
+        (text, Some(markup))
+    }
+
+    /// 卡片 27: 外部会话详细日志与思考卡片
+    pub fn external_session_logs_card(session: &ExternalOpenCodeSessionInfo) -> (String, InlineKeyboardMarkup) {
+        let title_line = session.title.as_deref().unwrap_or("未命名会话");
+        let tool_line = session.last_tool.as_deref().unwrap_or("暂无工具调用");
+        let status_line = session.last_tool_status.as_deref().unwrap_or("completed");
+        let cmd_preview = session.last_tool_input_preview.as_deref().unwrap_or("(无输入参数)");
+        let reasoning = session.last_reasoning.as_deref().unwrap_or("暂无思考内容");
+
+        let text = format!(
+            "📝 *外部会话详细动态与思考*\n\
+            > ├─ 项目: `{}` (PID: {})\n\
+            > └─ 会话: {}\n\n\
+            🛠️ *最新工具执行*：\n\
+            ```text\n\
+            工具: {}\n\
+            状态: {}\n\
+            入参: {}\n\
+            ```\n\n\
+            💭 *最新思考推理片段*：\n\
+            ```text\n\
+            {}\n\
+            ```",
+            session.project_name,
+            session.pid,
+            title_line,
+            tool_line,
+            status_line,
+            cmd_preview,
+            reasoning
+        );
+
+        let markup = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ 返回会话进度", format!("select_ext_session:{}", session.pid)),
+            InlineKeyboardButton::callback("🔄 刷新动态", format!("logs_ext_session:{}", session.pid)),
+        ]]);
+
+        (text, markup)
+    }
+
+    /// 卡片 28: 提示词输入请求引导卡片
+    pub fn prompt_input_request_card(session: &ExternalOpenCodeSessionInfo) -> (String, InlineKeyboardMarkup) {
+        let title_line = session.title.as_deref().unwrap_or("未命名会话");
+        let sid_line = session.session_id.as_deref().unwrap_or("未知");
+
+        let text = format!(
+            "💬 *向正在运行的 OpenCode 会话发送提示词*\n\
+            > ├─ 目标项目: `{}` (PID: {})\n\
+            > └─ 活跃会话: {} (`{}`)\n\n\
+            👉 *请直接在此回复您想要发送的提示词内容*：\n\
+            例如：`请帮我补充缺少的单元测试，并执行测试对账`\n\n\
+            _（发送普通文字即可自动投递执行；若想放弃请点击下方取消按钮）_",
+            session.project_name,
+            session.pid,
+            title_line,
+            sid_line
+        );
+
+        let markup = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("❌ 取消发送", "cancel_prompt_target".to_string()),
+            InlineKeyboardButton::callback("⬅️ 返回进度卡片", format!("select_ext_session:{}", session.pid)),
+        ]]);
+
+        (text, markup)
+    }
+
+    /// 卡片 29: 提示词已投递确认卡片
+    pub fn prompt_dispatched_ack_card(session: &super::types::PromptTargetSession, prompt: &str) -> String {
+        format!(
+            "🚀 *提示词已投递给 OpenCode 会话*\n\
+            > ├─ 目标项目: `{}` (PID: {})\n\
+            > ├─ 会话标识: `{}`\n\
+            > └─ 提示词: {}\n\n\
+            ⏳ *OpenCode 正在推进执行，期间保持 typing 状态，执行完毕后将推送结果...*",
+            session.project_name,
+            session.pid,
+            session.session_id,
+            prompt
+        )
+    }
+
+    /// 卡片 30: 启动完全托管卡片
+    pub fn hosted_session_started_card(
+        project_name: &str,
+        pid: u32,
+        session_id: &str,
+        mode: &super::types::SessionHostingDecisionMode,
+    ) -> (String, InlineKeyboardMarkup) {
+        let (mode_title, mode_desc) = match mode {
+            super::types::SessionHostingDecisionMode::Manual => (
+                "🎯 人工决断优先 (Manual)",
+                "遇有提问时在 Telegram 弹出交互按钮，由您点击确定",
+            ),
+            super::types::SessionHostingDecisionMode::AutoRecommended => (
+                "⚡ 自动推荐模式 (Auto-Recommended)",
+                "对带有推荐标识的方案自动代选并通知，其余由您决断",
+            ),
+        };
+
+        let text = format!(
+            "🤖 *会话已成功交由 OneSpace + Telegram 完全托管*\n\
+            > ├─ 目标项目: `{}` (PID: {})\n\
+            > ├─ 会话标识: `{}`\n\
+            > ├─ 决策模式: `{}`\n\
+            > └─ 托管状态: `🟢 守护运行中 (Supervisor Active)`\n\n\
+            💡 *全托管守护策略说明*：\n\
+            • 📢 *关键节点主动通知*：步骤推进与任务待办自动实时汇报；\n\
+            • ❓ *交互提问自动接管*：{}\n\
+            • 💬 *双向动态干预*：在此直接回复文字或输入 `/prompt` 即可向会话注入指令；\n\
+            • 🎉 *圆满交付报告*：任务执行完后自动推送耗时、Token统计及 Diff。",
+            project_name,
+            pid,
+            session_id,
+            mode_title,
+            mode_desc
+        );
+
+        let markup = InlineKeyboardMarkup::new(vec![
+            vec![
+                InlineKeyboardButton::callback("⚙️ 切换决策模式", format!("toggle_host_mode:{}", session_id)),
+                InlineKeyboardButton::callback("🛑 退出托管", format!("stop_host:{}", session_id)),
+            ],
+            vec![
+                InlineKeyboardButton::callback("🔄 刷新会话状态", format!("refresh_ext_session:{}", pid)),
+            ],
+        ]);
+
+        (text, markup)
+    }
+
+    /// 卡片 31: 待办项里程碑完成主动通知
+    pub fn hosted_todo_completed_notice(
+        project_name: &str,
+        todo_content: &str,
+        completed_cnt: usize,
+        total_cnt: usize,
+    ) -> String {
+        format!(
+            "✅ *任务待办已达成* · `{}`\n\
+            > ├─ 达成项: {}\n\
+            > └─ 当前进度: `{}/{}` 项已完成\n\n\
+            _OpenCode 正在继续推进剩余步骤..._",
+            project_name,
+            todo_content,
+            completed_cnt,
+            total_cnt
+        )
+    }
+
+    /// 卡片 32: 托管提问与决策卡片
+    pub fn hosted_question_card(
+        project_name: &str,
+        session_id: &str,
+        question_text: &str,
+        options: &[super::types::HostedOptionItem],
+    ) -> (String, InlineKeyboardMarkup) {
+        let mut text = format!(
+            "❓ *OpenCode 提问与决策确认*\n\
+            > ├─ 目标项目: `{}`\n\
+            > └─ 托管会话: `{}`\n\n\
+            📋 *决策问题*：\n\
+            {}\n\n\
+            👇 *请直接点击下方按钮做出决策*：\n",
+            project_name,
+            session_id,
+            question_text
+        );
+
+        let mut buttons = Vec::new();
+        for opt in options {
+            let prefix = if opt.is_recommended { "⭐️ " } else { "" };
+            let desc_line = opt.description.as_deref().unwrap_or("");
+            text.push_str(&format!("• *{}* {}\n", opt.label, if desc_line.is_empty() { String::new() } else { format!("— _{}_", desc_line) }));
+
+            let btn_label = format!("{}{}. {}", prefix, opt.index, opt.label);
+            let safe_label = if btn_label.chars().count() > 30 {
+                let s: String = btn_label.chars().take(28).collect();
+                format!("{}…", s)
+            } else {
+                btn_label
+            };
+
+            buttons.push(vec![InlineKeyboardButton::callback(
+                safe_label,
+                format!("host_ans:{}:{}", session_id, opt.index),
+            )]);
+        }
+
+        buttons.push(vec![
+            InlineKeyboardButton::callback("🛑 退出托管", format!("stop_host:{}", session_id)),
+        ]);
+
+        (text, InlineKeyboardMarkup::new(buttons))
+    }
+
+    /// 卡片 33: 托管自主决策代执行通知
+    pub fn hosted_auto_decision_card(
+        project_name: &str,
+        question_text: &str,
+        chosen_option: &str,
+    ) -> String {
+        format!(
+            "⚡ *托管决策代执行 (Auto-Approve)*\n\
+            > ├─ 目标项目: `{}`\n\
+            > ├─ 提问事项: {}\n\
+            > └─ 采纳推荐: `⭐️ {}`\n\n\
+            _已自动注入该选项应答，外部会话已恢复并继续全速执行。_",
+            project_name,
+            question_text,
+            chosen_option
+        )
+    }
+
+    /// 卡片 34: 托管会话圆满交付卡片
+    pub fn hosted_session_completed_card(
+        project_name: &str,
+        pid: u32,
+        session_id: &str,
+        elapsed_desc: &str,
+        total_steps: u32,
+        tokens_in: i64,
+        tokens_out: i64,
+    ) -> (String, InlineKeyboardMarkup) {
+        let token_summary = format!(
+            "输入 {} · 输出 {}",
+            super::opencode_inspector::format_token_count(tokens_in),
+            super::opencode_inspector::format_token_count(tokens_out)
+        );
+
+        let text = format!(
+            "🎉 *外部 OpenCode 会话圆满交付*\n\
+            > ├─ 目标项目: `{}` (PID: {})\n\
+            > ├─ 会话标识: `{}`\n\
+            > ├─ 交付耗时: `{}`\n\
+            > ├─ 总执行步数: `Step {}`\n\
+            > ├─ 资源消耗: {}\n\
+            > └─ 托管状态: `🏁 任务已完成，自动解除托管`\n\n\
+            ✅ *所有待办步骤已全部完成，终端进程已恢复空闲！*",
+            project_name,
+            pid,
+            session_id,
+            elapsed_desc,
+            total_steps,
+            token_summary
+        );
+
+        let markup = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("📊 差异对比 /diff", format!("diff_ext_session:{}", pid)),
+            InlineKeyboardButton::callback("📂 设为当前工作区", format!("switch_ext_ws:{}", pid)),
+        ]]);
+
+        (text, markup)
     }
 }

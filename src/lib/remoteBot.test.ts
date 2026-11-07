@@ -97,4 +97,50 @@ describe("remoteBot IPC", () => {
       binPath: "~/.local/bin/opencode",
     });
   });
+
+  it("remoteBotGetRunningOpencodeSessions 调用 remote_bot_get_running_opencode_sessions", async () => {
+    const mockSessions = [
+      {
+        pid: 12345,
+        ppid: 100,
+        elapsed: "10:00",
+        command: "opencode --yolo",
+        cwd: "/path/to/project",
+        project_name: "project",
+        is_busy: true,
+        todos: [],
+        tokens_input: 1000,
+        tokens_output: 500,
+        tokens_reasoning: 200,
+        tokens_cache_read: 5000,
+      },
+    ];
+    invokeMock.mockResolvedValueOnce(mockSessions);
+
+    const res = await (await import("./remoteBot")).remoteBotGetRunningOpencodeSessions();
+    expect(res).toEqual(mockSessions);
+    expect(invokeMock).toHaveBeenCalledWith("remote_bot_get_running_opencode_sessions");
+  });
+
+  it("remoteBotGetHostedSessions 调用 remote_bot_get_hosted_sessions", async () => {
+    const mockHosted = [
+      {
+        session_id: "ses_test_123",
+        pid: 12345,
+        cwd: "/path/to/project",
+        project_name: "project",
+        chat_id: 123456,
+        mode: "Manual" as const,
+        started_at: 1700000000,
+        last_observed_step: 5,
+        completed_todos_count: 2,
+        total_todos_count: 4,
+      },
+    ];
+    invokeMock.mockResolvedValueOnce(mockHosted);
+
+    const res = await (await import("./remoteBot")).remoteBotGetHostedSessions();
+    expect(res).toEqual(mockHosted);
+    expect(invokeMock).toHaveBeenCalledWith("remote_bot_get_hosted_sessions");
+  });
 });

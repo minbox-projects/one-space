@@ -3,8 +3,10 @@ pub mod card_builder;
 pub mod client;
 pub mod commands;
 pub mod opencode_bridge;
+pub mod opencode_inspector;
 pub mod plan_progress;
 pub mod router;
+pub mod session_supervisor;
 pub mod storage;
 pub mod types;
 
@@ -32,6 +34,7 @@ pub struct RemoteBotManager {
     #[allow(dead_code)]
     app_handle: AppHandle,
     client: RwLock<Option<Arc<TelegramClient>>>,
+    router: RwLock<Option<Arc<CommandRouter>>>,
     status: RwLock<RemoteBotStatus>,
     running_loop: Mutex<Option<JoinHandle<()>>>,
     stop_signal: Arc<AtomicBool>,
@@ -42,6 +45,7 @@ impl RemoteBotManager {
         Self {
             app_handle,
             client: RwLock::new(None),
+            router: RwLock::new(None),
             status: RwLock::new(RemoteBotStatus::default()),
             running_loop: Mutex::new(None),
             stop_signal: Arc::new(AtomicBool::new(false)),
@@ -102,6 +106,9 @@ impl RemoteBotManager {
 
                 // 注册 Telegram 官方原生菜单按钮 (setMyCommands)
                 let default_commands = vec![
+                    BotCommand { command: "running".to_string(), description: "查看终端运行中的 OpenCode 会话进度".to_string() },
+                    BotCommand { command: "host".to_string(), description: "完全托管运行中的会话 (交互/通知/决策)".to_string() },
+                    BotCommand { command: "unhost".to_string(), description: "退出当前会话托管守护".to_string() },
                     BotCommand { command: "planning".to_string(), description: "启动需求调研与方案规划 (Planning)".to_string() },
                     BotCommand { command: "plans".to_string(), description: "查看工作区方案列表及状态".to_string() },
                     BotCommand { command: "progress".to_string(), description: "查看当前或指定方案的实施进度".to_string() },
@@ -139,6 +146,10 @@ impl RemoteBotManager {
         let stop_flag = self.stop_signal.clone();
         let bridge = Arc::new(opencode_bridge::OpenCodeBridge::new(client.clone()));
         let router = Arc::new(CommandRouter::new(client.clone(), bridge.clone()));
+        {
+            let mut router_lock = self.router.write().await;
+            *router_lock = Some(router.clone());
+        }
 
         // 启动长轮询任务
         let handle = tauri::async_runtime::spawn(async move {
@@ -174,12 +185,17 @@ impl RemoteBotManager {
         *loop_lock = Some(handle);
     }
 
+    pub async fn get_router(&self) -> Option<Arc<CommandRouter>> {
+        self.router.read().await.clone()
+    }
+
     pub async fn stop(&self) {
         self.stop_signal.store(true, Ordering::SeqCst);
         let mut loop_lock = self.running_loop.lock().await;
         if let Some(handle) = loop_lock.take() {
             handle.abort();
         }
+        *self.router.write().await = None;
         let mut status = self.status.write().await;
         status.running = false;
     }

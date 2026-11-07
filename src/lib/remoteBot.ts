@@ -22,6 +22,37 @@ export interface RemoteBotStatus {
   pending_question_id?: string | null;
 }
 
+export interface OpenCodeTodoInfo {
+  position: number;
+  status: string;
+  content: string;
+}
+
+export interface ExternalOpenCodeSessionInfo {
+  pid: number;
+  ppid: number;
+  elapsed: string;
+  command: string;
+  cwd: string;
+  project_name: string;
+  session_id?: string | null;
+  title?: string | null;
+  model?: string | null;
+  agent?: string | null;
+  is_busy: boolean;
+  current_step?: number | null;
+  last_tool?: string | null;
+  last_tool_status?: string | null;
+  last_tool_input_preview?: string | null;
+  last_reasoning?: string | null;
+  todos: OpenCodeTodoInfo[];
+  tokens_input: number;
+  tokens_output: number;
+  tokens_reasoning: number;
+  tokens_cache_read: number;
+  updated_at?: number | null;
+}
+
 export interface TelegramUser {
   id: number;
   is_bot: boolean;
@@ -51,4 +82,28 @@ export async function remoteBotRestart(): Promise<RemoteBotStatus> {
 
 export async function remoteBotProbeOpencode(binPath?: string): Promise<string> {
   return await invoke<string>("remote_bot_probe_opencode", { binPath: binPath || null });
+}
+
+export type SessionHostingDecisionMode = "Manual" | "AutoRecommended";
+
+export interface HostedSessionInfo {
+  session_id: string;
+  pid: number;
+  cwd: string;
+  project_name: string;
+  chat_id: number;
+  mode: SessionHostingDecisionMode;
+  started_at: number;
+  last_observed_step: number;
+  completed_todos_count: number;
+  total_todos_count: number;
+  active_question_summary?: string | null;
+}
+
+export async function remoteBotGetRunningOpencodeSessions(): Promise<ExternalOpenCodeSessionInfo[]> {
+  return await invoke<ExternalOpenCodeSessionInfo[]>("remote_bot_get_running_opencode_sessions");
+}
+
+export async function remoteBotGetHostedSessions(): Promise<HostedSessionInfo[]> {
+  return await invoke<HostedSessionInfo[]>("remote_bot_get_hosted_sessions");
 }

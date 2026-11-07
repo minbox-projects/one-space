@@ -83,6 +83,21 @@ pub async fn remote_bot_probe_opencode(bin_path: Option<String>) -> Result<Strin
     }
 }
 
+#[tauri::command]
+pub async fn remote_bot_get_running_opencode_sessions() -> Result<Vec<super::types::ExternalOpenCodeSessionInfo>, String> {
+    Ok(super::opencode_inspector::discover_external_opencode_sessions().await)
+}
+
+#[tauri::command]
+pub async fn remote_bot_get_hosted_sessions() -> Result<Vec<super::types::HostedSessionInfo>, String> {
+    if let Some(manager) = RemoteBotManager::global() {
+        if let Some(router) = manager.get_router().await {
+            return Ok(router.supervisor.list_hosted_sessions(None).await);
+        }
+    }
+    Ok(Vec::new())
+}
+
 /// 解析可能带有波浪号 `~` 的可执行路径
 pub fn resolve_executable_path(raw: &str) -> String {
     let trimmed = raw.trim();
