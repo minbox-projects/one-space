@@ -49,10 +49,7 @@ pub async fn discover_external_opencode_sessions() -> Vec<ExternalOpenCodeSessio
             None => continue,
         };
 
-        let project_name = Path::new(&cwd)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| cwd.clone());
+        let project_name = detect_meaningful_project_name(&cwd);
 
         let mut session_info = ExternalOpenCodeSessionInfo {
             pid: proc.pid,
@@ -122,6 +119,16 @@ pub async fn discover_external_opencode_sessions() -> Vec<ExternalOpenCodeSessio
             .then_with(|| b.pid.cmp(&a.pid))
     });
 
+    // 3. 严格按 session_id 去重：若多个进程关联同一会话，仅展示一条最新活跃会话
+    let mut seen_sids = std::collections::HashSet::new();
+    sessions.retain(|sess| {
+        if let Some(ref sid) = sess.session_id {
+            seen_sids.insert(sid.clone())
+        } else {
+            true
+        }
+    });
+
     sessions
 }
 
@@ -189,19 +196,53 @@ async fn fetch_running_opencode_processes() -> Result<Vec<RawProcessInfo>, Strin
     Ok(results)
 }
 
-/// 判定命令字符串是否为 OpenCode 核心执行程序
-fn is_opencode_executable_process(cmd: &str) -> bool {
+/// 判定命令字符串是否为 OpenCode 核心执行程序（排除后台 serve 守护服务及辅助脚本）
+pub fn is_opencode_executable_process(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
     if lower.contains("grep") || lower.contains("onespace-zen-relay") {
         return false;
     }
 
-    let first_token = cmd.split_whitespace().next().unwrap_or("");
+    // 排除 opencode serve / daemon 后台服务守护进程，它们是服务端而非前台/批处理任务会话
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    if tokens.contains(&"serve") || tokens.contains(&"daemon") {
+        return false;
+    }
+
+    // 排除带有服务化监听端口/主机名参数的常驻服务端进程（如 --port 与 --hostname）
+    if lower.contains("--port") && lower.contains("--hostname") {
+        return false;
+    }
+
+    let first_token = tokens.first().copied().unwrap_or("");
     let is_bin_name = first_token == "opencode"
         || first_token.ends_with("/opencode")
         || (first_token.contains("opencode") && !first_token.ends_with(".js") && !first_token.ends_with(".ts") && !first_token.ends_with(".sh"));
 
     is_bin_name
+}
+
+/// 解析有意义的项目名称：若工作目录位于 Git 仓库子目录内，优先返回仓库根目录名，避免展示底层构建子目录（如 src-tauri）
+pub fn detect_meaningful_project_name(cwd: &str) -> String {
+    let mut current_p = Path::new(cwd);
+    while let Some(parent) = current_p.parent() {
+        if current_p.join(".git").exists() {
+            if let Some(name) = current_p.file_name() {
+                return name.to_string_lossy().to_string();
+            }
+        }
+        if parent.join(".git").exists() {
+            if let Some(name) = parent.file_name() {
+                return name.to_string_lossy().to_string();
+            }
+        }
+        current_p = parent;
+    }
+
+    Path::new(cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| cwd.to_string())
 }
 
 /// 通过 lsof 命令精确读取目标进程的 CWD
@@ -249,12 +290,33 @@ fn enrich_session_from_db(
         }
     };
 
+    // 候选目录：优先使用进程精确 CWD；若属于某个 Git 仓库子目录，追加其仓库根目录
+    let mut candidate_dirs = vec![cwd.to_string()];
+    let mut current_p = Path::new(cwd);
+    while let Some(parent) = current_p.parent() {
+        if current_p.join(".git").exists() {
+            let p_str = current_p.to_string_lossy().to_string();
+            if !candidate_dirs.contains(&p_str) {
+                candidate_dirs.push(p_str);
+            }
+            break;
+        }
+        if parent.join(".git").exists() {
+            let p_str = parent.to_string_lossy().to_string();
+            if !candidate_dirs.contains(&p_str) {
+                candidate_dirs.push(p_str);
+            }
+            break;
+        }
+        current_p = parent;
+    }
+
     // 1. 查询 session 或 session_v2 表匹配工作目录的最新会话（仅检索主代理会话，排除 subagent 会话）
-    let query_session = |table: &str| -> Option<(String, Option<String>, Option<String>, Option<String>, i64, i64, i64, i64, i64)> {
+    let query_session = |table: &str, dir_param: &str| -> Option<(String, Option<String>, Option<String>, Option<String>, i64, i64, i64, i64, i64)> {
         let sql = format!(
             "SELECT id, title, agent, model, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, time_updated \
              FROM {} \
-             WHERE (directory = ?1 OR ?1 LIKE (directory || '%')) \
+             WHERE directory = ?1 \
                AND (parent_id IS NULL OR parent_id = '') \
              ORDER BY time_updated DESC \
              LIMIT 1",
@@ -262,7 +324,7 @@ fn enrich_session_from_db(
         );
 
         let mut stmt = conn.prepare(&sql).ok()?;
-        let row_opt = stmt.query_row([cwd], |row| {
+        let row_opt = stmt.query_row([dir_param], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
@@ -286,7 +348,13 @@ fn enrich_session_from_db(
         Some(row_opt)
     };
 
-    let session_row = query_session("session").or_else(|| query_session("session_v2"));
+    let mut session_row = None;
+    for cand_dir in &candidate_dirs {
+        if let Some(r) = query_session("session", cand_dir).or_else(|| query_session("session_v2", cand_dir)) {
+            session_row = Some(r);
+            break;
+        }
+    }
 
     if let Some((sid, title, agent, raw_model, t_in, t_out, t_reason, t_cache, updated)) = session_row {
         info.session_id = Some(sid.clone());

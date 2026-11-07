@@ -1066,3 +1066,102 @@ fn test_session_hosting_cards_rendering() {
     assert_eq!(done_markup.inline_keyboard[0][0].callback_data.as_deref(), Some("diff_ext_session:45652"));
 }
 
+#[test]
+fn test_opencode_process_filter_and_project_detection() {
+    use super::opencode_inspector::{detect_meaningful_project_name, is_opencode_executable_process};
+
+    // 1. 过滤 serve / daemon 服务守护进程
+    assert!(!is_opencode_executable_process("opencode serve --print-logs --port 0 --hostname 127.0.0.1"));
+    assert!(!is_opencode_executable_process("/Users/yuqiyu/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4101"));
+    assert!(!is_opencode_executable_process("opencode daemon --start"));
+    assert!(!is_opencode_executable_process("/opt/opencode/opencode --port 8080 --hostname 0.0.0.0"));
+    assert!(!is_opencode_executable_process("grep opencode"));
+    assert!(!is_opencode_executable_process("node runner.js"));
+
+    // 2. 认可合法前台/批处理交互式任务
+    assert!(is_opencode_executable_process("opencode --yolo"));
+    assert!(is_opencode_executable_process("/usr/local/bin/opencode -m gpt-4o"));
+    assert!(is_opencode_executable_process("opencode run 'fix bugs'"));
+
+    // 3. 有意义项目名称推导：子目录优先解析到 Git 仓库根目录
+    let cwd_sub = env!("CARGO_MANIFEST_DIR"); // .../onespace-app/src-tauri
+    let proj_name = detect_meaningful_project_name(cwd_sub);
+    assert_eq!(proj_name, "onespace-app");
+}
+
+#[test]
+fn test_session_deduplication() {
+    use super::types::ExternalOpenCodeSessionInfo;
+
+    let s1 = ExternalOpenCodeSessionInfo {
+        pid: 101,
+        ppid: 1,
+        elapsed: "01:00".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/Users/tester/Work/main-repo".to_string(),
+        project_name: "main-repo".to_string(),
+        session_id: Some("ses_dup".to_string()),
+        title: Some("主功能开发".to_string()),
+        model: Some("claude-3-7-sonnet".to_string()),
+        agent: Some("code".to_string()),
+        is_busy: true,
+        current_step: Some(10),
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 100,
+        tokens_output: 100,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: Some(2000),
+    };
+
+    let s2 = ExternalOpenCodeSessionInfo {
+        pid: 102,
+        ppid: 1,
+        elapsed: "00:10".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/Users/tester/Work/main-repo".to_string(),
+        project_name: "main-repo".to_string(),
+        session_id: Some("ses_dup".to_string()),
+        title: Some("主功能开发".to_string()),
+        model: Some("claude-3-7-sonnet".to_string()),
+        agent: Some("code".to_string()),
+        is_busy: true,
+        current_step: Some(10),
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 100,
+        tokens_output: 100,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: Some(1000),
+    };
+
+    let mut sessions = vec![s1, s2];
+
+    sessions.sort_by(|a, b| {
+        b.updated_at
+            .unwrap_or_default()
+            .cmp(&a.updated_at.unwrap_or_default())
+            .then_with(|| b.pid.cmp(&a.pid))
+    });
+
+    let mut seen_sids = std::collections::HashSet::new();
+    sessions.retain(|sess| {
+        if let Some(ref sid) = sess.session_id {
+            seen_sids.insert(sid.clone())
+        } else {
+            true
+        }
+    });
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].pid, 101);
+}
+
