@@ -15,6 +15,7 @@ import {
   Search,
   Sparkles,
   Layers,
+  AlertCircle,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -25,12 +26,14 @@ import type { ApiResp, WorkspaceView } from "@/components/Workspaces/types";
 import {
   type RemoteBotConfig,
   type RemoteBotStatus,
+  type OpenCodeInstalledVersion,
   remoteBotGetConfig,
   remoteBotSaveConfig,
   remoteBotGetStatus,
   remoteBotTestConnection,
   remoteBotRestart,
   remoteBotProbeOpencode,
+  remoteBotListInstalledOpencode,
 } from "@/lib/remoteBot";
 
 interface RemoteBotSettingsPanelProps {
@@ -56,7 +59,9 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
   const [newChatId, setNewChatId] = useState("");
   const [showToken, setShowToken] = useState(false);
 
-  // 第一梯队扩展状态
+  // OpenCode CLI 版本与检测状态
+  const [installedVersions, setInstalledVersions] = useState<OpenCodeInstalledVersion[]>([]);
+  const [scanningVersions, setScanningVersions] = useState(false);
   const [probingCli, setProbingCli] = useState(false);
   const [cliProbeResult, setCliProbeResult] = useState<{
     success: boolean;
@@ -75,9 +80,10 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
   const loadData = async () => {
     try {
       setLoading(true);
-      const [cfg, st] = await Promise.all([
+      const [cfg, st, versions] = await Promise.all([
         remoteBotGetConfig(),
         remoteBotGetStatus(),
+        remoteBotListInstalledOpencode().catch(() => [] as OpenCodeInstalledVersion[]),
       ]);
       setConfig({
         ...cfg,
@@ -85,6 +91,30 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
         enable_natural_dialogue: cfg.enable_natural_dialogue ?? true,
       });
       setStatus(st);
+      setInstalledVersions(versions);
+
+      // 如果当前已配置路径但不在扫描列表中，自动尝试探针并追加为自定义项
+      if (cfg.opencode_bin_path && !versions.some((v) => v.path === cfg.opencode_bin_path)) {
+        try {
+          const probeText = await remoteBotProbeOpencode(cfg.opencode_bin_path);
+          const verMatch = probeText.match(/v?(\d+\.\d+\.\d+)/i);
+          const ver = verMatch ? verMatch[1] : probeText.split("\n")[0] || "custom";
+          const major = ver.startsWith("2") ? 2 : 1;
+          const verType = major >= 2 ? "v2" : "v1";
+          setInstalledVersions((prev) => [
+            {
+              path: cfg.opencode_bin_path!,
+              version: ver,
+              major_version: major,
+              version_type: verType,
+              is_active: true,
+            },
+            ...prev,
+          ]);
+        } catch {
+          // 忽略探测失败
+        }
+      }
 
       // 加载 OneSpace 系统工作空间列表
       try {
@@ -107,6 +137,10 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
   };
 
   const handleSave = async (updated: RemoteBotConfig) => {
+    if (updated.enabled && !updated.opencode_bin_path?.trim()) {
+      onShowToast?.("error", "启用 Telegram 远程控制前，必须选择一个具体的 OpenCode 版本");
+      return;
+    }
     try {
       setConfig(updated);
       await remoteBotSaveConfig(updated);
@@ -176,6 +210,34 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
   };
 
   // OpenCode CLI 路径探测与选择
+  const handleScanVersions = async () => {
+    try {
+      setScanningVersions(true);
+      const list = await remoteBotListInstalledOpencode();
+      setInstalledVersions(list);
+      if (list.length === 0) {
+        onShowToast?.("error", "未在本机检测到已安装的 OpenCode，请通过终端安装或手动指定路径");
+      } else {
+        onShowToast?.("success", `已扫描到 ${list.length} 个本机 OpenCode 版本`);
+      }
+    } catch (err: any) {
+      onShowToast?.("error", `扫描版本失败: ${err?.message || err}`);
+    } finally {
+      setScanningVersions(false);
+    }
+  };
+
+  const handleSelectVersion = async (item: OpenCodeInstalledVersion) => {
+    const updated: RemoteBotConfig = {
+      ...config,
+      opencode_bin_path: item.path,
+      opencode_version: item.version,
+      opencode_version_type: item.version_type,
+    };
+    setConfig(updated);
+    await handleSave(updated);
+  };
+
   const handleBrowseCli = async () => {
     try {
       const selected = await openDialog({
@@ -184,9 +246,38 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
         title: "选择 OpenCode CLI 执行文件",
       });
       if (selected && typeof selected === "string") {
-        const updated = { ...config, opencode_bin_path: selected };
-        setConfig(updated);
-        await handleSave(updated);
+        try {
+          const probeRes = await remoteBotProbeOpencode(selected);
+          const verMatch = probeRes.match(/v?(\d+\.\d+\.\d+)/i);
+          const ver = verMatch ? verMatch[1] : probeRes.split("\n")[0] || "custom";
+          const major = ver.startsWith("2") ? 2 : 1;
+          const verType = major >= 2 ? "v2" : "v1";
+
+          const newItem: OpenCodeInstalledVersion = {
+            path: selected,
+            version: ver,
+            major_version: major,
+            version_type: verType,
+            is_active: true,
+          };
+
+          setInstalledVersions((prev) => {
+            const rest = prev.filter((p) => p.path !== selected);
+            return [newItem, ...rest];
+          });
+
+          const updated: RemoteBotConfig = {
+            ...config,
+            opencode_bin_path: selected,
+            opencode_version: ver,
+            opencode_version_type: verType,
+          };
+          setConfig(updated);
+          await handleSave(updated);
+          onShowToast?.("success", `已选择并验证 OpenCode (${verType} ${ver})`);
+        } catch (probeErr: any) {
+          onShowToast?.("error", `该文件不是有效的 OpenCode 可执行程序: ${probeErr?.message || probeErr}`);
+        }
       }
     } catch (e: any) {
       onShowToast?.("error", `选择文件失败: ${e?.message || e}`);
@@ -194,10 +285,14 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
   };
 
   const handleProbeCli = async () => {
+    if (!config.opencode_bin_path) {
+      onShowToast?.("error", "请先选择一个具体的 OpenCode 版本");
+      return;
+    }
     try {
       setProbingCli(true);
       setCliProbeResult(null);
-      const res = await remoteBotProbeOpencode(config.opencode_bin_path || undefined);
+      const res = await remoteBotProbeOpencode(config.opencode_bin_path);
       setCliProbeResult({ success: true, output: res.trim() });
       onShowToast?.("success", `探测成功: ${res.split("\n")[0] || res}`);
     } catch (e: any) {
@@ -384,7 +479,13 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
           type="button"
           role="switch"
           aria-checked={config.enabled}
-          onClick={() => handleSave({ ...config, enabled: !config.enabled })}
+          onClick={() => {
+            if (!config.enabled && !config.opencode_bin_path?.trim()) {
+              onShowToast?.("error", "必须选择一个具体的 OpenCode 版本后才能启用 Telegram 远程工作台");
+              return;
+            }
+            handleSave({ ...config, enabled: !config.enabled });
+          }}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
             config.enabled ? "bg-primary" : "bg-muted"
           }`}
@@ -522,58 +623,129 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
         </button>
       </div>
 
-      {/* OpenCode CLI 执行文件路径 */}
-      <div className="space-y-2 border-t pt-4">
+      {/* OpenCode CLI 版本与执行路径配置（必选） */}
+      <div className="space-y-3 border-t pt-4">
         <div className="flex items-center justify-between">
           <div>
             <label className="text-sm font-medium flex items-center gap-2">
               <Terminal className="w-4 h-4 text-muted-foreground" />
-              OpenCode CLI 执行文件路径 (可选)
+              OpenCode CLI 版本选择 (必选)
             </label>
             <div className="text-xs text-muted-foreground">
-              默认优先在环境变量 PATH 中查找 <code>opencode</code>。若桌面 GUI 环境未继承 Shell 路径，请在此指定绝对路径（支持 <code>~</code> 展开，如 <code>~/.local/bin/opencode</code>）。
+              Telegram 远程通讯逻辑同时支持 OpenCode v1 与 v2 版本。请在本机已安装的 OpenCode 中选择一个具体的生效版本。
             </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={scanningVersions}
+              onClick={handleScanVersions}
+              className="px-2.5 py-1 text-xs font-medium rounded-lg border hover:bg-muted flex items-center gap-1.5 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${scanningVersions ? "animate-spin" : ""}`} />
+              {scanningVersions ? "正在扫描..." : "重新扫描"}
+            </button>
+            <button
+              type="button"
+              onClick={handleBrowseCli}
+              className="px-2.5 py-1 text-xs font-medium rounded-lg border hover:bg-muted flex items-center gap-1.5 transition-colors"
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              浏览指定文件
+            </button>
           </div>
         </div>
 
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={config.opencode_bin_path || ""}
-            onChange={(e) =>
-              setConfig({
-                ...config,
-                opencode_bin_path: e.target.value.trim() ? e.target.value : null,
-              })
-            }
-            placeholder="留空自动使用系统 PATH 中的 opencode"
-            className="flex-1 px-3 py-1.5 text-sm rounded-lg border bg-background font-mono"
-          />
-          <button
-            type="button"
-            onClick={handleBrowseCli}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border hover:bg-muted flex items-center gap-1.5"
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            浏览
-          </button>
-          <button
-            type="button"
-            disabled={probingCli}
-            onClick={handleProbeCli}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50 flex items-center gap-1.5"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${probingCli ? "animate-spin" : ""}`} />
-            {probingCli ? "探测中..." : "探测 CLI"}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleSave(config)}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            保存
-          </button>
-        </div>
+        {/* 版本卡片列表 */}
+        {installedVersions.length > 0 ? (
+          <div className="space-y-2">
+            {installedVersions.map((item) => {
+              const isSelected = config.opencode_bin_path === item.path;
+              const isV2 = item.version_type === "v2" || item.major_version >= 2;
+
+              return (
+                <div
+                  key={item.path}
+                  onClick={() => handleSelectVersion(item)}
+                  className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                    isSelected
+                      ? "bg-primary/5 border-primary shadow-sm"
+                      : "bg-muted/10 hover:bg-muted/30 border-border/60"
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <div
+                      className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 transition-colors ${
+                        isSelected
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-muted-foreground/40 bg-background"
+                      }`}
+                    >
+                      {isSelected && <Check className="w-2.5 h-2.5" />}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-sm">
+                          OpenCode {item.version}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${
+                            isV2
+                              ? "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20"
+                              : "bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20"
+                          }`}
+                        >
+                          {isV2 ? "OpenCode v2" : "OpenCode v1"}
+                        </span>
+                        {isSelected && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                            当前生效
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground font-mono truncate mt-0.5" title={item.path}>
+                        {item.path}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      type="button"
+                      disabled={probingCli}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleProbeCli();
+                      }}
+                      className="px-2 py-1 text-xs rounded border hover:bg-muted text-muted-foreground"
+                    >
+                      测试可用性
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="p-3.5 rounded-xl border border-dashed bg-muted/20 text-center space-y-1.5">
+            <div className="text-sm font-medium text-muted-foreground flex items-center justify-center gap-1.5">
+              <AlertCircle className="w-4 h-4 text-amber-500" />
+              未检测到本机已安装的 OpenCode
+            </div>
+            <div className="text-xs text-muted-foreground">
+              请确认终端是否已安装 OpenCode CLI（支持 v1 或 v2），或点击右上角「浏览指定文件」手动选取。
+            </div>
+          </div>
+        )}
+
+        {/* 必选警告提示 */}
+        {!config.opencode_bin_path && (
+          <div className="p-2.5 rounded-lg text-xs border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            <span>⚠️ 必须选择一个具体的 OpenCode 版本，方可启用 Telegram 远程控制。</span>
+          </div>
+        )}
 
         {cliProbeResult && (
           <div

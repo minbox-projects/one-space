@@ -350,7 +350,8 @@ fn enrich_session_from_db(
 
     let mut session_row = None;
     for cand_dir in &candidate_dirs {
-        if let Some(r) = query_session("session", cand_dir).or_else(|| query_session("session_v2", cand_dir)) {
+        // 优先检索 session_v2，回退到 legacy session 表
+        if let Some(r) = query_session("session_v2", cand_dir).or_else(|| query_session("session", cand_dir)) {
             session_row = Some(r);
             break;
         }
@@ -377,8 +378,8 @@ fn enrich_session_from_db(
             }
         }
 
-        // 2. 统计主会话步骤总数 (step-start)
-        let step_count_sql = "SELECT count(*) FROM part WHERE session_id = ?1 AND json_extract(data, '$.type') = 'step-start'";
+        // 2. 统计主会话步骤总数 (兼顾 v1 的 step-start 与 v2 的 step_start)
+        let step_count_sql = "SELECT count(*) FROM part WHERE session_id = ?1 AND (json_extract(data, '$.type') = 'step-start' OR json_extract(data, '$.type') = 'step_start')";
         if let Ok(mut stmt) = conn.prepare(step_count_sql) {
             if let Ok(cnt) = stmt.query_row([&sid], |row| row.get::<_, u32>(0)) {
                 if cnt > 0 {

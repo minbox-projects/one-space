@@ -1165,3 +1165,281 @@ fn test_session_deduplication() {
     assert_eq!(sessions[0].pid, 101);
 }
 
+#[test]
+fn test_opencode_v2_question_and_permission_deserialization() {
+    use super::opencode_bridge::{OpenCodePermissionRequest, OpenCodeQuestionRequest};
+
+    // OpenCode v2 风格的 question JSON（包含 header, requestId, sessionId, title）
+    let v2_question_json = r#"[
+        {
+            "requestId": "req-v2-001",
+            "sessionId": "ses_v2_abc",
+            "questions": [
+                {
+                    "header": "请选择构建目标",
+                    "multiple": false,
+                    "options": [
+                        {"title": "macOS aarch64", "description": "Apple Silicon"},
+                        {"title": "linux x86_64", "description": "标准 Linux"}
+                    ]
+                }
+            ]
+        }
+    ]"#;
+
+    let questions: Vec<OpenCodeQuestionRequest> =
+        serde_json::from_str(v2_question_json).expect("必须成功解析 OpenCode v2 问题格式");
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0].id, "req-v2-001");
+    assert_eq!(questions[0].session_id.as_deref(), Some("ses_v2_abc"));
+    assert_eq!(questions[0].questions[0].question, "请选择构建目标");
+    assert_eq!(questions[0].questions[0].options[0].label, "macOS aarch64");
+
+    // OpenCode v2 风格的 permission JSON
+    let v2_permission_json = r#"[
+        {
+            "requestId": "perm-v2-001",
+            "sessionId": "ses_v2_abc",
+            "permission": "bash",
+            "command": "npm run build"
+        }
+    ]"#;
+
+    let perms: Vec<OpenCodePermissionRequest> =
+        serde_json::from_str(v2_permission_json).expect("必须成功解析 OpenCode v2 权限格式");
+    assert_eq!(perms.len(), 1);
+    assert_eq!(perms[0].id, "perm-v2-001");
+    assert_eq!(perms[0].session_id.as_deref(), Some("ses_v2_abc"));
+    assert_eq!(perms[0].command.as_deref(), Some("npm run build"));
+}
+
+#[test]
+fn test_opencode_reply_payloads_serialization() {
+    use super::opencode_bridge::{PermissionReplyPayload, QuestionReplyPayload};
+
+    let q_payload = QuestionReplyPayload {
+        answers: vec![vec!["JWT 无状态".to_string()]],
+        answer: Some("JWT 无状态".to_string()),
+    };
+    let q_json = serde_json::to_string(&q_payload).expect("必须序列化成功");
+    assert!(q_json.contains("answers"));
+    assert!(q_json.contains("answer"));
+
+    let p_payload = PermissionReplyPayload {
+        reply: "once".to_string(),
+        response: Some("once".to_string()),
+    };
+    let p_json = serde_json::to_string(&p_payload).expect("必须序列化成功");
+    assert!(p_json.contains("once"));
+    assert!(p_json.contains("response"));
+}
+
+#[tokio::test]
+async fn test_remote_bot_save_config_guard_requires_opencode_version() {
+    use super::commands::remote_bot_save_config;
+    use super::types::RemoteBotConfig;
+
+    let mut invalid_config = RemoteBotConfig::default();
+    invalid_config.enabled = true;
+    invalid_config.opencode_bin_path = None;
+
+    let res = remote_bot_save_config(invalid_config).await;
+    assert!(res.is_err());
+    let err = res.err().unwrap();
+    assert!(err.contains("必须选择一个具体的 OpenCode 版本"));
+}
+
+#[test]
+fn test_opencode_v2_api_envelope_deserialization() {
+    use super::opencode_bridge::{ApiEnvelope, OpenCodeQuestionRequest, OpenCodePermissionRequest};
+
+    // 1. v1 传统裸数组格式
+    let raw_v1_json = r#"[{"id": "q-v1", "questions": []}]"#;
+    let v1_res: ApiEnvelope<OpenCodeQuestionRequest> = serde_json::from_str(raw_v1_json).expect("必须成功解析裸数组");
+    let v1_list = v1_res.into_vec();
+    assert_eq!(v1_list.len(), 1);
+    assert_eq!(v1_list[0].id, "q-v1");
+
+    // 2. v2 对象包装格式 {"location": {...}, "data": [...]}
+    let raw_v2_json = r#"{
+        "location": {"directory": "/tmp/test"},
+        "data": [
+            {
+                "id": "form-v2-1",
+                "sessionId": "ses_v2_test",
+                "questions": [
+                    {
+                        "title": "选择模式",
+                        "options": [{"title": "标准模式"}]
+                    }
+                ]
+            }
+        ]
+    }"#;
+    let v2_res: ApiEnvelope<OpenCodeQuestionRequest> = serde_json::from_str(raw_v2_json).expect("必须成功解析 v2 data 对象包装");
+    let v2_list = v2_res.into_vec();
+    assert_eq!(v2_list.len(), 1);
+    assert_eq!(v2_list[0].id, "form-v2-1");
+    assert_eq!(v2_list[0].session_id.as_deref(), Some("ses_v2_test"));
+    assert_eq!(v2_list[0].questions[0].question, "选择模式");
+    assert_eq!(v2_list[0].questions[0].options[0].label, "标准模式");
+
+    // 3. v2 权限包装格式
+    let raw_v2_perm = r#"{
+        "location": {"directory": "/tmp/test"},
+        "data": [
+            {
+                "requestId": "perm-v2-99",
+                "sessionId": "ses_v2_test",
+                "permission": "bash",
+                "command": "cargo test"
+            }
+        ]
+    }"#;
+    let v2_perm_res: ApiEnvelope<OpenCodePermissionRequest> = serde_json::from_str(raw_v2_perm).expect("必须成功解析 v2 perm 包装");
+    let v2_perm_list = v2_perm_res.into_vec();
+    assert_eq!(v2_perm_list.len(), 1);
+    assert_eq!(v2_perm_list[0].id, "perm-v2-99");
+    assert_eq!(v2_perm_list[0].session_id.as_deref(), Some("ses_v2_test"));
+    assert_eq!(v2_perm_list[0].command.as_deref(), Some("cargo test"));
+}
+
+#[tokio::test]
+async fn test_opencode_v2_real_env_e2e() {
+    use std::path::Path;
+    use std::sync::Arc;
+    use super::client::TelegramClient;
+    use super::opencode_bridge::{get_opencode_major_version, OpenCodeBridge, ApiEnvelope, OpenCodeQuestionRequest, OPENCODE_INTERNAL_AUTH};
+
+    let v2_bin_path = "/private/tmp/test-opencode-v2/node_modules/.bin/opencode";
+    if !Path::new(v2_bin_path).exists() {
+        println!("跳过真实 v2 E2E 测试：{} 不存在", v2_bin_path);
+        return;
+    }
+
+    // 1. 验证版本检测逻辑
+    let major_ver = get_opencode_major_version(v2_bin_path);
+    assert_eq!(major_ver, 2, "真实 OpenCode v2 的主版本号必须为 2");
+
+    // 2. 将临时配置指向该真实 v2 二进制
+    let mut config = super::storage::load_config().unwrap_or_default();
+    let original_path = config.opencode_bin_path.clone();
+    config.opencode_bin_path = Some(v2_bin_path.to_string());
+    let _ = super::storage::save_config(&config);
+
+    // 3. 构造 bridge 并真实启动 opencode serve
+    let tg_client = Arc::new(TelegramClient::new("dummy-test-token".to_string()));
+    let bridge = Arc::new(OpenCodeBridge::new(tg_client));
+
+    let server_url_res = bridge.ensure_server().await;
+    assert!(server_url_res.is_ok(), "ensure_server 必须成功启动真实 v2 服务并解析监听端口: {:?}", server_url_res.err());
+    let server_url = server_url_res.unwrap();
+    assert!(server_url.starts_with("http://127.0.0.1:"), "监听地址必须为 loopback: {}", server_url);
+
+    // 4. HTTP client 携带 Basic Auth 访问 /api/info
+    let client = reqwest::Client::new();
+    let info_resp = client.get(format!("{}/api/info", server_url))
+        .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+        .send().await
+        .expect("请求真实 v2 /api/info 必须连通");
+    assert_eq!(info_resp.status(), 200, "/api/info 必须返回 200 OK");
+    let info_json: serde_json::Value = info_resp.json().await.expect("必须解析 /api/info 为 JSON");
+    let ver_str = info_json.get("version").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(ver_str.starts_with("2."), "版本号必须以 2. 开头: {}", ver_str);
+
+    // 5. 真实访问 /api/form 和 /api/permission/request，验证 ApiEnvelope 解析
+    let form_resp = client.get(format!("{}/api/form", server_url))
+        .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+        .send().await
+        .expect("请求 /api/form 连通");
+    assert_eq!(form_resp.status(), 200);
+    let form_env: ApiEnvelope<OpenCodeQuestionRequest> = form_resp.json().await.expect("必须能通过 ApiEnvelope 解析 /api/form");
+    let _ = form_env.into_vec();
+
+    // 6. 清理现场
+    bridge.cancel_active_task().await;
+    config.opencode_bin_path = original_path;
+    let _ = super::storage::save_config(&config);
+}
+
+#[tokio::test]
+async fn test_opencode_v1_real_env_e2e() {
+    use std::sync::Arc;
+    use super::client::TelegramClient;
+    use super::opencode_bridge::{get_opencode_major_version, OpenCodeBridge, ApiEnvelope, OpenCodeQuestionRequest, OpenCodePermissionRequest, OPENCODE_INTERNAL_AUTH};
+
+    // 优先使用本机默认安装的 OpenCode v1（如 ~/.opencode/bin/opencode）
+    let v1_bin_candidates = vec![
+        "/Users/yuqiyu/.opencode/bin/opencode".to_string(),
+        "opencode".to_string(),
+    ];
+
+    let mut found_v1_bin = None;
+    for cand in v1_bin_candidates {
+        if let Ok(output) = std::process::Command::new(&cand).arg("--version").output() {
+            let ver = String::from_utf8_lossy(&output.stdout);
+            if ver.contains("1.") || ver.contains("v1.") {
+                found_v1_bin = Some(cand);
+                break;
+            }
+        }
+    }
+
+    let v1_bin_path = match found_v1_bin {
+        Some(bin) => bin,
+        None => {
+            println!("跳过真实 v1 E2E 测试：未找到可用的 OpenCode v1");
+            return;
+        }
+    };
+
+    // 1. 验证版本检测逻辑必须判定为 1
+    let major_ver = get_opencode_major_version(&v1_bin_path);
+    assert_eq!(major_ver, 1, "真实 OpenCode v1 的主版本号必须为 1");
+
+    // 2. 将临时配置指向该真实 v1 二进制
+    let mut config = super::storage::load_config().unwrap_or_default();
+    let original_path = config.opencode_bin_path.clone();
+    config.opencode_bin_path = Some(v1_bin_path.clone());
+    let _ = super::storage::save_config(&config);
+
+    // 3. 构造 bridge 并真实启动 opencode serve
+    let tg_client = Arc::new(TelegramClient::new("dummy-test-token".to_string()));
+    let bridge = Arc::new(OpenCodeBridge::new(tg_client));
+
+    let server_url_res = bridge.ensure_server().await;
+    assert!(server_url_res.is_ok(), "ensure_server 必须成功启动真实 v1 服务并解析监听端口: {:?}", server_url_res.err());
+    let server_url = server_url_res.unwrap();
+    assert!(server_url.starts_with("http://127.0.0.1:"), "监听地址必须为 loopback: {}", server_url);
+
+    // 4. HTTP client 访问 /session 探测存活性
+    let client = reqwest::Client::new();
+    let session_resp = client.get(format!("{}/session", server_url))
+        .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+        .send().await
+        .expect("请求真实 v1 /session 必须连通");
+    assert_eq!(session_resp.status(), 200, "/session 必须返回 200 OK");
+
+    // 5. 真实访问 /question 和 /permission，验证 ApiEnvelope 兼容裸数组格式
+    let q_resp = client.get(format!("{}/question", server_url))
+        .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+        .send().await
+        .expect("请求真实 v1 /question 连通");
+    assert_eq!(q_resp.status(), 200);
+    let q_env: ApiEnvelope<OpenCodeQuestionRequest> = q_resp.json().await.expect("必须能通过 ApiEnvelope 解析 v1 裸数组 /question");
+    let _ = q_env.into_vec();
+
+    let p_resp = client.get(format!("{}/permission", server_url))
+        .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+        .send().await
+        .expect("请求真实 v1 /permission 连通");
+    assert_eq!(p_resp.status(), 200);
+    let p_env: ApiEnvelope<OpenCodePermissionRequest> = p_resp.json().await.expect("必须能通过 ApiEnvelope 解析 v1 裸数组 /permission");
+    let _ = p_env.into_vec();
+
+    // 6. 清理现场
+    bridge.cancel_active_task().await;
+    config.opencode_bin_path = original_path;
+    let _ = super::storage::save_config(&config);
+}
+

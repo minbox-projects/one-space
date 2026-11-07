@@ -265,6 +265,7 @@ pub fn run() {
             remote_bot::remote_bot_get_status,
             remote_bot::remote_bot_restart,
             remote_bot::remote_bot_probe_opencode,
+            remote_bot::remote_bot_list_installed_opencode,
             remote_bot::remote_bot_get_running_opencode_sessions,
             remote_bot::remote_bot_get_hosted_sessions,
             server_monitor::commands::server_monitor_snapshot,

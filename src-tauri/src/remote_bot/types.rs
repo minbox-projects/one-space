@@ -17,6 +17,10 @@ pub struct RemoteBotConfig {
     #[serde(default)]
     pub opencode_bin_path: Option<String>,
     #[serde(default)]
+    pub opencode_version: Option<String>,
+    #[serde(default)]
+    pub opencode_version_type: Option<String>,
+    #[serde(default)]
     pub workspace_directories: Vec<String>,
     #[serde(default)]
     pub updated_at: i64,
@@ -40,10 +44,22 @@ impl Default for RemoteBotConfig {
             auto_approve_permissions: true,
             enable_natural_dialogue: true,
             opencode_bin_path: None,
+            opencode_version: None,
+            opencode_version_type: None,
             workspace_directories: Vec::new(),
             updated_at: chrono::Utc::now().timestamp(),
         }
     }
+}
+
+/// 本机安装的 OpenCode 版本信息
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OpenCodeInstalledVersion {
+    pub path: String,
+    pub version: String,
+    pub major_version: u32,
+    pub version_type: String, // "v1" | "v2" | "unknown"
+    pub is_active: bool,
 }
 
 /// 运行时状态快照（供前端监控与展示）

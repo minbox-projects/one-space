@@ -27,6 +27,7 @@ pub struct OpenCodeSession {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenCodeQuestionItem {
+    #[serde(alias = "title", alias = "header", alias = "prompt", alias = "text")]
     pub question: String,
     #[serde(default)]
     pub multiple: bool,
@@ -36,14 +37,16 @@ pub struct OpenCodeQuestionItem {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenCodeQuestionOption {
+    #[serde(alias = "title", alias = "text", alias = "name")]
     pub label: String,
     pub description: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenCodeQuestionRequest {
+    #[serde(alias = "requestId", alias = "request_id", alias = "formID", alias = "form_id")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, alias = "sessionId", alias = "sessionID")]
     pub session_id: Option<String>,
     #[serde(default)]
     pub questions: Vec<OpenCodeQuestionItem>,
@@ -51,21 +54,67 @@ pub struct OpenCodeQuestionRequest {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenCodePermissionRequest {
+    #[serde(alias = "requestId", alias = "request_id", alias = "permissionID", alias = "permission_id")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, alias = "sessionId", alias = "sessionID")]
     pub session_id: Option<String>,
     pub permission: Option<String>,
     pub command: Option<String>,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+pub enum ApiEnvelope<T> {
+    Direct(Vec<T>),
+    Envelope {
+        data: Vec<T>,
+    },
+}
+
+impl<T> ApiEnvelope<T> {
+    pub fn into_vec(self) -> Vec<T> {
+        match self {
+            ApiEnvelope::Direct(v) => v,
+            ApiEnvelope::Envelope { data } => data,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct QuestionReplyPayload {
     pub answers: Vec<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PermissionReplyPayload {
     pub reply: String, // "once" | "always" | "deny"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response: Option<String>,
+}
+
+pub const OPENCODE_INTERNAL_AUTH: &str = "onespace-remote-bot-internal-pass";
+
+/// 探知目标 OpenCode 执行程序的主版本号 (1 或 2)
+pub fn get_opencode_major_version(bin: &str) -> u32 {
+    let resolved = super::commands::resolve_executable_path(bin);
+    if let Ok(output) = std::process::Command::new(&resolved).arg("--version").output() {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let raw = if !stdout.is_empty() { stdout } else { stderr };
+        if let Some(ver) = crate::cli_probe::extract_semver(&raw) {
+            if let Some(first) = ver.split('.').next() {
+                if let Ok(m) = first.parse::<u32>() {
+                    return m;
+                }
+            }
+        }
+        if raw.contains("v2.") || raw.contains(" 2.") {
+            return 2;
+        }
+    }
+    1
 }
 
 // =========================================================================
@@ -141,8 +190,14 @@ impl OpenCodeBridge {
         {
             let url_guard = self.server_url.read().await;
             if let Some(ref url) = *url_guard {
-                // 探测存活性
-                if self.http_client.get(format!("{}/session", url)).send().await.is_ok() {
+                // 探测存活性 (兼顾 v1 的 /session 与 v2 的 /api/info)
+                let is_alive = self.http_client.get(format!("{}/session", url))
+                    .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                    .send().await.is_ok()
+                    || self.http_client.get(format!("{}/api/info", url))
+                    .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                    .send().await.is_ok();
+                if is_alive {
                     return Ok(url.clone());
                 }
             }
@@ -163,6 +218,8 @@ impl OpenCodeBridge {
             .arg("0")
             .arg("--hostname")
             .arg("127.0.0.1")
+            .env("OPENCODE_SERVER_PASSWORD", OPENCODE_INTERNAL_AUTH)
+            .env("OPENCODE_PASSWORD", OPENCODE_INTERNAL_AUTH)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -385,22 +442,30 @@ impl OpenCodeBridge {
 
         // 启动 opencode run 会话
         let opencode_bin = resolve_opencode_bin();
+        let is_v2 = get_opencode_major_version(&opencode_bin) >= 2;
+
         let mut cmd = Command::new(&opencode_bin);
+        cmd.current_dir(&project_dir);
         cmd.arg("run")
             .arg(&prompt_to_run)
             .arg("--format")
             .arg("json")
-            .arg("--auto")
-            .arg("--attach")
-            .arg(&server_url)
-            .arg("--dir")
-            .arg(&project_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .arg("--auto");
+
+        if is_v2 {
+            cmd.arg("--server").arg(&server_url);
+            cmd.env("OPENCODE_PASSWORD", OPENCODE_INTERNAL_AUTH);
+        } else {
+            cmd.arg("--attach").arg(&server_url)
+                .arg("--dir").arg(&project_dir);
+        }
 
         if let Some(ref sid) = session_id_opt {
             cmd.arg("--session").arg(sid);
         }
+
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let mut child = cmd.spawn()
             .map_err(|e| format!("启动 OpenCode Planning 失败: {}", e))?;
@@ -427,14 +492,31 @@ impl OpenCodeBridge {
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(sid) = v.get("sessionID").and_then(|s| s.as_str()) {
+                // 兼容 v1 与 v2 的 sessionID 字段位置
+                let sid_opt = v.get("sessionID")
+                    .or_else(|| v.get("sessionId"))
+                    .or_else(|| v.get("session_id"))
+                    .or_else(|| v.get("part").and_then(|p| p.get("sessionID")))
+                    .or_else(|| v.get("part").and_then(|p| p.get("sessionId")))
+                    .or_else(|| v.get("part").and_then(|p| p.get("session_id")))
+                    .and_then(|s| s.as_str());
+                if let Some(sid) = sid_opt {
                     if !sid.is_empty() {
                         captured_session_id = Some(sid.to_string());
                     }
                 }
-                if v.get("type").and_then(|t| t.as_str()) == Some("text") {
+
+                // 兼容 v1 与 v2 的 text 消息格式
+                let event_type = v.get("type").and_then(|t| t.as_str());
+                if event_type == Some("text") {
                     if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
                         text_parts.push(text.to_string());
+                    } else if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                        text_parts.push(text.to_string());
+                    }
+                } else if event_type == Some("message") {
+                    if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
+                        text_parts.push(content.to_string());
                     }
                 }
             }
@@ -565,49 +647,99 @@ impl OpenCodeBridge {
             let mut asked_permissions = std::collections::HashSet::new();
 
             while !cancel_flag.load(Ordering::Relaxed) {
-                // 1. 检查 /question
+                // 1. 检查 /question 或 v2 的 /api/form
                 let q_url = format!("{}/question", server_url);
-                if let Ok(resp) = http.get(&q_url).send().await {
-                    if let Ok(questions) = resp.json::<Vec<OpenCodeQuestionRequest>>().await {
-                        for q in questions {
-                            if asked_questions.contains(&q.id) {
-                                continue;
-                            }
-                            asked_questions.insert(q.id.clone());
-                            *active_q_holder.write().await = Some(q.clone());
+                let q_resp = http.get(&q_url)
+                    .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                    .send().await;
 
-                            if let Some(first_q) = q.questions.first() {
-                                let mut buttons = Vec::new();
-                                for (idx, opt) in first_q.options.iter().enumerate() {
-                                    let btn_text = extract_button_label(idx + 1, &opt.label);
-                                    buttons.push(vec![InlineKeyboardButton::callback(
-                                        btn_text,
-                                        format!("ans_q:{}:{}", q.id, idx),
-                                    )]);
-                                }
+                let mut questions_opt = if let Ok(resp) = q_resp {
+                    resp.json::<ApiEnvelope<OpenCodeQuestionRequest>>().await.ok().map(|e| e.into_vec())
+                } else {
+                    None
+                };
 
-                                let text = format_question_request_message(first_q);
-                                let markup = InlineKeyboardMarkup::new(buttons);
-                                let _ = tg.send_message(chat_id, &text, Some(markup), None).await;
+                if questions_opt.is_none() {
+                    let v2_q_url = format!("{}/api/form", server_url);
+                    if let Ok(resp) = http.get(&v2_q_url)
+                        .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                        .send().await {
+                        questions_opt = resp.json::<ApiEnvelope<OpenCodeQuestionRequest>>().await.ok().map(|e| e.into_vec());
+                    }
+                }
+
+                if let Some(questions) = questions_opt {
+                    for q in questions {
+                        if asked_questions.contains(&q.id) {
+                            continue;
+                        }
+                        asked_questions.insert(q.id.clone());
+                        *active_q_holder.write().await = Some(q.clone());
+
+                        if let Some(first_q) = q.questions.first() {
+                            let mut buttons = Vec::new();
+                            for (idx, opt) in first_q.options.iter().enumerate() {
+                                let btn_text = extract_button_label(idx + 1, &opt.label);
+                                buttons.push(vec![InlineKeyboardButton::callback(
+                                    btn_text,
+                                    format!("ans_q:{}:{}", q.id, idx),
+                                )]);
                             }
+
+                            let text = format_question_request_message(first_q);
+                            let markup = InlineKeyboardMarkup::new(buttons);
+                            let _ = tg.send_message(chat_id, &text, Some(markup), None).await;
                         }
                     }
                 }
 
-                // 2. 检查 /permission (自动授权或高危审批)
+                // 2. 检查 /permission (自动授权或高危审批，兼顾 v1 与 v2)
                 let p_url = format!("{}/permission", server_url);
-                if let Ok(resp) = http.get(&p_url).send().await {
-                    if let Ok(perms) = resp.json::<Vec<OpenCodePermissionRequest>>().await {
-                        for p in perms {
-                            if asked_permissions.contains(&p.id) {
-                                continue;
-                            }
-                            asked_permissions.insert(p.id.clone());
+                let p_resp = http.get(&p_url)
+                    .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                    .send().await;
 
-                            // 默认常规自动批准 "once"
-                            let reply_url = format!("{}/permission/{}/reply", server_url, p.id);
-                            let payload = PermissionReplyPayload { reply: "once".to_string() };
-                            let _ = http.post(&reply_url).json(&payload).send().await;
+                let mut perms_opt = if let Ok(resp) = p_resp {
+                    resp.json::<ApiEnvelope<OpenCodePermissionRequest>>().await.ok().map(|e| e.into_vec())
+                } else {
+                    None
+                };
+
+                if perms_opt.is_none() {
+                    let v2_p_url = format!("{}/api/permission/request", server_url);
+                    if let Ok(resp) = http.get(&v2_p_url)
+                        .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                        .send().await {
+                        perms_opt = resp.json::<ApiEnvelope<OpenCodePermissionRequest>>().await.ok().map(|e| e.into_vec());
+                    }
+                }
+
+                if let Some(perms) = perms_opt {
+                    for p in perms {
+                        if asked_permissions.contains(&p.id) {
+                            continue;
+                        }
+                        asked_permissions.insert(p.id.clone());
+
+                        // 默认常规自动批准 "once" (兼容 v1 与 v2 路径)
+                        let payload = PermissionReplyPayload {
+                            reply: "once".to_string(),
+                            response: Some("once".to_string()),
+                        };
+                        let reply_url = format!("{}/permission/{}/reply", server_url, p.id);
+                        let v2_reply_url = format!("{}/api/permission/request/{}/reply", server_url, p.id);
+                        let _ = http.post(&reply_url)
+                            .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                            .json(&payload).send().await;
+                        let _ = http.post(&v2_reply_url)
+                            .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                            .json(&payload).send().await;
+
+                        if let Some(ref sid) = p.session_id {
+                            let v2_session_perm_url = format!("{}/api/session/{}/permission/{}/reply", server_url, sid, p.id);
+                            let _ = http.post(&v2_session_perm_url)
+                                .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                                .json(&payload).send().await;
                         }
                     }
                 }
@@ -636,21 +768,52 @@ impl OpenCodeBridge {
     /// 回复指定的 OpenCode 提问
     pub async fn reply_question(&self, request_id: &str, answer: &str) -> Result<(), String> {
         let server_url = self.ensure_server().await?;
-        let url = format!("{}/question/{}/reply", server_url, request_id);
         let payload = QuestionReplyPayload {
             answers: vec![vec![answer.to_string()]],
+            answer: Some(answer.to_string()),
         };
 
-        let resp = self.http_client.post(&url)
+        // 1. 优先尝试 v1 传统路径 /question/{id}/reply
+        let v1_url = format!("{}/question/{}/reply", server_url, request_id);
+        let resp = self.http_client.post(&v1_url)
+            .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+            .json(&payload)
+            .send()
+            .await;
+
+        if let Ok(res) = resp {
+            if res.status().is_success() {
+                return Ok(());
+            }
+        }
+
+        // 2. 优先尝试 v2 会话表单路径 /api/session/{sid}/form/{id}/reply
+        if let Some(sid) = self.active_session_id.read().await.clone() {
+            let session_form_url = format!("{}/api/session/{}/form/{}/reply", server_url, sid, request_id);
+            if let Ok(res) = self.http_client.post(&session_form_url)
+                .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                .json(&payload)
+                .send()
+                .await {
+                if res.status().is_success() {
+                    return Ok(());
+                }
+            }
+        }
+
+        // 3. 尝试 v2 全局表单路径 /api/form/{id}/reply
+        let v2_url = format!("{}/api/form/{}/reply", server_url, request_id);
+        let v2_resp = self.http_client.post(&v2_url)
+            .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
             .json(&payload)
             .send()
             .await
             .map_err(|e| format!("发送提问回复失败: {}", e))?;
 
-        if resp.status().is_success() {
+        if v2_resp.status().is_success() {
             Ok(())
         } else {
-            Err(format!("OpenCode 拒绝提问回复，状态码: {}", resp.status()))
+            Err(format!("OpenCode 拒绝提问回复，状态码: {}", v2_resp.status()))
         }
     }
 
@@ -786,16 +949,25 @@ impl OpenCodeBridge {
         });
 
         let opencode_bin = resolve_opencode_bin();
-        let mut child = Command::new(&opencode_bin)
-            .arg("run")
+        let is_v2 = get_opencode_major_version(&opencode_bin) >= 2;
+
+        let mut cmd = Command::new(&opencode_bin);
+        cmd.current_dir(&project_dir);
+        cmd.arg("run")
             .arg(&coding_prompt)
             .arg("--format")
             .arg("json")
-            .arg("--auto")
-            .arg("--attach")
-            .arg(&server_url)
-            .arg("--dir")
-            .arg(&project_dir)
+            .arg("--auto");
+
+        if is_v2 {
+            cmd.arg("--server").arg(&server_url);
+            cmd.env("OPENCODE_PASSWORD", OPENCODE_INTERNAL_AUTH);
+        } else {
+            cmd.arg("--attach").arg(&server_url)
+                .arg("--dir").arg(&project_dir);
+        }
+
+        let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -821,9 +993,16 @@ impl OpenCodeBridge {
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if v.get("type").and_then(|t| t.as_str()) == Some("text") {
+                let event_type = v.get("type").and_then(|t| t.as_str());
+                if event_type == Some("text") {
                     if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
                         text_parts.push(text.to_string());
+                    } else if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                        text_parts.push(text.to_string());
+                    }
+                } else if event_type == Some("message") {
+                    if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
+                        text_parts.push(content.to_string());
                     }
                 }
             }

@@ -6,7 +6,9 @@ import {
   remoteBotSaveConfig,
   remoteBotTestConnection,
   remoteBotProbeOpencode,
+  remoteBotListInstalledOpencode,
   type RemoteBotConfig,
+  type OpenCodeInstalledVersion,
 } from "./remoteBot";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -142,5 +144,29 @@ describe("remoteBot IPC", () => {
     const res = await (await import("./remoteBot")).remoteBotGetHostedSessions();
     expect(res).toEqual(mockHosted);
     expect(invokeMock).toHaveBeenCalledWith("remote_bot_get_hosted_sessions");
+  });
+
+  it("remoteBotListInstalledOpencode 调用 remote_bot_list_installed_opencode", async () => {
+    const mockVersions: OpenCodeInstalledVersion[] = [
+      {
+        path: "/usr/local/bin/opencode",
+        version: "2.0.4",
+        major_version: 2,
+        version_type: "v2",
+        is_active: true,
+      },
+      {
+        path: "/Users/test/.opencode/bin/opencode",
+        version: "1.19.5",
+        major_version: 1,
+        version_type: "v1",
+        is_active: false,
+      },
+    ];
+    invokeMock.mockResolvedValueOnce(mockVersions);
+
+    const res = await remoteBotListInstalledOpencode();
+    expect(res).toEqual(mockVersions);
+    expect(invokeMock).toHaveBeenCalledWith("remote_bot_list_installed_opencode");
   });
 });

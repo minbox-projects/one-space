@@ -8,8 +8,18 @@ export interface RemoteBotConfig {
   auto_approve_permissions: boolean;
   enable_natural_dialogue: boolean;
   opencode_bin_path?: string | null;
+  opencode_version?: string | null;
+  opencode_version_type?: string | null;
   workspace_directories: string[];
   updated_at: number;
+}
+
+export interface OpenCodeInstalledVersion {
+  path: string;
+  version: string;
+  major_version: number;
+  version_type: string;
+  is_active: boolean;
 }
 
 export interface RemoteBotStatus {
@@ -82,6 +92,10 @@ export async function remoteBotRestart(): Promise<RemoteBotStatus> {
 
 export async function remoteBotProbeOpencode(binPath?: string): Promise<string> {
   return await invoke<string>("remote_bot_probe_opencode", { binPath: binPath || null });
+}
+
+export async function remoteBotListInstalledOpencode(): Promise<OpenCodeInstalledVersion[]> {
+  return await invoke<OpenCodeInstalledVersion[]>("remote_bot_list_installed_opencode");
 }
 
 export type SessionHostingDecisionMode = "Manual" | "AutoRecommended";
