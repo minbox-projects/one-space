@@ -121,6 +121,35 @@ pub fn get_opencode_major_version(bin: &str) -> u32 {
 // OpenCode Bridge 核心控制器
 // =========================================================================
 
+/// 当前桥接任务的类别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BridgeTaskKind {
+    Conversation,
+    Planning,
+    Prompt,
+    Coding,
+}
+
+/// 当前桥接任务的不可持久化快照。
+#[derive(Debug, Clone)]
+pub(super) struct BridgeTaskSnapshot {
+    pub(super) kind: BridgeTaskKind,
+    pub(super) session_id: Option<String>,
+    pub(super) plan_id: Option<String>,
+    pub(super) project_name: Option<String>,
+    pub(super) started_at: i64,
+    pub(super) is_busy: bool,
+}
+
+/// 面向会话清单的桥接状态快照。
+#[derive(Debug, Clone)]
+pub(super) struct BridgeSessionSnapshot {
+    pub(super) conversation_session_id: Option<String>,
+    pub(super) conversation_project_name: Option<String>,
+    pub(super) conversation_busy: bool,
+    pub(super) task: Option<BridgeTaskSnapshot>,
+}
+
 pub struct OpenCodeBridge {
     server_process: Mutex<Option<Child>>,
     server_url: RwLock<Option<String>>,
@@ -131,6 +160,10 @@ pub struct OpenCodeBridge {
     active_project_dir: RwLock<Option<PathBuf>>,
     active_options: RwLock<std::collections::HashMap<usize, String>>,
     is_busy: Arc<AtomicBool>,
+    conversation_session_id: RwLock<Option<String>>,
+    conversation_project_name: RwLock<Option<String>>,
+    conversation_busy: AtomicBool,
+    current_task: RwLock<Option<BridgeTaskSnapshot>>,
 }
 
 impl OpenCodeBridge {
@@ -148,7 +181,88 @@ impl OpenCodeBridge {
             active_project_dir: RwLock::new(None),
             active_options: RwLock::new(std::collections::HashMap::new()),
             is_busy: Arc::new(AtomicBool::new(false)),
+            conversation_session_id: RwLock::new(None),
+            conversation_project_name: RwLock::new(None),
+            conversation_busy: AtomicBool::new(false),
+            current_task: RwLock::new(None),
         }
+    }
+
+    /// 返回当前桥接状态的内存快照。
+    pub(super) async fn session_snapshot(&self) -> BridgeSessionSnapshot {
+        BridgeSessionSnapshot {
+            conversation_session_id: self.conversation_session_id.read().await.clone(),
+            conversation_project_name: self.conversation_project_name.read().await.clone(),
+            conversation_busy: self.conversation_busy.load(Ordering::SeqCst),
+            task: self.current_task.read().await.clone(),
+        }
+    }
+
+    /// 开始一次新的自然语言会话，替换之前的会话 ID 与项目。
+    pub(super) async fn begin_conversation(&self, project_dir: &Path) {
+        *self.conversation_session_id.write().await = None;
+        self.start_conversation_task(project_dir, None).await;
+    }
+
+    /// 记录对话会话 ID，并在当前任务为对话任务时同步该任务。
+    pub(super) async fn record_conversation_session(&self, session_id: &str) {
+        *self.conversation_session_id.write().await = Some(session_id.to_string());
+        let mut task = self.current_task.write().await;
+        if let Some(snapshot) = task.as_mut() {
+            if snapshot.kind == BridgeTaskKind::Conversation {
+                snapshot.session_id = Some(session_id.to_string());
+            }
+        }
+    }
+
+    /// 开始一次计划实施；对话会话状态保持不变。
+    pub(super) async fn begin_plan_execution(&self, project_dir: &Path, plan_id: &str) {
+        *self.current_task.write().await = Some(BridgeTaskSnapshot {
+            kind: BridgeTaskKind::Coding,
+            session_id: None,
+            plan_id: Some(plan_id.to_string()),
+            project_name: project_name_of(project_dir),
+            started_at: chrono::Utc::now().timestamp(),
+            is_busy: true,
+        });
+    }
+
+    /// 记录计划实施会话 ID，不触碰对话会话状态。
+    pub(super) async fn record_plan_execution_session(&self, session_id: &str) {
+        if let Some(snapshot) = self.current_task.write().await.as_mut() {
+            snapshot.session_id = Some(session_id.to_string());
+        }
+    }
+
+    /// 结束当前任务，保留最后一个对话会话 ID。
+    pub(super) async fn finish_task(&self) {
+        *self.current_task.write().await = None;
+        self.conversation_busy.store(false, Ordering::SeqCst);
+    }
+
+    async fn start_conversation_task(&self, project_dir: &Path, session_id: Option<String>) {
+        let project_name = project_name_of(project_dir);
+        *self.conversation_project_name.write().await = project_name.clone();
+        self.conversation_busy.store(true, Ordering::SeqCst);
+        *self.current_task.write().await = Some(BridgeTaskSnapshot {
+            kind: BridgeTaskKind::Conversation,
+            session_id,
+            plan_id: None,
+            project_name,
+            started_at: chrono::Utc::now().timestamp(),
+            is_busy: true,
+        });
+    }
+
+    async fn begin_prompt_task(&self, project_dir: &Path, session_id: &str) {
+        *self.current_task.write().await = Some(BridgeTaskSnapshot {
+            kind: BridgeTaskKind::Prompt,
+            session_id: Some(session_id.to_string()),
+            plan_id: None,
+            project_name: project_name_of(project_dir),
+            started_at: chrono::Utc::now().timestamp(),
+            is_busy: true,
+        });
     }
 
     /// 检查当前是否正有活跃的多轮会话进行中
@@ -182,6 +296,10 @@ impl OpenCodeBridge {
         *self.active_project_dir.write().await = None;
         *self.active_question.write().await = None;
         self.active_options.write().await.clear();
+        *self.conversation_session_id.write().await = None;
+        *self.conversation_project_name.write().await = None;
+        self.conversation_busy.store(false, Ordering::SeqCst);
+        *self.current_task.write().await = None;
         self.is_busy.store(false, Ordering::SeqCst);
     }
 
@@ -288,12 +406,27 @@ impl OpenCodeBridge {
         *self.active_session_id.write().await = None;
         *self.active_project_dir.write().await = Some(project_dir.clone());
         self.active_options.write().await.clear();
+        self.begin_conversation(&project_dir).await;
 
         let bridge = self.clone();
         let prompt_string = prompt.to_string();
 
         tokio::spawn(async move {
-            let res = bridge.run_planning_cycle(chat_id, project_dir, &prompt_string, None, is_explicit_planning).await;
+            let res = bridge
+                .run_planning_cycle(
+                    chat_id,
+                    project_dir,
+                    &prompt_string,
+                    None,
+                    is_explicit_planning,
+                    if is_explicit_planning {
+                        BridgeTaskKind::Planning
+                    } else {
+                        BridgeTaskKind::Conversation
+                    },
+                )
+                .await;
+            bridge.finish_task().await;
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("任务执行失败: {}", e);
@@ -325,6 +458,10 @@ impl OpenCodeBridge {
         let project_dir = self.active_project_dir.read().await.clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
+        self.start_conversation_task(&project_dir, Some(session_id.clone()))
+            .await;
+        self.record_conversation_session(&session_id).await;
+
         let bridge = self.clone();
         let input_text = user_input.to_string();
 
@@ -336,7 +473,17 @@ impl OpenCodeBridge {
         ).await;
 
         tokio::spawn(async move {
-            let res = bridge.run_planning_cycle(chat_id, project_dir, &input_text, Some(session_id), false).await;
+            let res = bridge
+                .run_planning_cycle(
+                    chat_id,
+                    project_dir,
+                    &input_text,
+                    Some(session_id),
+                    false,
+                    BridgeTaskKind::Conversation,
+                )
+                .await;
+            bridge.finish_task().await;
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("推进规划失败: {}", e);
@@ -368,13 +515,24 @@ impl OpenCodeBridge {
         *self.active_session_id.write().await = Some(session_id.to_string());
         *self.active_project_dir.write().await = Some(project_dir.clone());
         self.active_options.write().await.clear();
+        self.begin_prompt_task(&project_dir, session_id).await;
 
         let bridge = self.clone();
         let prompt_string = prompt.to_string();
         let sid = session_id.to_string();
 
         tokio::spawn(async move {
-            let res = bridge.run_planning_cycle(chat_id, project_dir, &prompt_string, Some(sid), false).await;
+            let res = bridge
+                .run_planning_cycle(
+                    chat_id,
+                    project_dir,
+                    &prompt_string,
+                    Some(sid),
+                    false,
+                    BridgeTaskKind::Prompt,
+                )
+                .await;
+            bridge.finish_task().await;
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("向 OpenCode 会话投递提示词失败: {}", e);
@@ -398,6 +556,7 @@ impl OpenCodeBridge {
         input_prompt: &str,
         session_id_opt: Option<String>,
         is_explicit_planning: bool,
+        task_kind: BridgeTaskKind,
     ) -> Result<(), String> {
         let server_url = self.ensure_server().await?;
         let start_time = std::time::SystemTime::now();
@@ -487,17 +646,14 @@ impl OpenCodeBridge {
             }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
                 // 兼容 v1 与 v2 的 sessionID 字段位置
-                let sid_opt = v.get("sessionID")
-                    .or_else(|| v.get("sessionId"))
-                    .or_else(|| v.get("session_id"))
-                    .or_else(|| v.get("part").and_then(|p| p.get("sessionID")))
-                    .or_else(|| v.get("part").and_then(|p| p.get("sessionId")))
-                    .or_else(|| v.get("part").and_then(|p| p.get("session_id")))
-                    .and_then(|s| s.as_str());
-                if let Some(sid) = sid_opt {
-                    if !sid.is_empty() {
-                        captured_session_id = Some(sid.to_string());
+                if let Some(sid) = extract_session_id_from_event(&v) {
+                    if matches!(
+                        task_kind,
+                        BridgeTaskKind::Conversation | BridgeTaskKind::Planning
+                    ) {
+                        self.record_conversation_session(&sid).await;
                     }
+                    captured_session_id = Some(sid);
                 }
 
                 // 兼容 v1 与 v2 的 text 消息格式
@@ -882,15 +1038,24 @@ impl OpenCodeBridge {
             return Err("已有正在运行的任务，请等待当前任务完成".to_string());
         }
 
-        // 方案已获确认开始实施，清空旧的规划会话
+        // 方案已获确认开始实施，清空旧的规划会话（对话会话状态保留）
         *self.active_session_id.write().await = None;
         self.active_options.write().await.clear();
+
+        let clean_plan_id = plan_identifier
+            .trim_start_matches(".ai-workflow/plans/")
+            .trim_start_matches("plans/")
+            .trim_matches('/')
+            .to_string();
+        self.begin_plan_execution(&project_dir, &clean_plan_id)
+            .await;
 
         let bridge = self.clone();
         let plan_tag = plan_identifier.to_string();
 
         tokio::spawn(async move {
             let res = bridge.run_coding_inner(chat_id, project_dir, &plan_tag, custom_prompt).await;
+            bridge.finish_task().await;
             bridge.is_busy.store(false, Ordering::SeqCst);
             if let Err(e) = res {
                 error!("Coding 实施失败: {}", e);
@@ -981,6 +1146,9 @@ impl OpenCodeBridge {
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(sid) = extract_session_id_from_event(&v) {
+                    self.record_plan_execution_session(&sid).await;
+                }
                 let event_type = v.get("type").and_then(|t| t.as_str());
                 if event_type == Some("text") {
                     if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
@@ -1094,6 +1262,28 @@ impl OpenCodeBridge {
         ).await?;
 
         Ok(())
+    }
+}
+
+fn project_name_of(project_dir: &Path) -> Option<String> {
+    project_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+}
+
+/// 从 OpenCode JSON 事件中提取会话 ID，兼容顶层与 `part` 嵌套的三种字段名。
+pub(super) fn extract_session_id_from_event(event: &serde_json::Value) -> Option<String> {
+    fn pick(value: &serde_json::Value) -> Option<&str> {
+        ["sessionID", "sessionId", "session_id"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(|v| v.as_str()))
+    }
+
+    let raw = pick(event).or_else(|| event.get("part").and_then(pick))?;
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw.to_string())
     }
 }
 

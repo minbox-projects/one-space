@@ -1454,3 +1454,984 @@ fn test_attached_v1_run_command_carries_internal_server_password() {
         "the v1 attached run must authenticate to the password-protected internal OpenCode server"
     );
 }
+
+fn make_external(session_id: Option<&str>, pid: u32, is_busy: bool) -> super::types::ExternalOpenCodeSessionInfo {
+    super::types::ExternalOpenCodeSessionInfo {
+        pid,
+        ppid: 1,
+        elapsed: "01:00".to_string(),
+        command: "opencode".to_string(),
+        cwd: format!("/tmp/proj-{pid}"),
+        project_name: format!("proj-{pid}"),
+        session_id: session_id.map(|s| s.to_string()),
+        title: Some("Work".to_string()),
+        model: None,
+        agent: None,
+        is_busy,
+        current_step: None,
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 0,
+        tokens_output: 0,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: None,
+    }
+}
+
+fn make_hosted(session_id: &str, pid: u32, project_name: &str) -> super::types::HostedSessionInfo {
+    super::types::HostedSessionInfo {
+        session_id: session_id.to_string(),
+        pid,
+        cwd: "/tmp/hosted".to_string(),
+        project_name: project_name.to_string(),
+        chat_id: 1,
+        mode: super::types::SessionHostingDecisionMode::Manual,
+        started_at: 0,
+        last_observed_step: 0,
+        completed_todos_count: 0,
+        total_todos_count: 0,
+        active_question_summary: None,
+    }
+}
+
+#[test]
+fn session_inventory_external_terminal_entries() {
+    use super::session_inventory::{
+        build_session_entries, SessionEntryKind, SessionInventorySources,
+        SESSION_ID_UNAVAILABLE,
+    };
+    let sources = SessionInventorySources {
+        external: vec![
+            make_external(Some("ses_busy"), 111, true),
+            make_external(Some("ses_idle"), 222, false),
+            make_external(None, 333, true),
+        ],
+        ..Default::default()
+    };
+    let entries = build_session_entries(&sources);
+    assert_eq!(entries.len(), 3);
+    assert!(entries.iter().all(|e| e.primary_kind == SessionEntryKind::Terminal));
+    let busy = entries.iter().find(|e| e.session_id.as_deref() == Some("ses_busy")).unwrap();
+    assert_eq!(busy.status_label, "Busy");
+    assert!(busy.is_busy);
+    let idle = entries.iter().find(|e| e.session_id.as_deref() == Some("ses_idle")).unwrap();
+    assert!(!idle.is_busy);
+    assert_eq!(idle.status_label, "Idle");
+    let no_id = entries.iter().find(|e| e.pid == Some(333)).unwrap();
+    assert!(no_id.session_id.is_none());
+    assert_eq!(no_id.session_id_marker, SESSION_ID_UNAVAILABLE);
+}
+
+#[test]
+fn session_inventory_hosted_dedup() {
+    use super::session_inventory::{
+        build_session_entries, SessionEntryKind, SessionInventorySources,
+    };
+    let sources = SessionInventorySources {
+        external: vec![make_external(Some("ses_hosted"), 444, true)],
+        hosted: vec![make_hosted("ses_hosted", 444, "hosted-proj")],
+        ..Default::default()
+    };
+    let entries = build_session_entries(&sources);
+    let hosted_entries: Vec<_> = entries.iter().filter(|e| e.session_id.as_deref() == Some("ses_hosted")).collect();
+    assert_eq!(hosted_entries.len(), 1);
+    let entry = hosted_entries[0];
+    assert_eq!(entry.primary_kind, SessionEntryKind::Hosted);
+    assert!(entry.kinds.contains(&SessionEntryKind::Hosted));
+    assert!(entry.kinds.contains(&SessionEntryKind::Terminal));
+    assert_eq!(entry.project_name, "hosted-proj");
+}
+
+#[test]
+fn session_inventory_conversation_and_plan() {
+    use super::session_inventory::{
+        build_session_entries, ConversationSessionState, PlanExecutionState,
+        SessionEntryKind, SessionInventorySources, SESSION_ID_CAPTURING,
+    };
+    let sources = SessionInventorySources {
+        conversation: Some(ConversationSessionState {
+            session_id: Some("ses_conv".to_string()),
+            project_name: Some("conv-proj".to_string()),
+            is_busy: true,
+        }),
+        plan_execution: Some(PlanExecutionState {
+            plan_id: "plan-1".to_string(),
+            session_id: None,
+            project_name: "plan-proj".to_string(),
+            is_busy: true,
+        }),
+        ..Default::default()
+    };
+    let entries = build_session_entries(&sources);
+    let conv = entries.iter().find(|e| e.primary_kind == SessionEntryKind::TelegramConversation).unwrap();
+    assert_eq!(conv.session_id_marker, "ses_conv");
+    let plan = entries.iter().find(|e| e.primary_kind == SessionEntryKind::PlanExecution).unwrap();
+    assert_eq!(plan.plan_id.as_deref(), Some("plan-1"));
+    assert_eq!(plan.session_id_marker, SESSION_ID_CAPTURING);
+
+    let rebuilt = SessionInventorySources {
+        conversation: sources.conversation.clone(),
+        plan_execution: Some(PlanExecutionState {
+            plan_id: "plan-1".to_string(),
+            session_id: Some("ses_plan".to_string()),
+            project_name: "plan-proj".to_string(),
+            is_busy: true,
+        }),
+        ..Default::default()
+    };
+    let entries2 = build_session_entries(&rebuilt);
+    let plans: Vec<_> = entries2.iter().filter(|e| e.plan_id.as_deref() == Some("plan-1")).collect();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].session_id_marker, "ses_plan");
+}
+
+#[test]
+fn session_inventory_conversation_unassigned() {
+    use super::session_inventory::{
+        build_session_entries, ConversationSessionState, SessionInventorySources,
+        SESSION_ID_UNASSIGNED,
+    };
+    let sources = SessionInventorySources {
+        conversation: Some(ConversationSessionState {
+            session_id: None,
+            project_name: Some("conv-proj".to_string()),
+            is_busy: false,
+        }),
+        ..Default::default()
+    };
+    let entries = build_session_entries(&sources);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].session_id_marker, SESSION_ID_UNASSIGNED);
+}
+
+#[test]
+fn session_inventory_empty() {
+    use super::session_inventory::{build_session_entries, SessionInventorySources};
+    let entries = build_session_entries(&SessionInventorySources::default());
+    assert!(entries.is_empty());
+}
+
+#[test]
+fn session_inventory_is_subagent() {
+    use super::session_inventory::is_subagent_session;
+    assert!(is_subagent_session(Some("Normal title"), Some("ses_parent")));
+    assert!(is_subagent_session(Some("Do work (@git-operator subagent)"), Some("")));
+    assert!(is_subagent_session(Some("Do work (@git-operator subagent)"), None));
+    assert!(!is_subagent_session(Some("Normal title"), Some("")));
+    assert!(!is_subagent_session(Some("Normal title"), None));
+}
+
+fn make_entry(
+    primary_kind: super::session_inventory::SessionEntryKind,
+    session_id: Option<&str>,
+    marker: &str,
+    plan_id: Option<&str>,
+    pid: Option<u32>,
+    project_name: &str,
+    status_label: &str,
+) -> super::session_inventory::SessionEntry {
+    super::session_inventory::SessionEntry {
+        primary_kind,
+        kinds: vec![primary_kind],
+        session_id: session_id.map(|s| s.to_string()),
+        session_id_marker: marker.to_string(),
+        plan_id: plan_id.map(|s| s.to_string()),
+        pid,
+        project_name: project_name.to_string(),
+        status_label: status_label.to_string(),
+        is_busy: status_label == "Busy" || status_label == "Running",
+    }
+}
+
+#[test]
+fn session_inventory_overview_empty() {
+    use super::session_inventory::format_sessions_overview;
+    let (text, _markup) = format_sessions_overview(&[]);
+    assert!(text.contains("当前没有活跃会话"));
+    assert!(text.contains("/sessions"));
+    assert!(!text.contains("ses_"));
+    assert!(!text.contains("PID:"));
+    assert!(!text.contains("Plan:"));
+}
+
+#[test]
+fn session_inventory_overview_mixed() {
+    use super::session_inventory::{
+        format_sessions_overview, SessionEntryKind,
+    };
+    let entries = vec![
+        make_entry(SessionEntryKind::Terminal, Some("ses_term"), "ses_term", None, Some(111), "proj-term", "Busy"),
+        make_entry(SessionEntryKind::Hosted, Some("ses_host"), "ses_host", None, Some(222), "proj-host", "Hosted"),
+        make_entry(SessionEntryKind::TelegramConversation, Some("ses_conv"), "ses_conv", None, None, "proj-conv", "Idle"),
+        make_entry(SessionEntryKind::PlanExecution, Some("ses_plan"), "ses_plan", Some("20261109-plan-x"), None, "proj-plan", "Running"),
+        make_entry(SessionEntryKind::Terminal, None, "unavailable", None, Some(333), "proj-noid", "Idle"),
+    ];
+    let (text, _markup) = format_sessions_overview(&entries);
+    for label in ["Terminal", "Hosted", "Conversation", "Plan Execution"] {
+        assert!(text.contains(label), "missing group label {label}: {text}");
+    }
+    for expected in ["proj-term", "ses_term", "111", "Busy", "proj-host", "ses_host", "222", "Hosted", "proj-conv", "ses_conv", "Idle", "proj-plan", "ses_plan", "20261109-plan-x", "Running", "proj-noid", "unavailable", "333"] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    let only_terminal = vec![make_entry(SessionEntryKind::Terminal, Some("ses_only"), "ses_only", None, Some(999), "proj-only", "Busy")];
+    let (text2, _markup2) = format_sessions_overview(&only_terminal);
+    assert!(text2.contains("Terminal"));
+    assert!(text2.contains("proj-only"));
+    assert!(text2.contains("ses_only"));
+    assert!(!text2.contains("Hosted"), "empty Hosted group must be omitted: {text2}");
+    assert!(!text2.contains("Conversation"), "empty Conversation group must be omitted: {text2}");
+    assert!(!text2.contains("Plan Execution"), "empty Plan Execution group must be omitted: {text2}");
+}
+
+#[test]
+fn session_inventory_overview_bounded() {
+    use super::session_inventory::{
+        format_sessions_overview, SessionEntryKind, SESSION_OVERVIEW_MAX_CHARS,
+        SESSION_OVERVIEW_MAX_ENTRIES,
+    };
+    let entries: Vec<_> = (1..=12)
+        .map(|i| {
+            let id = format!("ses_overview_{i:02}");
+            make_entry(SessionEntryKind::Terminal, Some(&id), &id, None, Some(1000 + i as u32), &format!("proj-overview-{i:02}"), "Busy")
+        })
+        .collect();
+    let (text, _markup) = format_sessions_overview(&entries);
+    assert!(text.chars().count() <= SESSION_OVERVIEW_MAX_CHARS, "too long: {}", text.chars().count());
+    assert!(text.contains("还有"));
+    assert!(text.contains("未展示"));
+    let rendered = text.matches("PID:").count();
+    assert!(rendered <= SESSION_OVERVIEW_MAX_ENTRIES, "rendered {rendered} entries");
+    assert_eq!(rendered, SESSION_OVERVIEW_MAX_ENTRIES.min(entries.len()));
+    assert!(text.contains("ses_overview_01"));
+    for i in (SESSION_OVERVIEW_MAX_ENTRIES + 1)..=12 {
+        let id = format!("ses_overview_{i:02}");
+        assert!(text.contains(&id), "omitted {id} must appear in truncation notice: {text}");
+    }
+}
+
+#[test]
+fn session_inventory_detail() {
+    use rusqlite::Connection;
+    use std::path::PathBuf;
+    use super::session_inventory::{SessionProgressDetail, lookup_session_progress};
+    use super::types::OpenCodeTodoInfo;
+
+    let db_path: PathBuf = std::env::temp_dir().join(format!(
+        "onespace_session_detail_{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&db_path);
+    {
+        let conn = Connection::open(&db_path).expect("open temp db");
+        conn.execute_batch(
+            "CREATE TABLE part(session_id TEXT, data TEXT, time_created INTEGER);
+             CREATE TABLE todo(session_id TEXT, position INTEGER, status TEXT, content TEXT);",
+        )
+        .expect("create tables");
+
+        conn.execute(
+            "INSERT INTO part(session_id, data, time_created) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["ses_detail", r#"{"type":"step-start"}"#, 1],
+        )
+        .expect("insert step 1");
+        conn.execute(
+            "INSERT INTO part(session_id, data, time_created) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["ses_detail", r#"{"type":"step_start"}"#, 2],
+        )
+        .expect("insert step 2");
+        conn.execute(
+            "INSERT INTO part(session_id, data, time_created) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                "ses_detail",
+                r#"{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"cargo test"}}}"#,
+                3
+            ],
+        )
+        .expect("insert tool");
+        conn.execute(
+            "INSERT INTO todo(session_id, position, status, content) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["ses_detail", 0i32, "completed", "first todo"],
+        )
+        .expect("insert todo 1");
+        conn.execute(
+            "INSERT INTO todo(session_id, position, status, content) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["ses_detail", 1i32, "in_progress", "second todo"],
+        )
+        .expect("insert todo 2");
+    }
+
+    let detail: SessionProgressDetail = lookup_session_progress("ses_detail", &db_path)
+        .expect("detail should exist");
+    assert_eq!(detail.current_step, Some(2));
+    assert_eq!(detail.last_tool, Some("bash".to_string()));
+    assert_eq!(detail.last_tool_status, Some("completed".to_string()));
+    assert!(detail
+        .last_tool_input_preview
+        .as_deref()
+        .unwrap_or("")
+        .contains("cargo test"));
+    assert_eq!(detail.todos.len(), 2);
+    assert_eq!(
+        detail.todos[0],
+        OpenCodeTodoInfo {
+            position: 0,
+            status: "completed".to_string(),
+            content: "first todo".to_string()
+        }
+    );
+    assert_eq!(
+        detail.todos[1],
+        OpenCodeTodoInfo {
+            position: 1,
+            status: "in_progress".to_string(),
+            content: "second todo".to_string()
+        }
+    );
+
+    assert!(lookup_session_progress("ses_missing", &db_path).is_none());
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn session_inventory_identifier() {
+    use super::session_inventory::{IdentifierResolution, SessionEntry, resolve_session_identifier};
+
+    let entry_a = SessionEntry {
+        primary_kind: super::session_inventory::SessionEntryKind::Terminal,
+        kinds: vec![super::session_inventory::SessionEntryKind::Terminal],
+        session_id: Some("ses_a".to_string()),
+        session_id_marker: "ses_a".to_string(),
+        plan_id: None,
+        pid: Some(111),
+        project_name: "proj-a".to_string(),
+        status_label: "Idle".to_string(),
+        is_busy: false,
+    };
+
+    let entry_pid = SessionEntry {
+        primary_kind: super::session_inventory::SessionEntryKind::Terminal,
+        kinds: vec![super::session_inventory::SessionEntryKind::Terminal],
+        session_id: Some("ses_pid".to_string()),
+        session_id_marker: "ses_pid".to_string(),
+        plan_id: None,
+        pid: Some(4321),
+        project_name: "proj-pid".to_string(),
+        status_label: "Idle".to_string(),
+        is_busy: false,
+    };
+
+    let plan_entry = SessionEntry {
+        primary_kind: super::session_inventory::SessionEntryKind::PlanExecution,
+        kinds: vec![super::session_inventory::SessionEntryKind::PlanExecution],
+        session_id: Some("ses_plan".to_string()),
+        session_id_marker: "ses_plan".to_string(),
+        plan_id: Some("plan-x".to_string()),
+        pid: None,
+        project_name: "proj-plan".to_string(),
+        status_label: "Running".to_string(),
+        is_busy: true,
+    };
+
+    let amb_one = SessionEntry {
+        primary_kind: super::session_inventory::SessionEntryKind::Terminal,
+        kinds: vec![super::session_inventory::SessionEntryKind::Terminal],
+        session_id: Some("ses_one".to_string()),
+        session_id_marker: "ses_one".to_string(),
+        plan_id: None,
+        pid: Some(777),
+        project_name: "proj-one".to_string(),
+        status_label: "Idle".to_string(),
+        is_busy: false,
+    };
+    let amb_two = SessionEntry {
+        primary_kind: super::session_inventory::SessionEntryKind::Terminal,
+        kinds: vec![super::session_inventory::SessionEntryKind::Terminal],
+        session_id: Some("ses_two".to_string()),
+        session_id_marker: "ses_two".to_string(),
+        plan_id: None,
+        pid: Some(777),
+        project_name: "proj-two".to_string(),
+        status_label: "Idle".to_string(),
+        is_busy: false,
+    };
+
+    let entries = vec![entry_a.clone(), entry_pid.clone(), plan_entry.clone(), amb_one.clone(), amb_two.clone()];
+
+    // trimmed session id
+    match resolve_session_identifier(&entries, "  ses_a  ") {
+        IdentifierResolution::Session(e) => assert_eq!(e.session_id, Some("ses_a".to_string())),
+        other => panic!("expected Session, got {:?}", other),
+    }
+
+    // numeric pid match
+    match resolve_session_identifier(&entries, "4321") {
+        IdentifierResolution::Session(e) => assert_eq!(e.pid, Some(4321)),
+        other => panic!("expected Session, got {:?}", other),
+    }
+
+    // numeric no pid match -> Unknown
+    assert!(matches!(resolve_session_identifier(&entries, "9999"), IdentifierResolution::Unknown));
+
+    // plan id match
+    match resolve_session_identifier(&entries, "plan-x") {
+        IdentifierResolution::Plan { plan_id, entry } => {
+            assert_eq!(plan_id, "plan-x");
+            assert!(entry.is_some());
+        }
+        other => panic!("expected Plan, got {:?}", other),
+    }
+
+    // unknown non-numeric -> Plan candidate None
+    match resolve_session_identifier(&entries, "plan-unknown") {
+        IdentifierResolution::Plan { plan_id, entry } => {
+            assert_eq!(plan_id, "plan-unknown");
+            assert!(entry.is_none());
+        }
+        other => panic!("expected Plan, got {:?}", other),
+    }
+
+    // ambiguous pid
+    match resolve_session_identifier(&entries, "777") {
+        IdentifierResolution::Ambiguous(v) => {
+            assert!(v.contains(&"ses_one".to_string()));
+            assert!(v.contains(&"ses_two".to_string()));
+        }
+        other => panic!("expected Ambiguous, got {:?}", other),
+    }
+
+    // case-sensitive: SES_A not session id -> Plan candidate None
+    match resolve_session_identifier(&entries, "SES_A") {
+        IdentifierResolution::Plan { plan_id, entry } => {
+            assert_eq!(plan_id, "SES_A");
+            assert!(entry.is_none());
+        }
+        other => panic!("expected Plan, got {:?}", other),
+    }
+}
+
+#[test]
+fn session_inventory_plan_execution() {
+    use super::session_inventory::{PlanExecutionState, PlanExecutionSummary, plan_execution_summary};
+
+    let matching_none = PlanExecutionState {
+        plan_id: "plan-a".to_string(),
+        session_id: None,
+        project_name: "proj".to_string(),
+        is_busy: true,
+    };
+    let summary_none = plan_execution_summary("plan-a", Some(&matching_none));
+    assert_eq!(summary_none.session_id_marker, "capturing");
+    assert!(summary_none.is_executing);
+    assert!(!summary_none.execution_status.is_empty());
+
+    let matching_some = PlanExecutionState {
+        plan_id: "plan-a".to_string(),
+        session_id: Some("ses_plan".to_string()),
+        project_name: "proj".to_string(),
+        is_busy: true,
+    };
+    let summary_some = plan_execution_summary("plan-a", Some(&matching_some));
+    assert_eq!(summary_some.session_id_marker, "ses_plan");
+    assert!(summary_some.is_executing);
+    assert!(!summary_some.execution_status.is_empty());
+
+    let summary_absent = plan_execution_summary("plan-a", None);
+    assert_eq!(summary_absent.session_id_marker, "unavailable");
+    assert!(!summary_absent.is_executing);
+    assert!(!summary_absent.execution_status.is_empty());
+
+    let different = PlanExecutionState {
+        plan_id: "plan-b".to_string(),
+        session_id: Some("ses_other".to_string()),
+        project_name: "proj".to_string(),
+        is_busy: true,
+    };
+    let summary_diff = plan_execution_summary("plan-a", Some(&different));
+    assert_eq!(summary_diff.session_id_marker, "unavailable");
+    assert!(!summary_diff.is_executing);
+    assert!(!summary_diff.execution_status.is_empty());
+}
+
+#[tokio::test]
+async fn bridge_conversation_replacement_and_cleanup() {
+    use std::path::Path;
+    use std::sync::Arc;
+    use super::client::TelegramClient;
+    use super::opencode_bridge::{
+        BridgeTaskKind, OpenCodeBridge, extract_session_id_from_event,
+    };
+
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+
+    // Fresh bridge: no conversation id and no task.
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.conversation_session_id.is_none());
+    assert!(snap.task.is_none());
+
+    // begin_conversation clears conversation id, sets Conversation task.
+    bridge.begin_conversation(Path::new("/tmp/proj-a")).await;
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.conversation_session_id.is_none());
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.kind, BridgeTaskKind::Conversation);
+    assert!(task.is_busy);
+    assert_eq!(snap.conversation_project_name, Some("proj-a".to_string()));
+    assert_eq!(task.project_name, Some("proj-a".to_string()));
+
+    // record_conversation_session sets both ids.
+    bridge.record_conversation_session("ses_conv_1").await;
+    let snap = bridge.session_snapshot().await;
+    assert_eq!(snap.conversation_session_id, Some("ses_conv_1".to_string()));
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.session_id, Some("ses_conv_1".to_string()));
+
+    // begin_plan_execution sets Coding task, keeps conversation id.
+    bridge.begin_plan_execution(Path::new("/tmp/proj-b"), "plan-1").await;
+    let snap = bridge.session_snapshot().await;
+    assert_eq!(snap.conversation_session_id, Some("ses_conv_1".to_string()));
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.kind, BridgeTaskKind::Coding);
+    assert_eq!(task.plan_id, Some("plan-1".to_string()));
+    assert!(task.session_id.is_none());
+    assert!(task.is_busy);
+
+    // record_plan_execution_session sets task session id.
+    bridge.record_plan_execution_session("ses_plan_1").await;
+    let snap = bridge.session_snapshot().await;
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.session_id, Some("ses_plan_1".to_string()));
+
+    // finish_task removes task, conversation not busy, retains id.
+    bridge.finish_task().await;
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.task.is_none());
+    assert_eq!(snap.conversation_session_id, Some("ses_conv_1".to_string()));
+    assert!(!snap.conversation_busy);
+
+    // later begin_conversation replaces conversation.
+    bridge.begin_conversation(Path::new("/tmp/proj-c")).await;
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.conversation_session_id.is_none());
+    assert_eq!(snap.conversation_project_name, Some("proj-c".to_string()));
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.kind, BridgeTaskKind::Conversation);
+
+    bridge.record_conversation_session("ses_conv_2").await;
+    bridge.cancel_active_task().await;
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.conversation_session_id.is_none());
+    assert!(snap.task.is_none());
+}
+
+#[tokio::test]
+async fn bridge_plan_only_does_not_clear_conversation() {
+    use std::path::Path;
+    use std::sync::Arc;
+    use super::client::TelegramClient;
+    use super::opencode_bridge::OpenCodeBridge;
+
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+
+    bridge.begin_conversation(Path::new("/tmp/proj-a")).await;
+    bridge.record_conversation_session("ses_conv_1").await;
+
+    let before = bridge.session_snapshot().await;
+    bridge.begin_plan_execution(Path::new("/tmp/proj-b"), "plan-1").await;
+    let after = bridge.session_snapshot().await;
+
+    assert_eq!(before.conversation_session_id, after.conversation_session_id);
+    assert_eq!(before.conversation_project_name, after.conversation_project_name);
+    assert_eq!(before.conversation_busy, after.conversation_busy);
+
+    bridge.finish_task().await;
+    let snap = bridge.session_snapshot().await;
+    assert_eq!(snap.conversation_session_id, Some("ses_conv_1".to_string()));
+}
+
+#[test]
+fn bridge_extract_session_id_from_events() {
+    use super::opencode_bridge::extract_session_id_from_event;
+    use serde_json::json;
+
+    assert_eq!(
+        extract_session_id_from_event(&json!({"sessionID": "ses_v1"})),
+        Some("ses_v1".to_string())
+    );
+    assert_eq!(
+        extract_session_id_from_event(&json!({"part": {"sessionId": "ses_v2"}})),
+        Some("ses_v2".to_string())
+    );
+    assert_eq!(
+        extract_session_id_from_event(&json!({"part": {"session_id": "ses_shadow"}})),
+        Some("ses_shadow".to_string())
+    );
+    assert_eq!(
+        extract_session_id_from_event(&json!({"type": "text", "part": {"text": "hi"}})),
+        None
+    );
+    assert_eq!(extract_session_id_from_event(&json!({})), None);
+}
+
+#[test]
+fn hosted_progress_paths_probe_opencode_database() {
+    let (db_path, log_path) = super::session_supervisor::hosted_progress_paths();
+    assert_eq!(db_path, super::opencode_inspector::resolve_opencode_db_path());
+    assert_eq!(log_path, super::opencode_inspector::resolve_opencode_log_path());
+    assert!(db_path.to_string_lossy().contains(".local/share/opencode/opencode.db"));
+    assert!(log_path.to_string_lossy().contains(".local/share/opencode/log/opencode.log"));
+}
+
+#[test]
+fn hosted_progress_reads_step_and_todos_by_session_id() {
+    use rusqlite::Connection;
+
+    let base = std::env::temp_dir().join(format!(
+        "onespace_hosted_progress_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let db_path = base.join("opencode.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE part(session_id TEXT, data TEXT, time_created INTEGER);
+             CREATE TABLE todo(session_id TEXT, position INTEGER, status TEXT, content TEXT);
+             CREATE TABLE session(id TEXT, tokens_input INTEGER, tokens_output INTEGER);
+             CREATE TABLE session_v2(id TEXT, tokens_input INTEGER, tokens_output INTEGER);",
+        )
+        .unwrap();
+
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO part(session_id, data, time_created) VALUES (?1, ?2, ?3)",
+                rusqlite::params!["ses_hosted_progress", r#"{"type":"step-start"}"#, i],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO todo(session_id, position, status, content) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["ses_hosted_progress", 0i32, "completed", "完成审计"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO todo(session_id, position, status, content) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["ses_hosted_progress", 1i32, "in_progress", "补齐测试"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO session(id, tokens_input, tokens_output) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["ses_hosted_progress", 1200i64, 300i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2(id, tokens_input, tokens_output) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["ses_hosted_progress", 1200i64, 300i64],
+        )
+        .unwrap();
+    }
+
+    let snap = super::session_supervisor::inspect_session_db(&db_path, "ses_hosted_progress")
+        .expect("snapshot should exist");
+    assert_eq!(snap.cur_step, 3);
+    assert_eq!(
+        snap.todos,
+        vec![
+            ("完成审计".to_string(), "completed".to_string()),
+            ("补齐测试".to_string(), "in_progress".to_string()),
+        ]
+    );
+    assert_eq!(snap.tokens, (1200, 300));
+
+    let missing = super::session_supervisor::inspect_session_db(&db_path, "ses_missing");
+    if let Some(s) = missing {
+        assert_eq!(s.cur_step, 0);
+        assert!(s.todos.is_empty());
+    }
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn router_parse_sessions_command() {
+    use super::router::{parse_sessions_command, SessionsCommand};
+    assert_eq!(parse_sessions_command("/sessions"), Some(SessionsCommand::Overview));
+    assert_eq!(
+        parse_sessions_command("/sessions ses_abc"),
+        Some(SessionsCommand::Detail("ses_abc".to_string()))
+    );
+    assert_eq!(
+        parse_sessions_command("/sessions   ses_abc  "),
+        Some(SessionsCommand::Detail("ses_abc".to_string()))
+    );
+    assert_eq!(parse_sessions_command("/sessionsfoo"), None);
+    assert_eq!(parse_sessions_command("/prompt"), None);
+}
+
+#[test]
+fn card_builder_help_consolidates_sessions() {
+    let help = super::card_builder::CardBuilder::help_card();
+    assert!(help.contains("/sessions"));
+    assert!(help.contains("/plans"));
+    assert!(!help.contains("/running"));
+    assert!(!help.contains("/progress"));
+}
+
+#[test]
+fn card_builder_session_redirect_texts() {
+    let s = super::card_builder::CardBuilder::sessions_redirect_text();
+    assert!(s.contains("/sessions"));
+    let p = super::card_builder::CardBuilder::progress_redirect_text(Some("plan-1"));
+    assert!(p.contains("/sessions plan-1"));
+    let pn = super::card_builder::CardBuilder::progress_redirect_text(None);
+    assert!(pn.contains("/sessions"));
+    assert!(pn.contains("/plans"));
+    let mentions_plan_id = pn.contains("plan ID")
+        || pn.contains("plan id")
+        || pn.contains("plan_id")
+        || pn.contains("planId")
+        || pn.to_lowercase().contains("id");
+    assert!(mentions_plan_id);
+    let pr = super::card_builder::CardBuilder::prompt_sessions_redirect_text();
+    assert!(pr.contains("/sessions"));
+}
+
+#[test]
+fn plans_list_card_preserved() {
+    let (text, markup) = super::card_builder::CardBuilder::plans_list_card(
+        "proj",
+        &[("plan-1".to_string(), "🟡 `实施中`".to_string(), false)],
+    );
+    assert!(text.contains("plan-1"));
+    assert!(text.contains("🟡 `实施中`"));
+    let mut has_progress = false;
+    for row in &markup.inline_keyboard {
+        for btn in row {
+            if let Some(cd) = &btn.callback_data {
+                if cd == "check_progress:plan-1" {
+                    has_progress = true;
+                }
+            }
+        }
+    }
+    assert!(has_progress);
+}
+
+#[test]
+fn card_builder_session_detail() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind, SessionProgressDetail};
+    use super::types::OpenCodeTodoInfo;
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Terminal,
+        kinds: vec![SessionEntryKind::Terminal],
+        session_id: Some("ses_x".to_string()),
+        session_id_marker: "ses_x".to_string(),
+        plan_id: None,
+        pid: Some(4321),
+        project_name: "proj-a".to_string(),
+        status_label: "Busy".to_string(),
+        is_busy: true,
+    };
+
+    let (text, markup) = CardBuilder::session_detail_card(&entry, None);
+    assert!(text.contains("ses_x"));
+    assert!(text.contains("4321"));
+    assert!(text.contains("proj-a"));
+    assert!(text.contains("unavailable"));
+
+    let progress = SessionProgressDetail {
+        current_step: Some(7),
+        last_tool: Some("bash".to_string()),
+        last_tool_status: Some("completed".to_string()),
+        last_tool_input_preview: Some("cargo test".to_string()),
+        todos: vec![OpenCodeTodoInfo {
+            position: 0,
+            status: "completed".into(),
+            content: "完成审计".into(),
+        }],
+    };
+    let (text2, _) = CardBuilder::session_detail_card(&entry, Some(&progress));
+    assert!(text2.contains("7"));
+    assert!(text2.contains("bash"));
+    assert!(text2.contains("完成审计"));
+
+    let markup = markup.unwrap();
+    let mut has_refresh = false;
+    let mut has_prompt = false;
+    for row in &markup.inline_keyboard {
+        for btn in row {
+            if let Some(cd) = &btn.callback_data {
+                if cd == "refresh_ext_session:4321" {
+                    has_refresh = true;
+                }
+                if cd == "prompt_ext_session:4321" {
+                    has_prompt = true;
+                }
+            }
+        }
+    }
+    assert!(has_refresh);
+    assert!(has_prompt);
+}
+
+#[test]
+fn card_builder_plan_session_detail() {
+    use super::card_builder::CardBuilder;
+    use super::plan_progress::{PlanProgressInfo, PlanExecutionStatus};
+    use super::session_inventory::PlanExecutionState;
+
+    let info = PlanProgressInfo {
+        plan_id: "plan-1".to_string(),
+        status: PlanExecutionStatus::InProgress,
+        started_at: Some("2026-11-09T10:00:00+08:00".to_string()),
+        completed_at: None,
+        elapsed_desc: Some("1 分 2 秒".to_string()),
+        commit_hash: Some("abc123".to_string()),
+        has_worktree: true,
+        worktree_branch: Some("ai-workflow/plan-1".to_string()),
+        steps: vec!["Step 1: 实施".to_string()],
+        report_files: vec![("step1.log".to_string(), "10:00:00".to_string())],
+    };
+
+    let (text, markup) = CardBuilder::plan_session_detail_card(&info, None);
+    assert!(text.contains("plan-1"));
+    assert!(text.contains("Step 1: 实施"));
+    assert!(text.contains("abc123"));
+    assert!(text.contains("ai-workflow/plan-1"));
+    assert!(text.contains("unavailable"));
+    assert!(!text.contains("ses_"));
+
+    let exec_none = PlanExecutionState {
+        plan_id: "plan-1".to_string(),
+        session_id: None,
+        project_name: "proj".to_string(),
+        is_busy: true,
+    };
+    let (text2, _) = CardBuilder::plan_session_detail_card(&info, Some(&exec_none));
+    assert!(text2.contains("capturing"));
+
+    let exec_some = PlanExecutionState {
+        plan_id: "plan-1".to_string(),
+        session_id: Some("ses_plan".to_string()),
+        project_name: "proj".to_string(),
+        is_busy: true,
+    };
+    let (text3, _) = CardBuilder::plan_session_detail_card(&info, Some(&exec_some));
+    assert!(text3.contains("ses_plan"));
+
+    let markup = markup.unwrap();
+    let mut has_check = false;
+    for row in &markup.inline_keyboard {
+        for btn in row {
+            if let Some(cd) = &btn.callback_data {
+                if cd == "check_progress:plan-1" {
+                    has_check = true;
+                }
+            }
+        }
+    }
+    assert!(has_check);
+}
+
+#[test]
+fn card_builder_identifier_error() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::IdentifierResolution;
+
+    let t1 = CardBuilder::identifier_error_text("nope", &IdentifierResolution::Unknown);
+    assert!(t1.contains("nope"));
+    assert!(!t1.contains("ses_"));
+
+    let t2 = CardBuilder::identifier_error_text(
+        "dup",
+        &IdentifierResolution::Ambiguous(vec!["ses_a".to_string(), "ses_b".to_string()]),
+    );
+    assert!(t2.contains("ses_a"));
+    assert!(t2.contains("ses_b"));
+}
+
+#[test]
+fn card_builder_session_detail_idle_has_no_dead_actions() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind};
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Terminal,
+        kinds: vec![SessionEntryKind::Terminal],
+        session_id: Some("ses_idle".to_string()),
+        session_id_marker: "ses_idle".to_string(),
+        plan_id: None,
+        pid: Some(222),
+        project_name: "proj-idle".to_string(),
+        status_label: "Idle".to_string(),
+        is_busy: false,
+    };
+
+    let (_text, markup) = CardBuilder::session_detail_card(&entry, None);
+    if let Some(mk) = markup {
+        for row in &mk.inline_keyboard {
+            for btn in row {
+                if let Some(cd) = &btn.callback_data {
+                    assert!(!cd.contains("refresh_ext_session:"), "dead callback: {cd}");
+                    assert!(!cd.contains("prompt_ext_session:"), "dead callback: {cd}");
+                    assert!(!cd.contains("diff_ext_session:"), "dead callback: {cd}");
+                    assert!(!cd.contains("start_host:"), "dead callback: {cd}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn card_builder_session_detail_hosted_actions() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind};
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Hosted,
+        kinds: vec![SessionEntryKind::Hosted, SessionEntryKind::Terminal],
+        session_id: Some("ses_hosted".to_string()),
+        session_id_marker: "ses_hosted".to_string(),
+        plan_id: None,
+        pid: Some(444),
+        project_name: "proj-hosted".to_string(),
+        status_label: "Hosted".to_string(),
+        is_busy: false,
+    };
+
+    let (_text, markup) = CardBuilder::session_detail_card(&entry, None);
+    let markup = markup.expect("hosted detail must have markup");
+    let mut has_toggle = false;
+    let mut has_stop = false;
+    let mut has_start = false;
+    for row in &markup.inline_keyboard {
+        for btn in row {
+            if let Some(cd) = &btn.callback_data {
+                if cd.contains("toggle_host_mode:ses_hosted") {
+                    has_toggle = true;
+                }
+                if cd.contains("stop_host:ses_hosted") {
+                    has_stop = true;
+                }
+                if cd.contains("start_host:") {
+                    has_start = true;
+                }
+            }
+        }
+    }
+    assert!(has_toggle, "missing toggle_host_mode:ses_hosted");
+    assert!(has_stop, "missing stop_host:ses_hosted");
+    assert!(!has_start, "must not contain start_host:");
+}

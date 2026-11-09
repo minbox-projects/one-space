@@ -6,6 +6,7 @@ pub mod opencode_bridge;
 pub mod opencode_inspector;
 pub mod plan_progress;
 pub mod router;
+pub mod session_inventory;
 pub mod session_supervisor;
 pub mod storage;
 pub mod types;

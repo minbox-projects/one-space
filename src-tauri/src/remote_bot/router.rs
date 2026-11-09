@@ -10,6 +10,30 @@ use super::opencode_bridge::OpenCodeBridge;
 use super::storage::{load_config, save_config};
 use super::types::{InlineKeyboardButton, InlineKeyboardMarkup, PromptTargetSession, TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
 
+/// `/sessions` 的两种命令形态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionsCommand {
+    Overview,
+    Detail(String),
+}
+
+/// 仅接受精确的 `/sessions` 或 `/sessions <arg>` 边界。
+pub fn parse_sessions_command(text: &str) -> Option<SessionsCommand> {
+    let rest = text.trim().strip_prefix("/sessions")?;
+    if rest.is_empty() {
+        return Some(SessionsCommand::Overview);
+    }
+    if !rest.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let arg = rest.trim();
+    if arg.is_empty() {
+        Some(SessionsCommand::Overview)
+    } else {
+        Some(SessionsCommand::Detail(arg.to_string()))
+    }
+}
+
 pub struct CommandRouter {
     client: Arc<TelegramClient>,
     bridge: Arc<OpenCodeBridge>,
@@ -84,9 +108,19 @@ impl CommandRouter {
         if text.starts_with("/start") || text.starts_with("/help") {
             let help_text = CardBuilder::help_card();
             self.client.send_message(chat_id, &help_text, None, Some("Markdown")).await?;
-        } else if text == "/running" || text.starts_with("/running") || text == "/sessions" || text.starts_with("/sessions") {
-            self.handle_running_command(chat_id).await?;
-        } else if text == "/host" || text.starts_with("/host ") || text == "/hosts" {
+        } else if let Some(command) = parse_sessions_command(text) {
+            self.handle_sessions_command(chat_id, command).await?;
+        } else if text.starts_with("/running") {
+            let redirect = CardBuilder::sessions_redirect_text();
+            self.client
+                .send_message(chat_id, &redirect, None, Some("Markdown"))
+                .await?;
+        } else if text == "/host" || text == "/hosts" {
+            let redirect = CardBuilder::sessions_redirect_text();
+            self.client
+                .send_message(chat_id, &redirect, None, Some("Markdown"))
+                .await?;
+        } else if text.starts_with("/host ") {
             self.handle_host_command(chat_id, text).await?;
         } else if text == "/unhost" {
             self.handle_unhost_command(chat_id).await?;
@@ -101,7 +135,12 @@ impl CommandRouter {
         } else if text == "/plans" {
             self.handle_plans_command(chat_id).await?;
         } else if text.starts_with("/progress") {
-            self.handle_progress_command(chat_id, text).await?;
+            let arg = text.trim_start_matches("/progress").trim();
+            let plan_id = (!arg.is_empty()).then_some(arg);
+            let redirect = CardBuilder::progress_redirect_text(plan_id);
+            self.client
+                .send_message(chat_id, &redirect, None, Some("Markdown"))
+                .await?;
         } else if text.starts_with("/diff") {
             self.handle_diff_command(chat_id, text).await?;
         } else if text == "/cancel" {
@@ -323,6 +362,158 @@ impl CommandRouter {
         Ok(())
     }
 
+    /// 聚合外部终端、托管、Telegram 会话与当前方案执行会话。
+    async fn collect_session_inventory(&self) -> Vec<super::session_inventory::SessionEntry> {
+        use super::session_inventory::{
+            build_session_entries, ConversationSessionState, PlanExecutionState,
+            SessionInventorySources,
+        };
+
+        let external = super::opencode_inspector::discover_inventory_opencode_sessions().await;
+        let hosted = self.supervisor.list_hosted_sessions(None).await;
+        let snapshot = self.bridge.session_snapshot().await;
+
+        let conversation = if snapshot.conversation_session_id.is_some()
+            || snapshot.conversation_project_name.is_some()
+            || snapshot.conversation_busy
+        {
+            Some(ConversationSessionState {
+                session_id: snapshot.conversation_session_id,
+                project_name: snapshot.conversation_project_name,
+                is_busy: snapshot.conversation_busy,
+            })
+        } else {
+            None
+        };
+
+        let plan_execution = snapshot.task.and_then(|task| {
+            if task.kind == super::opencode_bridge::BridgeTaskKind::Coding
+                && task.plan_id.is_some()
+                && task.is_busy
+            {
+                Some(PlanExecutionState {
+                    plan_id: task.plan_id.unwrap_or_default(),
+                    session_id: task.session_id,
+                    project_name: task.project_name.unwrap_or_default(),
+                    is_busy: task.is_busy,
+                })
+            } else {
+                None
+            }
+        });
+
+        build_session_entries(&SessionInventorySources {
+            external,
+            hosted,
+            conversation,
+            plan_execution,
+        })
+    }
+
+    /// 仅当桥接任务正在实施的方案 ID 匹配时，返回当前执行状态。
+    async fn current_plan_execution_state(
+        &self,
+        plan_id: &str,
+    ) -> Option<super::session_inventory::PlanExecutionState> {
+        use super::opencode_bridge::BridgeTaskKind;
+
+        let snapshot = self.bridge.session_snapshot().await;
+        snapshot.task.and_then(|task| {
+            if task.kind == BridgeTaskKind::Coding
+                && task.is_busy
+                && task.plan_id.as_deref() == Some(plan_id)
+            {
+                Some(super::session_inventory::PlanExecutionState {
+                    plan_id: task.plan_id.unwrap_or_default(),
+                    session_id: task.session_id,
+                    project_name: task.project_name.unwrap_or_default(),
+                    is_busy: task.is_busy,
+                })
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn handle_sessions_command(
+        &self,
+        chat_id: i64,
+        command: SessionsCommand,
+    ) -> Result<(), String> {
+        match command {
+            SessionsCommand::Overview => {
+                let entries = self.collect_session_inventory().await;
+                let (text, markup) = super::session_inventory::format_sessions_overview(&entries);
+                self.client
+                    .send_message(chat_id, &text, markup, Some("Markdown"))
+                    .await?;
+            }
+            SessionsCommand::Detail(identifier) => {
+                let entries = self.collect_session_inventory().await;
+                match super::session_inventory::resolve_session_identifier(&entries, &identifier) {
+                    super::session_inventory::IdentifierResolution::Session(entry) => {
+                        let progress = entry.session_id.as_deref().and_then(|session_id| {
+                            super::session_inventory::lookup_session_progress(
+                                session_id,
+                                &super::opencode_inspector::resolve_opencode_db_path(),
+                            )
+                        });
+                        let (text, markup) =
+                            CardBuilder::session_detail_card(&entry, progress.as_ref());
+                        self.client
+                            .send_message(chat_id, &text, markup, Some("Markdown"))
+                            .await?;
+                    }
+                    super::session_inventory::IdentifierResolution::Plan { plan_id, .. } => {
+                        let config = load_config()?;
+                        let project_dir = resolve_project_dir(&config);
+                        match super::plan_progress::get_plan_progress(&project_dir, &plan_id) {
+                            Ok(info) => {
+                                let execution =
+                                    self.current_plan_execution_state(&info.plan_id).await;
+                                let (text, markup) = CardBuilder::plan_session_detail_card(
+                                    &info,
+                                    execution.as_ref(),
+                                );
+                                self.client
+                                    .send_message(chat_id, &text, markup, Some("Markdown"))
+                                    .await?;
+                            }
+                            Err(_) => {
+                                let text = CardBuilder::identifier_error_text(
+                                    &identifier,
+                                    &super::session_inventory::IdentifierResolution::Unknown,
+                                );
+                                self.client
+                                    .send_message(chat_id, &text, None, Some("Markdown"))
+                                    .await?;
+                            }
+                        }
+                    }
+                    super::session_inventory::IdentifierResolution::Ambiguous(candidates) => {
+                        let text = CardBuilder::identifier_error_text(
+                            &identifier,
+                            &super::session_inventory::IdentifierResolution::Ambiguous(candidates),
+                        );
+                        self.client
+                            .send_message(chat_id, &text, None, Some("Markdown"))
+                            .await?;
+                    }
+                    super::session_inventory::IdentifierResolution::Unknown => {
+                        let text = CardBuilder::identifier_error_text(
+                            &identifier,
+                            &super::session_inventory::IdentifierResolution::Unknown,
+                        );
+                        self.client
+                            .send_message(chat_id, &text, None, Some("Markdown"))
+                            .await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn handle_host_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
         let arg = text.trim_start_matches("/host").trim_start_matches("s").trim();
 
@@ -343,7 +534,7 @@ impl CommandRouter {
                 }
                 return Ok(());
             } else {
-                self.client.send_message(chat_id, &format!("⚠️ 未找到匹配 `{}` 的正在运行会话。\n输入 `/running` 查看当前活跃会话。", arg), None, None).await?;
+                self.client.send_message(chat_id, &format!("⚠️ 未找到匹配 `{}` 的正在运行会话。\n输入 `/sessions` 查看当前活跃会话。", arg), None, None).await?;
                 return Ok(());
             }
         }
@@ -461,26 +652,11 @@ impl CommandRouter {
                 self.dispatch_prompt_to_session(chat_id, target, raw_prompt).await?;
             }
         } else {
-            // 多个外部会话
-            if raw_prompt.is_empty() {
-                let (list_text, markup) = CardBuilder::multiple_external_sessions_card(&sessions);
-                self.client.send_message(chat_id, &list_text, Some(markup), Some("Markdown")).await?;
-            } else {
-                let mut prompt_buttons = Vec::new();
-                for (idx, sess) in sessions.iter().enumerate() {
-                    let label = format!("{} 投递给: {} (PID: {})", CardBuilder::number_badge(idx + 1), sess.project_name, sess.pid);
-                    prompt_buttons.push(vec![
-                        InlineKeyboardButton::callback(label, format!("prompt_ext_session:{}", sess.pid)),
-                    ]);
-                }
-                let choose_text = format!(
-                    "💬 *检测到多个运行中的外部会话*\n\
-                    > 准备发送提示词: `{}`\n\n\
-                    请点击下方按钮选择目标会话：",
-                    raw_prompt
-                );
-                self.client.send_message(chat_id, &choose_text, Some(InlineKeyboardMarkup::new(prompt_buttons)), Some("Markdown")).await?;
-            }
+            // 多个外部会话：统一引导至 /sessions，不再渲染独立选择器
+            let redirect = CardBuilder::prompt_sessions_redirect_text();
+            self.client
+                .send_message(chat_id, &redirect, None, Some("Markdown"))
+                .await?;
         }
 
         Ok(())
@@ -793,77 +969,6 @@ impl CommandRouter {
         Ok(())
     }
 
-    async fn handle_progress_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
-        let config = load_config()?;
-        let project_dir = resolve_project_dir(&config);
-
-        let arg = text.trim_start_matches("/progress").trim();
-        let target_plan_id = if !arg.is_empty() {
-            Some(arg.to_string())
-        } else {
-            // 自动寻找正在运行的 planId
-            super::plan_progress::find_active_plan_id(&project_dir)
-                .or_else(|| {
-                    // 若无活跃的，取 plans 目录最近更新的一个方案
-                    let plans_dir = project_dir.join(".ai-workflow").join("plans");
-                    if let Ok(entries) = std::fs::read_dir(&plans_dir) {
-                        let mut candidates: Vec<(String, std::time::SystemTime)> = entries.flatten()
-                            .filter(|e| e.path().join("plan.md").is_file())
-                            .map(|e| {
-                                let mtime = e.path().metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                                (e.file_name().to_string_lossy().to_string(), mtime)
-                            })
-                            .collect();
-                        candidates.sort_by(|a, b| b.1.cmp(&a.1));
-                        candidates.into_iter().next().map(|(id, _)| id)
-                    } else {
-                        None
-                    }
-                })
-        };
-
-        let plan_id = match target_plan_id {
-            Some(id) => id,
-            None => {
-                // 如果当前工作区无方案，但检测到终端有外部运行中的 OpenCode 会话，则直接展示外部会话进度
-                let ext_sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
-                if !ext_sessions.is_empty() {
-                    return self.handle_running_command(chat_id).await;
-                }
-
-                self.client.send_message(
-                    chat_id,
-                    "📂 当前工作区未检测到任何方案，亦无正在实施中的任务。\n发送 `/running` 可探测终端运行中的会话，发送 `/help` 查看说明。",
-                    None,
-                    None,
-                ).await?;
-                return Ok(());
-            }
-        };
-
-        match super::plan_progress::get_plan_progress(&project_dir, &plan_id) {
-            Ok(info) => {
-                let (msg, markup) = super::plan_progress::format_plan_progress_message(&info);
-                self.client.send_message(
-                    chat_id,
-                    &msg,
-                    markup,
-                    Some("Markdown"),
-                ).await?;
-            }
-            Err(e) => {
-                self.client.send_message(
-                    chat_id,
-                    &format!("⚠️ 获取方案进度失败: {}", e),
-                    None,
-                    None,
-                ).await?;
-            }
-        }
-
-        Ok(())
-    }
-
     async fn handle_coding_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
         let config = load_config()?;
         let project_dir = resolve_project_dir(&config);
@@ -989,7 +1094,9 @@ impl CommandRouter {
 
             match super::plan_progress::get_plan_progress(&project_dir, plan_id) {
                 Ok(info) => {
-                    let (msg, markup) = super::plan_progress::format_plan_progress_message(&info);
+                    let execution = self.current_plan_execution_state(&info.plan_id).await;
+                    let (msg, markup) =
+                        CardBuilder::plan_session_detail_card(&info, execution.as_ref());
                     if let Some(ref m) = cb.message {
                         let _ = self.client.edit_message_text(
                             m.chat.id,
@@ -1175,7 +1282,7 @@ impl CommandRouter {
                         let _ = self.client.edit_message_text(
                             msg.chat.id,
                             msg.message_id,
-                            &format!("⚠️ PID `{}` 的外部 OpenCode 会话已退出或结束运行。\n发送 `/running` 可重新扫描会话列表。", pid),
+                            &format!("⚠️ PID `{}` 的外部 OpenCode 会话已退出或结束运行。\n发送 `/sessions` 可重新扫描会话列表。", pid),
                             None,
                             Some("Markdown"),
                         ).await;
@@ -1368,7 +1475,7 @@ impl CommandRouter {
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             self.pending_prompt_targets.write().await.remove(&chat_id);
             if let Some(ref msg) = cb.message {
-                let cancel_text = "❎ *已取消向会话发送提示词*\n\n您可以随时发送 `/running` 查看会话进度或重新发起交互。";
+                let cancel_text = "❎ *已取消向会话发送提示词*\n\n您可以随时发送 `/sessions` 查看会话进度或重新发起交互。";
                 let _ = self.client.edit_message_text(
                     msg.chat.id,
                     msg.message_id,

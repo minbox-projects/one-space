@@ -115,7 +115,7 @@ impl SessionSupervisor {
             record.cancel_flag.store(true, Ordering::Relaxed);
             self.active_questions.write().await.remove(session_id);
 
-            let text = format!("🛑 *已退出对会话 `{}` 的托管守护*\n\n会话已恢复为普通外部运行状态，可随时使用 `/running` 或 `/host` 重新接管。", session_id);
+            let text = format!("🛑 *已退出对会话 `{}` 的托管守护*\n\n会话已恢复为普通外部运行状态，可随时使用 `/sessions` 或 `/host` 重新接管。", session_id);
             let _ = self.client.send_message(record.info.chat_id, &text, None, Some("Markdown")).await;
             true
         } else {
@@ -233,14 +233,7 @@ impl SessionSupervisor {
         let active_questions = self.active_questions.clone();
 
         tokio::spawn(async move {
-            let db_path = match dirs::data_local_dir() {
-                Some(p) => p.join("opencode").join("opencode.db"),
-                None => return,
-            };
-            let log_path = match dirs::data_local_dir() {
-                Some(p) => p.join("opencode").join("log").join("opencode.log"),
-                None => return,
-            };
+            let (db_path, log_path) = hosted_progress_paths();
 
             let mut last_step: u32 = 0;
             let mut known_completed_todos: HashSet<String> = HashSet::new();
@@ -416,16 +409,28 @@ impl SessionSupervisor {
     }
 }
 
+/// 解析托管进度读取所用的 OpenCode 数据库与日志路径，
+/// 与终端会话发现共用同一来源，确保 macOS 上也读取相同位置。
+pub(super) fn hosted_progress_paths() -> (PathBuf, PathBuf) {
+    (
+        super::opencode_inspector::resolve_opencode_db_path(),
+        super::opencode_inspector::resolve_opencode_log_path(),
+    )
+}
+
 /// 数据库查询快照（确保均为 Send 类型）
-struct SessionInspectionSnapshot {
-    cur_step: u32,
-    todos: Vec<(String, String)>,
-    pending_question: Option<(String, String, Vec<HostedOptionItem>)>,
-    tokens: (i64, i64),
+pub(super) struct SessionInspectionSnapshot {
+    pub(super) cur_step: u32,
+    pub(super) todos: Vec<(String, String)>,
+    pub(super) pending_question: Option<(String, String, Vec<HostedOptionItem>)>,
+    pub(super) tokens: (i64, i64),
 }
 
 /// 纯同步查询 SQLite 数据库，避免 Connection 跨越 await 点
-fn inspect_session_db(db_path: &Path, session_id: &str) -> Option<SessionInspectionSnapshot> {
+pub(super) fn inspect_session_db(
+    db_path: &Path,
+    session_id: &str,
+) -> Option<SessionInspectionSnapshot> {
     let conn = Connection::open_with_flags(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI,

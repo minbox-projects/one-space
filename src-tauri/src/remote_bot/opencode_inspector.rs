@@ -5,6 +5,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use tokio::process::Command;
 
+use super::session_inventory::is_subagent_session;
 use super::types::{ExternalOpenCodeSessionInfo, OpenCodeTodoInfo};
 
 /// 获取本机 OpenCode 默认存储与数据库路径
@@ -21,8 +22,8 @@ pub fn resolve_opencode_log_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/nonexistent/opencode.log"))
 }
 
-/// 扫描并发现所有非 OneSpace 启动的、正在运行的 OpenCode 会话
-pub async fn discover_external_opencode_sessions() -> Vec<ExternalOpenCodeSessionInfo> {
+/// 扫描本机所有非 OneSpace 启动的 OpenCode 会话原始记录（含 busy/idle 与暂未识别 session_id 的进程）
+async fn collect_external_opencode_sessions() -> Vec<ExternalOpenCodeSessionInfo> {
     let raw_processes = match fetch_running_opencode_processes().await {
         Ok(procs) => procs,
         Err(e) => {
@@ -95,22 +96,36 @@ pub async fn discover_external_opencode_sessions() -> Vec<ExternalOpenCodeSessio
         sessions.push(session_info);
     }
 
-    // 1. 过滤已处于 Idle 状态的会话：仅保留真正处于运行中 (Busy) 的会话
+    sessions
+}
+
+/// 发现用于统一会话清单的外部终端会话：保留 busy 与 idle 的主代理会话，
+/// 包括暂时无法读取 session_id 的进程。
+pub async fn discover_inventory_opencode_sessions() -> Vec<ExternalOpenCodeSessionInfo> {
+    let mut sessions = collect_external_opencode_sessions().await;
+    sessions.retain(is_listable_terminal_session);
+    sort_and_dedupe_external_sessions(&mut sessions);
+    sessions
+}
+
+/// 扫描并发现所有非 OneSpace 启动的、正在运行的 OpenCode 会话。
+///
+/// 保留既有 `/host`、`/prompt`、`/status` 调用方语义：仅返回 busy 且已识别
+/// session_id 的主代理会话。
+pub async fn discover_external_opencode_sessions() -> Vec<ExternalOpenCodeSessionInfo> {
+    let mut sessions = collect_external_opencode_sessions().await;
     sessions.retain(|sess| sess.is_busy);
+    sessions.retain(|sess| sess.session_id.is_some() && is_listable_terminal_session(sess));
+    sort_and_dedupe_external_sessions(&mut sessions);
+    sessions
+}
 
-    // 2. 仅允许显示主代理会话：必须具备有效 session_id 且排除包含 subagent 标识的子会话
-    sessions.retain(|sess| {
-        if sess.session_id.is_none() {
-            return false;
-        }
-        if let Some(ref t) = sess.title {
-            if t.contains("(@") && t.contains("subagent)") {
-                return false;
-            }
-        }
-        true
-    });
+/// 判断会话记录是否为可列出的主代理终端会话。
+pub fn is_listable_terminal_session(info: &ExternalOpenCodeSessionInfo) -> bool {
+    !is_subagent_session(info.title.as_deref(), None)
+}
 
+fn sort_and_dedupe_external_sessions(sessions: &mut Vec<ExternalOpenCodeSessionInfo>) {
     // 按 updated_at 或 pid 倒序排列，优先展示最新活跃的会话
     sessions.sort_by(|a, b| {
         b.updated_at
@@ -119,17 +134,12 @@ pub async fn discover_external_opencode_sessions() -> Vec<ExternalOpenCodeSessio
             .then_with(|| b.pid.cmp(&a.pid))
     });
 
-    // 3. 严格按 session_id 去重：若多个进程关联同一会话，仅展示一条最新活跃会话
+    // 严格按 session_id 去重：若多个进程关联同一会话，仅展示一条最新活跃会话
     let mut seen_sids = std::collections::HashSet::new();
-    sessions.retain(|sess| {
-        if let Some(ref sid) = sess.session_id {
-            seen_sids.insert(sid.clone())
-        } else {
-            true
-        }
+    sessions.retain(|sess| match &sess.session_id {
+        Some(sid) => seen_sids.insert(sid.clone()),
+        None => true,
     });
-
-    sessions
 }
 
 /// 内部进程探测原始结构
@@ -338,11 +348,9 @@ fn enrich_session_from_db(
             ))
         }).ok()?;
 
-        // 防御性过滤：若标题带有 subagent 标识，跳过
-        if let Some(ref t) = row_opt.1 {
-            if t.contains("(@") && t.contains("subagent)") {
-                return None;
-            }
+        // 防御性过滤：标题带有 subagent 标识的会话不是主代理会话
+        if is_subagent_session(row_opt.1.as_deref(), None) {
+            return None;
         }
 
         Some(row_opt)
@@ -491,7 +499,7 @@ fn parse_model_id(raw_model: &str) -> String {
 }
 
 /// 提取工具调用的参数简要预览
-fn extract_tool_input_preview(v: &Value) -> Option<String> {
+pub(super) fn extract_tool_input_preview(v: &Value) -> Option<String> {
     let input = v.get("state").and_then(|s| s.get("input"))?;
 
     if let Some(cmd) = input.get("command").and_then(|c| c.as_str()) {
