@@ -92,6 +92,56 @@ impl CardBuilder {
         format!("{}{}", badge, label)
     }
 
+    /// UTF-8 安全地按字符截断文本；`ellipsis` 为真时以 `…` 收尾。
+    fn clip_chars(value: &str, max_chars: usize, ellipsis: bool) -> String {
+        if value.chars().count() <= max_chars {
+            return value.to_string();
+        }
+        let keep = if ellipsis {
+            max_chars.saturating_sub(1)
+        } else {
+            max_chars
+        };
+        let mut clipped: String = value.chars().take(keep).collect();
+        if ellipsis {
+            clipped.push('…');
+        }
+        clipped
+    }
+
+    /// 通用快捷入口：会话、状态、帮助。
+    pub fn quick_actions() -> InlineKeyboardMarkup {
+        InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("📋 会话", "open_sessions"),
+            InlineKeyboardButton::callback("📊 状态", "open_status"),
+            InlineKeyboardButton::callback("❓ 帮助", "open_help"),
+        ]])
+    }
+
+    /// 会话相关响应的下一步：会话概览或方案列表。
+    pub fn sessions_actions() -> InlineKeyboardMarkup {
+        InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("📋 会话", "open_sessions"),
+            InlineKeyboardButton::callback("📝 方案", "open_plans"),
+        ]])
+    }
+
+    /// 项目相关响应的下一步：项目列表或会话概览。
+    pub fn projects_actions() -> InlineKeyboardMarkup {
+        InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("📂 项目", "open_projects"),
+            InlineKeyboardButton::callback("📋 会话", "open_sessions"),
+        ]])
+    }
+
+    /// 提示词投递确认后的下一步：取消任务或查看会话。
+    pub fn prompt_ack_actions() -> InlineKeyboardMarkup {
+        InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("🛑 取消任务", "cancel_task"),
+            InlineKeyboardButton::callback("📋 会话", "open_sessions"),
+        ]])
+    }
+
     // =========================================================================
     // 1. 接入与鉴权类卡片 (3 个)
     // =========================================================================
@@ -105,6 +155,8 @@ impl CardBuilder {
             > ├─ 本地主机: `{}`\n\
             > └─ 通信状态: `🟢 活跃连接 (Long-Polling)`\n\n\
             📌 *常用快捷指令*\n\
+            • `/sessions` ── 选择并查看运行中的会话\n\
+            • `/prompt [会话ID|PID] <内容>` ── 向指定会话发送提示词\n\
             • `/status` ── 查看 Mac 状态与 Git 变更\n\
             • `/projects` ── 切换当前目标项目\n\
             • `/planning <需求>` ── 唤起需求规划与方案制定\n\
@@ -137,10 +189,10 @@ impl CardBuilder {
         > 💡 *已通过授权认证，随时可以下发指令或直接交流*\n\n\
         🛠️ *工作台运维*\n\
         • `/status` ── Mac 本地状态与 Git 提交\n\
-        • `/sessions` ── 统一会话概览与进度详情 (`/sessions <id>`)\n\
+        • `/sessions` ── 可选择会话概览与进度详情 (`/sessions <id>`)\n\
         • `/host [id]` ── 完全托管会话 (交互提问/主动通知/智能决策)\n\
         • `/unhost` ── 退出当前会话托管守护\n\
-        • `/prompt <内容>` ── 向运行中的 OpenCode 会话发送提示词\n\
+        • `/prompt [会话ID|PID] <内容>` ── 向指定 OpenCode 会话发送提示词\n\
         • `/projects` ── 切换活跃工作区项目\n\n\
         🚀 *AI 研发流水线*\n\
         • `/planning <需求>` ── 唤起需求调研与方案规划\n\
@@ -153,7 +205,7 @@ impl CardBuilder {
 
     /// `/running` 与无参数 `/host` 的重定向提示。
     pub fn sessions_redirect_text() -> String {
-        "👉 会话列表与进度查看已统一到 `/sessions`。\n发送 `/sessions` 查看当前活跃会话。"
+        "👉 会话列表与进度查看已统一到 `/sessions`。\n发送 `/sessions` 查看当前活跃会话，或点击下方按钮继续操作。"
             .to_string()
     }
 
@@ -166,11 +218,6 @@ impl CardBuilder {
             ),
             None => "👉 方案进度已合并到 `/sessions <planId>`。\n发送 `/sessions` 查看活跃会话，或使用 `/plans` 浏览方案后以 `/sessions <planId>` 查看指定方案进度。".to_string(),
         }
-    }
-
-    /// 多目标 `/prompt` 的重定向提示。
-    pub fn prompt_sessions_redirect_text() -> String {
-        "👉 检测到多个运行中的会话。\n请先发送 `/sessions` 查看并选择目标会话，再发送 `/prompt <内容>`。".to_string()
     }
 
     // =========================================================================
@@ -465,13 +512,22 @@ impl CardBuilder {
 
     /// 卡片 11: OpenCode 分析与自然对话回复卡片
     pub fn analysis_reply_card(workspace: &str, content: &str) -> String {
+        let trimmed = content.trim();
+        let truncated = trimmed.chars().count() > 2_800;
+        let body = Self::clip_chars(trimmed, 2_800, true);
+        let truncation_note = if truncated {
+            "\n\n_⚠️ 回复内容较长，已截断显示（完整内容请在 Mac 端查看）。_"
+        } else {
+            ""
+        };
         format!(
             "💬 *OpenCode 回复与分析*\n\
             > ▫️ 当前工作区: `{}`\n\n\
-            {}\n\n\
-            _👉 您可直接打字继续讨论，或输入 `/cancel` 结束本轮对话。_",
+            {}{}\n\n\
+            _👉 您可直接打字继续讨论，输入 `/cancel` 结束本轮对话，或发送 `/sessions` 查看会话。_",
             workspace,
-            content.trim()
+            body,
+            truncation_note
         )
     }
 
@@ -777,6 +833,15 @@ impl CardBuilder {
         stat_text: &str,
         diff_snippet: &str,
     ) -> String {
+        let raw_snippet = diff_snippet.trim();
+        let truncated = raw_snippet.chars().count() > 600;
+        let snippet = Self::clip_chars(raw_snippet, 600, false);
+        let truncation_note = if truncated {
+            "\n\n_✂️ 差异较大，已截取前 600 字符。_"
+        } else {
+            ""
+        };
+
         format!(
             "🔍 *代码改动 Diff 预览*\n\
             > ├─ 方案标识: `{}`\n\
@@ -788,12 +853,13 @@ impl CardBuilder {
             📝 *核心代码片段*：\n\
             ```diff\n\
             {}\n\
-            ```\n\n\
+            ```{}\n\n\
             _👉 输入 `/plans` 可继续查看其他方案。_",
             plan_title,
             target_scope,
             stat_text.trim(),
-            diff_snippet.trim()
+            snippet,
+            truncation_note
         )
     }
 
@@ -828,10 +894,10 @@ impl CardBuilder {
 
     /// 卡片 22: 任务中断与取消确认卡片
     pub fn task_cancelled_card() -> String {
-        "🛑 *任务已终止取消*\n\
-        > ▫️ 当前状态: `进行中的任务与规划会话已安全退出`\n\
-        > ▫️ 工作区: `已复位至空闲状态，无悬挂进程`\n\n\
-        您现在可以随时发起新任务（如 `/planning <需求>`）或输入 `/help` 查看说明。".to_string()
+        "🛑 *已请求取消当前任务*\n\
+        > ▫️ 当前状态: `取消请求已发送`\n\
+        > ▫️ 提示: `本地 OpenCode 进程可能仍在收尾，请稍候`\n\n\
+        您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
     }
 
     /// 卡片 23: 通用校验与异常报错卡片
@@ -1062,17 +1128,6 @@ impl CardBuilder {
         content: &str,
         sessions: &[ExternalOpenCodeSessionInfo],
     ) -> (String, InlineKeyboardMarkup) {
-        let clip = |value: &str, max: usize| -> String {
-            let chars: Vec<char> = value.chars().collect();
-            if chars.len() <= max {
-                return value.to_string();
-            }
-            let keep = max.saturating_sub(1);
-            let mut clipped: String = chars.into_iter().take(keep).collect();
-            clipped.push('…');
-            clipped
-        };
-
         let content_trimmed = content.trim();
         let mut text = format!(
             "🎯 *选择目标会话*\n> 检测到 {} 个运行中的 OpenCode 会话。\n",
@@ -1088,19 +1143,22 @@ impl CardBuilder {
                 .filter(|c| *c != '`')
                 .collect();
             let preview = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
-            let preview = clip(&preview, 80);
+            let preview = Self::clip_chars(&preview, 80, true);
             text.push_str(&format!("> 💬 待发送内容: {}\n\n", preview));
         }
 
         for (idx, session) in sessions.iter().enumerate() {
             let badge = Self::number_badge(idx + 1);
-            let project = clip(&session.project_name, 40);
-            let session_id = clip(session.session_id.as_deref().unwrap_or("待初始化"), 40);
+            let project = Self::clip_chars(&session.project_name, 32, true);
+            let session_id =
+                Self::clip_chars(session.session_id.as_deref().unwrap_or("待初始化"), 32, true);
             let status = if session.is_busy { "🟢 Busy" } else { "🟡 Idle" };
-            text.push_str(&format!(
-                "{} *{}* (PID: {})\n> ├─ 会话: `{}`\n> └─ 状态: {}\n\n",
+            let line = format!(
+                "{} {} · PID {} · {} · {}",
                 badge, project, session.pid, session_id, status
-            ));
+            );
+            text.push_str(&Self::clip_chars(&line, 100, true));
+            text.push('\n');
         }
         text.push_str("_点击下方按钮选择目标会话。_");
         let text: String = text.chars().take(1200).collect();
@@ -1111,8 +1169,8 @@ impl CardBuilder {
             let pid = session.pid.to_string();
             let fixed = format!("{}  (PID: {})", badge, pid);
             let name_room = 40usize.saturating_sub(fixed.chars().count()).max(1);
-            let project = clip(&session.project_name, name_room);
-            let label = clip(&format!("{} {} (PID: {})", badge, project, pid), 40);
+            let project = Self::clip_chars(&session.project_name, name_room, true);
+            let label = Self::clip_chars(&format!("{} {} (PID: {})", badge, project, pid), 40, true);
             rows.push(vec![InlineKeyboardButton::callback(
                 label,
                 format!("prompt_choice:{}", idx),
@@ -1379,7 +1437,10 @@ impl CardBuilder {
                     None => lines.push("> ├─ 最近工具: `unavailable`".to_string()),
                 }
                 match detail.last_tool_input_preview.as_deref() {
-                    Some(preview) => lines.push(format!("> ├─ 工具入参: `{}`", preview)),
+                    Some(preview) => lines.push(format!(
+                        "> ├─ 工具入参: {}",
+                        Self::clip_chars(preview, 100, true)
+                    )),
                     None => lines.push("> ├─ 工具入参: `unavailable`".to_string()),
                 }
 
@@ -1402,7 +1463,11 @@ impl CardBuilder {
                             "in_progress" => "▶️",
                             _ => "▫️",
                         };
-                        lines.push(format!(">    {} {}", icon, todo.content));
+                        lines.push(format!(
+                            ">    {} {}",
+                            icon,
+                            Self::clip_chars(&todo.content, 60, true)
+                        ));
                     }
                 }
             }
