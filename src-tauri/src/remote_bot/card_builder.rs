@@ -1,5 +1,9 @@
-use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup};
 use super::opencode_inspector;
+use super::plan_progress::{PlanExecutionStatus, PlanProgressInfo};
+use super::session_inventory::{
+    IdentifierResolution, PlanExecutionState, SessionEntry, SessionProgressDetail,
+};
+use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup};
 
 /// Telegram 移动端高可读性卡片构建器
 pub struct CardBuilder;
@@ -132,7 +136,7 @@ impl CardBuilder {
         > 💡 *已通过授权认证，随时可以下发指令或直接交流*\n\n\
         🛠️ *工作台运维*\n\
         • `/status` ── Mac 本地状态与 Git 提交\n\
-        • `/running` ── 查看终端中正在运行的 OpenCode 会话进度\n\
+        • `/sessions` ── 统一会话概览与进度详情 (`/sessions <id>`)\n\
         • `/host [id]` ── 完全托管会话 (交互提问/主动通知/智能决策)\n\
         • `/unhost` ── 退出当前会话托管守护\n\
         • `/prompt <内容>` ── 向运行中的 OpenCode 会话发送提示词\n\
@@ -140,11 +144,32 @@ impl CardBuilder {
         🚀 *AI 研发流水线*\n\
         • `/planning <需求>` ── 唤起需求调研与方案规划\n\
         • `/plans` ── 查看所有规划方案与状态\n\
-        • `/progress [id]` ── 查看指定方案实施进度\n\
         • `/coding <id>` ── 直接实施指定的已规划方案\n\
         • `/diff [id]` ── 查看最新代码改动对比\n\
         • `/cancel` ── 随时紧急中断当前任务\n\n\
         _💬 自然对话：直接发送任何技术问题，OpenCode 自动结合项目代码进行解答、小改动实施或方案规划！_".to_string()
+    }
+
+    /// `/running` 与无参数 `/host` 的重定向提示。
+    pub fn sessions_redirect_text() -> String {
+        "👉 会话列表与进度查看已统一到 `/sessions`。\n发送 `/sessions` 查看当前活跃会话。"
+            .to_string()
+    }
+
+    /// `/progress` 的重定向提示：有方案 ID 时指向 `/sessions <planId>`。
+    pub fn progress_redirect_text(plan_id: Option<&str>) -> String {
+        match plan_id {
+            Some(plan_id) => format!(
+                "👉 方案进度已合并到 `/sessions <planId>`。\n发送 `/sessions {}` 查看该方案进度。",
+                plan_id
+            ),
+            None => "👉 方案进度已合并到 `/sessions <planId>`。\n发送 `/sessions` 查看活跃会话，或使用 `/plans` 浏览方案后以 `/sessions <planId>` 查看指定方案进度。".to_string(),
+        }
+    }
+
+    /// 多目标 `/prompt` 的重定向提示。
+    pub fn prompt_sessions_redirect_text() -> String {
+        "👉 检测到多个运行中的会话。\n请先发送 `/sessions` 查看并选择目标会话，再发送 `/prompt <内容>`。".to_string()
     }
 
     // =========================================================================
@@ -1243,5 +1268,187 @@ impl CardBuilder {
         ]]);
 
         (text, markup)
+    }
+
+    // =========================================================================
+    // 8. 统一会话详情卡片
+    // =========================================================================
+
+    /// 单个会话的真实进度详情，缺失字段显式标记为 `unavailable`。
+    pub fn session_detail_card(
+        entry: &SessionEntry,
+        progress: Option<&SessionProgressDetail>,
+    ) -> (String, Option<InlineKeyboardMarkup>) {
+        let mut lines = vec![
+            "🔎 *会话详情*".to_string(),
+            format!("> ├─ 项目: `{}`", entry.project_name),
+            format!("> ├─ 会话标识: `{}`", entry.session_id_marker),
+        ];
+        if let Some(pid) = entry.pid {
+            lines.push(format!("> ├─ PID: `{}`", pid));
+        }
+        if let Some(plan_id) = &entry.plan_id {
+            lines.push(format!("> ├─ 方案标识: `{}`", plan_id));
+        }
+        lines.push(format!("> └─ 状态: `{}`", entry.status_label));
+
+        lines.push(String::new());
+        lines.push("▫️ *执行进度*".to_string());
+        match progress {
+            Some(detail) => {
+                match detail.current_step {
+                    Some(step) => lines.push(format!("> ├─ 当前步骤: `{}`", step)),
+                    None => lines.push("> ├─ 当前步骤: `unavailable`".to_string()),
+                }
+                match detail.last_tool.as_deref() {
+                    Some(tool) => lines.push(format!(
+                        "> ├─ 最近工具: `{}` (状态: `{}`)",
+                        tool,
+                        detail.last_tool_status.as_deref().unwrap_or("unavailable")
+                    )),
+                    None => lines.push("> ├─ 最近工具: `unavailable`".to_string()),
+                }
+                match detail.last_tool_input_preview.as_deref() {
+                    Some(preview) => lines.push(format!("> ├─ 工具入参: `{}`", preview)),
+                    None => lines.push("> ├─ 工具入参: `unavailable`".to_string()),
+                }
+
+                if detail.todos.is_empty() {
+                    lines.push("> └─ 待办清单: `unavailable`".to_string());
+                } else {
+                    let completed = detail
+                        .todos
+                        .iter()
+                        .filter(|todo| todo.status == "completed")
+                        .count();
+                    lines.push(format!(
+                        "> └─ 待办清单: {}/{} 完成",
+                        completed,
+                        detail.todos.len()
+                    ));
+                    for todo in detail.todos.iter().take(5) {
+                        let icon = match todo.status.as_str() {
+                            "completed" => "✅",
+                            "in_progress" => "▶️",
+                            _ => "▫️",
+                        };
+                        lines.push(format!(">    {} {}", icon, todo.content));
+                    }
+                }
+            }
+            None => {
+                lines.push("> ├─ 当前步骤: `unavailable`".to_string());
+                lines.push("> ├─ 最近工具: `unavailable`".to_string());
+                lines.push("> ├─ 工具入参: `unavailable`".to_string());
+                lines.push("> └─ 待办清单: `unavailable`".to_string());
+            }
+        }
+
+        let markup = match (entry.pid, entry.session_id.as_deref()) {
+            (Some(pid), Some(_)) => Some(InlineKeyboardMarkup::new(vec![
+                vec![
+                    InlineKeyboardButton::callback(
+                        "🔄 刷新进度",
+                        format!("refresh_ext_session:{}", pid),
+                    ),
+                    InlineKeyboardButton::callback(
+                        "💬 发送提示词",
+                        format!("prompt_ext_session:{}", pid),
+                    ),
+                ],
+                vec![
+                    InlineKeyboardButton::callback("🤖 完全托管", format!("start_host:{}", pid)),
+                    InlineKeyboardButton::callback(
+                        "📊 差异对比 /diff",
+                        format!("diff_ext_session:{}", pid),
+                    ),
+                ],
+            ])),
+            _ => None,
+        };
+
+        (lines.join("\n"), markup)
+    }
+
+    /// 方案进度详情，并附带当前方案执行的会话标识与执行状态。
+    pub fn plan_session_detail_card(
+        info: &PlanProgressInfo,
+        execution: Option<&PlanExecutionState>,
+    ) -> (String, Option<InlineKeyboardMarkup>) {
+        let (status_text, can_run, can_refresh, is_in_progress) = match info.status {
+            PlanExecutionStatus::Completed => ("🟢 `已圆满交付 (Completed)`", false, true, false),
+            PlanExecutionStatus::InProgress => ("🟡 `正在实施中 (In-Progress)`", false, true, true),
+            PlanExecutionStatus::NotStarted => ("⚪ `尚未实施 (Not Started)`", true, false, false),
+            PlanExecutionStatus::Failed => ("🔴 `实施中断/失败 (Failed)`", true, true, false),
+        };
+
+        let (base, mut markup) = Self::plan_progress_card(
+            &info.plan_id,
+            status_text,
+            info.elapsed_desc.as_deref(),
+            info.commit_hash.as_deref(),
+            info.worktree_branch.as_deref(),
+            &info.steps,
+            &info.report_files,
+            can_run,
+            can_refresh,
+            is_in_progress,
+        );
+
+        let summary = super::session_inventory::plan_execution_summary(&info.plan_id, execution);
+        let text = format!(
+            "{}\n\n▫️ *执行会话 (Session)*\n> ├─ 会话标识: `{}`\n> └─ 执行状态: `{}`",
+            base, summary.session_id_marker, summary.execution_status
+        );
+
+        // 刷新按钮始终保留，便于从详情重新读取方案进度。
+        let refresh_callback = format!("check_progress:{}", info.plan_id);
+        let has_refresh = markup.as_ref().map_or(false, |m| {
+            m.inline_keyboard
+                .iter()
+                .flatten()
+                .any(|button| button.callback_data.as_deref() == Some(refresh_callback.as_str()))
+        });
+        if !has_refresh {
+            if let Some(ref mut m) = markup {
+                m.inline_keyboard.push(vec![InlineKeyboardButton::callback(
+                    "🔄 刷新进度",
+                    refresh_callback,
+                )]);
+            } else {
+                markup = Some(InlineKeyboardMarkup::new(vec![vec![
+                    InlineKeyboardButton::callback("🔄 刷新进度", refresh_callback),
+                ]]));
+            }
+        }
+
+        (text, markup)
+    }
+
+    /// 未知或歧义标识符的非操作提示，明确命名原始参数与全部候选项。
+    pub fn identifier_error_text(raw: &str, resolution: &IdentifierResolution) -> String {
+        match resolution {
+            IdentifierResolution::Unknown => format!(
+                "⚠️ *未找到匹配的会话或方案*\n\
+                > ▫️ 输入标识符: `{}`\n\n\
+                未执行任何操作。发送 `/sessions` 查看活跃会话，或使用 `/plans` 浏览方案。",
+                raw
+            ),
+            IdentifierResolution::Ambiguous(candidates) => format!(
+                "⚠️ *标识符存在歧义*\n\
+                > ├─ 输入标识符: `{}`\n\
+                > └─ 匹配到多个会话: `{}`\n\n\
+                未执行任何操作。请使用精确的会话 ID 或 PID 后重试。",
+                raw,
+                candidates.join("`、`")
+            ),
+            IdentifierResolution::Session(entry) => format!(
+                "ℹ️ 标识符 `{}` 已唯一解析为会话 `{}`。",
+                raw, entry.session_id_marker
+            ),
+            IdentifierResolution::Plan { plan_id, .. } => {
+                format!("ℹ️ 标识符 `{}` 已唯一解析为方案 `{}`。", raw, plan_id)
+            }
+        }
     }
 }

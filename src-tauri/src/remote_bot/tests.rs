@@ -2161,3 +2161,203 @@ fn hosted_progress_reads_step_and_todos_by_session_id() {
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn router_parse_sessions_command() {
+    use super::router::{parse_sessions_command, SessionsCommand};
+    assert_eq!(parse_sessions_command("/sessions"), Some(SessionsCommand::Overview));
+    assert_eq!(
+        parse_sessions_command("/sessions ses_abc"),
+        Some(SessionsCommand::Detail("ses_abc".to_string()))
+    );
+    assert_eq!(
+        parse_sessions_command("/sessions   ses_abc  "),
+        Some(SessionsCommand::Detail("ses_abc".to_string()))
+    );
+    assert_eq!(parse_sessions_command("/sessionsfoo"), None);
+    assert_eq!(parse_sessions_command("/prompt"), None);
+}
+
+#[test]
+fn card_builder_help_consolidates_sessions() {
+    let help = super::card_builder::CardBuilder::help_card();
+    assert!(help.contains("/sessions"));
+    assert!(help.contains("/plans"));
+    assert!(!help.contains("/running"));
+    assert!(!help.contains("/progress"));
+}
+
+#[test]
+fn card_builder_session_redirect_texts() {
+    let s = super::card_builder::CardBuilder::sessions_redirect_text();
+    assert!(s.contains("/sessions"));
+    let p = super::card_builder::CardBuilder::progress_redirect_text(Some("plan-1"));
+    assert!(p.contains("/sessions plan-1"));
+    let pn = super::card_builder::CardBuilder::progress_redirect_text(None);
+    assert!(pn.contains("/sessions"));
+    assert!(pn.contains("/plans"));
+    let mentions_plan_id = pn.contains("plan ID")
+        || pn.contains("plan id")
+        || pn.contains("plan_id")
+        || pn.contains("planId")
+        || pn.to_lowercase().contains("id");
+    assert!(mentions_plan_id);
+    let pr = super::card_builder::CardBuilder::prompt_sessions_redirect_text();
+    assert!(pr.contains("/sessions"));
+}
+
+#[test]
+fn plans_list_card_preserved() {
+    let (text, markup) = super::card_builder::CardBuilder::plans_list_card(
+        "proj",
+        &[("plan-1".to_string(), "🟡 `实施中`".to_string(), false)],
+    );
+    assert!(text.contains("plan-1"));
+    assert!(text.contains("🟡 `实施中`"));
+    let mut has_progress = false;
+    for row in &markup.inline_keyboard {
+        for btn in row {
+            if let Some(cd) = &btn.callback_data {
+                if cd == "check_progress:plan-1" {
+                    has_progress = true;
+                }
+            }
+        }
+    }
+    assert!(has_progress);
+}
+
+#[test]
+fn card_builder_session_detail() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind, SessionProgressDetail};
+    use super::types::OpenCodeTodoInfo;
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Terminal,
+        kinds: vec![SessionEntryKind::Terminal],
+        session_id: Some("ses_x".to_string()),
+        session_id_marker: "ses_x".to_string(),
+        plan_id: None,
+        pid: Some(4321),
+        project_name: "proj-a".to_string(),
+        status_label: "Busy".to_string(),
+        is_busy: true,
+    };
+
+    let (text, markup) = CardBuilder::session_detail_card(&entry, None);
+    assert!(text.contains("ses_x"));
+    assert!(text.contains("4321"));
+    assert!(text.contains("proj-a"));
+    assert!(text.contains("unavailable"));
+
+    let progress = SessionProgressDetail {
+        current_step: Some(7),
+        last_tool: Some("bash".to_string()),
+        last_tool_status: Some("completed".to_string()),
+        last_tool_input_preview: Some("cargo test".to_string()),
+        todos: vec![OpenCodeTodoInfo {
+            position: 0,
+            status: "completed".into(),
+            content: "完成审计".into(),
+        }],
+    };
+    let (text2, _) = CardBuilder::session_detail_card(&entry, Some(&progress));
+    assert!(text2.contains("7"));
+    assert!(text2.contains("bash"));
+    assert!(text2.contains("完成审计"));
+
+    let markup = markup.unwrap();
+    let mut has_refresh = false;
+    let mut has_prompt = false;
+    for row in &markup.inline_keyboard {
+        for btn in row {
+            if let Some(cd) = &btn.callback_data {
+                if cd == "refresh_ext_session:4321" {
+                    has_refresh = true;
+                }
+                if cd == "prompt_ext_session:4321" {
+                    has_prompt = true;
+                }
+            }
+        }
+    }
+    assert!(has_refresh);
+    assert!(has_prompt);
+}
+
+#[test]
+fn card_builder_plan_session_detail() {
+    use super::card_builder::CardBuilder;
+    use super::plan_progress::{PlanProgressInfo, PlanExecutionStatus};
+    use super::session_inventory::PlanExecutionState;
+
+    let info = PlanProgressInfo {
+        plan_id: "plan-1".to_string(),
+        status: PlanExecutionStatus::InProgress,
+        started_at: Some("2026-11-09T10:00:00+08:00".to_string()),
+        completed_at: None,
+        elapsed_desc: Some("1 分 2 秒".to_string()),
+        commit_hash: Some("abc123".to_string()),
+        has_worktree: true,
+        worktree_branch: Some("ai-workflow/plan-1".to_string()),
+        steps: vec!["Step 1: 实施".to_string()],
+        report_files: vec![("step1.log".to_string(), "10:00:00".to_string())],
+    };
+
+    let (text, markup) = CardBuilder::plan_session_detail_card(&info, None);
+    assert!(text.contains("plan-1"));
+    assert!(text.contains("Step 1: 实施"));
+    assert!(text.contains("abc123"));
+    assert!(text.contains("ai-workflow/plan-1"));
+    assert!(text.contains("unavailable"));
+    assert!(!text.contains("ses_"));
+
+    let exec_none = PlanExecutionState {
+        plan_id: "plan-1".to_string(),
+        session_id: None,
+        project_name: "proj".to_string(),
+        is_busy: true,
+    };
+    let (text2, _) = CardBuilder::plan_session_detail_card(&info, Some(&exec_none));
+    assert!(text2.contains("capturing"));
+
+    let exec_some = PlanExecutionState {
+        plan_id: "plan-1".to_string(),
+        session_id: Some("ses_plan".to_string()),
+        project_name: "proj".to_string(),
+        is_busy: true,
+    };
+    let (text3, _) = CardBuilder::plan_session_detail_card(&info, Some(&exec_some));
+    assert!(text3.contains("ses_plan"));
+
+    let markup = markup.unwrap();
+    let mut has_check = false;
+    for row in &markup.inline_keyboard {
+        for btn in row {
+            if let Some(cd) = &btn.callback_data {
+                if cd == "check_progress:plan-1" {
+                    has_check = true;
+                }
+            }
+        }
+    }
+    assert!(has_check);
+}
+
+#[test]
+fn card_builder_identifier_error() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::IdentifierResolution;
+
+    let t1 = CardBuilder::identifier_error_text("nope", &IdentifierResolution::Unknown);
+    assert!(t1.contains("nope"));
+    assert!(!t1.contains("ses_"));
+
+    let t2 = CardBuilder::identifier_error_text(
+        "dup",
+        &IdentifierResolution::Ambiguous(vec!["ses_a".to_string(), "ses_b".to_string()]),
+    );
+    assert!(t2.contains("ses_a"));
+    assert!(t2.contains("ses_b"));
+}
