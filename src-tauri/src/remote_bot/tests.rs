@@ -2833,3 +2833,194 @@ fn card_builder_analysis_reply_is_mobile_bounded() {
     assert!(out.contains("workspace"), "missing workspace name: {}", out);
     assert!(out.contains("/sessions") || out.contains("/cancel"), "missing next-step hint: {}", out);
 }
+
+// --- Permission risk classifier ---
+// The classifier is deterministic: allowlisted routine commands stay Routine,
+// while destructive, unknown, compound, substituted or redirecting shell
+// commands fail closed as HighRisk.
+
+use super::permission::{classify_permission, PermissionRisk};
+
+fn expect_routine(permission_type: &str, command: Option<&str>) {
+    let actual = classify_permission(permission_type, command);
+    assert_eq!(
+        actual,
+        PermissionRisk::Routine,
+        "expected Routine for permission_type {:?} and command {:?}",
+        permission_type,
+        command
+    );
+}
+
+fn expect_high_risk(permission_type: &str, command: Option<&str>) {
+    let actual = classify_permission(permission_type, command);
+    assert_eq!(
+        actual,
+        PermissionRisk::HighRisk,
+        "expected HighRisk for permission_type {:?} and command {:?}",
+        permission_type,
+        command
+    );
+}
+
+#[test]
+fn permission_classify_routine_allowlisted_commands() {
+    for command in [
+        "pwd",
+        "ls -la",
+        "cat Cargo.toml",
+        "rg foo src",
+        "sed -n '1,40p' file",
+        "cargo test --lib",
+        "cargo build",
+        "npm run build",
+        "npx tsc --noEmit",
+        "git status",
+        "git diff --stat",
+        "git log --oneline -5",
+        "git branch",
+        "git remote -v",
+        "git rev-parse HEAD",
+        "git tag v1.0.0",
+        "git commit -m \"msg\"",
+        "git checkout -b feature",
+        "git switch -c other",
+        "git stash push",
+        "git stash pop",
+        "mkdir -p tmp",
+        "touch tmp/x",
+        "cd src",
+        "sleep 5",
+        "find . -name '*.rs'",
+    ] {
+        expect_routine("bash", Some(command));
+    }
+}
+
+#[test]
+fn permission_classify_high_risk_commands() {
+    for command in [
+        "rm -rf target",
+        "cp a b",
+        "mv a b",
+        "chmod 777 x",
+        "sudo ls",
+        "git push --force",
+        "git reset --hard",
+        "git clean -fdx",
+        "git rebase main",
+        "git cherry-pick abc",
+        "git revert abc",
+        "git branch -D old",
+        "git commit --amend",
+        "npm install",
+        "npm publish",
+        "cargo publish",
+        "cargo add serde",
+        "cargo install ripgrep",
+        "pip install requests",
+        "curl https://example.com",
+        "wget https://example.com",
+        "ssh host",
+        "awk '{print $1}' file",
+        "kill 123",
+        "pkill node",
+        "shutdown -h now",
+        "bash -c 'ls'",
+        "sh -c 'ls'",
+        "eval ls",
+        "exec ls",
+        "source script.sh",
+        "osascript -e 'beep'",
+    ] {
+        expect_high_risk("bash", Some(command));
+    }
+}
+
+#[test]
+fn permission_classify_sed_read_only_versus_write_and_exec() {
+    expect_routine("bash", Some("sed -n '1,10p' file"));
+    expect_high_risk("bash", Some("sed -i 's/a/b/' file"));
+    expect_high_risk("bash", Some("sed -n '1,10w out.txt' file"));
+    expect_high_risk("bash", Some("sed -n '1,10e touch x' file"));
+}
+
+#[test]
+fn permission_classify_find_destructive_flags() {
+    expect_high_risk("bash", Some("find . -delete"));
+    expect_high_risk("bash", Some("find . -exec rm {} ;"));
+    expect_high_risk("bash", Some("find . -ok rm {} ;"));
+}
+
+#[test]
+fn permission_classify_compound_command_segments() {
+    expect_high_risk("bash", Some("cargo test && rm -rf target"));
+    expect_routine("bash", Some("ls; pwd"));
+    expect_routine("bash", Some("ls || true"));
+    expect_routine("bash", Some("ls\npwd"));
+    expect_high_risk("bash", Some("cargo test\nrm -rf target"));
+}
+
+#[test]
+fn permission_classify_substitution_and_redirection_fail_closed() {
+    expect_high_risk("bash", Some("echo $(rm -rf x)"));
+    expect_high_risk("bash", Some("echo `rm -rf x`"));
+    expect_high_risk("bash", Some("cat <(rm -rf x)"));
+    expect_high_risk("bash", Some("ls >(cat)"));
+    expect_high_risk("bash", Some("ls | bash"));
+    expect_high_risk("bash", Some("cargo test > out.log"));
+    expect_high_risk("bash", Some("cargo test 2> err.log"));
+    expect_high_risk("bash", Some("cat < input.txt"));
+    expect_high_risk("bash", Some("cargo test >> out.log"));
+}
+
+#[test]
+fn permission_classify_wrappers_and_env_assignments() {
+    expect_routine("bash", Some("FOO=bar cargo test"));
+    expect_routine("bash", Some("A=1 B=2 ls"));
+    expect_routine("bash", Some("timeout 60 cargo test"));
+    expect_routine("bash", Some("nice cargo build"));
+    expect_routine("bash", Some("command ls"));
+    expect_routine("bash", Some("builtin cd"));
+    expect_high_risk("bash", Some("timeout 60 rm -rf x"));
+    expect_high_risk("bash", Some("FOO=$(rm -rf x) ls"));
+}
+
+#[test]
+fn permission_classify_non_shell_permission_types() {
+    for permission_type in [
+        "edit",
+        "write",
+        "read",
+        "patch",
+        "apply_patch",
+        "list",
+        "glob",
+        "grep",
+    ] {
+        expect_routine(permission_type, None);
+    }
+    for permission_type in ["webfetch", "websearch", "some_new_tool"] {
+        expect_high_risk(permission_type, None);
+    }
+}
+
+#[test]
+fn permission_classify_missing_or_unknown_shell_input() {
+    expect_high_risk("bash", None);
+    expect_high_risk("bash", Some(""));
+    expect_high_risk("bash", Some("   "));
+    expect_high_risk("bash", Some("frobnicate --now"));
+    expect_high_risk("", None);
+}
+
+#[test]
+fn permission_classify_language_and_build_tools() {
+    expect_routine("bash", Some("python -m pytest"));
+    expect_routine("bash", Some("go test ./..."));
+    expect_routine("bash", Some("make test"));
+    expect_routine("bash", Some("prettier --check ."));
+    expect_routine("bash", Some("ruff check ."));
+    expect_high_risk("bash", Some("python script.py"));
+    expect_high_risk("bash", Some("cargo run"));
+}

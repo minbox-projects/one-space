@@ -4,6 +4,7 @@ pub mod client;
 pub mod commands;
 pub mod opencode_bridge;
 pub mod opencode_inspector;
+pub mod permission;
 pub mod plan_progress;
 pub mod router;
 pub mod session_inventory;
