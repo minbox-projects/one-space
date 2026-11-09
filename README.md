@@ -1,181 +1,179 @@
 # OneSpace
 
-OneSpace 是一个面向开发者的 macOS 优先桌面工作台（Tauri 2 + React 19 + TypeScript），把 AI CLI 环境、原生终端会话、AI 网关、MCP、Skills/Subagents 和常用生产力工具收拢到一个窗口里。
+OneSpace 是一个面向开发者的桌面工作台（Tauri 2 + React 19 + TypeScript），把 AI CLI 环境、原生终端会话、AI 网关、云端智能体、MCP、Skills/Subagents 和常用开发工具收拢到一个窗口。提供 macOS（Intel / Apple Silicon）与 Windows x64 构建，界面支持中英双语。
 
-- 统一管理 `Claude`、`Codex`、`Antigravity`、`OpenCode` 四种 AI CLI 的环境与配置
-- 在原生终端中创建和恢复 AI 会话，标题与模型自动从 CLI 历史回填
-- 用本地 AI 网关聚合多个上游服务商，为 `OpenCode` / `Codex` 提供统一入口
-- 按项目组织会话、MCP、Skills 与 Subagents
-- 附带 SSH、隧道、协议路由、文件共享、短链与离线小工具，支持中英双语界面
+## 下载与安装
+
+从 [GitHub Releases](https://github.com/minbox-projects/one-space/releases) 下载对应平台的安装包。首次启动会进入初始化向导，选择数据存储方式（`local` / `iCloud` / `Git`）并设置主密码。
+
+如果 macOS 提示「OneSpace 已损坏」，通常是 Gatekeeper 拦截：
+
+```bash
+sudo xattr -cr /Applications/OneSpace.app
+```
 
 ## 快速上手
 
-1. 首次启动完成初始化向导：选择数据存储方式（`local` / `iCloud` / `Git`）并设置主密码。
-2. 进入 `AI 终端服务商`，确认目标 CLI 的安装与版本，导入系统现有配置或新建环境，保存后 `Apply to CLI` 激活。
-3. 进入 `AI 终端会话`，选择工具与工作目录创建会话，OneSpace 会在原生终端里启动对应 CLI。
-4. 按需补充 `Skills`、`Subagents`、`MCP Servers`，并在工作空间中把它们绑定到项目目录。
-5. 在 `AI 终端会话` 右上角点击 `Install CLI` 安装 `onespace` 命令行，即可在终端里创建与恢复会话。
+1. 在「AI 终端服务商」确认目标 CLI 的安装与版本，导入系统现有配置或新建环境，保存后点击 `Apply to CLI` 激活。
+2. 在「AI 终端会话」选择工具与工作目录创建会话，OneSpace 会在原生终端中启动对应 CLI。
+3. 按需在「Skills」「Subagents」「MCP Servers」安装扩展，并在「工作空间」中把它们绑定到项目目录。
+4. 在「AI 终端会话」右上角点击 `Install CLI` 安装 `onespace` 命令（默认 `~/.local/bin/onespace`），即可在终端中创建与恢复会话。
 
 ## 功能概览
 
 ### 工作台
 
-- **启动台（Launcher）**：统一启动应用、脚本、URL、文件夹或跳转应用内部页面；支持搜索、置顶排序、脚本信任确认、导入/导出 JSON。
-- **工作空间（Workspaces）**：把项目目录与 AI 会话、MCP、Skills、Subagents 绑定在一起（Sessions / MCP / Skills / Subagents 四个页签），支持标签筛选与项目范围内的能力复制。
+- **启动台（Launcher）**：统一启动应用、脚本、URL、文件夹或跳转应用内部页面；支持搜索、置顶、脚本信任确认与 JSON 导入导出。
+- **工作空间（Workspaces）**：把项目目录与 AI 会话、MCP、Skills、Subagents 绑定在一起（四个页签），支持标签筛选与项目范围内的能力复制。
 
 ### AI 能力
 
-**AI 终端服务商（AI Terminal Environments）**
+**AI 终端服务商**
 
-- 支持 `Claude`、`Codex`、`Antigravity`、`OpenCode`，自动检测本机 CLI 安装状态与版本
-- `Claude` / `Codex` / `Antigravity` 可从系统现有配置自动导入默认环境，并支持从其它已同步设备一键导入
-- 多环境预设：`Save` 保存到 OneSpace，`Apply to CLI` 设为活动环境并写入 CLI 配置
-- `Env Managed` 开关决定后续 CLI 配置文件是否持续由 OneSpace 接管
-- 支持环境 JSON 导入导出，导入前可预览冲突并逐条选择覆盖或新建
-- `OpenCode` 提供高级 provider JSON 编辑与模型快捷表单实时双向同步，保存保留历史版本、可回滚
+- 支持 `Claude`、`Codex`、`Antigravity`、`OpenCode`，自动检测本机 CLI 安装状态与版本。
+- 可从系统现有配置或其它已同步设备导入默认环境。
+- 多环境预设：`Save` 保存到 OneSpace，`Apply to CLI` 设为活动环境并写入 CLI 配置；`Env Managed` 决定 CLI 配置是否持续由 OneSpace 接管。
+- 支持环境 JSON 导入导出，导入前预览冲突并逐条选择覆盖或新建。
+- `OpenCode` 提供 provider JSON 编辑与模型快捷表单双向同步，保存保留历史版本、可回滚。
 
-**AI 终端会话（AI Terminal Sessions）**
+**AI 终端会话**
 
-- 选择工具与工作目录即可在原生终端创建会话
-- 会话可恢复、重命名、删除、复制 ID，支持按工具/模型筛选与按名称搜索
-- 会话标题与模型信息会从各 CLI 历史记录自动回填
-- 内置 `Install CLI` 按钮安装 `onespace` 命令行（默认 `~/.local/bin/onespace`）
-- Quick AI Session Bar：全局快捷键唤起（默认 `Alt+Shift+A`），选择工具与目录后 `Enter` 直接启动，`Esc` 关闭
+- 选择工具与工作目录即可在原生终端创建会话，会话可恢复、重命名、删除、复制 ID。
+- 支持按工具/模型筛选与按名称搜索，标题与模型从各 CLI 历史自动回填。
+- Quick AI Session Bar：全局快捷键唤起（默认 `Alt+Shift+A`），选择工具与目录后 `Enter` 直接启动。
 
-**AI 网关（AI Gateway）**
+**AI 云端智能体（Cloud Agent）**
 
-- 把多个上游服务商聚合成本地统一入口，默认监听 `127.0.0.1:17688`（开发构建为 `17689`），本地 Api 地址（`http://127.0.0.1:<端口>/v1`）可直接复制给调用方
-- 上游维护名称、Api 地址、密钥、默认模型、模型映射与接口协议（Chat Completions / Responses，可逐条映射覆盖）；支持服务商模板与模型清单同步
-- 每个上游使用有序密钥池，密钥按列表顺序使用；鉴权失败与额度耗尽的密钥会被标记，可在界面中单独重新启用
-- 模型映射可维护输入/缓存读/缓存写/输出四档单价与 UTC+8 峰谷优惠时段，金额在请求记录时固化
-- `AI 终端集成` 可把本地 Api 地址与默认本地 Key 一键配置到 `OpenCode` / `Codex`（创建独立的 `AI Gateway` 服务商记录，不改写你已有的记录）
-- 内置「用量统计」与「请求日志」页签：支持今日 / 昨天 / 近 7 天 / 近 15 天 / 近 30 天 / 全部范围，按模型、服务商或 UTC+8 自然日分组，并可按状态、模型、服务商过滤
-- 连续失败的模型映射会被自动禁用，冷却后自动探测恢复；密钥被标记时会推送界面提示与消息中心通知
+- 在云端 SSH 主机上创建 Git Worktree 隔离任务，长程编程断网保活。
+- 从本地终端一键直连或恢复云端会话，查看历史工作区。
+- 监控 GitHub Issues 触发标签任务，自动实施并创建 PR（Issues 流水线）。
+- 将本地 AI 网关配置同步到云端 Linux 网关。
 
-**AI 用量统计（AI Usage Stats）**
+**AI 网关**
 
-- 从本地 CLI 会话历史统计 token 用量，不请求云端账单接口，支持 `Claude`、`Codex`、`Antigravity`、`OpenCode`
-- 提供 7 天 / 30 天 / 90 天等时间窗口与每日趋势，展示 sessions / calls / total tokens / cache hit
-- `Antigravity` 不在磁盘持久化 token，token 列显示显式不可用说明
+- 把多个上游服务商聚合成本地统一入口，默认监听 `127.0.0.1:17688`（开发构建 `17689`），本地地址为 `http://127.0.0.1:<端口>/v1`。
+- 上游支持 Chat Completions / Responses，并可原生转发 Anthropic Messages（`/v1/messages`）；可逐条映射覆盖协议。
+- 每个上游使用有序密钥池；鉴权失败或额度耗尽的密钥会被标记，可单独重新启用。
+- 模型映射可配置输入/缓存读/缓存写/输出四档单价与 UTC+8 峰谷时段，金额在请求时固化。
+- **模型池**：把一个公共模型 id 分配给多个候选来源，按权重调度，并可为候选声明推理策略；模型池会作为独立模型出现在发现列表并同步到终端。
+- 按权重轮询并保持同一会话的粘性；连续失败的映射自动禁用，冷却后半开探测恢复。
+- 终端集成可把本地地址与默认 Key 一键配置到 `OpenCode`、`Codex`、`Claude`，创建独立的 `AI Gateway` 记录，不改写你已有的配置。
+- 内置「用量统计」与「请求日志」：支持今天/昨天/近 7/15/30 天/全部，按模型、服务商或 UTC+8 自然日分组与过滤。
+
+**AI 用量统计**
+
+- 从本地 CLI 会话历史统计 token 用量，不请求云端账单，覆盖 `Claude`、`Codex`、`Antigravity`、`OpenCode`。
+- 提供近 7 / 15 / 30 天窗口与每日趋势，展示 sessions / calls / total tokens / cache hit。
+- `Antigravity` 不在磁盘持久化 token，token 列会显式标记为不可用。
 
 ### AI 扩展
 
 **Skills**
 
-- `Recommended` / `Repository` / `Installed` 三视图
-- 支持 `Global`（统一目录 `~/.agents/skills`）与 `Project`（项目目录）两种安装范围
-- 全局安装只写入 `~/.agents/skills`，并自动发现四个工具全局目录中的本地 Skills
-- 支持 Git 源同步、差异预览、更新应用、本地目录自动发现/导入与打开
+- `Recommended` / `Repository` / `Installed` 三视图。
+- 支持 `Global`（`~/.agents/skills`）与 `Project`（项目目录）两种安装范围，并自动发现四个工具的全局目录。
+- 支持 Git 源同步、差异预览、更新应用、本地目录导入与打开。
 
 **MCP Servers**
 
-- 手动新增 `stdio` / `http` / `sse` 三类 Server
-- 内置模板创建：GitHub、Filesystem、PostgreSQL、Context7、Brave Search、Slack、Google Maps、Puppeteer、Playwright、Figma、Weather 等
-- 支持按模型单独启用/禁用、链接到环境、导入导出配置、刷新本地安装状态
-- 对部分 `npx` 型 `stdio` MCP 提供更新检查与更新应用
-- 页面内提供配置备份管理（创建、恢复、删除、清理旧备份）
+- 手动新增 `stdio` / `http` / `sse` 三类 Server，内置 GitHub、Filesystem、PostgreSQL、Context7、Brave Search、Slack、Google Maps、Puppeteer、Playwright、Figma、Weather 等模板。
+- 支持按模型启用/禁用、链接到环境、导入导出、刷新本地安装状态，以及对部分 `npx` 型 Server 的更新检查。
+- 页面内提供配置备份的创建、恢复、删除与清理。
 
 **Subagents**
 
-- 与 Skills 类似的三视图、安装范围与源管理
-- 额外提供源诊断：检查 frontmatter 缺失、`name` 缺失或非法、文件读取失败
+- 与 Skills 类似的三视图、安装范围与源管理。
+- 提供源诊断：检查 frontmatter 缺失、`name` 缺失或非法、文件读取失败。
 
 ### 工具
 
-侧边栏与「更多工具」（工具箱）中的常用工具：
+侧边栏与「更多工具」中的常用工具：
 
-- **SSH 服务器（SSH Servers）**：读取 `~/.ssh/config`，维护 history / ignored / 收藏与自定义连接（支持密码或私钥文件模式）
-- **SSH 隧道（SSH Tunnels）**：维护 Local / Remote / Dynamic 三种端口转发，支持连接测试、自动连接、断线重连（网络恢复或系统唤醒后自动重试）、常用端口管理与环境分组
-- **协议路由（Protocol Router）**：为 AI provider 暴露可复用的本地 endpoint，查看 route 状态、连接测试与近期请求用量；运行参数在设置页维护
-- **文件共享（File Sharing）**：在可信局域网内通过临时 HTTP 链接或二维码分享本地文件，接收方只读下载；共享状态仅存在于当前进程，停止或退出后链接立即失效
-  - 公网访问：默认关闭，可选的「公网访问」通过本共享自有的临时 Cloudflare Quick Tunnel 生成 `https://*.trycloudflare.com` 公网链接（需安装 `cloudflared`），启用、重试或重新开始都会得到新链接；LAN 链接始终保留，关闭公网访问只停止隧道
-  - 访问密码：可选，设置后局域网与公网访问者都需先通过密码页；密码只以 SHA-256 保留在内存，不写入配置、快照、链接、二维码或日志
-  - 安全边界：公网链接在启用期间可被互联网上任何拿到链接的人访问，Quick Tunnel 链接是临时地址；局域网链接仍是明文 HTTP，不要在不可信网络分享敏感文件
-- **蓝牙锁屏（BLE Lock）**：只监测一个自选 BLE 设备（不解码 MAC、不推断距离），主动连接读取（默认）或被动广播两种模式；仅 macOS 可用，其他平台保持入口可见但显示不可用，绝不调用原生动作。
-  - 设置与权限：在工具内扫描并选择设备并授权系统蓝牙；自动解锁还需在系统设置中授予辅助功能（Accessibility）权限。
-  - 阈值语义：解锁/锁定 RSSI 各自可「禁用」或取 `-95..-30 dBm` 的 5 dBm 步进，两者都启用时解锁阈值必须不低于锁定阈值；两个 RSSI 动作与全部可选开关默认关闭，锁定延时默认 10 秒、无信号超时默认 30 秒（前者 `1..=3600` 秒、后者 `5..=3600` 秒）。
-  - 唤醒与系统休眠：设备靠近时可按开关唤醒显示器，或启用「唤醒但不解锁」只唤醒屏幕而不注入密码；系统休眠期间暂停 proximity 判定、只唤醒显示、不承诺整机唤醒，唤醒后重建监测。
-  - 锁定、媒体与屏保：设备持续远离达到锁定延时后锁定会话，可选「使用屏保锁定」或锁定后息屏（两者互斥）；可选在锁定时暂停正在播放的媒体，且只恢复本轮锁定时暂停的内容。
-  - 密码与 Keychain：登录密码只存于本机不可同步的 Keychain 条目（Release `com.onespace.desktop.ble-lock` / Debug `com.onespace.desktop.ble-lock.dev`），对外只显示已配置/未配置；配置存于不同步的 `ble_lock.json`。
-  - 边界与失败：FileVault 或 pre-boot 认证屏幕不在功能范围内；蓝牙关闭/被拒、辅助功能未信任、Keychain 不可用、设备消失或原生能力缺失会给出可操作的本地化提示，且不阻断仍可用的配置、状态与手动锁定。
-- **生成短链接（Short Link）**：通过 TinyURL 生成短链（需在工具内填写 API Token），带本地历史记录
-- **JSON 解析**、**MD5 加密**、**随机密码**、**JT/T 数据解析**（JT/T 808 / 809 / 1078 报文）
-- **备忘录（Notes）**、**代码片段（Snippets）**、**收藏夹（Bookmarks）**：本地内容工具，参与侧边栏计数、OmniSearch 与内容同步
-- **AI Workflow 模型切换**：按 9×3 角色矩阵编辑并保存/激活 profile，模型候选自动从已发现的模型源读取，也支持手动输入
-- **服务状态监控（Uptime Monitor）**：多协议服务探活（HTTP/TCP/Ping/DNS）、60节点心跳柱状图、可用率SLA统计、事件流与桌面通知/Webhook告警
-- **Webhook 捕获与重放（Webhook Catcher）**：本地私密接收第三方回调、Payload与签名深度检视、一键重放到本地端口与实时镜像透传代理
+**网络与远程**
+
+| 工具 | 用途 |
+| --- | --- |
+| SSH 服务器 | 读取 `~/.ssh/config`，维护历史、忽略、收藏与自定义连接（密码或私钥）。 |
+| SSH 隧道 | Local / Remote / Dynamic 三种转发，连接测试、自动连接与断线重连。 |
+| 快速 SFTP | 浏览远程目录、预览与下载文件，流式跟踪远端日志。 |
+| 服务器监控 | 通过 SSH 采集 Linux 主机的 CPU、内存、磁盘与网络使用情况。 |
+| 内网穿透 | 通过 Cloudflare Quick Tunnel 或自建 FRP 把本机端口映射到公网。 |
+| 文件共享 | 在可信局域网内以只读 HTTP 链接或二维码分享文件，可选访问密码与公网链接。 |
+| SSL 证书 | 免费申请域名证书、TLS 握手与证书链检测、到期监控。 |
+| 协议路由 | 为 Claude Profile 与 OpenAI 兼容供应商暴露本地 Anthropic 兼容入口。 |
+| 服务状态监控 | HTTP / TCP / Ping / DNS 探活、心跳柱状图、SLA 统计、事件流与桌面/Webhook 告警。 |
+| Webhook 捕获与重放 | 本地私密接收第三方回调，检视 Payload 与签名，一键重放到本地端口。 |
+
+**调试与数据**
+
+| 工具 | 用途 |
+| --- | --- |
+| DNS 解析与网络探测 | 多公共 DNS 实时比对、全记录解析、IP 地理与 ASN 情报、TCP 握手时延。 |
+| URL 嵌套解构器 | 剖析超长 URL、自动解包嵌套回调、参数表格双向同步与代码导出。 |
+| WebSocket & SSE | 监听大模型流式事件、双向 WebSocket 交互、心跳保活与时间轴排查。 |
+| Curl 调试台 | 解析、调试并重放 HTTP cURL 请求，导出多语言代码。 |
+| JWT 检查 | 离线解析与校验 JWT 载荷、声明。 |
+| 其它 | JSON 解析、MD5 加密、随机密码、JT/T 808 / 809 / 1078 报文解析、TinyURL 短链接。 |
+
+**本地工具**
+
+- **备忘录 / 代码片段 / 收藏夹**：本地内容工具，参与侧边栏计数、OmniSearch 与内容同步。
+- **AI Workflow 模型切换**：按 9×3 角色矩阵编辑并保存/激活 profile，模型候选自动从已发现的模型源读取。
+- **蓝牙锁屏（仅 macOS）**：监测一个自选 BLE 设备，靠近唤醒或解锁，持续远离后锁定、息屏并可选暂停媒体；登录密码仅存本机 Keychain，配置不参与同步，自动解锁需授予辅助功能权限。
+- **鱼塘**：主界面底部的小游戏集合（CyberMuyu、Snake、Tetris、Sudoku、Minesweeper、Wordle）。
 
 ### 通知与资讯
 
-- **AI 新闻资讯（AI News）**：从自定义 RSS 源抓取 AI 资讯，内置 `36Kr`、`开源中国` 推荐源，支持关键词过滤、自动同步、保留天数与条数策略
-- **邮件（Mail）**：通过 Google OAuth 连接 Gmail（需自备 Client ID / Secret），支持收件箱、未读状态、正文与附件下载、发信与快速回复
-- **消息中心**：托管服务状态、备份结果、网关密钥标记等通知
-- **鱼塘（Fish Pond）**：主界面底部入口的小游戏集合 — CyberMuyu、Snake、Tetris、Sudoku、Minesweeper、Wordle
+- **AI 新闻**：从自定义 RSS 源抓取资讯，内置 36Kr 与开源中国，支持关键词过滤、自动同步与保留策略。
+- **邮件**：通过 Google OAuth 连接 Gmail（需自备 Client ID / Secret），支持收件箱、未读、正文与附件、发信与快速回复。
+- **消息中心**：托管服务状态、备份结果、网关密钥标记等通知。
 
 ### 全局能力
 
-- **OmniSearch（`Cmd/Ctrl + K`）**：聚合搜索会话、启动项、SSH、代码片段、书签、备忘录与 Skills
-- **托盘与全局快捷键**：主窗口显示/隐藏（默认 `Alt+Space`）与 Quick AI Session（默认 `Alt+Shift+A`）均可自定义；托盘菜单可显示/隐藏主窗口、唤起 Quick AI、打开各主要页面（含「更多页面」子菜单），并为网关、协议路由、SSH 隧道与文件共享提供服务状态与批量操作（连接/断开、停止共享、Sync Now、复制 API 地址），以及检查更新、打开设置与关于
-- **中英双语界面**：语言与主题在「外观」中切换；主窗口关闭默认隐藏到托盘
-- **应用内文档**：关于窗口与托盘菜单可进入内置文档
+- **OmniSearch（`Cmd/Ctrl + K`）**：聚合搜索会话、启动项、SSH、代码片段、书签、备忘录与 Skills。
+- **托盘与全局快捷键**：主窗口显示/隐藏（默认 `Alt+Space`）与 Quick AI Session（默认 `Alt+Shift+A`）均可自定义；托盘菜单可打开主要页面，并为网关、协议路由、SSH 隧道与文件共享提供服务状态与批量操作。
+- **中英双语**：语言与主题在「外观与语言」中切换；主窗口关闭默认隐藏到托盘。
 
 ## 设置与数据
 
-首次启动的初始化向导只做两件事：选择数据存储方式（`local` / `iCloud` / `Git`）与设置主密码（用于保护本地敏感信息，后续可在「安全」中修改）。
+设置页按分类独立保存与重置，当前分类包括：
 
-设置页按分区独立保存与重置，当前分区包括：
-
-| 分区 | 主要配置 |
+| 分类 | 子页签 |
 | --- | --- |
-| 数据存储 | 存储类型、Git 地址与认证、iCloud / 本地路径、同步策略（providers、mcp、content、Skills / Subagents 源与仓库、AI 新闻等） |
-| 新闻资讯 | AI News 自动同步、间隔、保留策略、关键词与 RSS 源列表 |
-| 通用 | 开机自启动 |
-| 更新 | 自动更新开关、检查间隔与「接收 Beta 更新」 |
-| Skills 源 / Subagents 源 | 自动同步开关与间隔、Git 源清单、导入 / 导出、手动 Sync Now |
-| 网络代理 | `http` / `https` / `socks5` 代理、账号密码、连通性测试 |
-| 协议路由 | 启用开关、本地端口、请求记录保留天数、Router token |
-| AI 网关 | 请求日志保留天数（默认 90 天）、服务商模板自动刷新间隔 |
-| 快捷键配置 | 主窗口与 Quick AI Session 的全局快捷键 |
-| AI 终端会话 | 默认工作目录、默认模型、终端应用、各模型启动命令模板与恢复会话权限模式 |
-| 外观 | 语言（中文 / English）与主题 |
-| 安全 | 查看 / 修改主密码，生成随机密码 |
+| 常规与系统 | 常规、外观与语言、快捷键、软件更新 |
+| AI 与扩展生态 | 终端与模型、Skills 源、Subagents 源 |
+| 网络与连接 | 网络代理、协议路由、AI 网关 |
+| 运维与自动化 | SSL 证书、服务器监控、AI 云端智能体、Telegram 远程工作台 |
+| 数据与安全 | 存储与多端同步、主密码与加密 |
+| 资讯与订阅 | 资讯设置 |
 
-## Beta 版本
+数据采用 local-first 策略：运行时读写本地镜像，再按同步策略同步到 `local` / `iCloud` / `Git`，范围包括 providers、MCP、内容、Skills/Subagents 源与仓库、AI 新闻等。
 
-维护者可以在正式版本之前发布同一目标版本的多个 Beta 构建：
-
-1. 在干净工作区执行 `python3 skills/onespace-release/scripts/release_tool.py beta <base>`，例如 `beta 0.1.58`：首次生成 `0.1.58-beta.1`，再次执行同一基版本递增为 `0.1.58-beta.2`；`--dry-run` 只报告下一个版本、不写文件。
-2. 提交 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 后，创建并推送附注标签 `v<base>-beta.N`；推送 `v*` 标签会触发发布工作流，并把该标签作为 GitHub prerelease 发布。Windows 的 Beta 构建只生成 NSIS 安装包，因为 MSI/WiX 要求 prerelease 标识符为纯数字；稳定版仍构建 MSI 与 NSIS。
-3. 正式发布时使用稳定版本号：稳定版的更新说明以上一个稳定标签为基准（跳过 Beta 标签），Beta 版以上一个标签为基准。
-
-用户可在「设置 → 更新」开启「接收 Beta 更新」。开启后，更新检查会从 GitHub Releases 中选择版本最高、非草稿且带 `latest.json` 的发布（包含预发布），再经既有的签名校验更新器检查；Beta 查询失败、没有可用发布，或当前平台/版本没有更新或出错时，会继续检查配置的稳定端点，且绝不降级。关闭时只使用稳定端点。Beta 构建在左上品牌区显示 BETA 徽标（侧边栏折叠时仍可见），稳定、缺失或格式错误的版本不显示。Beta 构建与稳定版共用 `~/.config/onespace` 及同一份配置与数据，不引入独立 profile 或迁移；该偏好是设备本地配置，默认关闭，在同一设备的稳定版与 Beta 版之间共享，不跨设备同步，旧版本会忽略该字段。
+**Telegram 远程工作台**：在「设置 → 运维与自动化」中配置 Bot Token 与 OpenCode 版本后，可在手机上触发 Planning 需求规划、Ask Question 交互决策，并让 OpenCode 执行与测试；支持进度卡片、Diff 预览、Git 上下文与命令菜单。
 
 ## 文档
 
 - 使用手册：[`docs/USAGE.md`](./docs/USAGE.md)
 - CLI 文档：[`docs/CLI.md`](./docs/CLI.md)
-- Skills 与 Subagents 文档：[`docs/SKILLS.md`](./docs/SKILLS.md)
-- MCP 文档：[`docs/MCP.md`](./docs/MCP.md)
-- 核心工作流清理与优化交付记录：[`docs/core-workflows-optimization.md`](./docs/core-workflows-optimization.md)
+- Skills 与 Subagents：[`docs/SKILLS.md`](./docs/SKILLS.md)
+- MCP：[`docs/MCP.md`](./docs/MCP.md)
 
 ## 技术栈
 
 - **桌面框架**：Tauri 2（Rust）
 - **前端**：React 19、TypeScript、Vite 7、Tailwind CSS 3、Radix UI、i18next
-- **平台**：macOS 优先；会话、应用启动与 SSH 会话等能力依赖 macOS 原生终端与 `open` / AppleScript 工作流
+- **平台**：macOS 优先，提供 Intel / Apple Silicon 与 Windows x64 构建；会话、应用启动与 SSH 等能力依赖系统原生终端与 `open` / AppleScript 工作流
 
 ## 开发
+
+需要 Node.js、Rust 与 Tauri CLI。构建内置的 OpenCode Zen sidecar 还需要 `cmake` 与 `ninja`（macOS：`brew install cmake ninja`，Windows：`choco install cmake ninja`）。
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-`npm run tauri dev` 使用独立的 `~/.config/onespace-dev` 应用目录，与已安装的 release 应用（`~/.config/onespace`）互不共享可变状态；首次 debug 启动会按条件从 release 目录播种 `.local_key` 与 `ai_gateway.json`（仅在 dev 目标缺失时复制、绝不覆盖），用量数据库不参与复制。dev 默认使用 local 存储，并使用自己的终端服务商标识 `gateway-dev` / `AI Gateway (Dev)`。
-
-`npm run tauri dev` / `npm run tauri build` 会先经 `src-tauri/scripts/build-zen-relay.mjs` 自动构建隔离的 OpenCode Zen sidecar（独立 Rust crate）。构建需要 `cmake` 与 `ninja`：macOS 执行 `brew install cmake ninja`，Windows 执行 `choco install cmake ninja`。发布构建会把产物复制为 `src-tauri/binaries/onespace-zen-relay-<target-triple>[.exe]` 供 Tauri 打包。
-
-常用命令：
+`npm run tauri dev` 使用独立的 `~/.config/onespace-dev` 应用目录，与已安装的 release 应用（`~/.config/onespace`）互不共享可变状态。
 
 | 命令 | 说明 |
 | --- | --- |
@@ -190,10 +188,8 @@ npm run tauri dev
 
 版本号在 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 四处保持一致。
 
-## macOS 常见安装问题
+## Beta 版本
 
-如果 macOS 提示「OneSpace 已损坏」，通常是 Gatekeeper 拦截导致：
+维护者可用 `python3 skills/onespace-release/scripts/release_tool.py beta <base>` 生成 `0.1.58-beta.1`、`0.1.58-beta.2` 这类版本，提交后推送 `v<base>-beta.N` 标签触发发布。Windows Beta 只生成 NSIS 安装包；稳定版同时生成 MSI 与 NSIS。
 
-```bash
-sudo xattr -cr /Applications/OneSpace.app
-```
+用户可在「设置 → 软件更新」开启「接收 Beta 更新」。Beta 与稳定版共用同一份配置与数据，该偏好仅保存在本机、默认关闭。
