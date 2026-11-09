@@ -1,7 +1,8 @@
 use super::opencode_inspector;
 use super::plan_progress::{PlanExecutionStatus, PlanProgressInfo};
 use super::session_inventory::{
-    IdentifierResolution, PlanExecutionState, SessionEntry, SessionProgressDetail,
+    IdentifierResolution, PlanExecutionState, SessionEntry, SessionEntryKind,
+    SessionProgressDetail,
 };
 use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup};
 
@@ -225,7 +226,7 @@ impl CardBuilder {
             > ├─ 项目名称: `{}`\n\
             > ├─ Git 分支: `{}` ({})\n\
             > └─ 最新提交: `{}`{}\n\n\
-            _👉 输入 `/running` 查看终端会话，`/diff` 查看代码变更。_",
+            _👉 输入 `/sessions` 查看终端会话，`/diff` 查看代码变更。_",
             hostname,
             current_time,
             if auto_approve { "⚡ 自动确认 (Auto-Approve)" } else { "🔒 手动审批" },
@@ -1007,7 +1008,7 @@ impl CardBuilder {
             "💡 *当前未检测到正在运行的外部 OpenCode 会话*\n\
             > ▫️ 宿主主机: `{}`\n\
             > ▫️ 探测范围: 终端 (Terminal / tmux) 及系统后台进程\n\n\
-            若您在终端启动了 `opencode` 或 `opencode --yolo`，在此发送 `/running` 即可实时查看会话进度、工具调用与任务清单。",
+            若您在终端启动了 `opencode` 或 `opencode --yolo`，在此发送 `/sessions` 即可实时查看会话进度、工具调用与任务清单。",
             hostname
         );
         let markup = InlineKeyboardMarkup::new(vec![vec![
@@ -1344,27 +1345,47 @@ impl CardBuilder {
             }
         }
 
-        let markup = match (entry.pid, entry.session_id.as_deref()) {
-            (Some(pid), Some(_)) => Some(InlineKeyboardMarkup::new(vec![
-                vec![
+        let markup = match entry.primary_kind {
+            SessionEntryKind::Hosted => entry.session_id.as_deref().map(|session_id| {
+                InlineKeyboardMarkup::new(vec![vec![
                     InlineKeyboardButton::callback(
-                        "🔄 刷新进度",
-                        format!("refresh_ext_session:{}", pid),
+                        "⚙️ 切换决策模式",
+                        format!("toggle_host_mode:{}", session_id),
                     ),
                     InlineKeyboardButton::callback(
-                        "💬 发送提示词",
-                        format!("prompt_ext_session:{}", pid),
+                        "🛑 退出托管",
+                        format!("stop_host:{}", session_id),
                     ),
-                ],
-                vec![
-                    InlineKeyboardButton::callback("🤖 完全托管", format!("start_host:{}", pid)),
-                    InlineKeyboardButton::callback(
-                        "📊 差异对比 /diff",
-                        format!("diff_ext_session:{}", pid),
-                    ),
-                ],
-            ])),
-            _ => None,
+                ]])
+            }),
+            SessionEntryKind::Terminal => {
+                match (entry.is_busy, entry.pid, entry.session_id.as_deref()) {
+                    (true, Some(pid), Some(_)) => Some(InlineKeyboardMarkup::new(vec![
+                        vec![
+                            InlineKeyboardButton::callback(
+                                "🔄 刷新进度",
+                                format!("refresh_ext_session:{}", pid),
+                            ),
+                            InlineKeyboardButton::callback(
+                                "💬 发送提示词",
+                                format!("prompt_ext_session:{}", pid),
+                            ),
+                        ],
+                        vec![
+                            InlineKeyboardButton::callback(
+                                "🤖 完全托管",
+                                format!("start_host:{}", pid),
+                            ),
+                            InlineKeyboardButton::callback(
+                                "📊 差异对比 /diff",
+                                format!("diff_ext_session:{}", pid),
+                            ),
+                        ],
+                    ])),
+                    _ => None,
+                }
+            }
+            SessionEntryKind::TelegramConversation | SessionEntryKind::PlanExecution => None,
         };
 
         (lines.join("\n"), markup)

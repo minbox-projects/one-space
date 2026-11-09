@@ -300,7 +300,7 @@ pub fn format_sessions_overview(
 ) -> (String, Option<InlineKeyboardMarkup>) {
     if entries.is_empty() {
         return (
-            "当前没有活跃会话。\n发送 /sessions 查看最新状态。".to_string(),
+            "当前没有活跃会话。\n发送 /sessions 刷新状态；可使用 /plans 浏览方案，或用 /host <id>、/prompt 操作活跃目标。".to_string(),
             None,
         );
     }

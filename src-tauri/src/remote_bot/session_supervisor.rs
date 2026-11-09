@@ -115,7 +115,7 @@ impl SessionSupervisor {
             record.cancel_flag.store(true, Ordering::Relaxed);
             self.active_questions.write().await.remove(session_id);
 
-            let text = format!("🛑 *已退出对会话 `{}` 的托管守护*\n\n会话已恢复为普通外部运行状态，可随时使用 `/running` 或 `/host` 重新接管。", session_id);
+            let text = format!("🛑 *已退出对会话 `{}` 的托管守护*\n\n会话已恢复为普通外部运行状态，可随时使用 `/sessions` 或 `/host` 重新接管。", session_id);
             let _ = self.client.send_message(record.info.chat_id, &text, None, Some("Markdown")).await;
             true
         } else {

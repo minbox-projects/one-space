@@ -2361,3 +2361,77 @@ fn card_builder_identifier_error() {
     assert!(t2.contains("ses_a"));
     assert!(t2.contains("ses_b"));
 }
+
+#[test]
+fn card_builder_session_detail_idle_has_no_dead_actions() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind};
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Terminal,
+        kinds: vec![SessionEntryKind::Terminal],
+        session_id: Some("ses_idle".to_string()),
+        session_id_marker: "ses_idle".to_string(),
+        plan_id: None,
+        pid: Some(222),
+        project_name: "proj-idle".to_string(),
+        status_label: "Idle".to_string(),
+        is_busy: false,
+    };
+
+    let (_text, markup) = CardBuilder::session_detail_card(&entry, None);
+    if let Some(mk) = markup {
+        for row in &mk.inline_keyboard {
+            for btn in row {
+                if let Some(cd) = &btn.callback_data {
+                    assert!(!cd.contains("refresh_ext_session:"), "dead callback: {cd}");
+                    assert!(!cd.contains("prompt_ext_session:"), "dead callback: {cd}");
+                    assert!(!cd.contains("diff_ext_session:"), "dead callback: {cd}");
+                    assert!(!cd.contains("start_host:"), "dead callback: {cd}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn card_builder_session_detail_hosted_actions() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind};
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Hosted,
+        kinds: vec![SessionEntryKind::Hosted, SessionEntryKind::Terminal],
+        session_id: Some("ses_hosted".to_string()),
+        session_id_marker: "ses_hosted".to_string(),
+        plan_id: None,
+        pid: Some(444),
+        project_name: "proj-hosted".to_string(),
+        status_label: "Hosted".to_string(),
+        is_busy: false,
+    };
+
+    let (_text, markup) = CardBuilder::session_detail_card(&entry, None);
+    let markup = markup.expect("hosted detail must have markup");
+    let mut has_toggle = false;
+    let mut has_stop = false;
+    let mut has_start = false;
+    for row in &markup.inline_keyboard {
+        for btn in row {
+            if let Some(cd) = &btn.callback_data {
+                if cd.contains("toggle_host_mode:ses_hosted") {
+                    has_toggle = true;
+                }
+                if cd.contains("stop_host:ses_hosted") {
+                    has_stop = true;
+                }
+                if cd.contains("start_host:") {
+                    has_start = true;
+                }
+            }
+        }
+    }
+    assert!(has_toggle, "missing toggle_host_mode:ses_hosted");
+    assert!(has_stop, "missing stop_host:ses_hosted");
+    assert!(!has_start, "must not contain start_host:");
+}
