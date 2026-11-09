@@ -2435,3 +2435,55 @@ fn card_builder_session_detail_hosted_actions() {
     assert!(has_stop, "missing stop_host:ses_hosted");
     assert!(!has_start, "must not contain start_host:");
 }
+
+#[test]
+fn test_default_bot_commands_match_current_command_surface() {
+    let commands = super::default_bot_commands();
+
+    let names: Vec<String> = commands.iter().map(|c| c.command.clone()).collect();
+
+    // No duplicates.
+    let mut unique = std::collections::BTreeSet::new();
+    for name in &names {
+        assert!(unique.insert(name.clone()), "duplicate command: {}", name);
+    }
+
+    let expected: std::collections::BTreeSet<&str> = [
+        "sessions", "host", "unhost", "prompt", "projects", "planning", "plans",
+        "coding", "diff", "cancel", "status", "help",
+    ]
+    .iter()
+    .cloned()
+    .collect();
+    let actual: std::collections::BTreeSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    assert_eq!(actual, expected, "advertised command set mismatch");
+
+    // Deprecated entries must be absent.
+    assert!(!names.iter().any(|n| n == "running"), "deprecated 'running' present");
+    assert!(!names.iter().any(|n| n == "progress"), "deprecated 'progress' present");
+
+    // Telegram constraints for every command.
+    for cmd in &commands {
+        let name_len = cmd.command.chars().count();
+        assert!(
+            (1..=32).contains(&name_len),
+            "command name length out of range: {}",
+            cmd.command
+        );
+        assert!(
+            cmd.command
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            "command name has invalid chars: {}",
+            cmd.command
+        );
+        assert!(!cmd.description.is_empty(), "empty description for {}", cmd.command);
+        let desc_len = cmd.description.chars().count();
+        assert!(
+            (3..=256).contains(&desc_len),
+            "description length out of range for {}: {}",
+            cmd.command,
+            desc_len
+        );
+    }
+}
