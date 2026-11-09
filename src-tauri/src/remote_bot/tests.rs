@@ -1443,3 +1443,14 @@ async fn test_opencode_v1_real_env_e2e() {
     let _ = super::storage::save_config(&config);
 }
 
+#[test]
+fn test_attached_v1_run_command_carries_internal_server_password() {
+    let mut cmd = tokio::process::Command::new("opencode");
+    super::opencode_bridge::apply_run_connection(&mut cmd, false, "http://127.0.0.1:4096", std::path::Path::new("/tmp/onespace-project"));
+    let std_cmd = cmd.as_std();
+    assert!(std_cmd.get_args().any(|a| a == "--attach"));
+    assert!(
+        std_cmd.get_envs().any(|(k, v)| k == "OPENCODE_SERVER_PASSWORD" && v == Some(std::ffi::OsStr::new(super::opencode_bridge::OPENCODE_INTERNAL_AUTH))),
+        "the v1 attached run must authenticate to the password-protected internal OpenCode server"
+    );
+}

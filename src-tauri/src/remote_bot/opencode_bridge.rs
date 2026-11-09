@@ -452,13 +452,7 @@ impl OpenCodeBridge {
             .arg("json")
             .arg("--auto");
 
-        if is_v2 {
-            cmd.arg("--server").arg(&server_url);
-            cmd.env("OPENCODE_PASSWORD", OPENCODE_INTERNAL_AUTH);
-        } else {
-            cmd.arg("--attach").arg(&server_url)
-                .arg("--dir").arg(&project_dir);
-        }
+        apply_run_connection(&mut cmd, is_v2, &server_url, &project_dir);
 
         if let Some(ref sid) = session_id_opt {
             cmd.arg("--session").arg(sid);
@@ -959,13 +953,7 @@ impl OpenCodeBridge {
             .arg("json")
             .arg("--auto");
 
-        if is_v2 {
-            cmd.arg("--server").arg(&server_url);
-            cmd.env("OPENCODE_PASSWORD", OPENCODE_INTERNAL_AUTH);
-        } else {
-            cmd.arg("--attach").arg(&server_url)
-                .arg("--dir").arg(&project_dir);
-        }
+        apply_run_connection(&mut cmd, is_v2, &server_url, &project_dir);
 
         let mut child = cmd
             .stdout(Stdio::piped())
@@ -1211,4 +1199,15 @@ pub fn resolve_opencode_bin() -> String {
         }
     }
     "opencode".to_string()
+}
+
+pub(super) fn apply_run_connection(cmd: &mut tokio::process::Command, is_v2: bool, server_url: &str, project_dir: &Path) {
+    if is_v2 {
+        cmd.arg("--server").arg(server_url);
+        cmd.env("OPENCODE_PASSWORD", OPENCODE_INTERNAL_AUTH);
+    } else {
+        cmd.arg("--attach").arg(server_url)
+            .arg("--dir").arg(project_dir)
+            .env("OPENCODE_SERVER_PASSWORD", OPENCODE_INTERNAL_AUTH);
+    }
 }
