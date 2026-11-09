@@ -106,20 +106,7 @@ impl RemoteBotManager {
                 info!("Remote Bot 连通成功: @{:?} ({})", user.username, user.first_name);
 
                 // 注册 Telegram 官方原生菜单按钮 (setMyCommands)
-                let default_commands = vec![
-                    BotCommand { command: "running".to_string(), description: "查看终端运行中的 OpenCode 会话进度".to_string() },
-                    BotCommand { command: "host".to_string(), description: "完全托管运行中的会话 (交互/通知/决策)".to_string() },
-                    BotCommand { command: "unhost".to_string(), description: "退出当前会话托管守护".to_string() },
-                    BotCommand { command: "planning".to_string(), description: "启动需求调研与方案规划 (Planning)".to_string() },
-                    BotCommand { command: "plans".to_string(), description: "查看工作区方案列表及状态".to_string() },
-                    BotCommand { command: "progress".to_string(), description: "查看当前或指定方案的实施进度".to_string() },
-                    BotCommand { command: "diff".to_string(), description: "查看最新代码改动对比或方案差异".to_string() },
-                    BotCommand { command: "coding".to_string(), description: "直接实施指定的已规划方案".to_string() },
-                    BotCommand { command: "projects".to_string(), description: "切换目标项目工作区".to_string() },
-                    BotCommand { command: "status".to_string(), description: "查看主机状态、Git分支与系统信息".to_string() },
-                    BotCommand { command: "cancel".to_string(), description: "中断当前正在执行的任务或会话".to_string() },
-                    BotCommand { command: "help".to_string(), description: "查看使用说明与指令指南".to_string() },
-                ];
+                let default_commands = default_bot_commands();
                 let client_cmd = client.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = client_cmd.set_my_commands(default_commands).await {
@@ -200,4 +187,25 @@ impl RemoteBotManager {
         let mut status = self.status.write().await;
         status.running = false;
     }
+}
+
+/// 返回注册到 Telegram 原生菜单的默认指令清单。
+///
+/// 该清单必须与命令路由实际实现的指令表面保持同步：新增、删除或重命名
+/// 指令时应同时更新此处，避免菜单继续展示已废弃指令或遗漏可用指令。
+pub(crate) fn default_bot_commands() -> Vec<BotCommand> {
+    vec![
+        BotCommand { command: "status".to_string(), description: "查看主机状态、Git分支与系统信息".to_string() },
+        BotCommand { command: "sessions".to_string(), description: "查看会话概览与进度详情 (/sessions <id>)".to_string() },
+        BotCommand { command: "host".to_string(), description: "完全托管运行中的会话 (交互/通知/决策)".to_string() },
+        BotCommand { command: "unhost".to_string(), description: "退出当前会话托管守护".to_string() },
+        BotCommand { command: "prompt".to_string(), description: "向运行中的会话发送提示词".to_string() },
+        BotCommand { command: "projects".to_string(), description: "切换目标项目工作区".to_string() },
+        BotCommand { command: "planning".to_string(), description: "启动需求调研与方案规划 (Planning)".to_string() },
+        BotCommand { command: "plans".to_string(), description: "查看工作区方案列表及状态".to_string() },
+        BotCommand { command: "coding".to_string(), description: "直接实施指定的已规划方案".to_string() },
+        BotCommand { command: "diff".to_string(), description: "查看最新代码改动对比或方案差异".to_string() },
+        BotCommand { command: "cancel".to_string(), description: "中断当前正在执行的任务或会话".to_string() },
+        BotCommand { command: "help".to_string(), description: "查看使用说明与指令指南".to_string() },
+    ]
 }
