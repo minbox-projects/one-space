@@ -350,8 +350,18 @@ fn enrich_session_from_db(
 
     let mut session_row = None;
     for cand_dir in &candidate_dirs {
-        // 优先检索 session_v2，回退到 legacy session 表
-        if let Some(r) = query_session("session_v2", cand_dir).or_else(|| query_session("session", cand_dir)) {
+        // 同一工作目录的主代理会话可能分别存在于 legacy session 与 session_v2 表中，
+        // 不能固定优先某一表：历史遗留行可能比另一表中的活跃会话更新。
+        // 同时查询两表并按 time_updated 选较新者，避免过期行遮蔽真正活跃的会话。
+        let v2_row = query_session("session_v2", cand_dir);
+        let legacy_row = query_session("session", cand_dir);
+        let newest = match (v2_row, legacy_row) {
+            (Some(a), Some(b)) => Some(if a.8 >= b.8 { a } else { b }),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        if let Some(r) = newest {
             session_row = Some(r);
             break;
         }
@@ -577,5 +587,127 @@ pub fn format_token_count(count: i64) -> String {
         format!("{:.1}K", count as f64 / 1_000.0)
     } else {
         count.to_string()
+    }
+}
+
+#[cfg(test)]
+mod session_selection {
+    use super::*;
+    use crate::remote_bot::types::ExternalOpenCodeSessionInfo;
+    use rusqlite::Connection;
+    use std::path::PathBuf;
+
+    fn make_db(path: &std::path::Path) {
+        let conn = Connection::open(path).unwrap();
+        for table in ["session", "session_v2"] {
+            conn.execute(
+                &format!(
+                    "CREATE TABLE {} (
+                        id TEXT,
+                        title TEXT,
+                        agent TEXT,
+                        model TEXT,
+                        tokens_input INTEGER,
+                        tokens_output INTEGER,
+                        tokens_reasoning INTEGER,
+                        tokens_cache_read INTEGER,
+                        time_updated INTEGER,
+                        directory TEXT,
+                        parent_id TEXT
+                    )",
+                    table
+                ),
+                [],
+            )
+            .unwrap();
+        }
+    }
+
+    fn make_info(cwd: &str) -> ExternalOpenCodeSessionInfo {
+        ExternalOpenCodeSessionInfo {
+            pid: 1,
+            ppid: 0,
+            elapsed: String::new(),
+            command: String::new(),
+            cwd: cwd.to_string(),
+            project_name: String::new(),
+            session_id: None,
+            title: None,
+            model: None,
+            agent: None,
+            is_busy: false,
+            current_step: None,
+            last_tool: None,
+            last_tool_status: None,
+            last_tool_input_preview: None,
+            last_reasoning: None,
+            todos: Vec::new(),
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_reasoning: 0,
+            tokens_cache_read: 0,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn selects_newest_session_across_v1_and_v2() {
+        let base =
+            std::env::temp_dir().join(format!("oc_session_selection_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let db_path: PathBuf = base.join("opencode.db");
+        let _ = std::fs::remove_file(&db_path);
+        make_db(&db_path);
+
+        let conn = Connection::open(&db_path).unwrap();
+        let dir_a = "/tmp/onespace_test_dir_a";
+        let dir_b = "/tmp/onespace_test_dir_b";
+
+        // Directory A: stale v2 (older) vs active v1 (newer)
+        conn.execute(
+            "INSERT INTO session_v2 (id, title, agent, model, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, time_updated, directory, parent_id) VALUES (?1, NULL, NULL, NULL, 0, 0, 0, 0, ?2, ?3, NULL)",
+            rusqlite::params!["ses_stale_v2", 1000i64, dir_a],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (id, title, agent, model, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, time_updated, directory, parent_id) VALUES (?1, NULL, NULL, NULL, 0, 0, 0, 0, ?2, ?3, NULL)",
+            rusqlite::params!["ses_active_v1", 2000i64, dir_a],
+        )
+        .unwrap();
+
+        // Directory B: active v2 (newer) vs stale v1 (older)
+        conn.execute(
+            "INSERT INTO session_v2 (id, title, agent, model, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, time_updated, directory, parent_id) VALUES (?1, NULL, NULL, NULL, 0, 0, 0, 0, ?2, ?3, NULL)",
+            rusqlite::params!["ses_active_v2", 4000i64, dir_b],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (id, title, agent, model, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, time_updated, directory, parent_id) VALUES (?1, NULL, NULL, NULL, 0, 0, 0, 0, ?2, ?3, NULL)",
+            rusqlite::params!["ses_stale_v1", 3000i64, dir_b],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Case A: should pick the newer legacy session, not the stale v2 row.
+        let mut info_a = make_info(dir_a);
+        let _ = enrich_session_from_db(&mut info_a, &db_path, dir_a);
+        assert_eq!(
+            info_a.session_id,
+            Some("ses_active_v1".to_string()),
+            "case A: newer legacy session should win over stale v2 session"
+        );
+
+        // Case B: newer v2 record should still be selected.
+        let mut info_b = make_info(dir_b);
+        let _ = enrich_session_from_db(&mut info_b, &db_path, dir_b);
+        assert_eq!(
+            info_b.session_id,
+            Some("ses_active_v2".to_string()),
+            "case B: newer v2 session should win over stale legacy session"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
