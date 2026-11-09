@@ -2191,6 +2191,7 @@ fn card_builder_help_consolidates_sessions() {
 fn card_builder_session_redirect_texts() {
     let s = super::card_builder::CardBuilder::sessions_redirect_text();
     assert!(s.contains("/sessions"));
+    assert!(s.contains("按钮"));
     let p = super::card_builder::CardBuilder::progress_redirect_text(Some("plan-1"));
     assert!(p.contains("/sessions plan-1"));
     let pn = super::card_builder::CardBuilder::progress_redirect_text(None);
@@ -2202,8 +2203,6 @@ fn card_builder_session_redirect_texts() {
         || pn.contains("planId")
         || pn.to_lowercase().contains("id");
     assert!(mentions_plan_id);
-    let pr = super::card_builder::CardBuilder::prompt_sessions_redirect_text();
-    assert!(pr.contains("/sessions"));
 }
 
 #[test]
@@ -2486,4 +2485,351 @@ fn test_default_bot_commands_match_current_command_surface() {
             desc_len
         );
     }
+}
+
+#[test]
+fn session_inventory_overview_is_actionable() {
+    use super::session_inventory::{format_sessions_overview, SessionEntryKind};
+
+    let entries = vec![
+        make_entry(SessionEntryKind::Terminal, Some("ses_term"), "ses_term", None, Some(111), "proj-term", "Busy"),
+        make_entry(SessionEntryKind::Terminal, None, "unavailable", None, Some(222), "proj-noid", "Idle"),
+        make_entry(SessionEntryKind::PlanExecution, None, "capturing", Some("plan-1"), None, "proj-plan", "Running"),
+        make_entry(SessionEntryKind::TelegramConversation, None, "unassigned", None, None, "proj-conv", "Idle"),
+    ];
+
+    let (text, markup) = format_sessions_overview(&entries);
+    let markup = markup.expect("overview markup must be Some");
+    let callbacks: Vec<String> = markup
+        .inline_keyboard
+        .iter()
+        .flat_map(|row| row.iter())
+        .filter_map(|btn| btn.callback_data.clone())
+        .collect();
+
+    assert!(callbacks.contains(&"open_session:ses_term".to_string()));
+    assert!(callbacks.contains(&"open_session:222".to_string()));
+    assert!(callbacks.contains(&"open_session:plan-1".to_string()));
+    assert!(callbacks.contains(&"open_sessions".to_string()));
+    assert!(callbacks.iter().all(|c| c.len() <= 64));
+    // unresolvable conversation entry must have no button
+    assert_eq!(
+        callbacks.iter().filter(|c| c.starts_with("open_session:")).count(),
+        3
+    );
+    let _ = text;
+}
+
+#[test]
+fn session_inventory_overview_mobile_lines() {
+    use super::session_inventory::{
+        format_sessions_overview, SessionEntryKind, SESSION_OVERVIEW_MAX_CHARS,
+        SESSION_OVERVIEW_MAX_LINE_CHARS,
+    };
+
+    let entries: Vec<_> = (1..=9)
+        .map(|i| {
+            let project_name = format!("PROJ-{}", format!("p{}", i).repeat(60));
+            let session_id = format!("ses_{}", format!("s{}", i).repeat(20));
+            make_entry(
+                SessionEntryKind::Terminal,
+                Some(&session_id),
+                &session_id,
+                None,
+                Some(1000 + i as u32),
+                &project_name,
+                "Busy",
+            )
+        })
+        .collect();
+
+    let (text, _markup) = format_sessions_overview(&entries);
+    for line in text.lines() {
+        assert!(
+            line.chars().count() <= SESSION_OVERVIEW_MAX_LINE_CHARS,
+            "line too long ({}): {}",
+            line.chars().count(),
+            line
+        );
+    }
+    assert!(text.chars().count() <= SESSION_OVERVIEW_MAX_CHARS);
+    assert!(text.contains("还有"));
+    assert!(text.contains("未展示"));
+
+    // project and identifier are reported on separate lines
+    let first_project_line = text.lines().find(|l| l.contains("PROJ-")).unwrap();
+    let first_id_line = text.lines().find(|l| l.contains("ses_")).unwrap();
+    assert!(!first_project_line.contains("ses_"));
+    assert!(!first_id_line.contains("PROJ-"));
+}
+
+#[test]
+fn router_parse_session_callback() {
+    use super::router::{parse_session_callback, SessionCallback};
+
+    assert_eq!(parse_session_callback("open_sessions"), Some(SessionCallback::Overview));
+    assert_eq!(
+        parse_session_callback("open_session:abc"),
+        Some(SessionCallback::Detail("abc".to_string()))
+    );
+    assert_eq!(parse_session_callback("open_session:"), None);
+    assert_eq!(parse_session_callback("anything-else"), None);
+}
+
+#[test]
+fn router_parse_prompt_command_with_target() {
+    use super::router::{parse_prompt_command, ParsedPromptCommand};
+
+    let tokens: Vec<String> = vec!["ses_a".to_string(), "4321".to_string()];
+    let empty = ParsedPromptCommand { target: None, content: "".to_string() };
+
+    // Exact command boundaries and empty content.
+    assert_eq!(parse_prompt_command("/prompt", &tokens), Some(empty.clone()));
+    assert_eq!(parse_prompt_command("/send", &tokens), Some(empty.clone()));
+    assert_eq!(parse_prompt_command("/prompt   ", &tokens), Some(empty.clone()));
+    assert_eq!(parse_prompt_command("/send  ", &tokens), Some(empty));
+
+    // Unrelated / lookalike commands are rejected.
+    assert_eq!(parse_prompt_command("/promptfoo", &tokens), None);
+    assert_eq!(parse_prompt_command("/promptfoo hello", &tokens), None);
+    assert_eq!(parse_prompt_command("/sendfoo hello", &tokens), None);
+    assert_eq!(parse_prompt_command("/status", &tokens), None);
+    assert_eq!(parse_prompt_command("hello /prompt ses_a hi", &tokens), None);
+    assert_eq!(parse_prompt_command("", &tokens), None);
+
+    // Matching session-id target.
+    assert_eq!(
+        parse_prompt_command("/prompt ses_a 请补充测试", &tokens),
+        Some(ParsedPromptCommand { target: Some("ses_a".to_string()), content: "请补充测试".to_string() })
+    );
+    // Matching PID target.
+    assert_eq!(
+        parse_prompt_command("/prompt 4321 继续", &tokens),
+        Some(ParsedPromptCommand { target: Some("4321".to_string()), content: "继续".to_string() })
+    );
+    // /send alias with a target.
+    assert_eq!(
+        parse_prompt_command("/send ses_a hello", &tokens),
+        Some(ParsedPromptCommand { target: Some("ses_a".to_string()), content: "hello".to_string() })
+    );
+    // Unmatched first token stays as content.
+    assert_eq!(
+        parse_prompt_command("/prompt 请补充测试", &tokens),
+        Some(ParsedPromptCommand { target: None, content: "请补充测试".to_string() })
+    );
+    assert_eq!(
+        parse_prompt_command("/prompt ses_unknown hello", &tokens),
+        Some(ParsedPromptCommand { target: None, content: "ses_unknown hello".to_string() })
+    );
+}
+
+#[test]
+fn router_parse_prompt_choice_callback() {
+    use super::router::parse_prompt_choice_callback;
+
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:0"), Some(0));
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:12"), Some(12));
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:"), None);
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:x"), None);
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:-1"), None);
+    assert_eq!(parse_prompt_choice_callback("cancel_prompt_choice"), None);
+    assert_eq!(parse_prompt_choice_callback("prompt_choice"), None);
+    assert_eq!(parse_prompt_choice_callback("anything-else"), None);
+    assert_eq!(parse_prompt_choice_callback(""), None);
+}
+
+#[test]
+fn card_builder_prompt_target_selection() {
+    use super::card_builder::CardBuilder;
+
+    let sessions = vec![
+        make_external(Some("ses_a"), 111, true),
+        make_external(Some("ses_b"), 222, true),
+    ];
+
+    // With content: text and button contract.
+    let (text, markup) = CardBuilder::prompt_target_selection_card("请补充\n测试", &sessions);
+    assert!(text.contains("选择目标会话"), "text: {text}");
+    assert!(text.contains('2'), "text must mention session count: {text}");
+    // Line breaks in content collapse to spaces in the preview.
+    assert!(text.contains("请补充 测试"), "preview must collapse newlines: {text}");
+    assert!(!text.contains("请补充\n测试"), "preview must not keep newline: {text}");
+    // Bounded text.
+    assert!(text.chars().count() <= 1200, "text too long: {}", text.chars().count());
+    for line in text.lines() {
+        assert!(line.chars().count() <= 100, "line too long: {line}");
+    }
+    // Buttons: one row per session plus a final cancel row.
+    assert_eq!(markup.inline_keyboard.len(), 3);
+    assert_eq!(markup.inline_keyboard[0].len(), 1);
+    assert_eq!(markup.inline_keyboard[1].len(), 1);
+    assert_eq!(markup.inline_keyboard[0][0].callback_data.as_deref(), Some("prompt_choice:0"));
+    assert_eq!(markup.inline_keyboard[1][0].callback_data.as_deref(), Some("prompt_choice:1"));
+    assert_eq!(markup.inline_keyboard[2].len(), 1);
+    assert_eq!(markup.inline_keyboard[2][0].callback_data.as_deref(), Some("cancel_prompt_choice"));
+    for (idx, session) in sessions.iter().enumerate() {
+        let btn = &markup.inline_keyboard[idx][0];
+        assert!(btn.text.contains(&session.project_name), "button must contain project: {}", btn.text);
+        assert!(btn.text.contains(&session.pid.to_string()), "button must contain PID: {}", btn.text);
+        assert!(btn.text.chars().count() <= 40, "button too long: {}", btn.text);
+    }
+
+    // Long content is truncated to a compact preview (at most 80 chars, no newlines).
+    let long = "啊".repeat(200);
+    let (long_text, _) = CardBuilder::prompt_target_selection_card(&long, &sessions);
+    assert!(!long_text.contains(&long), "long content must be truncated in preview");
+    assert!(long_text.chars().count() <= 1200);
+    for line in long_text.lines() {
+        assert!(line.chars().count() <= 100, "line too long: {line}");
+    }
+
+    // Without content: text tells the user to enter the prompt after choosing.
+    let (empty_text, empty_markup) = CardBuilder::prompt_target_selection_card("", &sessions);
+    assert!(empty_text.contains("选择目标会话"), "text: {empty_text}");
+    assert!(empty_text.contains('2'), "text: {empty_text}");
+    assert!(
+        empty_text.contains("输入") || empty_text.contains("提示"),
+        "empty content must say the prompt is entered after choosing: {empty_text}"
+    );
+    assert!(empty_text.chars().count() <= 1200);
+    for line in empty_text.lines() {
+        assert!(line.chars().count() <= 100, "line too long: {line}");
+    }
+    assert_eq!(empty_markup.inline_keyboard.len(), 3);
+    assert_eq!(empty_markup.inline_keyboard[0][0].callback_data.as_deref(), Some("prompt_choice:0"));
+    assert_eq!(empty_markup.inline_keyboard[1][0].callback_data.as_deref(), Some("prompt_choice:1"));
+    assert_eq!(empty_markup.inline_keyboard[2][0].callback_data.as_deref(), Some("cancel_prompt_choice"));
+}
+
+#[test]
+fn card_builder_quick_actions_expose_next_steps() {
+    use super::card_builder::CardBuilder;
+    use super::types::InlineKeyboardMarkup;
+
+    let quick = CardBuilder::quick_actions();
+    assert_eq!(quick.inline_keyboard.len(), 1);
+    let quick_cbs: Vec<&str> = quick.inline_keyboard[0]
+        .iter()
+        .filter_map(|b| b.callback_data.as_deref())
+        .collect();
+    assert_eq!(quick_cbs, vec!["open_sessions", "open_status", "open_help"]);
+
+    let sessions = CardBuilder::sessions_actions();
+    let sessions_cbs: Vec<&str> = sessions.inline_keyboard[0]
+        .iter()
+        .filter_map(|b| b.callback_data.as_deref())
+        .collect();
+    assert_eq!(sessions_cbs, vec!["open_sessions", "open_plans"]);
+
+    let projects = CardBuilder::projects_actions();
+    let projects_cbs: Vec<&str> = projects.inline_keyboard[0]
+        .iter()
+        .filter_map(|b| b.callback_data.as_deref())
+        .collect();
+    assert_eq!(projects_cbs, vec!["open_projects", "open_sessions"]);
+
+    let ack = CardBuilder::prompt_ack_actions();
+    let ack_cbs: Vec<&str> = ack.inline_keyboard[0]
+        .iter()
+        .filter_map(|b| b.callback_data.as_deref())
+        .collect();
+    assert_eq!(ack_cbs, vec!["cancel_task", "open_sessions"]);
+}
+
+#[test]
+fn card_builder_diff_preview_is_mobile_bounded() {
+    use super::card_builder::CardBuilder;
+
+    let mut diff = String::new();
+    for _ in 0..2000 {
+        diff.push('x');
+    }
+    diff.push_str("UNIQUE_MARKER_END");
+    let out = CardBuilder::diff_preview_card("plan", "main", "1 file", &diff);
+    assert!(out.contains("已截取"));
+    assert!(out.contains("600"));
+    assert!(!out.contains("UNIQUE_MARKER_END"));
+    assert!(out.chars().count() < 2000);
+}
+
+#[test]
+fn card_builder_session_detail_truncates_long_preview() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind, SessionProgressDetail};
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Terminal,
+        kinds: vec![SessionEntryKind::Terminal],
+        session_id: Some("ses_x".to_string()),
+        session_id_marker: "ses_x".to_string(),
+        plan_id: None,
+        pid: Some(4321),
+        project_name: "proj-a".to_string(),
+        status_label: "Busy".to_string(),
+        is_busy: true,
+    };
+
+    let long_preview = "a".repeat(300);
+    let progress = SessionProgressDetail {
+        current_step: Some(7),
+        last_tool: Some("bash".to_string()),
+        last_tool_status: Some("completed".to_string()),
+        last_tool_input_preview: Some(long_preview.clone()),
+        todos: vec![],
+    };
+    let (text, _) = CardBuilder::session_detail_card(&entry, Some(&progress));
+    assert!(!text.contains(&long_preview));
+    let tool_line = text
+        .lines()
+        .find(|l| l.contains("工具入参"))
+        .expect("missing tool line");
+    assert!(tool_line.chars().count() <= 120, "line too long: {tool_line}");
+    assert!(tool_line.ends_with('…'), "line: {tool_line}");
+}
+
+#[test]
+fn card_builder_cancel_copy_is_truthful() {
+    use super::card_builder::CardBuilder;
+
+    let text = CardBuilder::task_cancelled_card();
+    assert!(!text.contains("无悬挂进程"));
+    assert!(text.contains("已请求"));
+    assert!(text.contains("/sessions"));
+}
+
+#[test]
+fn card_builder_help_mentions_prompt_targets() {
+    use super::card_builder::CardBuilder;
+
+    let help = CardBuilder::help_card();
+    assert!(help.contains("/prompt"));
+    assert!(help.contains("/sessions"));
+    assert!(help.contains("会话ID") || help.contains("PID"));
+}
+
+#[test]
+fn card_builder_welcome_mentions_sessions() {
+    use super::card_builder::CardBuilder;
+
+    let welcome = CardBuilder::welcome_card(1, "host");
+    assert!(welcome.contains("/sessions"));
+    assert!(welcome.contains("/prompt"));
+}
+
+#[test]
+fn card_builder_analysis_reply_is_mobile_bounded() {
+    // 5,000-char content with unique end marker; reply must clamp ≤3200,
+    // show truncation notice, drop the end marker, keep workspace + next-step hint.
+    let end_marker = "UNIQUE_ANALYSIS_END_MARKER_XYZ";
+    let mut content = "a".repeat(5000 - end_marker.len());
+    content.push_str(end_marker);
+    assert_eq!(content.chars().count(), 5000);
+
+    let out = super::card_builder::CardBuilder::analysis_reply_card("workspace", &content);
+
+    assert!(out.chars().count() <= 3200, "output too long: {}", out.chars().count());
+    assert!(out.contains("已截断") || out.contains("已省略"), "missing truncation notice: {}", out);
+    assert!(!out.contains(end_marker), "end marker must be truncated away");
+    assert!(out.contains("workspace"), "missing workspace name: {}", out);
+    assert!(out.contains("/sessions") || out.contains("/cancel"), "missing next-step hint: {}", out);
 }

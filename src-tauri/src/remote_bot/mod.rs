@@ -196,10 +196,10 @@ impl RemoteBotManager {
 pub(crate) fn default_bot_commands() -> Vec<BotCommand> {
     vec![
         BotCommand { command: "status".to_string(), description: "查看主机状态、Git分支与系统信息".to_string() },
-        BotCommand { command: "sessions".to_string(), description: "查看会话概览与进度详情 (/sessions <id>)".to_string() },
+        BotCommand { command: "sessions".to_string(), description: "可选择会话概览与进度详情 (/sessions <id>)".to_string() },
         BotCommand { command: "host".to_string(), description: "完全托管运行中的会话 (交互/通知/决策)".to_string() },
         BotCommand { command: "unhost".to_string(), description: "退出当前会话托管守护".to_string() },
-        BotCommand { command: "prompt".to_string(), description: "向运行中的会话发送提示词".to_string() },
+        BotCommand { command: "prompt".to_string(), description: "向指定会话发送提示词 (/prompt [会话ID|PID] <内容>)".to_string() },
         BotCommand { command: "projects".to_string(), description: "切换目标项目工作区".to_string() },
         BotCommand { command: "planning".to_string(), description: "启动需求调研与方案规划 (Planning)".to_string() },
         BotCommand { command: "plans".to_string(), description: "查看工作区方案列表及状态".to_string() },

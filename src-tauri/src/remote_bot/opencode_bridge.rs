@@ -772,7 +772,7 @@ impl OpenCodeBridge {
             self.telegram_client.send_message(
                 chat_id,
                 &msg_text,
-                None,
+                Some(CardBuilder::quick_actions()),
                 Some("Markdown"),
             ).await?;
         }

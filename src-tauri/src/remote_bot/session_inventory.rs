@@ -6,13 +6,18 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 use super::types::{
-    ExternalOpenCodeSessionInfo, HostedSessionInfo, InlineKeyboardMarkup, OpenCodeTodoInfo,
+    ExternalOpenCodeSessionInfo, HostedSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup,
+    OpenCodeTodoInfo,
 };
 
 /// Maximum number of session entries rendered in one overview message.
 pub const SESSION_OVERVIEW_MAX_ENTRIES: usize = 8;
+/// Maximum number of characters rendered on one overview line.
+pub const SESSION_OVERVIEW_MAX_LINE_CHARS: usize = 88;
 /// Maximum number of characters rendered in one overview message.
 pub const SESSION_OVERVIEW_MAX_CHARS: usize = 3900;
+/// Maximum byte length of one session button identifier.
+const SESSION_CALLBACK_IDENTIFIER_MAX_BYTES: usize = 48;
 
 /// Marker for an external or hosted session whose real ID cannot be read.
 pub const SESSION_ID_UNAVAILABLE: &str = "unavailable";
@@ -309,6 +314,7 @@ pub fn format_sessions_overview(
     let omitted = &entries[rendered..];
 
     let mut lines = vec!["*会话概览*".to_string()];
+    let mut buttons: Vec<Vec<InlineKeyboardButton>> = Vec::new();
     for kind in [
         SessionEntryKind::PlanExecution,
         SessionEntryKind::Hosted,
@@ -325,30 +331,39 @@ pub fn format_sessions_overview(
         lines.push(String::new());
         lines.push(format!("*{}*", group_label(kind)));
         for entry in group {
-            lines.push(format_entry_line(entry));
+            for line in format_entry_lines(entry) {
+                lines.push(clamp_line(&line));
+            }
+            if let Some(identifier) = session_callback_identifier(entry) {
+                buttons.push(vec![InlineKeyboardButton::callback(
+                    button_label(entry),
+                    format!("open_session:{identifier}"),
+                )]);
+            }
         }
     }
 
     if !omitted.is_empty() {
-        let identifiers: Vec<&str> = omitted
-            .iter()
-            .map(|entry| {
-                entry
-                    .session_id
-                    .as_deref()
-                    .unwrap_or(&entry.session_id_marker)
-            })
-            .collect();
         lines.push(String::new());
-        lines.push(format!(
-            "还有 {} 个会话未展示：{}",
-            omitted.len(),
-            identifiers.join("、")
-        ));
+        lines.push(clamp_line(&format!(
+            "还有 {} 个会话未展示：",
+            omitted.len()
+        )));
+        for entry in omitted {
+            let identifier = entry
+                .session_id
+                .as_deref()
+                .unwrap_or(&entry.session_id_marker);
+            lines.push(clamp_line(identifier));
+        }
     }
 
     let text = clamp_chars(lines.join("\n"), SESSION_OVERVIEW_MAX_CHARS);
-    (text, None)
+    buttons.push(vec![InlineKeyboardButton::callback(
+        "🔄 刷新会话",
+        "open_sessions",
+    )]);
+    (text, Some(InlineKeyboardMarkup::new(buttons)))
 }
 
 fn group_label(kind: SessionEntryKind) -> &'static str {
@@ -360,18 +375,38 @@ fn group_label(kind: SessionEntryKind) -> &'static str {
     }
 }
 
-fn format_entry_line(entry: &SessionEntry) -> String {
-    let mut line = format!(
-        "• {} · {} · {}",
-        entry.project_name, entry.session_id_marker, entry.status_label
-    );
+fn format_entry_lines(entry: &SessionEntry) -> [String; 2] {
+    let status_line = format!("• {} · {}", entry.project_name, entry.status_label);
+    let mut identifier_line = entry.session_id_marker.clone();
     if let Some(pid) = entry.pid {
-        line.push_str(&format!(" · PID: {pid}"));
+        identifier_line.push_str(&format!(" · PID: {pid}"));
     }
     if let Some(plan_id) = &entry.plan_id {
-        line.push_str(&format!(" · Plan: {plan_id}"));
+        identifier_line.push_str(&format!(" · Plan: {plan_id}"));
     }
-    line
+    [status_line, identifier_line]
+}
+
+/// Pick the first available callback identifier, skipping over-long values.
+fn session_callback_identifier(entry: &SessionEntry) -> Option<String> {
+    let identifier = entry
+        .session_id
+        .clone()
+        .or_else(|| entry.pid.map(|pid| pid.to_string()))
+        .or_else(|| entry.plan_id.clone())?;
+    if identifier.len() > SESSION_CALLBACK_IDENTIFIER_MAX_BYTES {
+        return None;
+    }
+    Some(identifier)
+}
+
+fn button_label(entry: &SessionEntry) -> String {
+    let project = clamp_chars(entry.project_name.clone(), 32);
+    format!("{project} · {}", entry.status_label)
+}
+
+fn clamp_line(line: &str) -> String {
+    clamp_chars(line.to_string(), SESSION_OVERVIEW_MAX_LINE_CHARS)
 }
 
 fn clamp_chars(mut text: String, max_chars: usize) -> String {
