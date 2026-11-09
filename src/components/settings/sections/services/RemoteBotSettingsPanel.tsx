@@ -40,6 +40,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import type { ApiResp, WorkspaceView } from "@/components/Workspaces/types";
+import { normalizeWorkspaceView } from "@/components/Workspaces/helpers/workspaceHelpers";
 import {
   type RemoteBotConfig,
   type RemoteBotStatus,
@@ -137,11 +138,13 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
 
       // 加载 OneSpace 系统工作空间列表
       try {
-        const resp = await invoke<ApiResp<WorkspaceView[]>>("workspaces_list");
+        const resp = await invoke<ApiResp<unknown[]>>("workspaces_list");
         if (resp && Array.isArray(resp.data)) {
-          const sorted = [...resp.data].sort(
-            (a, b) => (b.workspace.last_activity_at || 0) - (a.workspace.last_activity_at || 0)
-          );
+          const sorted = resp.data
+            .map((item) => normalizeWorkspaceView(item))
+            .sort(
+              (a, b) => (b.workspace.last_activity_at || 0) - (a.workspace.last_activity_at || 0)
+            );
           setSystemWorkspaces(sorted);
         }
       } catch (wsErr) {
