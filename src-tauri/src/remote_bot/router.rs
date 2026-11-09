@@ -8,7 +8,7 @@ use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
 use super::opencode_bridge::OpenCodeBridge;
 use super::storage::{load_config, save_config};
-use super::types::{InlineKeyboardButton, InlineKeyboardMarkup, PromptTargetSession, TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
+use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup, PromptTargetSession, TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
 
 /// `/sessions` 的两种命令形态。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,11 +53,88 @@ pub fn parse_session_callback(data: &str) -> Option<SessionCallback> {
     Some(SessionCallback::Detail(identifier.to_string()))
 }
 
+/// `/prompt` 与 `/send` 的解析结果：可选的目标标识与提示词内容。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedPromptCommand {
+    pub target: Option<String>,
+    pub content: String,
+}
+
+/// 仅接受精确的 `/prompt` 或 `/send` 命令边界，并把首个目标标识从内容中分离。
+pub fn parse_prompt_command(text: &str, target_tokens: &[String]) -> Option<ParsedPromptCommand> {
+    let trimmed = text.trim();
+    let rest = trimmed
+        .strip_prefix("/prompt")
+        .or_else(|| trimmed.strip_prefix("/send"))?;
+    if !rest.is_empty() && !rest.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+
+    let remainder = rest.trim();
+    if remainder.is_empty() {
+        return Some(ParsedPromptCommand {
+            target: None,
+            content: String::new(),
+        });
+    }
+
+    let mut parts = remainder.splitn(2, |c: char| c.is_whitespace());
+    let first = parts.next().unwrap_or("");
+    let tail = parts.next().unwrap_or("").trim();
+
+    if target_tokens.iter().any(|token| token == first) {
+        Some(ParsedPromptCommand {
+            target: Some(first.to_string()),
+            content: tail.to_string(),
+        })
+    } else {
+        Some(ParsedPromptCommand {
+            target: None,
+            content: remainder.to_string(),
+        })
+    }
+}
+
+/// 仅接受 `prompt_choice:<非负整数>` 的目标选择回调。
+pub fn parse_prompt_choice_callback(data: &str) -> Option<usize> {
+    let index = data.strip_prefix("prompt_choice:")?;
+    if index.is_empty() || !index.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    index.parse::<usize>().ok()
+}
+
+fn is_prompt_command_boundary(text: &str) -> bool {
+    ["/prompt", "/send"].iter().any(|command| {
+        text.strip_prefix(command)
+            .map(|rest| rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace()))
+            .unwrap_or(false)
+    })
+}
+
+fn prompt_target_for(session: &ExternalOpenCodeSessionInfo) -> Result<PromptTargetSession, String> {
+    let session_id = session.session_id.clone().ok_or_else(|| {
+        "⚠️ 运行中的 OpenCode 尚未初始化 session_id，请稍候再试。".to_string()
+    })?;
+    Ok(PromptTargetSession {
+        pid: session.pid,
+        session_id,
+        cwd: session.cwd.clone(),
+        project_name: session.project_name.clone(),
+    })
+}
+
+struct PendingPromptChoice {
+    session: ExternalOpenCodeSessionInfo,
+    content: String,
+}
+
 pub struct CommandRouter {
     client: Arc<TelegramClient>,
     bridge: Arc<OpenCodeBridge>,
     pub supervisor: Arc<super::session_supervisor::SessionSupervisor>,
     pending_prompt_targets: tokio::sync::RwLock<std::collections::HashMap<i64, PromptTargetSession>>,
+    pending_prompt_choices: tokio::sync::RwLock<std::collections::HashMap<i64, Vec<PendingPromptChoice>>>,
 }
 
 impl CommandRouter {
@@ -72,6 +149,7 @@ impl CommandRouter {
             bridge,
             supervisor,
             pending_prompt_targets: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            pending_prompt_choices: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -111,11 +189,12 @@ impl CommandRouter {
             return Ok(());
         }
 
-        // 检查该用户是否正处于“向特定外部会话发送提示词”的等待输入状态
+        // 新消息开始时清理旧的提示词目标与目标选择器，避免误消费过期状态
         let pending_target = {
             let mut lock = self.pending_prompt_targets.write().await;
             lock.remove(&chat_id)
         };
+        self.pending_prompt_choices.write().await.remove(&chat_id);
 
         if let Some(target) = pending_target {
             if !text.starts_with('/') {
@@ -143,7 +222,7 @@ impl CommandRouter {
             self.handle_host_command(chat_id, text).await?;
         } else if text == "/unhost" {
             self.handle_unhost_command(chat_id).await?;
-        } else if text.starts_with("/prompt") || text.starts_with("/send") {
+        } else if is_prompt_command_boundary(text) {
             self.handle_prompt_command(chat_id, text).await?;
         } else if text == "/status" {
             self.handle_status_command(chat_id).await?;
@@ -629,15 +708,18 @@ impl CommandRouter {
     }
 
     async fn handle_prompt_command(&self, chat_id: i64, text: &str) -> Result<(), String> {
-        let raw_prompt = if let Some(stripped) = text.strip_prefix("/prompt") {
-            stripped.trim()
-        } else if let Some(stripped) = text.strip_prefix("/send") {
-            stripped.trim()
-        } else {
-            ""
-        };
-
         let sessions = super::opencode_inspector::discover_external_opencode_sessions().await;
+        let target_tokens: Vec<String> = sessions
+            .iter()
+            .flat_map(|session| {
+                let pid = session.pid.to_string();
+                session.session_id.clone().into_iter().chain(std::iter::once(pid))
+            })
+            .collect();
+        let parsed = match parse_prompt_command(text, &target_tokens) {
+            Some(parsed) => parsed,
+            None => return Ok(()),
+        };
 
         if sessions.is_empty() {
             let hostname = crate::get_hostname();
@@ -648,35 +730,64 @@ impl CommandRouter {
 
         if sessions.len() == 1 {
             let session = &sessions[0];
-            let sid = match session.session_id.clone() {
-                Some(s) => s,
-                None => {
-                    self.client.send_message(chat_id, "⚠️ 运行中的 OpenCode 尚未初始化 session_id，请稍候再试。", None, None).await?;
+            let target = match prompt_target_for(session) {
+                Ok(target) => target,
+                Err(message) => {
+                    self.client.send_message(chat_id, &message, None, None).await?;
                     return Ok(());
                 }
             };
 
-            let target = PromptTargetSession {
-                pid: session.pid,
-                session_id: sid,
-                cwd: session.cwd.clone(),
-                project_name: session.project_name.clone(),
-            };
-
-            if raw_prompt.is_empty() {
+            if parsed.content.is_empty() {
                 self.pending_prompt_targets.write().await.insert(chat_id, target);
                 let (req_text, markup) = CardBuilder::prompt_input_request_card(session);
                 self.client.send_message(chat_id, &req_text, Some(markup), Some("Markdown")).await?;
             } else {
-                self.dispatch_prompt_to_session(chat_id, target, raw_prompt).await?;
+                self.dispatch_prompt_to_session(chat_id, target, &parsed.content).await?;
             }
-        } else {
-            // 多个外部会话：统一引导至 /sessions，不再渲染独立选择器
-            let redirect = CardBuilder::prompt_sessions_redirect_text();
-            self.client
-                .send_message(chat_id, &redirect, None, Some("Markdown"))
-                .await?;
+            return Ok(());
         }
+
+        let selected = parsed.target.as_deref().and_then(|target| {
+            sessions.iter().find(|session| {
+                session.session_id.as_deref() == Some(target) || session.pid.to_string() == target
+            })
+        });
+
+        if let Some(session) = selected {
+            let target = match prompt_target_for(session) {
+                Ok(target) => target,
+                Err(message) => {
+                    self.client.send_message(chat_id, &message, None, None).await?;
+                    return Ok(());
+                }
+            };
+
+            if parsed.content.is_empty() {
+                self.pending_prompt_targets.write().await.insert(chat_id, target);
+                let (req_text, markup) = CardBuilder::prompt_input_request_card(session);
+                self.client.send_message(chat_id, &req_text, Some(markup), Some("Markdown")).await?;
+            } else {
+                self.dispatch_prompt_to_session(chat_id, target, &parsed.content).await?;
+            }
+            return Ok(());
+        }
+
+        let choices = sessions
+            .iter()
+            .cloned()
+            .map(|session| PendingPromptChoice {
+                session,
+                content: parsed.content.clone(),
+            })
+            .collect();
+        self.pending_prompt_choices.write().await.insert(chat_id, choices);
+
+        let (selection_text, markup) =
+            CardBuilder::prompt_target_selection_card(&parsed.content, &sessions);
+        self.client
+            .send_message(chat_id, &selection_text, Some(markup), Some("Markdown"))
+            .await?;
 
         Ok(())
     }
@@ -1496,6 +1607,90 @@ impl CommandRouter {
                     let err_msg = format!("⚠️ PID `{}` 的外部会话已结束或不存在。", pid);
                     let _ = self.client.send_message(chat_id, &err_msg, None, None).await;
                 }
+            }
+        } else if let Some(index) = parse_prompt_choice_callback(data) {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            let choices = self
+                .pending_prompt_choices
+                .write()
+                .await
+                .remove(&chat_id)
+                .unwrap_or_default();
+
+            if let Some(choice) = choices.into_iter().nth(index) {
+                let target = match prompt_target_for(&choice.session) {
+                    Ok(target) => target,
+                    Err(message) => {
+                        self.client.send_message(chat_id, &message, None, None).await?;
+                        return Ok(());
+                    }
+                };
+
+                if choice.content.is_empty() {
+                    self.pending_prompt_targets.write().await.insert(chat_id, target);
+                    let (text, markup) = CardBuilder::prompt_input_request_card(&choice.session);
+                    if let Some(ref msg) = cb.message {
+                        let _ = self.client.edit_message_text(
+                            msg.chat.id,
+                            msg.message_id,
+                            &text,
+                            Some(markup),
+                            Some("Markdown"),
+                        ).await;
+                    } else {
+                        let _ = self.client.send_message(
+                            chat_id,
+                            &text,
+                            Some(markup),
+                            Some("Markdown"),
+                        ).await;
+                    }
+                } else {
+                    if let Some(ref msg) = cb.message {
+                        let selected_text = format!(
+                            "✅ *已选择目标会话*：`{}` (PID: {})\n\n⏳ _正在投递提示词..._",
+                            choice.session.project_name,
+                            choice.session.pid
+                        );
+                        let _ = self.client.edit_message_text(
+                            msg.chat.id,
+                            msg.message_id,
+                            &selected_text,
+                            None,
+                            Some("Markdown"),
+                        ).await;
+                    }
+                    self.dispatch_prompt_to_session(chat_id, target, &choice.content).await?;
+                }
+            } else {
+                let expired_text =
+                    "⚠️ *目标选择已失效或超出范围*\n\n请重新发送 `/prompt` 并选择目标会话。";
+                if let Some(ref msg) = cb.message {
+                    let _ = self.client.edit_message_text(
+                        msg.chat.id,
+                        msg.message_id,
+                        expired_text,
+                        None,
+                        Some("Markdown"),
+                    ).await;
+                } else {
+                    let _ = self.client.send_message(chat_id, expired_text, None, Some("Markdown")).await;
+                }
+            }
+        } else if data == "cancel_prompt_choice" {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            self.pending_prompt_choices.write().await.remove(&chat_id);
+            let cancel_text = "❎ *已取消选择目标会话*\n\n您可以重新发送 `/prompt` 选择目标会话。";
+            if let Some(ref msg) = cb.message {
+                let _ = self.client.edit_message_text(
+                    msg.chat.id,
+                    msg.message_id,
+                    cancel_text,
+                    None,
+                    Some("Markdown"),
+                ).await;
+            } else {
+                let _ = self.client.send_message(chat_id, cancel_text, None, Some("Markdown")).await;
             }
         } else if data == "cancel_prompt_target" {
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);

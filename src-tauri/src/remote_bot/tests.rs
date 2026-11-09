@@ -2576,3 +2576,128 @@ fn router_parse_session_callback() {
     assert_eq!(parse_session_callback("open_session:"), None);
     assert_eq!(parse_session_callback("anything-else"), None);
 }
+
+#[test]
+fn router_parse_prompt_command_with_target() {
+    use super::router::{parse_prompt_command, ParsedPromptCommand};
+
+    let tokens: Vec<String> = vec!["ses_a".to_string(), "4321".to_string()];
+    let empty = ParsedPromptCommand { target: None, content: "".to_string() };
+
+    // Exact command boundaries and empty content.
+    assert_eq!(parse_prompt_command("/prompt", &tokens), Some(empty.clone()));
+    assert_eq!(parse_prompt_command("/send", &tokens), Some(empty.clone()));
+    assert_eq!(parse_prompt_command("/prompt   ", &tokens), Some(empty.clone()));
+    assert_eq!(parse_prompt_command("/send  ", &tokens), Some(empty));
+
+    // Unrelated / lookalike commands are rejected.
+    assert_eq!(parse_prompt_command("/promptfoo", &tokens), None);
+    assert_eq!(parse_prompt_command("/promptfoo hello", &tokens), None);
+    assert_eq!(parse_prompt_command("/sendfoo hello", &tokens), None);
+    assert_eq!(parse_prompt_command("/status", &tokens), None);
+    assert_eq!(parse_prompt_command("hello /prompt ses_a hi", &tokens), None);
+    assert_eq!(parse_prompt_command("", &tokens), None);
+
+    // Matching session-id target.
+    assert_eq!(
+        parse_prompt_command("/prompt ses_a 请补充测试", &tokens),
+        Some(ParsedPromptCommand { target: Some("ses_a".to_string()), content: "请补充测试".to_string() })
+    );
+    // Matching PID target.
+    assert_eq!(
+        parse_prompt_command("/prompt 4321 继续", &tokens),
+        Some(ParsedPromptCommand { target: Some("4321".to_string()), content: "继续".to_string() })
+    );
+    // /send alias with a target.
+    assert_eq!(
+        parse_prompt_command("/send ses_a hello", &tokens),
+        Some(ParsedPromptCommand { target: Some("ses_a".to_string()), content: "hello".to_string() })
+    );
+    // Unmatched first token stays as content.
+    assert_eq!(
+        parse_prompt_command("/prompt 请补充测试", &tokens),
+        Some(ParsedPromptCommand { target: None, content: "请补充测试".to_string() })
+    );
+    assert_eq!(
+        parse_prompt_command("/prompt ses_unknown hello", &tokens),
+        Some(ParsedPromptCommand { target: None, content: "ses_unknown hello".to_string() })
+    );
+}
+
+#[test]
+fn router_parse_prompt_choice_callback() {
+    use super::router::parse_prompt_choice_callback;
+
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:0"), Some(0));
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:12"), Some(12));
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:"), None);
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:x"), None);
+    assert_eq!(parse_prompt_choice_callback("prompt_choice:-1"), None);
+    assert_eq!(parse_prompt_choice_callback("cancel_prompt_choice"), None);
+    assert_eq!(parse_prompt_choice_callback("prompt_choice"), None);
+    assert_eq!(parse_prompt_choice_callback("anything-else"), None);
+    assert_eq!(parse_prompt_choice_callback(""), None);
+}
+
+#[test]
+fn card_builder_prompt_target_selection() {
+    use super::card_builder::CardBuilder;
+
+    let sessions = vec![
+        make_external(Some("ses_a"), 111, true),
+        make_external(Some("ses_b"), 222, true),
+    ];
+
+    // With content: text and button contract.
+    let (text, markup) = CardBuilder::prompt_target_selection_card("请补充\n测试", &sessions);
+    assert!(text.contains("选择目标会话"), "text: {text}");
+    assert!(text.contains('2'), "text must mention session count: {text}");
+    // Line breaks in content collapse to spaces in the preview.
+    assert!(text.contains("请补充 测试"), "preview must collapse newlines: {text}");
+    assert!(!text.contains("请补充\n测试"), "preview must not keep newline: {text}");
+    // Bounded text.
+    assert!(text.chars().count() <= 1200, "text too long: {}", text.chars().count());
+    for line in text.lines() {
+        assert!(line.chars().count() <= 100, "line too long: {line}");
+    }
+    // Buttons: one row per session plus a final cancel row.
+    assert_eq!(markup.inline_keyboard.len(), 3);
+    assert_eq!(markup.inline_keyboard[0].len(), 1);
+    assert_eq!(markup.inline_keyboard[1].len(), 1);
+    assert_eq!(markup.inline_keyboard[0][0].callback_data.as_deref(), Some("prompt_choice:0"));
+    assert_eq!(markup.inline_keyboard[1][0].callback_data.as_deref(), Some("prompt_choice:1"));
+    assert_eq!(markup.inline_keyboard[2].len(), 1);
+    assert_eq!(markup.inline_keyboard[2][0].callback_data.as_deref(), Some("cancel_prompt_choice"));
+    for (idx, session) in sessions.iter().enumerate() {
+        let btn = &markup.inline_keyboard[idx][0];
+        assert!(btn.text.contains(&session.project_name), "button must contain project: {}", btn.text);
+        assert!(btn.text.contains(&session.pid.to_string()), "button must contain PID: {}", btn.text);
+        assert!(btn.text.chars().count() <= 40, "button too long: {}", btn.text);
+    }
+
+    // Long content is truncated to a compact preview (at most 80 chars, no newlines).
+    let long = "啊".repeat(200);
+    let (long_text, _) = CardBuilder::prompt_target_selection_card(&long, &sessions);
+    assert!(!long_text.contains(&long), "long content must be truncated in preview");
+    assert!(long_text.chars().count() <= 1200);
+    for line in long_text.lines() {
+        assert!(line.chars().count() <= 100, "line too long: {line}");
+    }
+
+    // Without content: text tells the user to enter the prompt after choosing.
+    let (empty_text, empty_markup) = CardBuilder::prompt_target_selection_card("", &sessions);
+    assert!(empty_text.contains("选择目标会话"), "text: {empty_text}");
+    assert!(empty_text.contains('2'), "text: {empty_text}");
+    assert!(
+        empty_text.contains("输入") || empty_text.contains("提示"),
+        "empty content must say the prompt is entered after choosing: {empty_text}"
+    );
+    assert!(empty_text.chars().count() <= 1200);
+    for line in empty_text.lines() {
+        assert!(line.chars().count() <= 100, "line too long: {line}");
+    }
+    assert_eq!(empty_markup.inline_keyboard.len(), 3);
+    assert_eq!(empty_markup.inline_keyboard[0][0].callback_data.as_deref(), Some("prompt_choice:0"));
+    assert_eq!(empty_markup.inline_keyboard[1][0].callback_data.as_deref(), Some("prompt_choice:1"));
+    assert_eq!(empty_markup.inline_keyboard[2][0].callback_data.as_deref(), Some("cancel_prompt_choice"));
+}

@@ -1057,6 +1057,75 @@ impl CardBuilder {
         (text, markup)
     }
 
+    /// 卡片 28a: 多会话 `/prompt` 的目标选择卡片
+    pub fn prompt_target_selection_card(
+        content: &str,
+        sessions: &[ExternalOpenCodeSessionInfo],
+    ) -> (String, InlineKeyboardMarkup) {
+        let clip = |value: &str, max: usize| -> String {
+            let chars: Vec<char> = value.chars().collect();
+            if chars.len() <= max {
+                return value.to_string();
+            }
+            let keep = max.saturating_sub(1);
+            let mut clipped: String = chars.into_iter().take(keep).collect();
+            clipped.push('…');
+            clipped
+        };
+
+        let content_trimmed = content.trim();
+        let mut text = format!(
+            "🎯 *选择目标会话*\n> 检测到 {} 个运行中的 OpenCode 会话。\n",
+            sessions.len()
+        );
+
+        if content_trimmed.is_empty() {
+            text.push_str("> 👉 请选择目标会话，随后直接输入要发送的提示词内容。\n\n");
+        } else {
+            let collapsed: String = content_trimmed
+                .chars()
+                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+                .filter(|c| *c != '`')
+                .collect();
+            let preview = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
+            let preview = clip(&preview, 80);
+            text.push_str(&format!("> 💬 待发送内容: {}\n\n", preview));
+        }
+
+        for (idx, session) in sessions.iter().enumerate() {
+            let badge = Self::number_badge(idx + 1);
+            let project = clip(&session.project_name, 40);
+            let session_id = clip(session.session_id.as_deref().unwrap_or("待初始化"), 40);
+            let status = if session.is_busy { "🟢 Busy" } else { "🟡 Idle" };
+            text.push_str(&format!(
+                "{} *{}* (PID: {})\n> ├─ 会话: `{}`\n> └─ 状态: {}\n\n",
+                badge, project, session.pid, session_id, status
+            ));
+        }
+        text.push_str("_点击下方按钮选择目标会话。_");
+        let text: String = text.chars().take(1200).collect();
+
+        let mut rows = Vec::new();
+        for (idx, session) in sessions.iter().enumerate() {
+            let badge = Self::number_badge(idx + 1);
+            let pid = session.pid.to_string();
+            let fixed = format!("{}  (PID: {})", badge, pid);
+            let name_room = 40usize.saturating_sub(fixed.chars().count()).max(1);
+            let project = clip(&session.project_name, name_room);
+            let label = clip(&format!("{} {} (PID: {})", badge, project, pid), 40);
+            rows.push(vec![InlineKeyboardButton::callback(
+                label,
+                format!("prompt_choice:{}", idx),
+            )]);
+        }
+        rows.push(vec![InlineKeyboardButton::callback(
+            "❌ 取消选择",
+            "cancel_prompt_choice",
+        )]);
+
+        (text, InlineKeyboardMarkup::new(rows))
+    }
+
     /// 卡片 28: 提示词输入请求引导卡片
     pub fn prompt_input_request_card(session: &ExternalOpenCodeSessionInfo) -> (String, InlineKeyboardMarkup) {
         let title_line = session.title.as_deref().unwrap_or("未命名会话");
