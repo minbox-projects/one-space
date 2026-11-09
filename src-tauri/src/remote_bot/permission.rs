@@ -1,10 +1,14 @@
-//! Deterministic permission risk classification.
+//! Deterministic permission risk classification and pending-request tracking.
 //!
 //! The classifier is deliberately conservative: only an explicit allowlist of
 //! read-only, build/test and project-local commands is treated as routine, and
 //! anything ambiguous (unknown commands, command or process substitution,
 //! redirection, empty input) fails closed as high risk. It performs no I/O and
 //! never consults settings, so the same input always produces the same risk.
+
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 /// Risk level assigned to a permission request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,5 +452,160 @@ fn classify_git(args: &[&str]) -> PermissionRisk {
             _ => PermissionRisk::HighRisk,
         },
         _ => PermissionRisk::HighRisk,
+    }
+}
+
+/// How long a pending permission request may wait for a decision.
+///
+/// The bound is absolute rather than extended by activity so a request that is
+/// never answered stops blocking the agent instead of lingering indefinitely.
+pub const PERMISSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Whether a request sent at `sent_at` has reached the decision deadline.
+///
+/// `saturating_duration_since` keeps a `now` earlier than `sent_at` from
+/// panicking or reporting expiry.
+pub fn permission_timed_out(sent_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(sent_at) >= PERMISSION_TIMEOUT
+}
+
+/// Reply value returned to the agent for a resolved permission request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    Once,
+    Always,
+    Deny,
+}
+
+impl PermissionDecision {
+    /// Protocol reply string understood by the agent permission endpoint.
+    pub fn as_reply(self) -> &'static str {
+        match self {
+            PermissionDecision::Once => "once",
+            PermissionDecision::Always => "always",
+            PermissionDecision::Deny => "deny",
+        }
+    }
+}
+
+/// A permission request awaiting a human decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPermissionRequest {
+    pub request_id: String,
+    pub chat_id: i64,
+    pub permission_type: String,
+    pub command: Option<String>,
+    pub risk: PermissionRisk,
+    pub card_message_id: Option<i64>,
+    pub sent_at: Instant,
+}
+
+impl PendingPermissionRequest {
+    pub fn new(
+        request_id: impl Into<String>,
+        chat_id: i64,
+        permission_type: impl Into<String>,
+        command: Option<String>,
+        risk: PermissionRisk,
+        sent_at: Instant,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            chat_id,
+            permission_type: permission_type.into(),
+            command,
+            risk,
+            card_message_id: None,
+            sent_at,
+        }
+    }
+}
+
+/// A pending request paired with the decision that resolved it.
+#[derive(Debug)]
+pub struct PermissionResolution {
+    pub request: PendingPermissionRequest,
+    pub decision: PermissionDecision,
+}
+
+/// In-memory store of permission requests that no decision has resolved yet.
+///
+/// Shared across async tasks, so access is serialized by a `Mutex` and no lock
+/// is held across an `await`; the registry is `Send + Sync` because the guard
+/// never escapes a method call.
+#[derive(Default)]
+pub struct PermissionRegistry {
+    pending: Mutex<HashMap<String, PendingPermissionRequest>>,
+}
+
+impl PermissionRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A panic while another thread held the lock must not disable the
+    /// registry; recovered data is still the last consistent map contents.
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, PendingPermissionRequest>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Store `request`, returning the request it replaced for the same id.
+    pub fn insert(&self, request: PendingPermissionRequest) -> Option<PendingPermissionRequest> {
+        self.lock().insert(request.request_id.clone(), request)
+    }
+
+    pub fn get(&self, id: &str) -> Option<PendingPermissionRequest> {
+        self.lock().get(id).cloned()
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+
+    /// Resolve `id` exactly once: the entry is removed before returning, so a
+    /// repeated or concurrent decision cannot apply twice.
+    pub fn resolve(&self, id: &str, decision: PermissionDecision) -> Option<PermissionResolution> {
+        let request = self.lock().remove(id)?;
+        Some(PermissionResolution { request, decision })
+    }
+
+    /// Remove `id` only if it has passed the timeout at `now`.
+    pub fn expire(&self, id: &str, now: Instant) -> Option<PendingPermissionRequest> {
+        let mut guard = self.lock();
+        let timed_out = guard
+            .get(id)
+            .is_some_and(|request| permission_timed_out(request.sent_at, now));
+        if timed_out {
+            guard.remove(id)
+        } else {
+            None
+        }
+    }
+
+    /// Remove every request that has passed the timeout at `now`.
+    pub fn take_expired(&self, now: Instant) -> Vec<PendingPermissionRequest> {
+        let mut guard = self.lock();
+        let expired_ids: Vec<String> = guard
+            .values()
+            .filter(|request| permission_timed_out(request.sent_at, now))
+            .map(|request| request.request_id.clone())
+            .collect();
+        expired_ids
+            .into_iter()
+            .filter_map(|id| guard.remove(&id))
+            .collect()
+    }
+
+    /// Remove and return every pending request.
+    pub fn clear(&self) -> Vec<PendingPermissionRequest> {
+        self.lock().drain().map(|(_, request)| request).collect()
+    }
+
+    pub fn remove(&self, id: &str) -> Option<PendingPermissionRequest> {
+        self.lock().remove(id)
     }
 }

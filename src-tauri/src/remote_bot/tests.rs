@@ -3024,3 +3024,300 @@ fn permission_classify_language_and_build_tools() {
     expect_high_risk("bash", Some("python script.py"));
     expect_high_risk("bash", Some("cargo run"));
 }
+
+// --- Pending permission registry, decision and timeout ---
+// The registry is shared across async tasks, so it must be Send + Sync, must
+// store at most one pending request per id, and must make each decision
+// single-use. The 30-minute timeout boundary is absolute: 29m59s is still
+// pending, exactly 30m is expired.
+
+use super::permission::{
+    permission_timed_out, PendingPermissionRequest, PermissionDecision, PermissionRegistry,
+    PERMISSION_TIMEOUT,
+};
+use std::time::{Duration, Instant};
+
+fn permission_assert_send_sync<T: Send + Sync>() {}
+
+#[test]
+fn permission_registry_is_send_and_sync() {
+    permission_assert_send_sync::<PermissionRegistry>();
+}
+
+#[test]
+fn permission_registry_insert_get_and_duplicate() {
+    let registry = PermissionRegistry::new();
+    assert!(registry.is_empty());
+    assert_eq!(registry.len(), 0);
+
+    let sent_at = Instant::now();
+    let first = PendingPermissionRequest::new(
+        "req-1",
+        42,
+        "bash",
+        Some("cargo test".to_string()),
+        PermissionRisk::Routine,
+        sent_at,
+    );
+    assert!(registry.insert(first).is_none());
+    assert_eq!(registry.len(), 1);
+    assert!(!registry.is_empty());
+
+    let stored = registry.get("req-1").expect("inserted request must be retrievable");
+    assert_eq!(stored.request_id, "req-1");
+    assert_eq!(stored.chat_id, 42);
+    assert_eq!(stored.permission_type, "bash");
+    assert_eq!(stored.command.as_deref(), Some("cargo test"));
+    assert_eq!(stored.risk, PermissionRisk::Routine);
+    assert_eq!(stored.card_message_id, None);
+    assert_eq!(stored.sent_at, sent_at);
+
+    let other = PendingPermissionRequest::new(
+        "req-2",
+        43,
+        "edit",
+        None,
+        PermissionRisk::HighRisk,
+        sent_at,
+    );
+    assert!(registry.insert(other).is_none());
+    assert_eq!(registry.len(), 2);
+    assert_eq!(
+        registry.get("req-2").expect("second request must coexist").chat_id,
+        43
+    );
+
+    let newest = PendingPermissionRequest::new(
+        "req-1",
+        99,
+        "write",
+        Some("npm run build".to_string()),
+        PermissionRisk::HighRisk,
+        sent_at,
+    );
+    let replaced = registry
+        .insert(newest)
+        .expect("duplicate id must return the previous request");
+    assert_eq!(replaced.request_id, "req-1");
+    assert_eq!(replaced.chat_id, 42);
+    assert_eq!(replaced.permission_type, "bash");
+    assert_eq!(replaced.command.as_deref(), Some("cargo test"));
+    assert_eq!(registry.len(), 2);
+
+    let updated = registry.get("req-1").expect("newest request must remain");
+    assert_eq!(updated.chat_id, 99);
+    assert_eq!(updated.permission_type, "write");
+    assert_eq!(updated.command.as_deref(), Some("npm run build"));
+    assert_eq!(updated.risk, PermissionRisk::HighRisk);
+    assert_eq!(registry.get("req-2").expect("unrelated id must remain").chat_id, 43);
+}
+
+#[test]
+fn permission_registry_resolve_is_single_use() {
+    let registry = PermissionRegistry::new();
+    let sent_at = Instant::now();
+    registry.insert(PendingPermissionRequest::new(
+        "req-a",
+        11,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        sent_at,
+    ));
+    registry.insert(PendingPermissionRequest::new(
+        "req-b",
+        12,
+        "bash",
+        Some("rm -rf target".to_string()),
+        PermissionRisk::HighRisk,
+        sent_at,
+    ));
+
+    let resolution = registry
+        .resolve("req-a", PermissionDecision::Once)
+        .expect("pending request must resolve");
+    assert_eq!(resolution.request.request_id, "req-a");
+    assert_eq!(resolution.request.chat_id, 11);
+    assert_eq!(resolution.decision, PermissionDecision::Once);
+    assert_eq!(registry.len(), 1);
+    assert!(registry.get("req-a").is_none());
+
+    assert!(
+        registry.resolve("req-a", PermissionDecision::Once).is_none(),
+        "the second decision for the same id must be a no-op"
+    );
+    assert!(registry.resolve("unknown-id", PermissionDecision::Deny).is_none());
+    assert_eq!(registry.len(), 1);
+
+    let other = registry
+        .resolve("req-b", PermissionDecision::Always)
+        .expect("resolving one id must leave others pending");
+    assert_eq!(other.request.request_id, "req-b");
+    assert_eq!(other.request.chat_id, 12);
+    assert_eq!(other.decision, PermissionDecision::Always);
+    assert!(registry.is_empty());
+}
+
+#[test]
+fn permission_decision_as_reply_values() {
+    assert_eq!(PermissionDecision::Once.as_reply(), "once");
+    assert_eq!(PermissionDecision::Always.as_reply(), "always");
+    assert_eq!(PermissionDecision::Deny.as_reply(), "deny");
+}
+
+#[test]
+fn permission_timeout_boundary() {
+    assert_eq!(PERMISSION_TIMEOUT, Duration::from_secs(30 * 60));
+
+    let sent_at = Instant::now();
+    assert!(!permission_timed_out(
+        sent_at,
+        sent_at + PERMISSION_TIMEOUT - Duration::from_secs(1)
+    ));
+    assert!(permission_timed_out(sent_at, sent_at + PERMISSION_TIMEOUT));
+    assert!(permission_timed_out(
+        sent_at,
+        sent_at + PERMISSION_TIMEOUT + Duration::from_secs(1)
+    ));
+}
+
+#[test]
+fn permission_registry_expire_respects_timeout_boundary() {
+    let registry = PermissionRegistry::new();
+    let sent_at = Instant::now();
+    registry.insert(PendingPermissionRequest::new(
+        "req-expire",
+        7,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        sent_at,
+    ));
+
+    assert!(
+        registry
+            .expire("req-expire", sent_at + Duration::from_secs(29 * 60 + 59))
+            .is_none(),
+        "a request pending for 29m59s must not expire"
+    );
+    assert!(registry.get("req-expire").is_some());
+    assert_eq!(registry.len(), 1);
+
+    let expired = registry
+        .expire("req-expire", sent_at + PERMISSION_TIMEOUT)
+        .expect("exactly 30m must expire the request");
+    assert_eq!(expired.request_id, "req-expire");
+    assert_eq!(expired.chat_id, 7);
+    assert!(registry.get("req-expire").is_none());
+    assert!(registry.is_empty());
+    assert!(registry
+        .expire("req-expire", sent_at + PERMISSION_TIMEOUT + Duration::from_secs(1))
+        .is_none());
+
+    let resolved_registry = PermissionRegistry::new();
+    resolved_registry.insert(PendingPermissionRequest::new(
+        "req-resolved",
+        8,
+        "edit",
+        None,
+        PermissionRisk::Routine,
+        sent_at,
+    ));
+    assert!(resolved_registry
+        .resolve("req-resolved", PermissionDecision::Deny)
+        .is_some());
+    assert!(resolved_registry
+        .expire("req-resolved", sent_at + PERMISSION_TIMEOUT)
+        .is_none(),
+        "an already resolved request leaves nothing to expire");
+    assert!(resolved_registry
+        .resolve("req-resolved", PermissionDecision::Deny)
+        .is_none());
+    assert!(resolved_registry.is_empty());
+}
+
+#[test]
+fn permission_registry_take_expired_clear_and_remove() {
+    let registry = PermissionRegistry::new();
+    let now = Instant::now();
+    let expired_sent_at = now - PERMISSION_TIMEOUT - Duration::from_secs(1);
+    let fresh_sent_at = now - Duration::from_secs(1);
+
+    registry.insert(PendingPermissionRequest::new(
+        "req-old-a",
+        21,
+        "bash",
+        Some("cat file".to_string()),
+        PermissionRisk::Routine,
+        expired_sent_at,
+    ));
+    registry.insert(PendingPermissionRequest::new(
+        "req-old-b",
+        22,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        expired_sent_at,
+    ));
+    registry.insert(PendingPermissionRequest::new(
+        "req-fresh",
+        23,
+        "edit",
+        None,
+        PermissionRisk::Routine,
+        fresh_sent_at,
+    ));
+
+    let mut expired_ids: Vec<String> = registry
+        .take_expired(now)
+        .into_iter()
+        .map(|request| request.request_id)
+        .collect();
+    expired_ids.sort();
+    assert_eq!(
+        expired_ids,
+        vec!["req-old-a".to_string(), "req-old-b".to_string()],
+        "take_expired must remove exactly the timed-out requests"
+    );
+    assert_eq!(registry.len(), 1);
+    assert_eq!(
+        registry.get("req-fresh").expect("fresh request must remain").chat_id,
+        23
+    );
+
+    let cleared = registry.clear();
+    assert_eq!(cleared.len(), 1);
+    assert_eq!(cleared[0].request_id, "req-fresh");
+    assert!(registry.is_empty());
+    assert_eq!(registry.len(), 0);
+
+    let removal_registry = PermissionRegistry::new();
+    removal_registry.insert(PendingPermissionRequest::new(
+        "req-remove",
+        31,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        now,
+    ));
+    removal_registry.insert(PendingPermissionRequest::new(
+        "req-keep",
+        32,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        now,
+    ));
+
+    let removed = removal_registry
+        .remove("req-remove")
+        .expect("named request must be removed");
+    assert_eq!(removed.request_id, "req-remove");
+    assert_eq!(removed.chat_id, 31);
+    assert!(removal_registry.remove("req-remove").is_none());
+    assert_eq!(removal_registry.len(), 1);
+    assert_eq!(
+        removal_registry.get("req-keep").expect("unnamed request must remain").chat_id,
+        32
+    );
+}
