@@ -314,7 +314,7 @@ impl CommandRouter {
                     self.client.send_message(
                         chat_id,
                         &format!("❌ 启动规划任务失败: `{}`", e),
-                        None,
+                        Some(CardBuilder::quick_actions()),
                         Some("Markdown")
                     ).await?;
                 }
@@ -336,7 +336,7 @@ impl CommandRouter {
                                 return Ok(());
                             }
                             Err(e) => {
-                                self.client.send_message(chat_id, &format!("⚠️ 决断提交失败: {}", e), None, None).await?;
+                                self.client.send_message(chat_id, &format!("⚠️ 决断提交失败: {}", e), Some(CardBuilder::quick_actions()), None).await?;
                                 return Ok(());
                             }
                         }
@@ -372,7 +372,7 @@ impl CommandRouter {
                     self.client.send_message(
                         chat_id,
                         &format!("❌ 推进处理失败: {}", e),
-                        None,
+                        Some(CardBuilder::quick_actions()),
                         None,
                     ).await?;
                 }
@@ -390,7 +390,7 @@ impl CommandRouter {
                         _（可在 Mac 端 OneSpace 设置 -> 远程工作台中开启自由对话）_",
                         project_name
                     );
-                    self.client.send_message(chat_id, &guard_text, None, Some("Markdown")).await?;
+                    self.client.send_message(chat_id, &guard_text, Some(CardBuilder::quick_actions()), Some("Markdown")).await?;
                     return Ok(());
                 }
 
@@ -404,7 +404,7 @@ impl CommandRouter {
                     self.client.send_message(
                         chat_id,
                         &format!("❌ 启动处理失败: {}", e),
-                        None,
+                        Some(CardBuilder::quick_actions()),
                         None,
                     ).await?;
                 }
@@ -678,12 +678,12 @@ impl CommandRouter {
                 match self.supervisor.start_hosting(chat_id, session, mode).await {
                     Ok(msg) => info!("{}", msg),
                     Err(e) => {
-                        self.client.send_message(chat_id, &format!("❌ 启动托管失败: {}", e), None, None).await?;
+                        self.client.send_message(chat_id, &format!("❌ 启动托管失败: {}", e), Some(CardBuilder::sessions_actions()), None).await?;
                     }
                 }
                 return Ok(());
             } else {
-                self.client.send_message(chat_id, &format!("⚠️ 未找到匹配 `{}` 的正在运行会话。\n输入 `/sessions` 查看当前活跃会话。", arg), None, None).await?;
+                self.client.send_message(chat_id, &format!("⚠️ 未找到匹配 `{}` 的正在运行会话。\n输入 `/sessions` 查看当前活跃会话。", arg), Some(CardBuilder::sessions_actions()), None).await?;
                 return Ok(());
             }
         }
@@ -798,7 +798,7 @@ impl CommandRouter {
             let target = match prompt_target_for(session) {
                 Ok(target) => target,
                 Err(message) => {
-                    self.client.send_message(chat_id, &message, None, None).await?;
+                    self.client.send_message(chat_id, &message, Some(CardBuilder::sessions_actions()), None).await?;
                     return Ok(());
                 }
             };
@@ -823,7 +823,7 @@ impl CommandRouter {
             let target = match prompt_target_for(session) {
                 Ok(target) => target,
                 Err(message) => {
-                    self.client.send_message(chat_id, &message, None, None).await?;
+                    self.client.send_message(chat_id, &message, Some(CardBuilder::sessions_actions()), None).await?;
                     return Ok(());
                 }
             };
@@ -879,7 +879,7 @@ impl CommandRouter {
             &target.session_id,
             prompt,
         ).await {
-            self.client.send_message(chat_id, &format!("❌ 发送提示词失败: {}", e), None, None).await?;
+            self.client.send_message(chat_id, &format!("❌ 发送提示词失败: {}", e), Some(CardBuilder::prompt_ack_actions()), None).await?;
         }
 
         Ok(())
@@ -1249,7 +1249,7 @@ impl CommandRouter {
         self.client.send_message(chat_id, &ack_text, None, Some("Markdown")).await?;
 
         if let Err(e) = self.bridge.execute_coding(chat_id, project_dir, &clean_plan_id).await {
-            self.client.send_message(chat_id, &format!("❌ 启动 Coding 实施失败: {}", e), None, None).await?;
+            self.client.send_message(chat_id, &format!("❌ 启动 Coding 实施失败: {}", e), Some(CardBuilder::quick_actions()), None).await?;
         }
 
         Ok(())
@@ -1305,7 +1305,7 @@ impl CommandRouter {
                 let _ = self.client.send_message(
                     chat_id,
                     &format!("❌ 启动 Coding 实施失败: {}", e),
-                    None,
+                    Some(CardBuilder::quick_actions()),
                     None,
                 ).await;
             }
@@ -1344,7 +1344,7 @@ impl CommandRouter {
                         let _ = self.client.send_message(
                             m.chat.id,
                             &format!("⚠️ 刷新进度失败: {}", e),
-                            None,
+                            Some(CardBuilder::sessions_actions()),
                             None,
                         ).await;
                     }
@@ -1371,7 +1371,7 @@ impl CommandRouter {
                 let _ = self.client.send_message(
                     chat_id,
                     &format!("❌ 推进规划失败: {}", e),
-                    None,
+                    Some(CardBuilder::quick_actions()),
                     None,
                 ).await;
             }
@@ -1389,7 +1389,7 @@ impl CommandRouter {
                         let _ = self.client.send_message(
                             msg.chat.id,
                             &format!("⚠️ 提交提问应答失败: {}", e),
-                            None,
+                            Some(CardBuilder::sessions_actions()),
                             None,
                         ).await;
                     }
@@ -1409,14 +1409,14 @@ impl CommandRouter {
             let project_dir = resolve_project_dir(&config);
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             if let Err(e) = self.send_diff_view(chat_id, &project_dir, Some(plan_id)).await {
-                let _ = self.client.send_message(chat_id, &format!("⚠️ 查看代码改动 Diff 失败: {}", e), None, None).await;
+                let _ = self.client.send_message(chat_id, &format!("⚠️ 查看代码改动 Diff 失败: {}", e), Some(CardBuilder::quick_actions()), None).await;
             }
         } else if let Some(plan_id) = data.strip_prefix("view_failure_log:") {
             let config = load_config()?;
             let project_dir = resolve_project_dir(&config);
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             if let Err(e) = self.send_failure_log_view(chat_id, &project_dir, plan_id).await {
-                let _ = self.client.send_message(chat_id, &format!("⚠️ 查看诊断日志失败: {}", e), None, None).await;
+                let _ = self.client.send_message(chat_id, &format!("⚠️ 查看诊断日志失败: {}", e), Some(CardBuilder::quick_actions()), None).await;
             }
         } else if let Some(plan_id) = data.strip_prefix("retry_repair:") {
             let config = load_config()?;
@@ -1449,7 +1449,7 @@ impl CommandRouter {
                 let _ = self.client.send_message(
                     chat_id,
                     &format!("❌ 启动自愈修复失败: {}", e),
-                    None,
+                    Some(CardBuilder::quick_actions()),
                     None,
                 ).await;
             }
@@ -1522,7 +1522,7 @@ impl CommandRouter {
                             msg.chat.id,
                             msg.message_id,
                             &format!("⚠️ PID `{}` 的外部 OpenCode 会话已退出或结束运行。\n发送 `/sessions` 可重新扫描会话列表。", pid),
-                            None,
+                            Some(CardBuilder::sessions_actions()),
                             Some("Markdown"),
                         ).await;
                     }
@@ -1589,7 +1589,7 @@ impl CommandRouter {
                         session.project_name,
                         session.cwd
                     );
-                    self.client.send_message(chat_id, &confirm_text, None, Some("Markdown")).await?;
+                    self.client.send_message(chat_id, &confirm_text, Some(CardBuilder::quick_actions()), Some("Markdown")).await?;
                 }
             }
         } else if let Some(pid_str) = data.strip_prefix("start_host:") {
@@ -1599,10 +1599,10 @@ impl CommandRouter {
                 if let Some(session) = sessions.into_iter().find(|s| s.pid == pid) {
                     let mode = super::types::SessionHostingDecisionMode::Manual;
                     if let Err(e) = self.supervisor.start_hosting(chat_id, session, mode).await {
-                        self.client.send_message(chat_id, &format!("❌ 开启托管失败: {}", e), None, None).await?;
+                        self.client.send_message(chat_id, &format!("❌ 开启托管失败: {}", e), Some(CardBuilder::sessions_actions()), None).await?;
                     }
                 } else {
-                    self.client.send_message(chat_id, &format!("⚠️ PID `{}` 会话已结束或无法被托管。", pid), None, None).await?;
+                    self.client.send_message(chat_id, &format!("⚠️ PID `{}` 会话已结束或无法被托管。", pid), Some(CardBuilder::sessions_actions()), None).await?;
                 }
             }
         } else if let Some(sid) = data.strip_prefix("stop_host:") {
@@ -1619,7 +1619,7 @@ impl CommandRouter {
                     ).await;
                 }
             } else {
-                self.client.send_message(chat_id, &format!("ℹ️ 会话 `{}` 并未在托管中或已结束。", sid), None, None).await?;
+                self.client.send_message(chat_id, &format!("ℹ️ 会话 `{}` 并未在托管中或已结束。", sid), Some(CardBuilder::sessions_actions()), None).await?;
             }
         } else if let Some(sid) = data.strip_prefix("toggle_host_mode:") {
             if let Some(new_mode) = self.supervisor.toggle_decision_mode(sid).await {
@@ -1629,7 +1629,7 @@ impl CommandRouter {
                 };
                 if let Some(ref msg) = cb.message {
                     let notice = format!("🔄 会话 `{}` 的托管决策模式已切换为：*{}*", sid, mode_str);
-                    self.client.send_message(msg.chat.id, &notice, None, Some("Markdown")).await?;
+                    self.client.send_message(msg.chat.id, &notice, Some(CardBuilder::sessions_actions()), Some("Markdown")).await?;
                 }
             }
         } else if let Some(ans_payload) = data.strip_prefix("host_ans:") {
@@ -1664,7 +1664,7 @@ impl CommandRouter {
                         let _ = self.client.send_message(
                             chat_id,
                             &format!("⚠️ 提交选项答复失败: {}", e),
-                            None,
+                            Some(CardBuilder::sessions_actions()),
                             None,
                         ).await;
                     }
@@ -1703,11 +1703,11 @@ impl CommandRouter {
                         }
                     } else {
                         let err_msg = format!("⚠️ PID `{}` 会话尚未分配 Session ID，暂无法注入提示词。", pid);
-                        let _ = self.client.send_message(chat_id, &err_msg, None, None).await;
+                        let _ = self.client.send_message(chat_id, &err_msg, Some(CardBuilder::sessions_actions()), None).await;
                     }
                 } else {
                     let err_msg = format!("⚠️ PID `{}` 的外部会话已结束或不存在。", pid);
-                    let _ = self.client.send_message(chat_id, &err_msg, None, None).await;
+                    let _ = self.client.send_message(chat_id, &err_msg, Some(CardBuilder::sessions_actions()), None).await;
                 }
             }
         } else if let Some(index) = parse_prompt_choice_callback(data) {
@@ -1723,7 +1723,7 @@ impl CommandRouter {
                 let target = match prompt_target_for(&choice.session) {
                     Ok(target) => target,
                     Err(message) => {
-                        self.client.send_message(chat_id, &message, None, None).await?;
+                        self.client.send_message(chat_id, &message, Some(CardBuilder::sessions_actions()), None).await?;
                         return Ok(());
                     }
                 };
@@ -1772,11 +1772,11 @@ impl CommandRouter {
                         msg.chat.id,
                         msg.message_id,
                         expired_text,
-                        None,
+                        Some(CardBuilder::sessions_actions()),
                         Some("Markdown"),
                     ).await;
                 } else {
-                    let _ = self.client.send_message(chat_id, expired_text, None, Some("Markdown")).await;
+                    let _ = self.client.send_message(chat_id, expired_text, Some(CardBuilder::sessions_actions()), Some("Markdown")).await;
                 }
             }
         } else if data == "cancel_prompt_choice" {
