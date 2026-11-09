@@ -1956,3 +1956,208 @@ fn session_inventory_plan_execution() {
     assert!(!summary_diff.is_executing);
     assert!(!summary_diff.execution_status.is_empty());
 }
+
+#[tokio::test]
+async fn bridge_conversation_replacement_and_cleanup() {
+    use std::path::Path;
+    use std::sync::Arc;
+    use super::client::TelegramClient;
+    use super::opencode_bridge::{
+        BridgeTaskKind, OpenCodeBridge, extract_session_id_from_event,
+    };
+
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+
+    // Fresh bridge: no conversation id and no task.
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.conversation_session_id.is_none());
+    assert!(snap.task.is_none());
+
+    // begin_conversation clears conversation id, sets Conversation task.
+    bridge.begin_conversation(Path::new("/tmp/proj-a")).await;
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.conversation_session_id.is_none());
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.kind, BridgeTaskKind::Conversation);
+    assert!(task.is_busy);
+    assert_eq!(snap.conversation_project_name, Some("proj-a".to_string()));
+    assert_eq!(task.project_name, Some("proj-a".to_string()));
+
+    // record_conversation_session sets both ids.
+    bridge.record_conversation_session("ses_conv_1").await;
+    let snap = bridge.session_snapshot().await;
+    assert_eq!(snap.conversation_session_id, Some("ses_conv_1".to_string()));
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.session_id, Some("ses_conv_1".to_string()));
+
+    // begin_plan_execution sets Coding task, keeps conversation id.
+    bridge.begin_plan_execution(Path::new("/tmp/proj-b"), "plan-1").await;
+    let snap = bridge.session_snapshot().await;
+    assert_eq!(snap.conversation_session_id, Some("ses_conv_1".to_string()));
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.kind, BridgeTaskKind::Coding);
+    assert_eq!(task.plan_id, Some("plan-1".to_string()));
+    assert!(task.session_id.is_none());
+    assert!(task.is_busy);
+
+    // record_plan_execution_session sets task session id.
+    bridge.record_plan_execution_session("ses_plan_1").await;
+    let snap = bridge.session_snapshot().await;
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.session_id, Some("ses_plan_1".to_string()));
+
+    // finish_task removes task, conversation not busy, retains id.
+    bridge.finish_task().await;
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.task.is_none());
+    assert_eq!(snap.conversation_session_id, Some("ses_conv_1".to_string()));
+    assert!(!snap.conversation_busy);
+
+    // later begin_conversation replaces conversation.
+    bridge.begin_conversation(Path::new("/tmp/proj-c")).await;
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.conversation_session_id.is_none());
+    assert_eq!(snap.conversation_project_name, Some("proj-c".to_string()));
+    let task = snap.task.expect("task must exist");
+    assert_eq!(task.kind, BridgeTaskKind::Conversation);
+
+    bridge.record_conversation_session("ses_conv_2").await;
+    bridge.cancel_active_task().await;
+    let snap = bridge.session_snapshot().await;
+    assert!(snap.conversation_session_id.is_none());
+    assert!(snap.task.is_none());
+}
+
+#[tokio::test]
+async fn bridge_plan_only_does_not_clear_conversation() {
+    use std::path::Path;
+    use std::sync::Arc;
+    use super::client::TelegramClient;
+    use super::opencode_bridge::OpenCodeBridge;
+
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+
+    bridge.begin_conversation(Path::new("/tmp/proj-a")).await;
+    bridge.record_conversation_session("ses_conv_1").await;
+
+    let before = bridge.session_snapshot().await;
+    bridge.begin_plan_execution(Path::new("/tmp/proj-b"), "plan-1").await;
+    let after = bridge.session_snapshot().await;
+
+    assert_eq!(before.conversation_session_id, after.conversation_session_id);
+    assert_eq!(before.conversation_project_name, after.conversation_project_name);
+    assert_eq!(before.conversation_busy, after.conversation_busy);
+
+    bridge.finish_task().await;
+    let snap = bridge.session_snapshot().await;
+    assert_eq!(snap.conversation_session_id, Some("ses_conv_1".to_string()));
+}
+
+#[test]
+fn bridge_extract_session_id_from_events() {
+    use super::opencode_bridge::extract_session_id_from_event;
+    use serde_json::json;
+
+    assert_eq!(
+        extract_session_id_from_event(&json!({"sessionID": "ses_v1"})),
+        Some("ses_v1".to_string())
+    );
+    assert_eq!(
+        extract_session_id_from_event(&json!({"part": {"sessionId": "ses_v2"}})),
+        Some("ses_v2".to_string())
+    );
+    assert_eq!(
+        extract_session_id_from_event(&json!({"part": {"session_id": "ses_shadow"}})),
+        Some("ses_shadow".to_string())
+    );
+    assert_eq!(
+        extract_session_id_from_event(&json!({"type": "text", "part": {"text": "hi"}})),
+        None
+    );
+    assert_eq!(extract_session_id_from_event(&json!({})), None);
+}
+
+#[test]
+fn hosted_progress_paths_probe_opencode_database() {
+    let (db_path, log_path) = super::session_supervisor::hosted_progress_paths();
+    assert_eq!(db_path, super::opencode_inspector::resolve_opencode_db_path());
+    assert_eq!(log_path, super::opencode_inspector::resolve_opencode_log_path());
+    assert!(db_path.to_string_lossy().contains(".local/share/opencode/opencode.db"));
+    assert!(log_path.to_string_lossy().contains(".local/share/opencode/log/opencode.log"));
+}
+
+#[test]
+fn hosted_progress_reads_step_and_todos_by_session_id() {
+    use rusqlite::Connection;
+
+    let base = std::env::temp_dir().join(format!(
+        "onespace_hosted_progress_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let db_path = base.join("opencode.db");
+    let _ = std::fs::remove_file(&db_path);
+
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE part(session_id TEXT, data TEXT, time_created INTEGER);
+             CREATE TABLE todo(session_id TEXT, position INTEGER, status TEXT, content TEXT);
+             CREATE TABLE session(id TEXT, tokens_input INTEGER, tokens_output INTEGER);
+             CREATE TABLE session_v2(id TEXT, tokens_input INTEGER, tokens_output INTEGER);",
+        )
+        .unwrap();
+
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO part(session_id, data, time_created) VALUES (?1, ?2, ?3)",
+                rusqlite::params!["ses_hosted_progress", r#"{"type":"step-start"}"#, i],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO todo(session_id, position, status, content) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["ses_hosted_progress", 0i32, "completed", "完成审计"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO todo(session_id, position, status, content) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["ses_hosted_progress", 1i32, "in_progress", "补齐测试"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO session(id, tokens_input, tokens_output) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["ses_hosted_progress", 1200i64, 300i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2(id, tokens_input, tokens_output) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["ses_hosted_progress", 1200i64, 300i64],
+        )
+        .unwrap();
+    }
+
+    let snap = super::session_supervisor::inspect_session_db(&db_path, "ses_hosted_progress")
+        .expect("snapshot should exist");
+    assert_eq!(snap.cur_step, 3);
+    assert_eq!(
+        snap.todos,
+        vec![
+            ("完成审计".to_string(), "completed".to_string()),
+            ("补齐测试".to_string(), "in_progress".to_string()),
+        ]
+    );
+    assert_eq!(snap.tokens, (1200, 300));
+
+    let missing = super::session_supervisor::inspect_session_db(&db_path, "ses_missing");
+    if let Some(s) = missing {
+        assert_eq!(s.cur_step, 0);
+        assert!(s.todos.is_empty());
+    }
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&base);
+}
