@@ -34,6 +34,25 @@ pub fn parse_sessions_command(text: &str) -> Option<SessionsCommand> {
     }
 }
 
+/// 会话概览按钮的回调数据解析结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionCallback {
+    Overview,
+    Detail(String),
+}
+
+/// 仅接受 `open_sessions` 或带非空标识的 `open_session:<id>`。
+pub fn parse_session_callback(data: &str) -> Option<SessionCallback> {
+    if data == "open_sessions" {
+        return Some(SessionCallback::Overview);
+    }
+    let identifier = data.strip_prefix("open_session:")?;
+    if identifier.is_empty() {
+        return None;
+    }
+    Some(SessionCallback::Detail(identifier.to_string()))
+}
+
 pub struct CommandRouter {
     client: Arc<TelegramClient>,
     bridge: Arc<OpenCodeBridge>,
@@ -1239,6 +1258,13 @@ impl CommandRouter {
         } else if data == "open_plans" {
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             self.handle_plans_command(chat_id).await?;
+        } else if let Some(callback) = parse_session_callback(data) {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            let command = match callback {
+                SessionCallback::Overview => SessionsCommand::Overview,
+                SessionCallback::Detail(identifier) => SessionsCommand::Detail(identifier),
+            };
+            self.handle_sessions_command(chat_id, command).await?;
         } else if data == "view_ext_session" {
             let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
             self.handle_running_command(chat_id).await?;

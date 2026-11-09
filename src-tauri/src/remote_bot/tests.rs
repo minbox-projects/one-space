@@ -2487,3 +2487,92 @@ fn test_default_bot_commands_match_current_command_surface() {
         );
     }
 }
+
+#[test]
+fn session_inventory_overview_is_actionable() {
+    use super::session_inventory::{format_sessions_overview, SessionEntryKind};
+
+    let entries = vec![
+        make_entry(SessionEntryKind::Terminal, Some("ses_term"), "ses_term", None, Some(111), "proj-term", "Busy"),
+        make_entry(SessionEntryKind::Terminal, None, "unavailable", None, Some(222), "proj-noid", "Idle"),
+        make_entry(SessionEntryKind::PlanExecution, None, "capturing", Some("plan-1"), None, "proj-plan", "Running"),
+        make_entry(SessionEntryKind::TelegramConversation, None, "unassigned", None, None, "proj-conv", "Idle"),
+    ];
+
+    let (text, markup) = format_sessions_overview(&entries);
+    let markup = markup.expect("overview markup must be Some");
+    let callbacks: Vec<String> = markup
+        .inline_keyboard
+        .iter()
+        .flat_map(|row| row.iter())
+        .filter_map(|btn| btn.callback_data.clone())
+        .collect();
+
+    assert!(callbacks.contains(&"open_session:ses_term".to_string()));
+    assert!(callbacks.contains(&"open_session:222".to_string()));
+    assert!(callbacks.contains(&"open_session:plan-1".to_string()));
+    assert!(callbacks.contains(&"open_sessions".to_string()));
+    assert!(callbacks.iter().all(|c| c.len() <= 64));
+    // unresolvable conversation entry must have no button
+    assert_eq!(
+        callbacks.iter().filter(|c| c.starts_with("open_session:")).count(),
+        3
+    );
+    let _ = text;
+}
+
+#[test]
+fn session_inventory_overview_mobile_lines() {
+    use super::session_inventory::{
+        format_sessions_overview, SessionEntryKind, SESSION_OVERVIEW_MAX_CHARS,
+        SESSION_OVERVIEW_MAX_LINE_CHARS,
+    };
+
+    let entries: Vec<_> = (1..=9)
+        .map(|i| {
+            let project_name = format!("PROJ-{}", format!("p{}", i).repeat(60));
+            let session_id = format!("ses_{}", format!("s{}", i).repeat(20));
+            make_entry(
+                SessionEntryKind::Terminal,
+                Some(&session_id),
+                &session_id,
+                None,
+                Some(1000 + i as u32),
+                &project_name,
+                "Busy",
+            )
+        })
+        .collect();
+
+    let (text, _markup) = format_sessions_overview(&entries);
+    for line in text.lines() {
+        assert!(
+            line.chars().count() <= SESSION_OVERVIEW_MAX_LINE_CHARS,
+            "line too long ({}): {}",
+            line.chars().count(),
+            line
+        );
+    }
+    assert!(text.chars().count() <= SESSION_OVERVIEW_MAX_CHARS);
+    assert!(text.contains("还有"));
+    assert!(text.contains("未展示"));
+
+    // project and identifier are reported on separate lines
+    let first_project_line = text.lines().find(|l| l.contains("PROJ-")).unwrap();
+    let first_id_line = text.lines().find(|l| l.contains("ses_")).unwrap();
+    assert!(!first_project_line.contains("ses_"));
+    assert!(!first_id_line.contains("PROJ-"));
+}
+
+#[test]
+fn router_parse_session_callback() {
+    use super::router::{parse_session_callback, SessionCallback};
+
+    assert_eq!(parse_session_callback("open_sessions"), Some(SessionCallback::Overview));
+    assert_eq!(
+        parse_session_callback("open_session:abc"),
+        Some(SessionCallback::Detail("abc".to_string()))
+    );
+    assert_eq!(parse_session_callback("open_session:"), None);
+    assert_eq!(parse_session_callback("anything-else"), None);
+}
