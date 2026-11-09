@@ -1,4 +1,5 @@
 use super::opencode_inspector;
+use super::permission::PermissionRisk;
 use super::plan_progress::{PlanExecutionStatus, PlanProgressInfo};
 use super::session_inventory::{
     IdentifierResolution, PlanExecutionState, SessionEntry, SessionEntryKind,
@@ -508,6 +509,54 @@ impl CardBuilder {
             ⏳ _OpenCode 正在根据您的决策继续推进方案生成..._",
             choice_label.trim()
         )
+    }
+
+    /// 权限审批请求卡片：按风险等级提供决策按钮，并说明超时自动拒绝。
+    ///
+    /// 命令预览放在末尾，便于长命令被截断时仍以省略号收尾。
+    pub fn permission_request_card(
+        project: &str,
+        session_id: Option<&str>,
+        permission_type: &str,
+        command: Option<&str>,
+        risk: PermissionRisk,
+        request_id: &str,
+    ) -> (String, InlineKeyboardMarkup) {
+        let session = session_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unassigned");
+        let details = Self::quote_tree(&[
+            ("项目", project),
+            ("会话", session),
+            ("类型", permission_type),
+            ("风险", risk.label()),
+        ]);
+        let preview = match command {
+            Some(raw) if !raw.trim().is_empty() => Self::clip_chars(raw, 240, true),
+            _ => "（无命令）".to_string(),
+        };
+        let text = format!(
+            "🔐 *权限审批请求*\n\n{}\n\n⏳ 30 分钟内未处理将自动拒绝。\n\n> ▫️ 命令: {}",
+            details, preview
+        );
+
+        let mut rows = vec![vec![InlineKeyboardButton::callback(
+            "✅ 允许一次",
+            format!("perm_once:{request_id}"),
+        )]];
+        if risk == PermissionRisk::Routine {
+            rows.push(vec![InlineKeyboardButton::callback(
+                "♾️ 始终允许",
+                format!("perm_always:{request_id}"),
+            )]);
+        }
+        rows.push(vec![InlineKeyboardButton::callback(
+            "❌ 拒绝",
+            format!("perm_deny:{request_id}"),
+        )]);
+
+        (text, InlineKeyboardMarkup::new(rows))
     }
 
     /// 卡片 11: OpenCode 分析与自然对话回复卡片

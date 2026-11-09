@@ -17,6 +17,16 @@ pub enum PermissionRisk {
     HighRisk,
 }
 
+impl PermissionRisk {
+    /// User-facing risk label shown on approval cards.
+    pub fn label(self) -> &'static str {
+        match self {
+            PermissionRisk::Routine => "常规",
+            PermissionRisk::HighRisk => "高危",
+        }
+    }
+}
+
 /// Classify an OpenCode permission request by type and, for shell requests, by
 /// the command that would run.
 pub fn classify_permission(permission_type: &str, command: Option<&str>) -> PermissionRisk {
@@ -486,6 +496,35 @@ impl PermissionDecision {
             PermissionDecision::Deny => "deny",
         }
     }
+}
+
+/// Decision encoded in an inline-keyboard callback for a permission request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionCallback {
+    Once(String),
+    Always(String),
+    Deny(String),
+}
+
+/// Parse permission callback data of the form `perm_once:<id>`,
+/// `perm_always:<id>` or `perm_deny:<id>`.
+///
+/// Only the first colon separates the action from the identifier, because
+/// request ids may themselves contain colons; the identifier is preserved
+/// exactly as sent. Empty or whitespace-only identifiers are rejected so a
+/// blank callback can never resolve a request.
+pub fn parse_permission_callback(data: &str) -> Option<PermissionCallback> {
+    let (prefix, id) = data.split_once(':')?;
+    let build = match prefix {
+        "perm_once" => PermissionCallback::Once,
+        "perm_always" => PermissionCallback::Always,
+        "perm_deny" => PermissionCallback::Deny,
+        _ => return None,
+    };
+    if id.trim().is_empty() {
+        return None;
+    }
+    Some(build(id.to_string()))
 }
 
 /// A permission request awaiting a human decision.

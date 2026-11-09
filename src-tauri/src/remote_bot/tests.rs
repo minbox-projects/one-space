@@ -3321,3 +3321,244 @@ fn permission_registry_take_expired_clear_and_remove() {
         32
     );
 }
+
+#[test]
+fn permission_risk_labels_are_stable() {
+    use super::permission::PermissionRisk;
+
+    assert_eq!(PermissionRisk::Routine.label(), "常规");
+    assert_eq!(PermissionRisk::HighRisk.label(), "高危");
+}
+
+#[test]
+fn permission_card_high_risk_offers_once_and_deny_only() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let request_id = "per_1234567890abcdef1234567890abcdef";
+    let (text, markup) = CardBuilder::permission_request_card(
+        "onespace-app",
+        Some("ses_x"),
+        "bash",
+        Some("rm -rf /tmp/demo"),
+        PermissionRisk::HighRisk,
+        request_id,
+    );
+
+    assert!(text.contains("onespace-app"), "text: {text}");
+    assert!(text.contains("ses_x"), "text: {text}");
+    assert!(text.contains("bash"), "text: {text}");
+    assert!(text.contains("高危"), "text: {text}");
+    assert!(text.contains("rm -rf /tmp/demo"), "text: {text}");
+
+    let buttons: Vec<(String, String)> = markup
+        .inline_keyboard
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|button| {
+            (
+                button.text.clone(),
+                button.callback_data.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let callbacks: Vec<&str> = buttons.iter().map(|(_, data)| data.as_str()).collect();
+    let once_cb = format!("perm_once:{request_id}");
+    let deny_cb = format!("perm_deny:{request_id}");
+    assert_eq!(callbacks, vec![once_cb.as_str(), deny_cb.as_str()]);
+    assert!(buttons.iter().any(|(label, _)| label.contains("允许一次")));
+    assert!(buttons.iter().any(|(label, _)| label.contains("拒绝")));
+    assert!(
+        !callbacks.iter().any(|data| data.starts_with("perm_always:")),
+        "high-risk card must not offer always-allow: {callbacks:?}"
+    );
+}
+
+#[test]
+fn permission_card_routine_offers_all_three_choices() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let request_id = "per_routine";
+    let (text, markup) = CardBuilder::permission_request_card(
+        "project-a",
+        Some("ses_routine"),
+        "read",
+        Some("cat Cargo.toml"),
+        PermissionRisk::Routine,
+        request_id,
+    );
+
+    assert!(text.contains("project-a"), "text: {text}");
+    assert!(text.contains("ses_routine"), "text: {text}");
+    assert!(text.contains("read"), "text: {text}");
+    assert!(text.contains("常规"), "text: {text}");
+    assert!(text.contains("cat Cargo.toml"), "text: {text}");
+
+    let buttons: Vec<(String, String)> = markup
+        .inline_keyboard
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|button| {
+            (
+                button.text.clone(),
+                button.callback_data.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let callbacks: Vec<&str> = buttons.iter().map(|(_, data)| data.as_str()).collect();
+    let once_cb = format!("perm_once:{request_id}");
+    let always_cb = format!("perm_always:{request_id}");
+    let deny_cb = format!("perm_deny:{request_id}");
+    assert_eq!(
+        callbacks,
+        vec![once_cb.as_str(), always_cb.as_str(), deny_cb.as_str()]
+    );
+    assert!(buttons.iter().any(|(label, _)| label.contains("允许一次")));
+    assert!(buttons.iter().any(|(label, _)| label.contains("始终允许")));
+    assert!(buttons.iter().any(|(label, _)| label.contains("拒绝")));
+}
+
+#[test]
+fn permission_card_unassigned_session_is_labelled() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let (text, _) = CardBuilder::permission_request_card(
+        "project-b",
+        None,
+        "write",
+        Some("touch notes.md"),
+        PermissionRisk::HighRisk,
+        "per_no_session",
+    );
+    assert!(text.contains("unassigned"), "text: {text}");
+    assert!(!text.contains("ses_x"), "text: {text}");
+}
+
+#[test]
+fn permission_card_without_command_says_none() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let (text, _) = CardBuilder::permission_request_card(
+        "project-c",
+        Some("ses_y"),
+        "bash",
+        None,
+        PermissionRisk::HighRisk,
+        "per_no_command",
+    );
+    assert!(text.contains("（无命令）"), "text: {text}");
+}
+
+#[test]
+fn permission_card_bounds_long_command_preview() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let raw = format!("{}TAILMARKER{}", "a".repeat(300), "b".repeat(5000));
+    let (text, _) = CardBuilder::permission_request_card(
+        "project-d",
+        Some("ses_long"),
+        "bash",
+        Some(&raw),
+        PermissionRisk::HighRisk,
+        "per_long",
+    );
+
+    assert!(
+        text.chars().count() < raw.chars().count(),
+        "card text must be shorter than the raw command"
+    );
+    assert!(text.ends_with('…'), "text must end with an ellipsis: {text}");
+    assert!(
+        !text.contains("TAILMARKER"),
+        "preview must not exceed 300 command code points: {text}"
+    );
+    assert!(
+        text.chars().count() <= 600,
+        "card text is unexpectedly large: {}",
+        text.chars().count()
+    );
+}
+
+#[test]
+fn permission_callback_data_stays_within_telegram_limit() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let request_id = "per_1234567890abcdef1234567890abcdef";
+    let (_, markup) = CardBuilder::permission_request_card(
+        "project-e",
+        Some("ses_limit"),
+        "read",
+        Some("ls"),
+        PermissionRisk::Routine,
+        request_id,
+    );
+    for row in &markup.inline_keyboard {
+        for button in row {
+            let data = button.callback_data.as_deref().unwrap_or_default();
+            assert!(
+                data.len() <= 64,
+                "callback data must fit Telegram's 64-byte limit: {data}"
+            );
+        }
+    }
+}
+
+#[test]
+fn permission_callback_parses_all_variants() {
+    use super::permission::{parse_permission_callback, PermissionCallback};
+
+    assert_eq!(
+        parse_permission_callback("perm_once:id-1"),
+        Some(PermissionCallback::Once("id-1".to_string()))
+    );
+    assert_eq!(
+        parse_permission_callback("perm_always:id-2"),
+        Some(PermissionCallback::Always("id-2".to_string()))
+    );
+    assert_eq!(
+        parse_permission_callback("perm_deny:id-3"),
+        Some(PermissionCallback::Deny("id-3".to_string()))
+    );
+}
+
+#[test]
+fn permission_callback_keeps_colons_in_identifier() {
+    use super::permission::{parse_permission_callback, PermissionCallback};
+
+    assert_eq!(
+        parse_permission_callback("perm_once:per:a:b:c"),
+        Some(PermissionCallback::Once("per:a:b:c".to_string()))
+    );
+    assert_eq!(
+        parse_permission_callback("perm_always:req:123"),
+        Some(PermissionCallback::Always("req:123".to_string()))
+    );
+}
+
+#[test]
+fn permission_callback_rejects_malformed_data() {
+    use super::permission::parse_permission_callback;
+
+    for data in [
+        "",
+        "perm_once",
+        "perm_once:",
+        "perm_always:",
+        "perm_deny:",
+        "perm_maybe:x",
+        "once:id",
+        "perm_once:   ",
+        "perm_once:\t\n",
+    ] {
+        assert_eq!(
+            parse_permission_callback(data),
+            None,
+            "malformed callback must be rejected: {data:?}"
+        );
+    }
+}
