@@ -4,6 +4,7 @@ pub mod client;
 pub mod commands;
 pub mod opencode_bridge;
 pub mod opencode_inspector;
+pub mod permission;
 pub mod plan_progress;
 pub mod router;
 pub mod session_inventory;
@@ -183,9 +184,27 @@ impl RemoteBotManager {
         if let Some(handle) = loop_lock.take() {
             handle.abort();
         }
-        *self.router.write().await = None;
+        drop(loop_lock);
+
+        // Take the router out of its lock before awaiting shutdown so the
+        // bridge-owned task and server are torn down without holding the lock.
+        let router = { self.router.write().await.take() };
+        if let Some(router) = router {
+            router.shutdown().await;
+        }
+
         let mut status = self.status.write().await;
         status.running = false;
+    }
+}
+
+/// 应用退出时同步关闭远程 Bot 运行时。
+///
+/// 退出路径本身是同步的，且不在异步运行时内，因此这里阻塞等待管理器停止，
+/// 确保其拥有的任务进程组与 `opencode serve` 子进程在进程结束前被回收。
+pub fn shutdown_runtime() {
+    if let Some(manager) = RemoteBotManager::global() {
+        tauri::async_runtime::block_on(manager.stop());
     }
 }
 

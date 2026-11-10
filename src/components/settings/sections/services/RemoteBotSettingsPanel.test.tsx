@@ -79,3 +79,73 @@ describe("RemoteBotSettingsPanel featured workspace picker", () => {
     });
   });
 });
+
+describe("RemoteBotSettingsPanel auto-approve permission policy", () => {
+  beforeEach(() => {
+    resetTauriMocks();
+  });
+
+  it("describes the enabled, disabled, timeout and high-risk approval policy", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "remote_bot_get_config") {
+        return {
+          enabled: false,
+          bot_token: "",
+          allowed_chat_ids: [],
+          active_workspace: null,
+          auto_approve_permissions: true,
+          enable_natural_dialogue: true,
+          opencode_bin_path: null,
+          workspace_directories: [],
+          updated_at: 1,
+        };
+      }
+      if (command === "remote_bot_get_status") {
+        return { running: false };
+      }
+      if (command === "remote_bot_list_installed_opencode") {
+        return [];
+      }
+      if (command === "workspaces_list") {
+        return {
+          ok: true,
+          data: [],
+          meta: { schema_version: 1, revision: 1 },
+        };
+      }
+      return undefined;
+    });
+
+    renderWithProviders(
+      <RemoteBotSettingsPanel t={i18n.t.bind(i18n) as unknown as TFunction} />
+    );
+
+    await screen.findByText("Coding 阶段常规权限自动通过");
+
+    const policy = screen.getByText(/30 分钟/);
+    const policyText = policy.textContent ?? "";
+    for (const phrase of [
+      "常规",
+      "自动批准",
+      "高危",
+      "始终需要",
+      "关闭",
+      "所有权限请求",
+      "30 分钟",
+      "自动拒绝",
+      "始终允许",
+      "文件",
+      "edit",
+      "write",
+    ]) {
+      expect(policyText).toContain(phrase);
+    }
+
+    // The surrounding copy must warn that saving or restarting the remote
+    // workbench terminates the active remote task because the bot reloads.
+    const policyCopy = policy.parentElement?.textContent ?? policyText;
+    for (const lifecyclePhrase of ["保存", "重启", "终止", "当前远程任务"]) {
+      expect(policyCopy).toContain(lifecyclePhrase);
+    }
+  });
+});

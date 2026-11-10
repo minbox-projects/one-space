@@ -575,41 +575,55 @@ fn test_resolve_executable_path() {
 #[test]
 fn test_resolve_project_dir_multi_workspaces() {
     use super::router::{resolve_project_dir, collect_all_workspaces, collect_featured_projects};
-    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let current_dir = env::current_dir().unwrap_or_default();
-    let canon_current = std::fs::canonicalize(&current_dir).unwrap_or_else(|_| current_dir.clone());
-    let current_str = canon_current.to_string_lossy().to_string();
-    let folder_name = canon_current.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // 使用进程内唯一的临时目录，避免依赖机器上的全局工作空间记录或仓库目录名。
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_path = std::env::temp_dir().join(format!(
+        "onespace-remote-bot-workspace-{}-{}",
+        std::process::id(),
+        unique
+    ));
+    std::fs::create_dir_all(&temp_path).expect("临时工作目录必须创建成功");
+    let canon_temp = std::fs::canonicalize(&temp_path).expect("临时工作目录必须可规范化");
+    let temp_str = canon_temp.to_string_lossy().to_string();
+    let folder_name = canon_temp
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
 
     let mut config = RemoteBotConfig::default();
-    config.workspace_directories = vec![current_str.clone()];
+    config.workspace_directories = vec![temp_str.clone()];
 
     // 1. active_workspace 命中 workspace_directories 中的文件夹名
-    if !folder_name.is_empty() {
-        config.active_workspace = Some(folder_name.clone());
-        let resolved = resolve_project_dir(&config);
-        assert_eq!(resolved, canon_current);
-    }
+    assert!(!folder_name.is_empty());
+    config.active_workspace = Some(folder_name.clone());
+    let resolved = resolve_project_dir(&config);
+    assert_eq!(resolved, canon_temp);
 
     // 2. active_workspace 直接是绝对路径
-    config.active_workspace = Some(current_str.clone());
+    config.active_workspace = Some(temp_str.clone());
     let resolved = resolve_project_dir(&config);
-    assert_eq!(resolved, canon_current);
+    assert_eq!(resolved, canon_temp);
 
     // 3. active_workspace 为 None 时，自动使用 workspace_directories 中的第一个有效目录
     config.active_workspace = None;
     let resolved = resolve_project_dir(&config);
-    assert_eq!(resolved, canon_current);
+    assert_eq!(resolved, canon_temp);
 
-    // 4. 验证 collect_all_workspaces 包含当前工作目录
+    // 4. 验证 collect_all_workspaces 包含临时工作目录
     let all = collect_all_workspaces(&config);
-    assert!(all.iter().any(|it| it.path == canon_current));
+    assert!(all.iter().any(|it| it.path == canon_temp));
 
     // 5. 验证 collect_featured_projects 数量受控（上限不超过 8）
     let featured = collect_featured_projects(&config);
     assert!(featured.len() <= 8);
-    assert!(featured.iter().any(|it| it.path == canon_current));
+    assert!(featured.iter().any(|it| it.path == canon_temp));
+
+    let _ = std::fs::remove_dir_all(&temp_path);
 }
 
 #[test]
@@ -1084,9 +1098,14 @@ fn test_opencode_process_filter_and_project_detection() {
     assert!(is_opencode_executable_process("opencode run 'fix bugs'"));
 
     // 3. 有意义项目名称推导：子目录优先解析到 Git 仓库根目录
-    let cwd_sub = env!("CARGO_MANIFEST_DIR"); // .../onespace-app/src-tauri
+    let cwd_sub = env!("CARGO_MANIFEST_DIR"); // .../<仓库根目录>/src-tauri
+    let repo_root_name = std::path::Path::new(cwd_sub)
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .expect("src-tauri 必须位于仓库根目录下");
     let proj_name = detect_meaningful_project_name(cwd_sub);
-    assert_eq!(proj_name, "onespace-app");
+    assert_eq!(proj_name, repo_root_name);
 }
 
 #[test]
@@ -2832,4 +2851,2564 @@ fn card_builder_analysis_reply_is_mobile_bounded() {
     assert!(!out.contains(end_marker), "end marker must be truncated away");
     assert!(out.contains("workspace"), "missing workspace name: {}", out);
     assert!(out.contains("/sessions") || out.contains("/cancel"), "missing next-step hint: {}", out);
+}
+
+// --- Permission risk classifier ---
+// The classifier is deterministic: allowlisted routine commands stay Routine,
+// while destructive, unknown, compound, substituted or redirecting shell
+// commands fail closed as HighRisk.
+
+use super::permission::{classify_permission, PermissionRisk};
+
+fn expect_routine(permission_type: &str, command: Option<&str>) {
+    let actual = classify_permission(permission_type, command);
+    assert_eq!(
+        actual,
+        PermissionRisk::Routine,
+        "expected Routine for permission_type {:?} and command {:?}",
+        permission_type,
+        command
+    );
+}
+
+fn expect_high_risk(permission_type: &str, command: Option<&str>) {
+    let actual = classify_permission(permission_type, command);
+    assert_eq!(
+        actual,
+        PermissionRisk::HighRisk,
+        "expected HighRisk for permission_type {:?} and command {:?}",
+        permission_type,
+        command
+    );
+}
+
+#[test]
+fn permission_classify_routine_allowlisted_commands() {
+    for command in [
+        "pwd",
+        "ls -la",
+        "cat Cargo.toml",
+        "rg foo src",
+        "sed -n '1,40p' file",
+        "cargo test --lib",
+        "cargo build",
+        "npm run build",
+        "npx tsc --noEmit",
+        "git status",
+        "git diff --stat",
+        "git log --oneline -5",
+        "git branch",
+        "git remote -v",
+        "git rev-parse HEAD",
+        "git tag v1.0.0",
+        "git commit -m \"msg\"",
+        "git checkout -b feature",
+        "git switch -c other",
+        "git stash push",
+        "git stash pop",
+        "mkdir -p tmp",
+        "touch tmp/x",
+        "cd src",
+        "sleep 5",
+        "find . -name '*.rs'",
+    ] {
+        expect_routine("bash", Some(command));
+    }
+}
+
+#[test]
+fn permission_classify_high_risk_commands() {
+    for command in [
+        "rm -rf target",
+        "cp a b",
+        "mv a b",
+        "chmod 777 x",
+        "sudo ls",
+        "git push --force",
+        "git reset --hard",
+        "git clean -fdx",
+        "git rebase main",
+        "git cherry-pick abc",
+        "git revert abc",
+        "git branch -D old",
+        "git commit --amend",
+        "npm install",
+        "npm publish",
+        "cargo publish",
+        "cargo add serde",
+        "cargo install ripgrep",
+        "pip install requests",
+        "curl https://example.com",
+        "wget https://example.com",
+        "ssh host",
+        "awk '{print $1}' file",
+        "kill 123",
+        "pkill node",
+        "shutdown -h now",
+        "bash -c 'ls'",
+        "sh -c 'ls'",
+        "eval ls",
+        "exec ls",
+        "source script.sh",
+        "osascript -e 'beep'",
+    ] {
+        expect_high_risk("bash", Some(command));
+    }
+}
+
+#[test]
+fn permission_classify_sed_read_only_versus_write_and_exec() {
+    expect_routine("bash", Some("sed -n '1,10p' file"));
+    expect_high_risk("bash", Some("sed -i 's/a/b/' file"));
+    expect_high_risk("bash", Some("sed -n '1,10w out.txt' file"));
+    expect_high_risk("bash", Some("sed -n '1,10e touch x' file"));
+}
+
+#[test]
+fn permission_classify_find_destructive_flags() {
+    expect_high_risk("bash", Some("find . -delete"));
+    expect_high_risk("bash", Some("find . -exec rm {} ;"));
+    expect_high_risk("bash", Some("find . -ok rm {} ;"));
+}
+
+#[test]
+fn permission_classify_compound_command_segments() {
+    expect_high_risk("bash", Some("cargo test && rm -rf target"));
+    expect_routine("bash", Some("ls; pwd"));
+    expect_routine("bash", Some("ls || true"));
+    expect_routine("bash", Some("ls\npwd"));
+    expect_high_risk("bash", Some("cargo test\nrm -rf target"));
+}
+
+#[test]
+fn permission_classify_substitution_and_redirection_fail_closed() {
+    expect_high_risk("bash", Some("echo $(rm -rf x)"));
+    expect_high_risk("bash", Some("echo `rm -rf x`"));
+    expect_high_risk("bash", Some("cat <(rm -rf x)"));
+    expect_high_risk("bash", Some("ls >(cat)"));
+    expect_high_risk("bash", Some("ls | bash"));
+    expect_high_risk("bash", Some("cargo test > out.log"));
+    expect_high_risk("bash", Some("cargo test 2> err.log"));
+    expect_high_risk("bash", Some("cat < input.txt"));
+    expect_high_risk("bash", Some("cargo test >> out.log"));
+}
+
+#[test]
+fn permission_classify_wrappers_and_env_assignments() {
+    expect_high_risk("bash", Some("FOO=bar cargo test"));
+    expect_high_risk("bash", Some("A=1 B=2 ls"));
+    expect_routine("bash", Some("timeout 60 cargo test"));
+    expect_routine("bash", Some("nice cargo build"));
+    expect_routine("bash", Some("command ls"));
+    expect_routine("bash", Some("builtin cd"));
+    expect_high_risk("bash", Some("timeout 60 rm -rf x"));
+    expect_high_risk("bash", Some("FOO=$(rm -rf x) ls"));
+}
+
+#[test]
+fn permission_classify_environment_assignments_fail_closed() {
+    for command in [
+        "PATH=/tmp/evil ls",
+        "LD_PRELOAD=/tmp/evil.dylib cargo test",
+        "DYLD_INSERT_LIBRARIES=/tmp/evil.dylib ls",
+        "BASH_ENV=/tmp/evil.sh ls",
+        "ENV=/tmp/evil.sh ls",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=/tmp/evil git status",
+        "NODE_OPTIONS=--require=/tmp/evil.js npm run build",
+        "PYTHONPATH=/tmp/x python -m pytest",
+        "RUSTC_WRAPPER=/tmp/x cargo test",
+        "CARGO_BUILD_RUSTC=/tmp/x cargo build",
+        "CARGO_HOME=/tmp/x cargo test",
+        "FOO=bar cargo test",
+        "A=1 B=2 ls",
+        "SAFE_LITERAL=1 ls",
+    ] {
+        expect_high_risk("bash", Some(command));
+    }
+}
+
+#[test]
+fn permission_classify_non_shell_permission_types() {
+    for permission_type in [
+        "edit",
+        "write",
+        "read",
+        "patch",
+        "apply_patch",
+        "list",
+        "glob",
+        "grep",
+    ] {
+        expect_routine(permission_type, None);
+    }
+    for permission_type in ["webfetch", "websearch", "some_new_tool"] {
+        expect_high_risk(permission_type, None);
+    }
+}
+
+#[test]
+fn permission_classify_missing_or_unknown_shell_input() {
+    expect_high_risk("bash", None);
+    expect_high_risk("bash", Some(""));
+    expect_high_risk("bash", Some("   "));
+    expect_high_risk("bash", Some("frobnicate --now"));
+    expect_high_risk("", None);
+}
+
+#[test]
+fn permission_classify_language_and_build_tools() {
+    expect_routine("bash", Some("python -m pytest"));
+    expect_routine("bash", Some("go test ./..."));
+    expect_routine("bash", Some("make test"));
+    expect_routine("bash", Some("prettier --check ."));
+    expect_routine("bash", Some("ruff check ."));
+    expect_high_risk("bash", Some("python script.py"));
+    expect_high_risk("bash", Some("cargo run"));
+}
+
+// --- Pending permission registry, decision and timeout ---
+// The registry is shared across async tasks, so it must be Send + Sync, must
+// store at most one pending request per id, and must make each decision
+// single-use. The 30-minute timeout boundary is absolute: 29m59s is still
+// pending, exactly 30m is expired.
+
+use super::permission::{
+    permission_timed_out, PendingPermissionRequest, PermissionDecision, PermissionRegistry,
+    PERMISSION_TIMEOUT,
+};
+use std::time::{Duration, Instant};
+
+fn permission_assert_send_sync<T: Send + Sync>() {}
+
+#[test]
+fn permission_registry_is_send_and_sync() {
+    permission_assert_send_sync::<PermissionRegistry>();
+}
+
+#[test]
+fn permission_registry_insert_get_and_duplicate() {
+    let registry = PermissionRegistry::new();
+    assert!(registry.is_empty());
+    assert_eq!(registry.len(), 0);
+
+    let sent_at = Instant::now();
+    let first = PendingPermissionRequest::new(
+        "req-1",
+        42,
+        "bash",
+        Some("cargo test".to_string()),
+        PermissionRisk::Routine,
+        sent_at,
+    );
+    assert!(registry.insert(first).is_none());
+    assert_eq!(registry.len(), 1);
+    assert!(!registry.is_empty());
+
+    let stored = registry.get("req-1").expect("inserted request must be retrievable");
+    assert_eq!(stored.request_id, "req-1");
+    assert_eq!(stored.chat_id, 42);
+    assert_eq!(stored.permission_type, "bash");
+    assert_eq!(stored.command.as_deref(), Some("cargo test"));
+    assert_eq!(stored.risk, PermissionRisk::Routine);
+    assert_eq!(stored.card_message_id, None);
+    assert_eq!(stored.sent_at, sent_at);
+
+    let other = PendingPermissionRequest::new(
+        "req-2",
+        43,
+        "edit",
+        None,
+        PermissionRisk::HighRisk,
+        sent_at,
+    );
+    assert!(registry.insert(other).is_none());
+    assert_eq!(registry.len(), 2);
+    assert_eq!(
+        registry.get("req-2").expect("second request must coexist").chat_id,
+        43
+    );
+
+    let newest = PendingPermissionRequest::new(
+        "req-1",
+        99,
+        "write",
+        Some("npm run build".to_string()),
+        PermissionRisk::HighRisk,
+        sent_at,
+    );
+    let replaced = registry
+        .insert(newest)
+        .expect("duplicate id must return the previous request");
+    assert_eq!(replaced.request_id, "req-1");
+    assert_eq!(replaced.chat_id, 42);
+    assert_eq!(replaced.permission_type, "bash");
+    assert_eq!(replaced.command.as_deref(), Some("cargo test"));
+    assert_eq!(registry.len(), 2);
+
+    let updated = registry.get("req-1").expect("newest request must remain");
+    assert_eq!(updated.chat_id, 99);
+    assert_eq!(updated.permission_type, "write");
+    assert_eq!(updated.command.as_deref(), Some("npm run build"));
+    assert_eq!(updated.risk, PermissionRisk::HighRisk);
+    assert_eq!(registry.get("req-2").expect("unrelated id must remain").chat_id, 43);
+}
+
+#[test]
+fn permission_registry_resolve_is_single_use() {
+    let registry = PermissionRegistry::new();
+    let sent_at = Instant::now();
+    registry.insert(PendingPermissionRequest::new(
+        "req-a",
+        11,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        sent_at,
+    ));
+    registry.insert(PendingPermissionRequest::new(
+        "req-b",
+        12,
+        "bash",
+        Some("rm -rf target".to_string()),
+        PermissionRisk::HighRisk,
+        sent_at,
+    ));
+
+    let resolution = registry
+        .resolve("req-a", PermissionDecision::Once)
+        .expect("pending request must resolve");
+    assert_eq!(resolution.request.request_id, "req-a");
+    assert_eq!(resolution.request.chat_id, 11);
+    assert_eq!(resolution.decision, PermissionDecision::Once);
+    assert_eq!(registry.len(), 1);
+    assert!(registry.get("req-a").is_none());
+
+    assert!(
+        registry.resolve("req-a", PermissionDecision::Once).is_none(),
+        "the second decision for the same id must be a no-op"
+    );
+    assert!(registry.resolve("unknown-id", PermissionDecision::Deny).is_none());
+    assert_eq!(registry.len(), 1);
+
+    let other = registry
+        .resolve("req-b", PermissionDecision::Always)
+        .expect("resolving one id must leave others pending");
+    assert_eq!(other.request.request_id, "req-b");
+    assert_eq!(other.request.chat_id, 12);
+    assert_eq!(other.decision, PermissionDecision::Always);
+    assert!(registry.is_empty());
+}
+
+#[test]
+fn permission_decision_as_reply_values() {
+    assert_eq!(PermissionDecision::Once.as_reply(), "once");
+    assert_eq!(PermissionDecision::Always.as_reply(), "always");
+    assert_eq!(PermissionDecision::Deny.as_reply(), "deny");
+}
+
+#[test]
+fn permission_timeout_boundary() {
+    assert_eq!(PERMISSION_TIMEOUT, Duration::from_secs(30 * 60));
+
+    let sent_at = Instant::now();
+    assert!(!permission_timed_out(
+        sent_at,
+        sent_at + PERMISSION_TIMEOUT - Duration::from_secs(1)
+    ));
+    assert!(permission_timed_out(sent_at, sent_at + PERMISSION_TIMEOUT));
+    assert!(permission_timed_out(
+        sent_at,
+        sent_at + PERMISSION_TIMEOUT + Duration::from_secs(1)
+    ));
+}
+
+#[test]
+fn permission_registry_expire_respects_timeout_boundary() {
+    let registry = PermissionRegistry::new();
+    let sent_at = Instant::now();
+    registry.insert(PendingPermissionRequest::new(
+        "req-expire",
+        7,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        sent_at,
+    ));
+
+    assert!(
+        registry
+            .expire("req-expire", sent_at + Duration::from_secs(29 * 60 + 59))
+            .is_none(),
+        "a request pending for 29m59s must not expire"
+    );
+    assert!(registry.get("req-expire").is_some());
+    assert_eq!(registry.len(), 1);
+
+    let expired = registry
+        .expire("req-expire", sent_at + PERMISSION_TIMEOUT)
+        .expect("exactly 30m must expire the request");
+    assert_eq!(expired.request_id, "req-expire");
+    assert_eq!(expired.chat_id, 7);
+    assert!(registry.get("req-expire").is_none());
+    assert!(registry.is_empty());
+    assert!(registry
+        .expire("req-expire", sent_at + PERMISSION_TIMEOUT + Duration::from_secs(1))
+        .is_none());
+
+    let resolved_registry = PermissionRegistry::new();
+    resolved_registry.insert(PendingPermissionRequest::new(
+        "req-resolved",
+        8,
+        "edit",
+        None,
+        PermissionRisk::Routine,
+        sent_at,
+    ));
+    assert!(resolved_registry
+        .resolve("req-resolved", PermissionDecision::Deny)
+        .is_some());
+    assert!(resolved_registry
+        .expire("req-resolved", sent_at + PERMISSION_TIMEOUT)
+        .is_none(),
+        "an already resolved request leaves nothing to expire");
+    assert!(resolved_registry
+        .resolve("req-resolved", PermissionDecision::Deny)
+        .is_none());
+    assert!(resolved_registry.is_empty());
+}
+
+#[test]
+fn permission_registry_take_expired_clear_and_remove() {
+    let registry = PermissionRegistry::new();
+    let now = Instant::now();
+    let expired_sent_at = now - PERMISSION_TIMEOUT - Duration::from_secs(1);
+    let fresh_sent_at = now - Duration::from_secs(1);
+
+    registry.insert(PendingPermissionRequest::new(
+        "req-old-a",
+        21,
+        "bash",
+        Some("cat file".to_string()),
+        PermissionRisk::Routine,
+        expired_sent_at,
+    ));
+    registry.insert(PendingPermissionRequest::new(
+        "req-old-b",
+        22,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        expired_sent_at,
+    ));
+    registry.insert(PendingPermissionRequest::new(
+        "req-fresh",
+        23,
+        "edit",
+        None,
+        PermissionRisk::Routine,
+        fresh_sent_at,
+    ));
+
+    let mut expired_ids: Vec<String> = registry
+        .take_expired(now)
+        .into_iter()
+        .map(|request| request.request_id)
+        .collect();
+    expired_ids.sort();
+    assert_eq!(
+        expired_ids,
+        vec!["req-old-a".to_string(), "req-old-b".to_string()],
+        "take_expired must remove exactly the timed-out requests"
+    );
+    assert_eq!(registry.len(), 1);
+    assert_eq!(
+        registry.get("req-fresh").expect("fresh request must remain").chat_id,
+        23
+    );
+
+    let cleared = registry.clear();
+    assert_eq!(cleared.len(), 1);
+    assert_eq!(cleared[0].request_id, "req-fresh");
+    assert!(registry.is_empty());
+    assert_eq!(registry.len(), 0);
+
+    let removal_registry = PermissionRegistry::new();
+    removal_registry.insert(PendingPermissionRequest::new(
+        "req-remove",
+        31,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        now,
+    ));
+    removal_registry.insert(PendingPermissionRequest::new(
+        "req-keep",
+        32,
+        "bash",
+        Some("ls".to_string()),
+        PermissionRisk::Routine,
+        now,
+    ));
+
+    let removed = removal_registry
+        .remove("req-remove")
+        .expect("named request must be removed");
+    assert_eq!(removed.request_id, "req-remove");
+    assert_eq!(removed.chat_id, 31);
+    assert!(removal_registry.remove("req-remove").is_none());
+    assert_eq!(removal_registry.len(), 1);
+    assert_eq!(
+        removal_registry.get("req-keep").expect("unnamed request must remain").chat_id,
+        32
+    );
+}
+
+#[test]
+fn permission_risk_labels_are_stable() {
+    use super::permission::PermissionRisk;
+
+    assert_eq!(PermissionRisk::Routine.label(), "常规");
+    assert_eq!(PermissionRisk::HighRisk.label(), "高危");
+}
+
+#[test]
+fn permission_card_high_risk_offers_once_and_deny_only() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let request_id = "per_1234567890abcdef1234567890abcdef";
+    let (text, markup) = CardBuilder::permission_request_card(
+        "onespace-app",
+        Some("ses_x"),
+        "bash",
+        Some("rm -rf /tmp/demo"),
+        PermissionRisk::HighRisk,
+        request_id,
+    );
+
+    assert!(text.contains("onespace-app"), "text: {text}");
+    assert!(text.contains("ses_x"), "text: {text}");
+    assert!(text.contains("bash"), "text: {text}");
+    assert!(text.contains("高危"), "text: {text}");
+    assert!(text.contains("rm -rf /tmp/demo"), "text: {text}");
+
+    let buttons: Vec<(String, String)> = markup
+        .inline_keyboard
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|button| {
+            (
+                button.text.clone(),
+                button.callback_data.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let callbacks: Vec<&str> = buttons.iter().map(|(_, data)| data.as_str()).collect();
+    let once_cb = format!("perm_once:{request_id}");
+    let deny_cb = format!("perm_deny:{request_id}");
+    assert_eq!(callbacks, vec![once_cb.as_str(), deny_cb.as_str()]);
+    assert!(buttons.iter().any(|(label, _)| label.contains("允许一次")));
+    assert!(buttons.iter().any(|(label, _)| label.contains("拒绝")));
+    assert!(
+        !callbacks.iter().any(|data| data.starts_with("perm_always:")),
+        "high-risk card must not offer always-allow: {callbacks:?}"
+    );
+}
+
+#[test]
+fn permission_card_routine_offers_all_three_choices() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let request_id = "per_routine";
+    let (text, markup) = CardBuilder::permission_request_card(
+        "project-a",
+        Some("ses_routine"),
+        "read",
+        Some("cat Cargo.toml"),
+        PermissionRisk::Routine,
+        request_id,
+    );
+
+    assert!(text.contains("project-a"), "text: {text}");
+    assert!(text.contains("ses_routine"), "text: {text}");
+    assert!(text.contains("read"), "text: {text}");
+    assert!(text.contains("常规"), "text: {text}");
+    assert!(text.contains("cat Cargo.toml"), "text: {text}");
+
+    let buttons: Vec<(String, String)> = markup
+        .inline_keyboard
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|button| {
+            (
+                button.text.clone(),
+                button.callback_data.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let callbacks: Vec<&str> = buttons.iter().map(|(_, data)| data.as_str()).collect();
+    let once_cb = format!("perm_once:{request_id}");
+    let always_cb = format!("perm_always:{request_id}");
+    let deny_cb = format!("perm_deny:{request_id}");
+    assert_eq!(
+        callbacks,
+        vec![once_cb.as_str(), always_cb.as_str(), deny_cb.as_str()]
+    );
+    assert!(buttons.iter().any(|(label, _)| label.contains("允许一次")));
+    assert!(buttons.iter().any(|(label, _)| label.contains("始终允许")));
+    assert!(buttons.iter().any(|(label, _)| label.contains("拒绝")));
+}
+
+#[test]
+fn permission_card_unassigned_session_is_labelled() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let (text, _) = CardBuilder::permission_request_card(
+        "project-b",
+        None,
+        "write",
+        Some("touch notes.md"),
+        PermissionRisk::HighRisk,
+        "per_no_session",
+    );
+    assert!(text.contains("unassigned"), "text: {text}");
+    assert!(!text.contains("ses_x"), "text: {text}");
+}
+
+#[test]
+fn permission_card_without_command_says_none() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let (text, _) = CardBuilder::permission_request_card(
+        "project-c",
+        Some("ses_y"),
+        "bash",
+        None,
+        PermissionRisk::HighRisk,
+        "per_no_command",
+    );
+    assert!(text.contains("（无命令）"), "text: {text}");
+}
+
+#[test]
+fn permission_card_bounds_long_command_preview() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let raw = format!("{}TAILMARKER{}", "a".repeat(300), "b".repeat(5000));
+    let (text, _) = CardBuilder::permission_request_card(
+        "project-d",
+        Some("ses_long"),
+        "bash",
+        Some(&raw),
+        PermissionRisk::HighRisk,
+        "per_long",
+    );
+
+    assert!(
+        text.chars().count() < raw.chars().count(),
+        "card text must be shorter than the raw command"
+    );
+    assert!(text.ends_with('…'), "text must end with an ellipsis: {text}");
+    assert!(
+        !text.contains("TAILMARKER"),
+        "preview must not exceed 300 command code points: {text}"
+    );
+    assert!(
+        text.chars().count() <= 600,
+        "card text is unexpectedly large: {}",
+        text.chars().count()
+    );
+}
+
+#[test]
+fn permission_callback_data_stays_within_telegram_limit() {
+    use super::card_builder::CardBuilder;
+    use super::permission::PermissionRisk;
+
+    let request_id = "per_1234567890abcdef1234567890abcdef";
+    let (_, markup) = CardBuilder::permission_request_card(
+        "project-e",
+        Some("ses_limit"),
+        "read",
+        Some("ls"),
+        PermissionRisk::Routine,
+        request_id,
+    );
+    for row in &markup.inline_keyboard {
+        for button in row {
+            let data = button.callback_data.as_deref().unwrap_or_default();
+            assert!(
+                data.len() <= 64,
+                "callback data must fit Telegram's 64-byte limit: {data}"
+            );
+        }
+    }
+}
+
+#[test]
+fn permission_callback_parses_all_variants() {
+    use super::permission::{parse_permission_callback, PermissionCallback};
+
+    assert_eq!(
+        parse_permission_callback("perm_once:id-1"),
+        Some(PermissionCallback::Once("id-1".to_string()))
+    );
+    assert_eq!(
+        parse_permission_callback("perm_always:id-2"),
+        Some(PermissionCallback::Always("id-2".to_string()))
+    );
+    assert_eq!(
+        parse_permission_callback("perm_deny:id-3"),
+        Some(PermissionCallback::Deny("id-3".to_string()))
+    );
+}
+
+#[test]
+fn permission_callback_keeps_colons_in_identifier() {
+    use super::permission::{parse_permission_callback, PermissionCallback};
+
+    assert_eq!(
+        parse_permission_callback("perm_once:per:a:b:c"),
+        Some(PermissionCallback::Once("per:a:b:c".to_string()))
+    );
+    assert_eq!(
+        parse_permission_callback("perm_always:req:123"),
+        Some(PermissionCallback::Always("req:123".to_string()))
+    );
+}
+
+#[test]
+fn permission_callback_rejects_malformed_data() {
+    use super::permission::parse_permission_callback;
+
+    for data in [
+        "",
+        "perm_once",
+        "perm_once:",
+        "perm_always:",
+        "perm_deny:",
+        "perm_maybe:x",
+        "once:id",
+        "perm_once:   ",
+        "perm_once:\t\n",
+    ] {
+        assert_eq!(
+            parse_permission_callback(data),
+            None,
+            "malformed callback must be rejected: {data:?}"
+        );
+    }
+}
+
+// --- Permission policy, auto-approval and card delivery ---
+// These tests drive the real poller against a loopback HTTP server so the
+// observable contract is the exact reply bytes and Telegram payloads sent over
+// the wire. The server records every request and can serve configured
+// permission payloads or fail Telegram sendMessage delivery.
+
+use super::client::TelegramClient;
+use super::opencode_bridge::OpenCodeBridge;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+#[derive(Clone, Debug)]
+struct RecordedRequest {
+    method: String,
+    path: String,
+    body: String,
+}
+
+struct FakeServerState {
+    requests: Mutex<Vec<RecordedRequest>>,
+    permissions_json: Mutex<String>,
+    fail_send_message: AtomicBool,
+    fail_permission_reply: AtomicBool,
+}
+
+struct FakeHttpServer {
+    addr: SocketAddr,
+    state: Arc<FakeServerState>,
+    accept_handle: tokio::task::JoinHandle<()>,
+}
+
+impl FakeHttpServer {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake HTTP server");
+        let addr = listener.local_addr().expect("fake HTTP server address");
+        let state = Arc::new(FakeServerState {
+            requests: Mutex::new(Vec::new()),
+            permissions_json: Mutex::new("[]".to_string()),
+            fail_send_message: AtomicBool::new(false),
+            fail_permission_reply: AtomicBool::new(false),
+        });
+        let accept_state = state.clone();
+        let accept_handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let connection_state = accept_state.clone();
+                tokio::spawn(async move {
+                    fake_handle_connection(stream, connection_state).await;
+                });
+            }
+        });
+        Self {
+            addr,
+            state,
+            accept_handle,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    fn telegram_base_url(&self) -> String {
+        format!("http://{}/botTEST", self.addr)
+    }
+
+    fn set_permissions_json(&self, json_array: &str) {
+        *self.state.permissions_json.lock().unwrap() = json_array.to_string();
+    }
+
+    fn fail_send_message(&self, fail: bool) {
+        self.state.fail_send_message.store(fail, Ordering::SeqCst);
+    }
+
+    /// Make every `/reply` POST answer HTTP 500 so a decision cannot be
+    /// forwarded while Telegram card delivery stays unaffected.
+    fn fail_permission_reply(&self, fail: bool) {
+        self.state
+            .fail_permission_reply
+            .store(fail, Ordering::SeqCst);
+    }
+
+    fn requests(&self) -> Vec<RecordedRequest> {
+        self.state.requests.lock().unwrap().clone()
+    }
+
+    fn shutdown(&self) {
+        self.accept_handle.abort();
+    }
+}
+
+fn fake_find_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+}
+
+async fn fake_handle_connection(mut stream: TcpStream, state: Arc<FakeServerState>) {
+    let mut received = Vec::new();
+    let mut chunk = [0u8; 1024];
+    let head_end = loop {
+        let Ok(read) = stream.read(&mut chunk).await else {
+            return;
+        };
+        if read == 0 {
+            return;
+        }
+        received.extend_from_slice(&chunk[..read]);
+        if let Some(head_end) = fake_find_header_end(&received) {
+            break head_end;
+        }
+        if received.len() > 64 * 1024 {
+            return;
+        }
+    };
+
+    let head = String::from_utf8_lossy(&received[..head_end]).to_string();
+    let mut head_lines = head.split("\r\n");
+    let request_line = head_lines.next().unwrap_or_default();
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or_default().to_string();
+    let path = request_parts.next().unwrap_or_default().to_string();
+    let content_length = head_lines
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .filter_map(|(_, value)| value.trim().parse::<usize>().ok())
+        .next()
+        .unwrap_or(0);
+
+    let mut body = received[head_end..].to_vec();
+    while body.len() < content_length {
+        let Ok(read) = stream.read(&mut chunk).await else {
+            return;
+        };
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    body.truncate(content_length);
+
+    state.requests.lock().unwrap().push(RecordedRequest {
+        method: method.clone(),
+        path: path.clone(),
+        body: String::from_utf8_lossy(&body).to_string(),
+    });
+
+    let (status, response_body) = fake_response(&state, &method, &path);
+    let status_text = if status == 200 {
+        "OK"
+    } else {
+        "Internal Server Error"
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        response_body.len(),
+        response_body
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+fn fake_response(state: &FakeServerState, method: &str, path: &str) -> (u16, String) {
+    let telegram_success = "{\"ok\":true,\"result\":{\"message_id\":777,\"chat\":{\"id\":42,\"type\":\"private\"},\"date\":1,\"text\":\"ok\"}}";
+    if method == "GET" && (path == "/question" || path == "/api/form") {
+        (200, "{\"data\":[]}".to_string())
+    } else if method == "GET" && (path == "/permission" || path == "/api/permission/request") {
+        let permissions = state.permissions_json.lock().unwrap().clone();
+        (200, format!("{{\"data\":{permissions}}}"))
+    } else if method == "POST" && path.ends_with("/reply") {
+        if state.fail_permission_reply.load(Ordering::SeqCst) {
+            (500, "{\"ok\":false}".to_string())
+        } else {
+            (200, "{\"ok\":true}".to_string())
+        }
+    } else if method == "POST" && path.ends_with("/sendMessage") {
+        if state.fail_send_message.load(Ordering::SeqCst) {
+            (
+                500,
+                "{\"ok\":false,\"description\":\"delivery failed\"}".to_string(),
+            )
+        } else {
+            (200, telegram_success.to_string())
+        }
+    } else if method == "POST" && path.ends_with("/editMessageText") {
+        (200, telegram_success.to_string())
+    } else {
+        (404, "{\"ok\":false,\"description\":\"not found\"}".to_string())
+    }
+}
+
+async fn permission_wait_for_request(
+    server: &FakeHttpServer,
+    predicate: impl Fn(&RecordedRequest) -> bool,
+    label: &str,
+) -> RecordedRequest {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(found) = server.requests().into_iter().find(|request| predicate(request)) {
+            return found;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {label}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn permission_wait_until(mut predicate: impl FnMut() -> bool, label: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if predicate() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {label}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn permission_test_bridge(server: &FakeHttpServer) -> OpenCodeBridge {
+    OpenCodeBridge::new(Arc::new(TelegramClient::with_base_url(
+        "test-token",
+        server.telegram_base_url(),
+    )))
+}
+
+fn permission_reply_posts(requests: Vec<RecordedRequest>) -> Vec<RecordedRequest> {
+    requests
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path.ends_with("/reply"))
+        .collect()
+}
+
+fn permission_send_messages(requests: Vec<RecordedRequest>) -> Vec<RecordedRequest> {
+    requests
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path.ends_with("/sendMessage"))
+        .collect()
+}
+
+fn permission_edit_messages(requests: Vec<RecordedRequest>) -> Vec<RecordedRequest> {
+    requests
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path.ends_with("/editMessageText"))
+        .collect()
+}
+
+#[tokio::test]
+async fn permission_policy_auto_approves_routine_without_card() {
+    let server = FakeHttpServer::start().await;
+    server.set_permissions_json(
+        r#"[{"id":"per_auto_1","permission":"bash","command":"cargo test"}]"#,
+    );
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.body.contains("\"reply\":\"once\"")
+                && request.body.contains("\"response\":\"once\"")
+        },
+        "auto-approved routine permission reply",
+    )
+    .await;
+    assert!(
+        reply.path.contains("per_auto_1"),
+        "reply must target the routine request: {}",
+        reply.path
+    );
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+
+    let cards = permission_send_messages(server.requests());
+    assert!(
+        cards.is_empty(),
+        "routine auto-approval must not send a permission card: {cards:?}"
+    );
+    assert!(
+        registry.get("per_auto_1").is_none(),
+        "auto-approved request must not stay pending"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_poller_high_risk_enabled_requests_approval() {
+    let server = FakeHttpServer::start().await;
+    server.set_permissions_json(
+        r#"[{"id":"per_high_1","permission":"bash","command":"rm -rf target"}]"#,
+    );
+    let bridge = permission_test_bridge(&server);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    let card = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "high-risk approval card",
+    )
+    .await;
+    assert!(
+        card.body.contains("perm_deny:per_high_1"),
+        "high-risk card must offer deny: {}",
+        card.body
+    );
+    assert!(
+        !card.body.contains("perm_always:per_high_1"),
+        "high-risk card must not offer always-allow: {}",
+        card.body
+    );
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+
+    let replies = permission_reply_posts(server.requests());
+    assert!(
+        replies.is_empty(),
+        "high-risk requests must wait for a human decision, not auto-reply: {replies:?}"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_policy_disabled_routine_requests_approval() {
+    let server = FakeHttpServer::start().await;
+    server.set_permissions_json(
+        r#"[{"id":"per_routine_1","permission":"bash","command":"cargo test"}]"#,
+    );
+    let bridge = permission_test_bridge(&server);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    let card = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "routine approval card",
+    )
+    .await;
+    assert!(
+        card.body.contains("perm_always:per_routine_1"),
+        "routine card must offer always-allow: {}",
+        card.body
+    );
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+
+    let replies = permission_reply_posts(server.requests());
+    assert!(
+        replies.is_empty(),
+        "disabled auto-approval must not reply for a routine request: {replies:?}"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_card_delivery_failure_keeps_request_pending() {
+    let server = FakeHttpServer::start().await;
+    server.set_permissions_json(
+        r#"[{"id":"per_fail_1","permission":"bash","command":"rm -rf target"}]"#,
+    );
+    server.fail_send_message(true);
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "failed delivery attempt",
+    )
+    .await;
+    permission_wait_until(
+        || registry.get("per_fail_1").is_some(),
+        "failed permission to stay pending",
+    )
+    .await;
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+
+    let replies = permission_reply_posts(server.requests());
+    assert!(
+        replies.is_empty(),
+        "a failed card delivery must not auto-reply: {replies:?}"
+    );
+    assert!(
+        registry.get("per_fail_1").is_some(),
+        "the undelivered request must remain pending"
+    );
+    server.shutdown();
+}
+
+// --- Permission decisions ---
+// A decision is single-use: exactly one reply reaches the agent, the delivered
+// card is edited in place to show the outcome, and any reply failure keeps the
+// request pending so the operator can tap again.
+
+use super::opencode_bridge::PermissionDecisionOutcome;
+
+fn permission_pending(
+    request_id: &str,
+    risk: PermissionRisk,
+    sent_at: Instant,
+) -> PendingPermissionRequest {
+    PendingPermissionRequest::new(
+        request_id,
+        42,
+        "bash",
+        Some("cargo test".to_string()),
+        risk,
+        sent_at,
+    )
+    .with_card_message_id(Some(777))
+    .with_session_id(None)
+}
+
+#[tokio::test]
+async fn permission_decide_once_replies_once_and_edits_card() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_once_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_once_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionDecisionOutcome::Applied(PermissionDecision::Once)
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_once_1")
+        },
+        "once permission reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"once\""),
+        "reply payload must forward once: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains("\"response\":\"once\""),
+        "reply payload must forward once as response: {}",
+        reply.body
+    );
+
+    permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "card edit after once decision",
+    )
+    .await;
+    let edits = permission_edit_messages(server.requests());
+    assert_eq!(edits.len(), 1, "exactly one card edit: {edits:?}");
+    assert!(
+        edits[0].body.contains("已允许一次"),
+        "edited card must show the once outcome: {}",
+        edits[0].body
+    );
+    assert!(
+        registry.get("per_once_1").is_none(),
+        "a resolved request must leave the registry"
+    );
+
+    let outcome = runtime
+        .decide(&server.url(), "per_once_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::Ignored);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let replies = permission_reply_posts(server.requests());
+    assert_eq!(replies.len(), 1, "single-use decision sends one reply: {replies:?}");
+    let edits = permission_edit_messages(server.requests());
+    assert_eq!(edits.len(), 1, "single-use decision edits one card: {edits:?}");
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_always_forwards_always() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_always_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_always_1", PermissionDecision::Always)
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionDecisionOutcome::Applied(PermissionDecision::Always)
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_always_1")
+        },
+        "always permission reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"always\""),
+        "reply payload must forward always: {}",
+        reply.body
+    );
+
+    let edit = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "card edit after always decision",
+    )
+    .await;
+    assert!(
+        edit.body.contains("已始终允许"),
+        "edited card must show the always outcome: {}",
+        edit.body
+    );
+    assert!(
+        registry.get("per_always_1").is_none(),
+        "a resolved request must leave the registry"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_deny_forwards_deny() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_deny_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_deny_1", PermissionDecision::Deny)
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionDecisionOutcome::Applied(PermissionDecision::Deny)
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_deny_1")
+        },
+        "deny permission reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"deny\""),
+        "reply payload must forward deny: {}",
+        reply.body
+    );
+
+    let edit = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "card edit after deny decision",
+    )
+    .await;
+    assert!(
+        edit.body.contains("已拒绝"),
+        "edited card must show the deny outcome: {}",
+        edit.body
+    );
+    assert!(
+        registry.get("per_deny_1").is_none(),
+        "a resolved request must leave the registry"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_reply_failure_keeps_pending() {
+    let server = FakeHttpServer::start().await;
+    server.fail_permission_reply(true);
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_fail_reply_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_fail_reply_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::ReplyFailed);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !permission_reply_posts(server.requests()).is_empty(),
+        "the decision must have been attempted"
+    );
+    assert!(
+        permission_edit_messages(server.requests()).is_empty(),
+        "a failed reply must not claim the card was decided"
+    );
+    assert!(
+        registry.get("per_fail_reply_1").is_some(),
+        "a failed reply keeps the request pending"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_ignores_high_risk_always() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_high_always_1",
+        PermissionRisk::HighRisk,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(
+            &server.url(),
+            "per_high_always_1",
+            PermissionDecision::Always,
+        )
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::Ignored);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        permission_reply_posts(server.requests()).is_empty(),
+        "a high-risk request must never honor always"
+    );
+    assert!(
+        permission_edit_messages(server.requests()).is_empty(),
+        "an ignored decision must not edit the card"
+    );
+    assert!(
+        registry.get("per_high_always_1").is_some(),
+        "an ignored decision keeps the request pending"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_expired_tap_is_ignored() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let sent_at = Instant::now()
+        .checked_sub(PERMISSION_TIMEOUT + Duration::from_secs(1))
+        .expect("clock");
+    registry.insert(permission_pending(
+        "per_expired_1",
+        PermissionRisk::Routine,
+        sent_at,
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_expired_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::Expired);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        permission_reply_posts(server.requests()).is_empty(),
+        "an expired request must not reply"
+    );
+    assert!(
+        registry.get("per_expired_1").is_some(),
+        "an expired tap leaves the stale request untouched"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_unknown_is_ignored() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+
+    let outcome = runtime
+        .decide(&server.url(), "per_unknown_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::Ignored);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        server.requests().is_empty(),
+        "an unknown request must not produce traffic: {:?}",
+        server.requests()
+    );
+    server.shutdown();
+}
+
+// --- Pending permission timeout sweep ---
+// An unanswered request is denied exactly once when the 30-minute deadline
+// passes: the agent receives `deny`, the delivered card is replaced with the
+// timeout result and the chat is notified. The poller performs the same sweep,
+// so a request that vanished from the agent listing still expires, and ending
+// or cancelling a task drops every pending request.
+
+#[tokio::test]
+async fn permission_timeout_denies_and_notifies() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let now = Instant::now();
+    registry.insert(permission_pending(
+        "per_to_1",
+        PermissionRisk::Routine,
+        now,
+    ));
+
+    let expired = runtime
+        .expire_due(&server.url(), now + PERMISSION_TIMEOUT)
+        .await;
+    assert_eq!(expired, 1, "one request must be swept");
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_to_1")
+        },
+        "timeout deny reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"deny\""),
+        "timeout must reply deny: {}",
+        reply.body
+    );
+
+    let edit = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "timeout card edit",
+    )
+    .await;
+    assert!(
+        edit.body.contains("已超时") && edit.body.contains("自动拒绝"),
+        "timeout card must show both timeout and auto-deny: {}",
+        edit.body
+    );
+
+    let notification = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "timeout chat notification",
+    )
+    .await;
+    assert!(
+        notification.body.contains("自动拒绝"),
+        "timeout notification must mention auto-deny: {}",
+        notification.body
+    );
+
+    assert!(
+        registry.get("per_to_1").is_none(),
+        "a swept request must leave the registry"
+    );
+
+    let again = runtime
+        .expire_due(&server.url(), now + PERMISSION_TIMEOUT * 2)
+        .await;
+    assert_eq!(again, 0, "a repeated sweep must not expire anything");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let replies = permission_reply_posts(server.requests());
+    assert_eq!(
+        replies.len(),
+        1,
+        "a timed-out request must be denied exactly once: {replies:?}"
+    );
+    let edits = permission_edit_messages(server.requests());
+    assert_eq!(edits.len(), 1, "exactly one timeout card edit: {edits:?}");
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_timeout_reply_failure_retries_before_commit() {
+    let failing_server = FakeHttpServer::start().await;
+    failing_server.fail_permission_reply(true);
+    let succeeding_server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&failing_server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let now = Instant::now();
+    registry.insert(permission_pending(
+        "per_tmo_fail_1",
+        PermissionRisk::Routine,
+        now,
+    ));
+
+    let expired = runtime
+        .expire_due(&failing_server.url(), now + PERMISSION_TIMEOUT)
+        .await;
+    assert_eq!(
+        expired, 0,
+        "a failed deny reply must not commit the timeout sweep"
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        registry.get("per_tmo_fail_1").is_some(),
+        "a failed deny reply keeps the request registered for retry"
+    );
+    assert!(
+        permission_edit_messages(failing_server.requests()).is_empty(),
+        "a failed deny reply must not edit the card"
+    );
+    assert!(
+        permission_send_messages(failing_server.requests()).is_empty(),
+        "a failed deny reply must not notify the chat"
+    );
+
+    let retried = runtime
+        .expire_due(
+            &succeeding_server.url(),
+            now + PERMISSION_TIMEOUT * 2,
+        )
+        .await;
+    assert_eq!(retried, 1, "the retried sweep must deny the request");
+
+    let reply = permission_wait_for_request(
+        &succeeding_server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_tmo_fail_1")
+        },
+        "retried timeout deny reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"deny\""),
+        "retried timeout must reply deny: {}",
+        reply.body
+    );
+
+    let edit = permission_wait_for_request(
+        &failing_server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "timeout card edit after retry",
+    )
+    .await;
+    assert!(
+        edit.body.contains("已超时"),
+        "retried timeout card must show the timeout result: {}",
+        edit.body
+    );
+
+    let notification = permission_wait_for_request(
+        &failing_server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "timeout notification after retry",
+    )
+    .await;
+    assert!(
+        notification.body.contains("自动拒绝"),
+        "retried timeout notification must mention auto-deny: {}",
+        notification.body
+    );
+
+    assert!(
+        registry.get("per_tmo_fail_1").is_none(),
+        "a committed timeout must leave the registry"
+    );
+    failing_server.shutdown();
+    succeeding_server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_timeout_sweep_boundary() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let now = Instant::now();
+    registry.insert(permission_pending(
+        "per_bound_1",
+        PermissionRisk::Routine,
+        now,
+    ));
+
+    let before = runtime
+        .expire_due(
+            &server.url(),
+            now + PERMISSION_TIMEOUT - Duration::from_secs(1),
+        )
+        .await;
+    assert_eq!(before, 0, "29m59s must still be pending");
+    assert!(
+        registry.get("per_bound_1").is_some(),
+        "a request short of the deadline stays registered"
+    );
+
+    let at_deadline = runtime
+        .expire_due(&server.url(), now + PERMISSION_TIMEOUT)
+        .await;
+    assert_eq!(at_deadline, 1, "exactly 30 minutes must expire");
+    assert!(
+        registry.get("per_bound_1").is_none(),
+        "the expired request leaves the registry"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_timeout_ignores_resolved() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let now = Instant::now();
+    registry.insert(permission_pending(
+        "per_resolved_1",
+        PermissionRisk::Routine,
+        now,
+    ));
+    let resolved = registry
+        .resolve("per_resolved_1", PermissionDecision::Once)
+        .expect("the pending request must resolve");
+    assert_eq!(resolved.decision, PermissionDecision::Once);
+
+    let expired = runtime
+        .expire_due(&server.url(), now + PERMISSION_TIMEOUT)
+        .await;
+    assert_eq!(expired, 0, "a resolved request must never time out");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        server.requests().is_empty(),
+        "a resolved request must not be denied, edited or announced: {:?}",
+        server.requests()
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_clear_on_task_end_clears_pending() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let registry = bridge.permission_runtime().registry();
+    registry.insert(permission_pending(
+        "per_end_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    bridge.finish_task().await;
+
+    assert!(
+        registry.is_empty(),
+        "finishing a task must drop every pending permission"
+    );
+    assert!(
+        registry.get("per_end_1").is_none(),
+        "the finished task's pending request must be gone"
+    );
+}
+
+#[tokio::test]
+async fn permission_clear_on_cancel_clears_pending() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let registry = bridge.permission_runtime().registry();
+    registry.insert(permission_pending(
+        "per_cancel_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    bridge.cancel_active_task().await;
+
+    assert!(
+        registry.is_empty(),
+        "cancelling a task must drop every pending permission"
+    );
+    assert!(
+        registry.get("per_cancel_1").is_none(),
+        "the cancelled task's pending request must be gone"
+    );
+}
+
+#[tokio::test]
+async fn permission_poller_expiry_clears_stale_request() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    let sent_at = Instant::now()
+        .checked_sub(PERMISSION_TIMEOUT + Duration::from_secs(1))
+        .expect("clock");
+    registry.insert(
+        PendingPermissionRequest::new(
+            "per_stale_1",
+            42,
+            "bash",
+            Some("rm -rf target".to_string()),
+            PermissionRisk::HighRisk,
+            sent_at,
+        )
+        .with_card_message_id(Some(778))
+        .with_session_id(None),
+    );
+
+    // The agent no longer lists the request, so only the poller's own sweep
+    // can observe that it has passed the deadline.
+    server.set_permissions_json("[]");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_stale_1")
+                && request.body.contains("\"reply\":\"deny\"")
+        },
+        "poller timeout deny reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"deny\""),
+        "poller expiry must reply deny: {}",
+        reply.body
+    );
+
+    permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/sendMessage")
+                && request.body.contains("自动拒绝")
+        },
+        "poller timeout notification",
+    )
+    .await;
+
+    permission_wait_until(
+        || registry.get("per_stale_1").is_none(),
+        "the poller to drop the stale request",
+    )
+    .await;
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+    server.shutdown();
+}
+
+// --- Active task cancellation ---
+// Cancelling must terminate the owned process group, escalate when a child
+// ignores SIGTERM, leave unrelated groups running, suppress a late result from
+// the cancelled generation, and retire pending interaction cards.
+
+use super::opencode_bridge::CancelOutcome;
+use std::path::Path;
+
+/// Best-effort process-group cleanup for a test that fails before reaping.
+#[cfg(unix)]
+struct CancelGroupGuard {
+    pgid: u32,
+}
+
+#[cfg(unix)]
+impl Drop for CancelGroupGuard {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(format!("-{}", self.pgid))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Spawn a child in its own process group so group signals are observable.
+#[cfg(unix)]
+async fn cancel_spawn_group(
+    program: &str,
+    args: &[&str],
+) -> (tokio::process::Child, CancelGroupGuard) {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command.as_std_mut().process_group(0);
+    let child = command.spawn().expect("spawn grouped child");
+    let pgid = child.id().expect("grouped child pid");
+    (child, CancelGroupGuard { pgid })
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_process_group_terminates_sleep_child() {
+    use super::opencode_bridge::terminate_process_group;
+
+    let (mut child, _guard) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let pid = child.id().expect("sleep pid");
+
+    let outcome = terminate_process_group(pid, Duration::from_secs(2)).await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+
+    let waited = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    assert!(
+        waited.is_ok(),
+        "a terminated sleep child must be reaped within two seconds"
+    );
+    let _ = waited;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_process_group_force_kills_after_grace() {
+    use super::opencode_bridge::terminate_process_group;
+
+    let (mut child, _guard) =
+        cancel_spawn_group("/bin/sh", &["-c", "trap \"\" TERM; sleep 30"]).await;
+    let pid = child.id().expect("shell pid");
+
+    let outcome = terminate_process_group(pid, Duration::from_millis(300)).await;
+    assert_eq!(outcome, CancelOutcome::ForcedCancelled);
+
+    let waited = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+    assert!(
+        waited.is_ok(),
+        "a SIGTERM-ignoring child must exit after the forced SIGKILL"
+    );
+    let _ = waited;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_process_group_leaves_unrelated_group_running() {
+    use super::opencode_bridge::terminate_process_group;
+
+    let (mut child_a, _guard_a) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let pid_a = child_a.id().expect("first sleep pid");
+    let (mut child_b, _guard_b) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let pid_b = child_b.id().expect("second sleep pid");
+
+    let outcome = terminate_process_group(pid_a, Duration::from_secs(2)).await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+
+    let waited = tokio::time::timeout(Duration::from_secs(2), child_a.wait()).await;
+    assert!(waited.is_ok(), "the targeted group must be reaped");
+    let _ = waited;
+    assert!(
+        child_b.try_wait().expect("probe unrelated child").is_none(),
+        "an unrelated process group must keep running"
+    );
+
+    let _ = terminate_process_group(pid_b, Duration::from_secs(2)).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), child_b.wait()).await;
+}
+
+#[tokio::test]
+async fn cancel_reports_nothing_when_idle() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let generation_before = bridge.task_generation();
+    let snapshot_before = bridge.session_snapshot().await;
+
+    let outcome = bridge.cancel_active_task().await;
+
+    assert_eq!(outcome, CancelOutcome::NothingToCancel);
+    assert_eq!(bridge.task_generation(), generation_before);
+    let snapshot_after = bridge.session_snapshot().await;
+    assert!(snapshot_after.task.is_none());
+    assert_eq!(
+        snapshot_after.conversation_busy,
+        snapshot_before.conversation_busy
+    );
+    assert_eq!(
+        snapshot_after.conversation_session_id,
+        snapshot_before.conversation_session_id
+    );
+    assert_eq!(
+        snapshot_after.conversation_project_name,
+        snapshot_before.conversation_project_name
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_terminates_owned_process_and_suppresses_late_result() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let (mut child, _guard) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let pid = child.id().expect("sleep pid");
+
+    bridge.track_active_process(pid).await;
+    bridge.begin_conversation(Path::new("/tmp/cancel-a")).await;
+    let old_generation = bridge.task_generation();
+
+    let outcome = bridge.cancel_active_task().await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+
+    let waited = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    assert!(
+        waited.is_ok(),
+        "cancelling must terminate the tracked process group"
+    );
+    let _ = waited;
+
+    assert!(
+        !bridge.should_publish_result(old_generation),
+        "a result from the cancelled generation must be suppressed"
+    );
+    let current_generation = bridge.task_generation();
+    assert!(
+        bridge.should_publish_result(current_generation),
+        "the current generation must stay publishable"
+    );
+    assert!(
+        bridge.session_snapshot().await.task.is_none(),
+        "cancelling must clear the active task snapshot"
+    );
+}
+
+#[tokio::test]
+async fn cancel_edits_pending_interaction_cards() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    registry.insert(permission_pending(
+        "per_cancel_card_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+    bridge.track_question_message(778).await;
+    bridge.begin_conversation(Path::new("/tmp/cancel-cards")).await;
+
+    let outcome = bridge.cancel_active_task().await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+    assert!(registry.is_empty(), "cancel must drop pending permissions");
+
+    permission_wait_until(
+        || {
+            permission_edit_messages(server.requests())
+                .iter()
+                .filter(|request| request.body.contains("已取消"))
+                .count()
+                == 2
+        },
+        "both pending interaction cards to be edited as cancelled",
+    )
+    .await;
+    let cancelled_edits: Vec<RecordedRequest> = permission_edit_messages(server.requests())
+        .into_iter()
+        .filter(|request| request.body.contains("已取消"))
+        .collect();
+    assert_eq!(
+        cancelled_edits.len(),
+        2,
+        "the pending question and permission cards must both be cancelled: {cancelled_edits:?}"
+    );
+
+    let expired = bridge
+        .permission_runtime()
+        .expire_due(&server.url(), Instant::now() + PERMISSION_TIMEOUT * 2)
+        .await;
+    assert_eq!(
+        expired, 0,
+        "cancelled cards must not expire or be denied later"
+    );
+    let deny_replies = permission_reply_posts(server.requests())
+        .into_iter()
+        .filter(|request| request.body.contains("\"reply\":\"deny\""))
+        .count();
+    assert_eq!(
+        deny_replies, 0,
+        "a cancelled pending card must not send a deny reply"
+    );
+    server.shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_forced_outcome_reported() {
+    use super::opencode_bridge::CANCEL_GRACE;
+
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let (mut child, _guard) =
+        cancel_spawn_group("/bin/sh", &["-c", "trap \"\" TERM; sleep 30"]).await;
+    let pid = child.id().expect("shell pid");
+
+    bridge.track_active_process(pid).await;
+    bridge.begin_conversation(Path::new("/tmp/cancel-forced")).await;
+
+    let outcome = bridge.cancel_active_task().await;
+    assert_eq!(outcome, CancelOutcome::ForcedCancelled);
+
+    let waited = tokio::time::timeout(CANCEL_GRACE + Duration::from_secs(3), child.wait()).await;
+    assert!(
+        waited.is_ok(),
+        "forced cancellation must reap the SIGTERM-ignoring child"
+    );
+    let _ = waited;
+}
+
+#[tokio::test]
+async fn cancel_late_generation_does_not_clear_newer_task() {
+    use super::opencode_bridge::BridgeTaskKind;
+
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    bridge.begin_conversation(Path::new("/tmp/cancel-old")).await;
+    let old_generation = bridge.task_generation();
+
+    let outcome = bridge.cancel_active_task().await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+
+    bridge.begin_conversation(Path::new("/tmp/cancel-new")).await;
+    assert!(
+        !bridge.should_publish_result(old_generation),
+        "the cancelled generation must stay stale after a newer task starts"
+    );
+    assert!(
+        bridge.should_publish_result(bridge.task_generation()),
+        "the newer conversation generation must be publishable"
+    );
+
+    let snapshot = bridge.session_snapshot().await;
+    let task = snapshot
+        .task
+        .expect("the newer conversation must remain the active task");
+    assert_eq!(task.kind, BridgeTaskKind::Conversation);
+    assert_eq!(task.project_name.as_deref(), Some("cancel-new"));
+    assert_eq!(
+        snapshot.conversation_project_name.as_deref(),
+        Some("cancel-new")
+    );
+}
+
+// --- Bridge shutdown ---
+// Shutdown must retire the tracked task process group and the bridge-owned
+// server child, clear observable state, and stay safe when repeated or idle.
+
+/// Poll until the process group led by `pid` no longer exists.
+#[cfg(unix)]
+async fn cancel_wait_group_exits(pid: u32, label: &str) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let alive = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(format!("-{pid}"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !alive {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("{label} process group {pid} must exit within three seconds");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_shutdown_terminates_task_and_server() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let (mut task_child, _task_guard) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let task_pid = task_child.id().expect("task sleep pid");
+    bridge.track_active_process(task_pid).await;
+    bridge.begin_conversation(Path::new("/tmp/cancel-shutdown")).await;
+
+    let (server_child, _server_guard) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let server_pid = server_child.id().expect("server sleep pid");
+    bridge.set_server_process_for_test(server_child).await;
+
+    let old_generation = bridge.task_generation();
+
+    let shutdown = tokio::time::timeout(Duration::from_secs(3), bridge.shutdown()).await;
+    assert!(
+        shutdown.is_ok(),
+        "bridge shutdown must complete without hanging"
+    );
+
+    let task_exited = tokio::time::timeout(Duration::from_secs(3), task_child.wait()).await;
+    assert!(
+        task_exited.is_ok(),
+        "shutdown must terminate and reap the tracked task process group"
+    );
+    cancel_wait_group_exits(server_pid, "bridge-owned server").await;
+
+    assert!(
+        bridge.session_snapshot().await.task.is_none(),
+        "shutdown must clear the active task snapshot"
+    );
+    assert!(
+        !bridge.should_publish_result(old_generation),
+        "shutdown must suppress results from the retired generation"
+    );
+    assert!(
+        bridge.permission_runtime().registry().is_empty(),
+        "shutdown must clear pending permissions"
+    );
+}
+
+#[tokio::test]
+async fn cancel_shutdown_is_idempotent() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+
+    for attempt in 1..=2 {
+        let shutdown = tokio::time::timeout(Duration::from_secs(3), bridge.shutdown()).await;
+        assert!(
+            shutdown.is_ok(),
+            "shutdown attempt {attempt} must complete without hanging"
+        );
+        assert!(
+            bridge.session_snapshot().await.task.is_none(),
+            "shutdown attempt {attempt} must leave no active task"
+        );
+        assert!(
+            bridge.permission_runtime().registry().is_empty(),
+            "shutdown attempt {attempt} must leave no pending permissions"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancel_shutdown_clears_pending_permission() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    registry.insert(permission_pending(
+        "per_shutdown_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+    assert_eq!(registry.len(), 1, "pending permission must be installed");
+
+    bridge.shutdown().await;
+
+    assert!(
+        registry.is_empty(),
+        "shutdown must clear the pending permission registry"
+    );
+    let expired = bridge
+        .permission_runtime()
+        .expire_due(&server.url(), Instant::now() + PERMISSION_TIMEOUT * 2)
+        .await;
+    assert_eq!(
+        expired, 0,
+        "a shutdown-cleared permission must not time out or be denied later"
+    );
+
+    server.shutdown();
+}
+
+
+fn hosted_test_session(session_id: &str, pid: u32) -> super::types::ExternalOpenCodeSessionInfo {
+    super::types::ExternalOpenCodeSessionInfo {
+        pid,
+        ppid: 1,
+        elapsed: "00:00".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/tmp".to_string(),
+        project_name: "proj".to_string(),
+        session_id: Some(session_id.to_string()),
+        title: None,
+        model: None,
+        agent: None,
+        is_busy: false,
+        current_step: None,
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 0,
+        tokens_output: 0,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: None,
+    }
+}
+
+fn hosted_test_question(call_id: &str, question_text: &str) -> super::types::HostedQuestionItem {
+    super::types::HostedQuestionItem {
+        call_id: call_id.to_string(),
+        question_text: question_text.to_string(),
+        options: vec![super::types::HostedOptionItem {
+            index: 1,
+            label: "A".to_string(),
+            description: None,
+            is_recommended: false,
+        }],
+    }
+}
+
+fn hosted_test_supervisor() -> super::session_supervisor::SessionSupervisor {
+    let client = Arc::new(super::client::TelegramClient::with_base_url(
+        "test-token",
+        "http://127.0.0.1:9",
+    ));
+    let bridge = Arc::new(super::opencode_bridge::OpenCodeBridge::new(client.clone()));
+    super::session_supervisor::SessionSupervisor::new(client, bridge)
+}
+
+#[tokio::test]
+async fn hosted_failed_answer_keeps_question_retryable() {
+    let client = Arc::new(super::client::TelegramClient::with_base_url(
+        "test-token",
+        "http://127.0.0.1:9",
+    ));
+    let bridge = Arc::new(super::opencode_bridge::OpenCodeBridge::new(client.clone()));
+    let supervisor = super::session_supervisor::SessionSupervisor::new(client, bridge.clone());
+    supervisor
+        .start_hosting(
+            42,
+            hosted_test_session("ses_hosted_1", 4242),
+            super::types::SessionHostingDecisionMode::Manual,
+        )
+        .await
+        .expect("hosting must start");
+
+    let question = hosted_test_question("call-1", "Choose an option");
+    supervisor
+        .set_active_question("ses_hosted_1", question.clone())
+        .await;
+
+    bridge.set_busy_for_test(true);
+    let result = supervisor
+        .handle_answer_question(42, "ses_hosted_1", 1)
+        .await;
+    assert!(result.is_err(), "busy injection must fail");
+
+    assert_eq!(
+        supervisor.get_active_question("ses_hosted_1").await,
+        Some(question),
+        "a failed injection must keep the question retryable"
+    );
+    let hosted = supervisor.list_hosted_sessions(Some(42)).await;
+    let record = hosted
+        .iter()
+        .find(|h| h.session_id == "ses_hosted_1")
+        .expect("session must still be hosted");
+    assert_eq!(
+        record.active_question_summary,
+        Some("Choose an option".to_string())
+    );
+
+    bridge.set_busy_for_test(false);
+    supervisor.stop_hosting("ses_hosted_1").await;
+}
+
+#[tokio::test]
+async fn hosted_stale_question_clear_and_detection() {
+    use super::session_supervisor::question_stale;
+
+    assert!(!question_stale(Some("call-1"), Some("call-1")));
+    assert!(question_stale(Some("call-1"), Some("call-2")));
+    assert!(question_stale(Some("call-1"), None));
+    assert!(!question_stale(None, Some("call-1")));
+
+    let supervisor = hosted_test_supervisor();
+    supervisor
+        .start_hosting(
+            43,
+            hosted_test_session("ses_hosted_2", 4343),
+            super::types::SessionHostingDecisionMode::Manual,
+        )
+        .await
+        .expect("hosting must start");
+    supervisor
+        .set_active_question("ses_hosted_2", hosted_test_question("call-1", "Choose an option"))
+        .await;
+    assert!(supervisor.get_active_question("ses_hosted_2").await.is_some());
+
+    supervisor.clear_active_question("ses_hosted_2").await;
+    assert_eq!(supervisor.get_active_question("ses_hosted_2").await, None);
+    let hosted = supervisor.list_hosted_sessions(Some(43)).await;
+    let record = hosted
+        .iter()
+        .find(|h| h.session_id == "ses_hosted_2")
+        .expect("session must still be hosted");
+    assert_eq!(record.active_question_summary, None);
+
+    supervisor.stop_hosting("ses_hosted_2").await;
+}
+
+#[test]
+fn hosted_idle_resets_while_question_pending() {
+    use super::session_supervisor::next_idle_checks;
+
+    assert_eq!(next_idle_checks(1, false, true), 0);
+    assert_eq!(next_idle_checks(1, true, false), 0);
+    assert_eq!(next_idle_checks(0, false, false), 1);
+    assert_eq!(next_idle_checks(1, false, false), 2);
+}
+
+#[test]
+fn hosted_completion_waits_for_pending_question() {
+    use super::session_supervisor::completion_due;
+
+    assert!(!completion_due(2, true));
+    assert!(completion_due(2, false));
+    assert!(!completion_due(1, false));
+    assert!(!completion_due(5, true));
+}
+
+// ---------------------------------------------------------------------------
+// Hosted question visibility: `/host` overview, `/sessions` detail re-send,
+// and expired-question status.
+// ---------------------------------------------------------------------------
+
+fn hosted_ui_session(question_summary: Option<&str>) -> super::types::HostedSessionInfo {
+    super::types::HostedSessionInfo {
+        session_id: "ses_hosted_ui".to_string(),
+        pid: 4242,
+        cwd: "/tmp/proj".to_string(),
+        project_name: "proj".to_string(),
+        chat_id: 42,
+        mode: super::types::SessionHostingDecisionMode::Manual,
+        started_at: 1,
+        last_observed_step: 3,
+        completed_todos_count: 1,
+        total_todos_count: 2,
+        active_question_summary: question_summary.map(|s| s.to_string()),
+    }
+}
+
+fn flatten_callbacks(markup: &InlineKeyboardMarkup) -> Vec<String> {
+    markup
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .filter_map(|button| button.callback_data.clone())
+        .collect()
+}
+
+fn flatten_labels(markup: &InlineKeyboardMarkup) -> Vec<String> {
+    markup
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .map(|button| button.text.clone())
+        .collect()
+}
+
+#[test]
+fn hosted_overview_card_shows_pending_question() {
+    use super::card_builder::CardBuilder;
+
+    let session = hosted_ui_session(Some("Choose deployment target"));
+    let (text, markup) = CardBuilder::hosted_sessions_overview_card(&[session]);
+    assert!(text.contains("待答"), "overview text: {}", text);
+    assert!(text.contains("Choose deployment target"));
+    let callbacks = flatten_callbacks(&markup);
+    let labels = flatten_labels(&markup);
+    assert!(callbacks.iter().any(|c| c == "host_question:ses_hosted_ui"));
+    assert!(labels.iter().any(|l| l.contains("查看待答提问")));
+    assert!(callbacks.iter().any(|c| c.starts_with("toggle_host_mode:")));
+    assert!(callbacks.iter().any(|c| c.starts_with("stop_host:")));
+}
+
+#[test]
+fn hosted_overview_card_without_question_has_no_resend() {
+    use super::card_builder::CardBuilder;
+
+    let session = hosted_ui_session(None);
+    let (text, markup) = CardBuilder::hosted_sessions_overview_card(&[session]);
+    assert!(!text.contains("待答"), "overview text: {}", text);
+    let callbacks = flatten_callbacks(&markup);
+    assert!(!callbacks.iter().any(|c| c.starts_with("host_question:")));
+}
+
+#[test]
+fn hosted_session_detail_card_shows_question_and_action() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind};
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Hosted,
+        kinds: vec![SessionEntryKind::Hosted],
+        session_id: Some("ses_hosted_ui".to_string()),
+        session_id_marker: String::new(),
+        plan_id: None,
+        pid: Some(4242),
+        project_name: "proj".to_string(),
+        status_label: "Hosted".to_string(),
+        is_busy: false,
+    };
+
+    let (text, markup) = CardBuilder::session_detail_card_with_hosted_question(
+        &entry,
+        None,
+        Some("Choose deployment target"),
+    );
+    assert!(text.contains("待答提问"), "detail text: {}", text);
+    assert!(text.contains("Choose deployment target"));
+    let markup = markup.expect("hosted question detail must carry a keyboard");
+    assert!(flatten_callbacks(&markup)
+        .iter()
+        .any(|c| c == "host_question:ses_hosted_ui"));
+
+    let (plain_text, plain_markup) =
+        CardBuilder::session_detail_card_with_hosted_question(&entry, None, None);
+    assert!(!plain_text.contains("待答提问"), "detail text: {}", plain_text);
+    let plain_callbacks = plain_markup
+        .as_ref()
+        .map(flatten_callbacks)
+        .unwrap_or_default();
+    assert!(!plain_callbacks.iter().any(|c| c.starts_with("host_question:")));
+}
+
+#[test]
+fn hosted_question_expired_card_reports_status() {
+    use super::card_builder::CardBuilder;
+
+    let text = CardBuilder::hosted_question_expired_card("ses_hosted_ui");
+    assert!(text.contains("已不再等待"), "expired card: {}", text);
+    assert!(text.contains("ses_hosted_ui"));
+    assert!(!text.contains("决策已收到"));
 }

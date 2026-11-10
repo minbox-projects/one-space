@@ -1,10 +1,13 @@
 use super::opencode_inspector;
+use super::permission::{PermissionDecision, PermissionRisk};
 use super::plan_progress::{PlanExecutionStatus, PlanProgressInfo};
 use super::session_inventory::{
     IdentifierResolution, PlanExecutionState, SessionEntry, SessionEntryKind,
     SessionProgressDetail,
 };
-use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup};
+use super::types::{
+    ExternalOpenCodeSessionInfo, HostedSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup,
+};
 
 /// Telegram 移动端高可读性卡片构建器
 pub struct CardBuilder;
@@ -510,6 +513,77 @@ impl CardBuilder {
         )
     }
 
+    /// 权限审批请求卡片：按风险等级提供决策按钮，并说明超时自动拒绝。
+    ///
+    /// 命令预览放在末尾，便于长命令被截断时仍以省略号收尾。
+    pub fn permission_request_card(
+        project: &str,
+        session_id: Option<&str>,
+        permission_type: &str,
+        command: Option<&str>,
+        risk: PermissionRisk,
+        request_id: &str,
+    ) -> (String, InlineKeyboardMarkup) {
+        let session = session_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unassigned");
+        let details = Self::quote_tree(&[
+            ("项目", project),
+            ("会话", session),
+            ("类型", permission_type),
+            ("风险", risk.label()),
+        ]);
+        let preview = match command {
+            Some(raw) if !raw.trim().is_empty() => Self::clip_chars(raw, 240, true),
+            _ => "（无命令）".to_string(),
+        };
+        let text = format!(
+            "🔐 *权限审批请求*\n\n{}\n\n⏳ 30 分钟内未处理将自动拒绝。\n\n> ▫️ 命令: {}",
+            details, preview
+        );
+
+        let mut rows = vec![vec![InlineKeyboardButton::callback(
+            "✅ 允许一次",
+            format!("perm_once:{request_id}"),
+        )]];
+        if risk == PermissionRisk::Routine {
+            rows.push(vec![InlineKeyboardButton::callback(
+                "♾️ 始终允许",
+                format!("perm_always:{request_id}"),
+            )]);
+        }
+        rows.push(vec![InlineKeyboardButton::callback(
+            "❌ 拒绝",
+            format!("perm_deny:{request_id}"),
+        )]);
+
+        (text, InlineKeyboardMarkup::new(rows))
+    }
+
+    /// 权限决议结果卡片：替换原审批卡片，展示实际生效的决议。
+    pub fn permission_decision_card(decision: PermissionDecision) -> String {
+        let (result, hint) = match decision {
+            PermissionDecision::Once => ("已允许一次", "本次操作已放行，后续同类请求仍需审批。"),
+            PermissionDecision::Always => ("已始终允许", "后续同类请求将自动放行。"),
+            PermissionDecision::Deny => ("已拒绝", "该操作未获授权，代理已收到拒绝。"),
+        };
+        format!(
+            "🔐 *权限决议已提交*\n\
+            > ▫️ 决议结果: `{}`\n\n\
+            {}",
+            result, hint
+        )
+    }
+
+    /// 权限请求超时结果卡片：替换原审批卡片，说明请求未在时限内处理。
+    pub fn permission_timeout_card() -> String {
+        "⏰ *权限请求已超时*\n\
+        > ▫️ 决议结果: `已超时`\n\n\
+        请求未在 30 分钟内处理，已自动拒绝。该操作未获授权，代理已收到拒绝。"
+            .to_string()
+    }
+
     /// 卡片 11: OpenCode 分析与自然对话回复卡片
     pub fn analysis_reply_card(workspace: &str, content: &str) -> String {
         let trimmed = content.trim();
@@ -894,10 +968,37 @@ impl CardBuilder {
 
     /// 卡片 22: 任务中断与取消确认卡片
     pub fn task_cancelled_card() -> String {
-        "🛑 *已请求取消当前任务*\n\
-        > ▫️ 当前状态: `取消请求已发送`\n\
-        > ▫️ 提示: `本地 OpenCode 进程可能仍在收尾，请稍候`\n\n\
+        "🛑 *已请求取消，任务已终止*\n\
+        > ▫️ 任务与受管进程组: `已终止`\n\
+        > ▫️ 结果: `该任务迟到的执行结果会被丢弃`\n\n\
         您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
+    }
+
+    /// 取消请求在宽限期后升级为 SIGKILL 时的真实结果卡片。
+    pub fn task_forced_cancel_card() -> String {
+        "🛑 *任务已被强制终止*\n\
+        > ▫️ 受管进程组: `宽限期后仍未退出，已强制结束`\n\
+        > ▫️ 结果: `该任务迟到的执行结果会被丢弃`\n\n\
+        您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
+    }
+
+    /// 没有受管任务可取消时的提示卡片。
+    pub fn nothing_to_cancel_card() -> String {
+        "ℹ️ *没有正在运行的任务*\n\n\
+        当前没有本机受管任务需要取消；外部或托管 OpenCode 会话不受影响。\n\n\
+        您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
+    }
+
+    /// 已取消任务遗留的权限审批卡片。
+    pub fn permission_cancelled_card() -> String {
+        "⏹️ *权限请求已取消*\n\n\
+        所属任务已终止，本次审批已取消，不会再被处理。".to_string()
+    }
+
+    /// 已取消任务遗留的提问卡片。
+    pub fn question_cancelled_card() -> String {
+        "⏹️ *提问已取消*\n\n\
+        所属任务已终止，本次提问已取消，后续回答不会被接受。".to_string()
     }
 
     /// 卡片 23: 通用校验与异常报错卡片
@@ -1339,6 +1440,69 @@ impl CardBuilder {
         (text, InlineKeyboardMarkup::new(buttons))
     }
 
+    /// `/host` 无参数时的托管会话概览，逐会话列出待答提问与重新发送入口。
+    pub fn hosted_sessions_overview_card(
+        sessions: &[HostedSessionInfo],
+    ) -> (String, InlineKeyboardMarkup) {
+        let mut summary = "🤖 *当前正在完全托管的会话*：\n\n".to_string();
+        let mut buttons = Vec::new();
+        for (idx, h) in sessions.iter().enumerate() {
+            let mode_str = match h.mode {
+                super::types::SessionHostingDecisionMode::Manual => "🎯 手动决断",
+                super::types::SessionHostingDecisionMode::AutoRecommended => "⚡ 自动推荐",
+            };
+            summary.push_str(&format!(
+                "{} *{}* (PID: {})\n> ├─ 会话: `{}`\n> ├─ 模式: `{}`\n> └─ 进度: Step {} · Todos {}/{} 完成\n",
+                Self::number_badge(idx + 1),
+                h.project_name,
+                h.pid,
+                h.session_id,
+                mode_str,
+                h.last_observed_step,
+                h.completed_todos_count,
+                h.total_todos_count
+            ));
+            if let Some(question) = &h.active_question_summary {
+                summary.push_str(&format!(
+                    "> ❓ 待答提问: {}\n",
+                    Self::clip_chars(question, 120, true)
+                ));
+            }
+            summary.push('\n');
+
+            buttons.push(vec![
+                InlineKeyboardButton::callback(
+                    format!("⚙️ 切换模式 ({})", h.project_name),
+                    format!("toggle_host_mode:{}", h.session_id),
+                ),
+                InlineKeyboardButton::callback(
+                    format!("🛑 退出托管 ({})", h.project_name),
+                    format!("stop_host:{}", h.session_id),
+                ),
+            ]);
+            if h.active_question_summary.is_some() {
+                buttons.push(vec![InlineKeyboardButton::callback(
+                    "❓ 查看待答提问",
+                    format!("host_question:{}", h.session_id),
+                )]);
+            }
+        }
+        summary.push_str("_可在聊天框直接回复以注入指令，或发送 `/unhost` 退出托管。_");
+        (summary, InlineKeyboardMarkup::new(buttons))
+    }
+
+    /// 待答提问已过期或在别处得到答复时的状态卡片。
+    pub fn hosted_question_expired_card(session_id: &str) -> String {
+        format!(
+            "⌛ *提问已失效*\n\
+            > ├─ 目标会话: `{}`\n\
+            > └─ 状态: `已不再等待该提问的答复`\n\n\
+            该提问已在其他位置被回答，或已超时过期，本次没有提交任何答复。\n\
+            发送 `/host` 查看当前托管会话，或等待新的提问。",
+            session_id
+        )
+    }
+
     /// 卡片 33: 托管自主决策代执行通知
     pub fn hosted_auto_decision_card(
         project_name: &str,
@@ -1523,6 +1687,39 @@ impl CardBuilder {
         };
 
         (lines.join("\n"), markup)
+    }
+
+    /// 在托管会话详情后追加待答提问，并提供重新发送该提问的按钮。
+    pub fn session_detail_card_with_hosted_question(
+        entry: &SessionEntry,
+        progress: Option<&SessionProgressDetail>,
+        active_question_summary: Option<&str>,
+    ) -> (String, Option<InlineKeyboardMarkup>) {
+        let (mut text, mut markup) = Self::session_detail_card(entry, progress);
+        if entry.primary_kind != SessionEntryKind::Hosted {
+            return (text, markup);
+        }
+        let Some(summary) = active_question_summary else {
+            return (text, markup);
+        };
+
+        text.push_str(&format!(
+            "\n\n▫️ *待答提问*\n> ❓ {}\n\n_点击下方按钮重新发送该提问。_",
+            Self::clip_chars(summary, 120, true)
+        ));
+
+        if let Some(session_id) = entry.session_id.as_deref() {
+            let button = InlineKeyboardButton::callback(
+                "❓ 查看待答提问",
+                format!("host_question:{}", session_id),
+            );
+            match markup.as_mut() {
+                Some(existing) => existing.inline_keyboard.push(vec![button]),
+                None => markup = Some(InlineKeyboardMarkup::new(vec![vec![button]])),
+            }
+        }
+
+        (text, markup)
     }
 
     /// 方案进度详情，并附带当前方案执行的会话标识与执行状态。

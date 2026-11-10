@@ -6,7 +6,8 @@ use tokio::process::Command;
 use super::auth::AuthGuard;
 use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
-use super::opencode_bridge::OpenCodeBridge;
+use super::opencode_bridge::{CancelOutcome, OpenCodeBridge, PermissionDecisionOutcome};
+use super::permission::{parse_permission_callback, PermissionCallback, PermissionDecision};
 use super::storage::{load_config, save_config};
 use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup, PromptTargetSession, TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
 
@@ -153,6 +154,11 @@ impl CommandRouter {
         }
     }
 
+    /// 停止本路由拥有的桥接资源（任务进程组与 `opencode serve` 子进程）。
+    pub(super) async fn shutdown(&self) {
+        self.bridge.shutdown().await;
+    }
+
     /// 分发处理单条 Telegram Update
     pub async fn dispatch_update(&self, update: TelegramUpdate) -> Result<(), String> {
         if let Some(msg) = update.message {
@@ -271,8 +277,14 @@ impl CommandRouter {
         } else if text.starts_with("/diff") {
             self.handle_diff_command(chat_id, text).await?;
         } else if text == "/cancel" {
-            self.bridge.cancel_active_task().await;
-            let cancel_text = CardBuilder::task_cancelled_card();
+            let outcome = self.bridge.cancel_active_task().await;
+            self.pending_prompt_targets.write().await.remove(&chat_id);
+            self.pending_prompt_choices.write().await.remove(&chat_id);
+            let cancel_text = match outcome {
+                CancelOutcome::NothingToCancel => CardBuilder::nothing_to_cancel_card(),
+                CancelOutcome::Cancelled => CardBuilder::task_cancelled_card(),
+                CancelOutcome::ForcedCancelled => CardBuilder::task_forced_cancel_card(),
+            };
             self.client
                 .send_message(
                     chat_id,
@@ -592,8 +604,32 @@ impl CommandRouter {
                                 &super::opencode_inspector::resolve_opencode_db_path(),
                             )
                         });
-                        let (text, markup) =
-                            CardBuilder::session_detail_card(&entry, progress.as_ref());
+                        let active_question_summary = if entry.primary_kind
+                            == super::session_inventory::SessionEntryKind::Hosted
+                        {
+                            self.supervisor
+                                .list_hosted_sessions(None)
+                                .await
+                                .into_iter()
+                                .find(|hosted| {
+                                    Some(hosted.session_id.as_str())
+                                        == entry.session_id.as_deref()
+                                })
+                                .and_then(|hosted| hosted.active_question_summary)
+                        } else {
+                            None
+                        };
+                        let (text, markup) = if entry.primary_kind
+                            == super::session_inventory::SessionEntryKind::Hosted
+                        {
+                            CardBuilder::session_detail_card_with_hosted_question(
+                                &entry,
+                                progress.as_ref(),
+                                active_question_summary.as_deref(),
+                            )
+                        } else {
+                            CardBuilder::session_detail_card(&entry, progress.as_ref())
+                        };
                         self.client
                             .send_message(chat_id, &text, markup, Some("Markdown"))
                             .await?;
@@ -691,31 +727,11 @@ impl CommandRouter {
         // 2. 无参数：检查当前是否已有托管中的会话
         let current_hosted = self.supervisor.list_hosted_sessions(Some(chat_id)).await;
         if !current_hosted.is_empty() {
-            let mut summary = "🤖 *当前正在完全托管的会话*：\n\n".to_string();
-            let mut buttons = Vec::new();
-            for (idx, h) in current_hosted.iter().enumerate() {
-                let mode_str = match h.mode {
-                    super::types::SessionHostingDecisionMode::Manual => "🎯 手动决断",
-                    super::types::SessionHostingDecisionMode::AutoRecommended => "⚡ 自动推荐",
-                };
-                summary.push_str(&format!(
-                    "{} *{}* (PID: {})\n> ├─ 会话: `{}`\n> ├─ 模式: `{}`\n> └─ 进度: Step {} · Todos {}/{} 完成\n\n",
-                    CardBuilder::number_badge(idx + 1),
-                    h.project_name,
-                    h.pid,
-                    h.session_id,
-                    mode_str,
-                    h.last_observed_step,
-                    h.completed_todos_count,
-                    h.total_todos_count
-                ));
-                buttons.push(vec![
-                    InlineKeyboardButton::callback(format!("⚙️ 切换模式 ({})", h.project_name), format!("toggle_host_mode:{}", h.session_id)),
-                    InlineKeyboardButton::callback(format!("🛑 退出托管 ({})", h.project_name), format!("stop_host:{}", h.session_id)),
-                ]);
-            }
-            summary.push_str("_可在聊天框直接回复以注入指令，或发送 `/unhost` 退出托管。_");
-            self.client.send_message(chat_id, &summary, Some(InlineKeyboardMarkup::new(buttons)), Some("Markdown")).await?;
+            let (summary, markup) =
+                CardBuilder::hosted_sessions_overview_card(&current_hosted);
+            self.client
+                .send_message(chat_id, &summary, Some(markup), Some("Markdown"))
+                .await?;
             return Ok(());
         }
 
@@ -1376,6 +1392,10 @@ impl CommandRouter {
                 ).await;
             }
         } else if let Some(q_info) = data.strip_prefix("ans_q:") {
+            // 取消后的任务不再接受迟到的提问回答。
+            if !self.bridge.has_active_question().await {
+                return Ok(());
+            }
             // ans_q:<question_id>:<option_index>
             let parts: Vec<&str> = q_info.splitn(2, ':').collect();
             if parts.len() == 2 {
@@ -1453,12 +1473,39 @@ impl CommandRouter {
                     None,
                 ).await;
             }
+        } else if let Some(callback) = parse_permission_callback(data) {
+            let (request_id, decision) = match callback {
+                PermissionCallback::Once(id) => (id, PermissionDecision::Once),
+                PermissionCallback::Always(id) => (id, PermissionDecision::Always),
+                PermissionCallback::Deny(id) => (id, PermissionDecision::Deny),
+            };
+            // The runtime owns the result card edit; the router only warns when
+            // the agent reply itself failed and the tap can be retried.
+            if self
+                .bridge
+                .decide_permission(&request_id, decision)
+                .await
+                == PermissionDecisionOutcome::ReplyFailed
+            {
+                let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+                let _ = self
+                    .client
+                    .send_message(chat_id, "⚠️ 提交权限决议失败，请稍后重试。", None, None)
+                    .await;
+            }
         } else if data == "cancel_task" {
-            self.bridge.cancel_active_task().await;
+            let outcome = self.bridge.cancel_active_task().await;
             if let Some(ref msg) = cb.message {
-                let update_text = CardBuilder::task_cancelled_card();
+                let chat_id = msg.chat.id;
+                self.pending_prompt_targets.write().await.remove(&chat_id);
+                self.pending_prompt_choices.write().await.remove(&chat_id);
+                let update_text = match outcome {
+                    CancelOutcome::NothingToCancel => CardBuilder::nothing_to_cancel_card(),
+                    CancelOutcome::Cancelled => CardBuilder::task_cancelled_card(),
+                    CancelOutcome::ForcedCancelled => CardBuilder::task_forced_cancel_card(),
+                };
                 let _ = self.client.edit_message_text(
-                    msg.chat.id,
+                    chat_id,
                     msg.message_id,
                     &update_text,
                     Some(CardBuilder::quick_actions()),
@@ -1631,6 +1678,37 @@ impl CommandRouter {
                     let notice = format!("🔄 会话 `{}` 的托管决策模式已切换为：*{}*", sid, mode_str);
                     self.client.send_message(msg.chat.id, &notice, Some(CardBuilder::sessions_actions()), Some("Markdown")).await?;
                 }
+            }
+        } else if let Some(sid) = data.strip_prefix("host_question:") {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            if let Some(question) = self.supervisor.get_active_question(sid).await {
+                let project_name = self
+                    .supervisor
+                    .list_hosted_sessions(None)
+                    .await
+                    .into_iter()
+                    .find(|hosted| hosted.session_id == sid)
+                    .map(|hosted| hosted.project_name)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let (text, markup) = CardBuilder::hosted_question_card(
+                    &project_name,
+                    sid,
+                    &question.question_text,
+                    &question.options,
+                );
+                self.client
+                    .send_message(chat_id, &text, Some(markup), Some("Markdown"))
+                    .await?;
+            } else {
+                let text = CardBuilder::hosted_question_expired_card(sid);
+                self.client
+                    .send_message(
+                        chat_id,
+                        &text,
+                        Some(CardBuilder::sessions_actions()),
+                        Some("Markdown"),
+                    )
+                    .await?;
             }
         } else if let Some(ans_payload) = data.strip_prefix("host_ans:") {
             // host_ans:<session_id>:<opt_idx>
