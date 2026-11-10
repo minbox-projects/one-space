@@ -449,8 +449,8 @@ fn test_card_builder_cards() {
     // 1. 欢迎卡片包含原生引用与 Chat ID
     let welcome = CardBuilder::welcome_card(999888, "MacBook-Test.local");
     assert!(welcome.contains("999888"));
-    assert!(welcome.contains("> ├─ 管理员 ID: `999888`"));
-    assert!(welcome.contains("> └─ 通信状态: `🟢 活跃连接 (Long-Polling)`"));
+    assert!(welcome.contains("> 管理员 ID: `999888`"));
+    assert!(welcome.contains("> 通信状态: `🟢 活跃连接 (Long-Polling)`"));
 
     // 2. 状态卡片包含树形分支与操作按钮
     let (status, markup) = CardBuilder::status_card(
@@ -462,7 +462,7 @@ fn test_card_builder_cards() {
         "a1b2c3d",
         true,
     );
-    assert!(status.contains("> ├─ 设备主机: `MacBook.local`"));
+    assert!(status.contains("> 设备主机: `MacBook.local`"));
     assert!(status.contains("⚡ 自动确认 (Auto-Approve)"));
     assert!(markup.is_some());
     let mk = markup.unwrap();
@@ -634,7 +634,7 @@ fn test_projects_card_compact_layout() {
     let (text, markup) = CardBuilder::projects_card("OneSpace", "/Users/tester/onespace-app", &candidates);
 
     // 验证包含美化引用块与提示信息
-    assert!(text.contains("> ├─ 当前活跃: `OneSpace`"));
+    assert!(text.contains("> 当前活跃: `OneSpace`"));
     assert!(text.contains("💡 *小提示：输入 `/projects <名称>` 可快速搜索全量系统工作空间。*"));
 
     // 验证按钮排版：当前选中项 OneSpace 独占一行，其余 3 个按双列紧凑排列

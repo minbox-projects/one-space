@@ -305,7 +305,9 @@ pub fn format_sessions_overview(
 ) -> (String, Option<InlineKeyboardMarkup>) {
     if entries.is_empty() {
         return (
-            "当前没有活跃会话。\n发送 /sessions 刷新状态；可使用 /plans 浏览方案，或用 /host <id>、/prompt 操作活跃目标。".to_string(),
+            "*OneSpace* ╎ 会话概览\n\n\
+            > ⚪ 当前没有活跃会话。\n\n\
+            发送 `/sessions` 刷新状态；可使用 `/plans` 浏览方案，或用 `/host <id>`、`/prompt` 操作活跃目标。".to_string(),
             None,
         );
     }
@@ -313,7 +315,7 @@ pub fn format_sessions_overview(
     let rendered = entries.len().min(SESSION_OVERVIEW_MAX_ENTRIES);
     let omitted = &entries[rendered..];
 
-    let mut lines = vec!["*会话概览*".to_string()];
+    let mut lines = vec!["*OneSpace* ╎ 会话概览".to_string()];
     let mut buttons: Vec<Vec<InlineKeyboardButton>> = Vec::new();
     for kind in [
         SessionEntryKind::PlanExecution,
@@ -376,8 +378,8 @@ fn group_label(kind: SessionEntryKind) -> &'static str {
 }
 
 fn format_entry_lines(entry: &SessionEntry) -> [String; 2] {
-    let status_line = format!("• {} · {}", entry.project_name, entry.status_label);
-    let mut identifier_line = entry.session_id_marker.clone();
+    let status_line = format!("> {} · {}", entry.project_name, entry.status_label);
+    let mut identifier_line = format!("> {}", entry.session_id_marker);
     if let Some(pid) = entry.pid {
         identifier_line.push_str(&format!(" · PID: {pid}"));
     }
@@ -401,8 +403,14 @@ fn session_callback_identifier(entry: &SessionEntry) -> Option<String> {
 }
 
 fn button_label(entry: &SessionEntry) -> String {
-    let project = clamp_chars(entry.project_name.clone(), 32);
-    format!("{project} · {}", entry.status_label)
+    let icon = match entry.primary_kind {
+        SessionEntryKind::PlanExecution => "🚀 ",
+        SessionEntryKind::Hosted => "🤖 ",
+        SessionEntryKind::TelegramConversation => "💬 ",
+        SessionEntryKind::Terminal => "💻 ",
+    };
+    let project = clamp_chars(entry.project_name.clone(), 24);
+    format!("{icon}{project} · {}", entry.status_label)
 }
 
 fn clamp_line(line: &str) -> String {

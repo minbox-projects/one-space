@@ -25,21 +25,25 @@ impl CardBuilder {
             .join("\n")
     }
 
-    /// 将键值对列表渲染为树形引用卡片块
+    /// 将键值对列表渲染为 Linear 风格的原生引用卡片块（平滑耐折行）
     pub fn quote_tree(items: &[(&str, &str)]) -> String {
         if items.is_empty() {
             return String::new();
         }
         if items.len() == 1 {
-            return format!("> ▫️ {}: {}", items[0].0, items[0].1);
+            return format!("> {}: {}", items[0].0, items[0].1);
         }
 
         let mut lines = Vec::new();
-        for (i, (key, val)) in items.iter().enumerate() {
-            let prefix = if i == items.len() - 1 { "└─" } else { "├─" };
-            lines.push(format!("> {} {}: {}", prefix, key, val));
+        for (key, val) in items {
+            lines.push(format!("> {}: {}", key, val));
         }
         lines.join("\n")
+    }
+
+    /// Linear 风格键值卡片引用块构建器
+    pub fn quote_kv(items: &[(&str, &str)]) -> String {
+        Self::quote_tree(items)
     }
 
     /// 提取内联按钮标签（安全长度截断，避免在手机屏幕上被省略号截断）
@@ -152,11 +156,11 @@ impl CardBuilder {
     /// 卡片 1: 首绑成功欢迎卡片
     pub fn welcome_card(chat_id: i64, hostname: &str) -> String {
         format!(
-            "🎉 *OneSpace 移动工作台*\n\
-            > ✨ *首位管理员已成功绑定*\n\
-            > ├─ 管理员 ID: `{}`\n\
-            > ├─ 本地主机: `{}`\n\
-            > └─ 通信状态: `🟢 活跃连接 (Long-Polling)`\n\n\
+            "*OneSpace* ╎ 移动工作台\n\
+            > ✨ *管理员已成功绑定*\n\
+            > 管理员 ID: `{}`\n\
+            > 宿主主机: `{}`\n\
+            > 通信状态: `🟢 活跃连接 (Long-Polling)`\n\n\
             📌 *常用快捷指令*\n\
             • `/sessions` ── 选择并查看运行中的会话\n\
             • `/prompt [会话ID|PID] <内容>` ── 向指定会话发送提示词\n\
@@ -173,22 +177,22 @@ impl CardBuilder {
     /// 卡片 2: 未授权访问拦截卡片
     pub fn unauthorized_card(chat_id: i64) -> String {
         format!(
-            "⛔ *未授权的访问请求*\n\
-            > ⚠️ *该 Mac 工作台受本地安全策略保护*\n\
-            > ├─ 来源类别: `Telegram 私聊`\n\
-            > └─ 拦截状态: `已自动阻断`\n\n\
+            "*OneSpace* ╎ 访问受限\n\
+            > ⛔ *该 Mac 工作台受本地安全策略保护*\n\
+            > 来源类别: `Telegram 私聊`\n\
+            > 拦截状态: `未授权访问已阻断`\n\n\
             🔑 *您的 Chat ID*\n\
             `{}`\n\
             _（点击上方数字可一键复制）_\n\n\
             👉 *授权开通指引*：\n\
-            请在 Mac 打开 *OneSpace* → *设置* → *服务* → *Telegram 远程工作台*，将该 ID 添加至管理员白名单。",
+            请在 Mac 打开 *OneSpace* → *设置* → *运维与自动化* → *Telegram 远程工作台*，将该 ID 添加至管理员白名单。",
             chat_id
         )
     }
 
     /// 卡片 3: 帮助与功能概览卡片
     pub fn help_card() -> String {
-        "🤖 *OneSpace 移动智能工作台*\n\
+        "*OneSpace* ╎ 指令手册\n\
         > 💡 *已通过授权认证，随时可以下发指令或直接交流*\n\n\
         🛠️ *工作台运维*\n\
         • `/status` ── Mac 本地状态与 Git 提交\n\
@@ -208,7 +212,9 @@ impl CardBuilder {
 
     /// `/running` 与无参数 `/host` 的重定向提示。
     pub fn sessions_redirect_text() -> String {
-        "👉 会话列表与进度查看已统一到 `/sessions`。\n发送 `/sessions` 查看当前活跃会话，或点击下方按钮继续操作。"
+        "*OneSpace* ╎ 快捷引导\n\n\
+        👉 会话列表与进度查看已统一到 `/sessions`。\n\
+        发送 `/sessions` 查看当前活跃会话，或点击下方按钮继续操作。"
             .to_string()
     }
 
@@ -216,10 +222,14 @@ impl CardBuilder {
     pub fn progress_redirect_text(plan_id: Option<&str>) -> String {
         match plan_id {
             Some(plan_id) => format!(
-                "👉 方案进度已合并到 `/sessions <planId>`。\n发送 `/sessions {}` 查看该方案进度。",
+                "*OneSpace* ╎ 快捷引导\n\n\
+                👉 方案进度已合并到 `/sessions <planId>`。\n\
+                发送 `/sessions {}` 查看该方案进度。",
                 plan_id
             ),
-            None => "👉 方案进度已合并到 `/sessions <planId>`。\n发送 `/sessions` 查看活跃会话，或使用 `/plans` 浏览方案后以 `/sessions <planId>` 查看指定方案进度。".to_string(),
+            None => "*OneSpace* ╎ 快捷引导\n\n\
+            👉 方案进度已合并到 `/sessions <planId>`。\n\
+            发送 `/sessions` 查看活跃会话，或使用 `/plans` 浏览方案后以 `/sessions <planId>` 查看指定方案进度。".to_string(),
         }
     }
 
@@ -261,21 +271,21 @@ impl CardBuilder {
         ext_sessions_count: usize,
     ) -> (String, Option<InlineKeyboardMarkup>) {
         let ext_session_line = if ext_sessions_count > 0 {
-            format!("\n> └─ 终端 OpenCode: `🚀 {} 个会话运行中`", ext_sessions_count)
+            format!("\n> 终端 OpenCode: `🚀 {} 个会话运行中`", ext_sessions_count)
         } else {
             String::new()
         };
 
         let text = format!(
-            "🖥️ *Mac 本地工作台状态*\n\
-            > 🟢 *系统运行平稳 ╎ 实时长轮询在线*\n\
-            > ├─ 设备主机: `{}`\n\
-            > ├─ 系统时间: `{}`\n\
-            > └─ 权限审批: `{}`\n\n\
+            "*OneSpace* ╎ 工作台状态\n\
+            > 🟢 *READY* · 实时长轮询在线\n\
+            > 设备主机: `{}`\n\
+            > 系统时间: `{}`\n\
+            > 权限审批: `{}`\n\n\
             📁 *当前活跃工作区*\n\
-            > ├─ 项目名称: `{}`\n\
-            > ├─ Git 分支: `{}` ({})\n\
-            > └─ 最新提交: `{}`{}\n\n\
+            > 项目名称: `{}`\n\
+            > Git 分支: `{}` ({})\n\
+            > 最新提交: `{}`{}\n\n\
             _👉 输入 `/sessions` 查看终端会话，`/diff` 查看代码变更。_",
             hostname,
             current_time,
@@ -304,9 +314,9 @@ impl CardBuilder {
     /// 卡片 5: 工作区项目管理卡片
     pub fn projects_card(active_workspace: &str, physical_path: &str, projects: &[&str]) -> (String, InlineKeyboardMarkup) {
         let text = format!(
-            "📂 *工作区项目管理*\n\
-            > ├─ 当前活跃: `{}`\n\
-            > └─ 本地路径: `{}`\n\n\
+            "*OneSpace* ╎ 工作区项目管理\n\
+            > 当前活跃: `{}`\n\
+            > 本地路径: `{}`\n\n\
             点击下方按钮快速切换指令生效的目标项目：\n\n\
             💡 *小提示：输入 `/projects <名称>` 可快速搜索全量系统工作空间。*",
             active_workspace,
@@ -351,9 +361,9 @@ impl CardBuilder {
     /// 卡片 5-B: 搜索多项结果候选卡片
     pub fn projects_search_card(keyword: &str, candidates: &[(&str, &str)]) -> (String, InlineKeyboardMarkup) {
         let text = format!(
-            "🔍 *工作空间搜索结果*\n\
-            > ├─ 搜索关键词: `{}`\n\
-            > └─ 匹配到 `{}` 个候选项目\n\n\
+            "*OneSpace* ╎ 工作空间搜索结果\n\
+            > 搜索关键词: `{}`\n\
+            > 匹配候选: `{} 个项目`\n\n\
             请点击下方按钮选择要切换的项目：",
             keyword,
             candidates.len()
@@ -375,8 +385,8 @@ impl CardBuilder {
     /// 卡片 5-C: 未找到匹配工作空间
     pub fn project_not_found_card(keyword: &str) -> String {
         format!(
-            "⚠️ *未找到匹配的工作空间*\n\
-            > 搜索关键词: `{}`\n\n\
+            "*OneSpace* ╎ 工作区提示\n\
+            > ⚠️ 未找到匹配的工作空间: `{}`\n\n\
             系统中未找到包含该名称的工作空间。可发送 `/projects` 查看精选常用项目，或在桌面端「设置 -> Telegram」中添加常用工作区。",
             keyword
         )
@@ -385,10 +395,11 @@ impl CardBuilder {
     /// 卡片 6: 项目切换成功确认态
     pub fn project_switch_confirmed(project: &str, timestamp: &str) -> String {
         format!(
-            "✅ *工作区已成功切换*\n\
-            > ├─ 当前项目: `{}`\n\
-            > └─ 生效时间: `{}`\n\n\
-            后续下发的所有规划流水线与 Coding 任务将全部作用于该项目。",
+            "*OneSpace* ╎ 工作区已切换\n\
+            > ✓ *当前活跃项目已生效*\n\
+            > 当前项目: `{}`\n\
+            > 生效时间: `{}`\n\n\
+            _后续下发的所有规划流水线与 Coding 任务将全部作用于该项目。_",
             project,
             timestamp
         )
@@ -402,14 +413,14 @@ impl CardBuilder {
     pub fn new_feature_ack_card(project_name: &str, prompt: &str, is_explicit_planning: bool) -> (String, InlineKeyboardMarkup) {
         let (header, mode, label, hint) = if is_explicit_planning {
             (
-                "🚀 *已开启需求规划流程 (Planning)*",
+                "已开启需求规划流程 (Planning)",
                 "方案调研与规划 (Planning 技能)",
                 "📝 *规划目标*：",
                 "⏳ _正在拉起 OpenCode 执行深入分析与规划，请稍候..._",
             )
         } else {
             (
-                "💬 *已接收对话消息*",
+                "已接收对话消息",
                 "自然对话 (遵循 OpenCode 流程)",
                 "📝 *消息内容*：",
                 "⏳ _OpenCode 正在分析处理中，请稍候..._",
@@ -417,9 +428,9 @@ impl CardBuilder {
         };
 
         let text = format!(
-            "{}\n\
-            > ├─ 目标项目: `{}`\n\
-            > └─ 任务模式: `{}`\n\n\
+            "*OpenCode* ╎ {}\n\
+            > 目标项目: `{}`\n\
+            > 任务模式: `{}`\n\n\
             {}\n\
             > {}\n\n\
             {}",
@@ -441,16 +452,16 @@ impl CardBuilder {
     /// 卡片 8: OpenCode 思考与执行状态卡片
     pub fn planning_thinking_card(is_initial: bool, session_id: Option<&str>) -> String {
         if is_initial {
-            "🔍 *OpenCode 正在深入分析*\n\
-            > ▫️ 分析阶段: `读取工程规范与代码库依赖`\n\
-            > ▫️ 进程状态: `运行中`\n\n\
+            "*OpenCode* ╎ 深入分析中\n\
+            > 分析阶段: `读取工程规范与代码库依赖`\n\
+            > 进程状态: `🟢 运行中`\n\n\
             ⏳ _正在结合 MEMORY.md 与现有交互代码推导设计方案中..._".to_string()
         } else {
             let sid = session_id.unwrap_or("活跃交互");
             format!(
-                "🔍 *OpenCode 正在根据答复深入分析*\n\
-                > ▫️ 活跃会话: `{}`\n\
-                > ▫️ 处理状态: `推进下一阶段决策`\n\n\
+                "*OpenCode* ╎ 答复分析中\n\
+                > 活跃会话: `{}`\n\
+                > 处理状态: `🟢 推进下一阶段决策`\n\n\
                 ⏳ _正在结合您的指导意见继续推进方案完善..._",
                 sid
             )
@@ -465,12 +476,12 @@ impl CardBuilder {
     ) -> (String, InlineKeyboardMarkup) {
         let round_str = round.map(|r| format!("第 {} 轮澄清决策", r)).unwrap_or_else(|| "架构决策澄清".to_string());
         let mut lines = Vec::new();
-        lines.push("🤔 *方案澄清与架构决策*".to_string());
-        lines.push(format!("> ▫️ 提问进度: `{}`", round_str));
-        lines.push("".to_string());
+        lines.push("*OpenCode* ╎ 方案澄清与架构决策".to_string());
+        lines.push(format!("> 提问进度: `{}`", round_str));
+        lines.push(String::new());
         lines.push("❓ *决策议题*：".to_string());
-        lines.push(question_text.trim().to_string());
-        lines.push("".to_string());
+        lines.push(format!("> {}", question_text.trim()));
+        lines.push(String::new());
 
         let num_emojis = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
 
@@ -481,10 +492,10 @@ impl CardBuilder {
                 lines.push(format!("{} {}", badge, title.trim()));
                 if let Some(d) = desc {
                     if !d.trim().is_empty() {
-                        lines.push(format!("   {}", d.trim()));
+                        lines.push(format!("   _{}_", d.trim()));
                     }
                 }
-                lines.push("".to_string());
+                lines.push(String::new());
             }
         }
 
@@ -505,9 +516,9 @@ impl CardBuilder {
     /// 卡片 10: 提问决策已提交状态
     pub fn question_answered_card(choice_label: &str) -> String {
         format!(
-            "✅ *决策已提交确认*\n\
-            > ├─ 已选方案: `{}`\n\
-            > └─ 处理状态: `已同步至 OpenCode 执行上下文`\n\n\
+            "*OpenCode* ╎ 决策已确认\n\
+            > ✓ *已选方案*: `{}`\n\
+            > 处理状态: `已同步至 OpenCode 执行上下文`\n\n\
             ⏳ _OpenCode 正在根据您的决策继续推进方案生成..._",
             choice_label.trim()
         )
@@ -539,7 +550,11 @@ impl CardBuilder {
             _ => "（无命令）".to_string(),
         };
         let text = format!(
-            "🔐 *权限审批请求*\n\n{}\n\n⏳ 30 分钟内未处理将自动拒绝。\n\n> ▫️ 命令: {}",
+            "*OneSpace* ╎ 权限审批请求\n\
+            > 🔐 *WAITING* · 敏感操作需审批\n\
+            {}\n\n\
+            _⏳ 30 分钟内未处理将自动拒绝放行。_\n\n\
+            > 命令: {}",
             details, preview
         );
 
@@ -569,8 +584,8 @@ impl CardBuilder {
             PermissionDecision::Deny => ("已拒绝", "该操作未获授权，代理已收到拒绝。"),
         };
         format!(
-            "🔐 *权限决议已提交*\n\
-            > ▫️ 决议结果: `{}`\n\n\
+            "*OneSpace* ╎ 权限决议结果\n\
+            > ✓ *决议结果*: `{}`\n\n\
             {}",
             result, hint
         )
@@ -578,8 +593,8 @@ impl CardBuilder {
 
     /// 权限请求超时结果卡片：替换原审批卡片，说明请求未在时限内处理。
     pub fn permission_timeout_card() -> String {
-        "⏰ *权限请求已超时*\n\
-        > ▫️ 决议结果: `已超时`\n\n\
+        "*OneSpace* ╎ 权限请求已超时\n\
+        > ⏰ *决议结果*: `已超时`\n\n\
         请求未在 30 分钟内处理，已自动拒绝。该操作未获授权，代理已收到拒绝。"
             .to_string()
     }
@@ -595,8 +610,8 @@ impl CardBuilder {
             ""
         };
         format!(
-            "💬 *OpenCode 回复与分析*\n\
-            > ▫️ 当前工作区: `{}`\n\n\
+            "*OpenCode* ╎ 回复与分析\n\
+            > 当前工作区: `{}`\n\n\
             {}{}\n\n\
             _👉 您可直接打字继续讨论，输入 `/cancel` 结束本轮对话，或发送 `/sessions` 查看会话。_",
             workspace,
@@ -612,10 +627,10 @@ impl CardBuilder {
             .unwrap_or_else(|| "TDD 测试驱动实施".to_string());
 
         let text = format!(
-            "📋 *方案规划完成 ╎ 等待确认*\n\
-            > ├─ 方案标识: `{}`\n\
-            > ├─ 规划文件: `spec.md` + `plan.md`\n\
-            > └─ 预计步骤: `{}`\n\n\
+            "*OpenCode* ╎ 方案规划完成 ╎ 等待确认\n\
+            > 方案标识: `{}`\n\
+            > 规划文件: `spec.md` + `plan.md`\n\
+            > 预计步骤: `{}`\n\n\
             📄 *方案核心摘要*：\n\
             {}\n\n\
             _👉 点击下方按钮进行选择（确认即可进入编码实施，补充可打字输入意见）：_",
@@ -636,8 +651,8 @@ impl CardBuilder {
     /// 卡片 13: 方案补充指引提示
     pub fn revise_prompt_card(plan_id: &str) -> String {
         format!(
-            "✏️ *方案补充建议*\n\
-            > ▫️ 针对方案: `{}`\n\n\
+            "*OpenCode* ╎ 方案补充建议\n\
+            > 针对方案: `{}`\n\n\
             请直接在聊天框打字发送您希望补充或微调的内容。\n\
             OpenCode 将基于您的意见重新润色方案。\n\n\
             _（输入 `/cancel` 可放弃本次补充并保持原方案）_",
@@ -653,22 +668,22 @@ impl CardBuilder {
     pub fn coding_running_card(plan_id: &str, is_repair: bool) -> (String, InlineKeyboardMarkup) {
         let (title, status_text) = if is_repair {
             (
-                "🔄 *自愈修复实施已启动*",
+                "自愈修复实施已启动",
                 "针对上一轮测试或规范未通过项调整代码中...",
             )
         } else {
             (
-                "🚀 *Coding 实施已启动*",
+                "Coding 实施已启动",
                 "基于当前分支创建本地临时 worktree 编写测试并实施中...",
             )
         };
 
         let text = format!(
-            "{}\n\
-            > ├─ 实施方案: `{}`\n\
-            > ├─ 隔离构建: `.worktrees/{}`\n\
-            > ├─ 独立分支: `ai-workflow/{}`\n\
-            > └─ 当前状态: `🟡 {}`\n\n\
+            "*OpenCode* ╎ {}\n\
+            > 实施方案: `{}`\n\
+            > 隔离构建: `.worktrees/{}`\n\
+            > 独立分支: `ai-workflow/{}`\n\
+            > 当前状态: `🟡 {}`\n\n\
             ⏳ _OpenCode 正在严格遵循工程规范与 TDD 流程推进实施..._",
             title,
             plan_id,
@@ -693,7 +708,7 @@ impl CardBuilder {
         stat_text: &str,
     ) -> (String, InlineKeyboardMarkup) {
         let elapsed_line = elapsed
-            .map(|e| format!("> ├─ 交付耗时: `{}`\n", e))
+            .map(|e| format!("> 交付耗时: `{}`\n", e))
             .unwrap_or_default();
 
         let clean_stat = if stat_text.len() > 320 {
@@ -703,10 +718,11 @@ impl CardBuilder {
         };
 
         let text = format!(
-            "🎉 *Coding 实施圆满完成*\n\
-            > ├─ 交付方案: `{}`\n\
+            "*OpenCode* ╎ Coding 实施圆满完成\n\
+            > ✓ *DELIVERED* · 新功能已就绪\n\
+            > 交付方案: `{}`\n\
             {}\
-            > └─ 提交哈希: `{}`\n\n\
+            > 提交哈希: `{}`\n\n\
             ✅ *四重证据链严格核验全部达标*：\n\
             • 进程退出 ╎ `Exit 0 (正常退出)`\n\
             • 契约审核 ╎ `### Status: done 达标`\n\
@@ -735,9 +751,10 @@ impl CardBuilder {
     /// 卡片 16: 实施中断/审核失败及自愈卡片
     pub fn coding_failed_card(plan_id: &str, stage: &str, reason: &str) -> (String, InlineKeyboardMarkup) {
         let text = format!(
-            "❌ *实施中断 ╎ 审核未通过*\n\
-            > ├─ 异常方案: `{}`\n\
-            > └─ 阻碍阶段: `{}`\n\n\
+            "*OpenCode* ╎ 实施中断 ╎ 审核未通过\n\
+            > 🔴 *FAILED* · 需要自愈调整\n\
+            > 异常方案: `{}`\n\
+            > 阻碍阶段: `{}`\n\n\
             🚨 *错误详情*：\n\
             {}\n\n\
             _👉 您可以点击下方按钮自动启动自愈修复，或查看诊断日志：_",
@@ -758,9 +775,10 @@ impl CardBuilder {
     /// 卡片 17: 实施自愈修复启动卡片
     pub fn self_repair_running_card(plan_id: &str) -> String {
         format!(
-            "🔄 *自愈修复已启动*\n\
-            > ├─ 修复方案: `{}`\n\
-            > └─ 修复模式: `已注入上一轮测试错误与失败上下文`\n\n\
+            "*OpenCode* ╎ 自愈修复已启动\n\
+            > 🔄 *REPAIRING*\n\
+            > 修复方案: `{}`\n\
+            > 修复模式: `已注入上一轮测试错误与失败上下文`\n\n\
             ⏳ _OpenCode 正在针对失败项调整代码实现与测试断言..._",
             plan_id
         )
@@ -776,9 +794,9 @@ impl CardBuilder {
         plans: &[(String, String, bool)], // (plan_id, status_text, can_run)
     ) -> (String, InlineKeyboardMarkup) {
         let mut lines = Vec::new();
-        lines.push("📋 *工作区方案列表*".to_string());
-        lines.push(format!("> ▫️ 目标项目: `{}`", project));
-        lines.push(format!("> ▫️ 方案总计: `{} 个方案`", plans.len()));
+        lines.push("*OneSpace* ╎ 工作区方案列表".to_string());
+        lines.push(format!("> 目标项目: `{}`", project));
+        lines.push(format!("> 方案总计: `{} 个方案`", plans.len()));
         lines.push("".to_string());
 
         let mut keyboard_rows = Vec::new();
@@ -827,22 +845,22 @@ impl CardBuilder {
         is_in_progress: bool,
     ) -> (String, Option<InlineKeyboardMarkup>) {
         let mut lines = Vec::new();
-        lines.push("📊 *方案实施进度报告*".to_string());
-        lines.push(format!("> ├─ 方案标识: `{}`", plan_id));
-        lines.push(format!("> ├─ 当前状态: {}", status_text));
+        lines.push("*OpenCode* ╎ 方案实施进度报告".to_string());
+        lines.push(format!("> 方案标识: `{}`", plan_id));
+        lines.push(format!("> 当前状态: {}", status_text));
 
         if let Some(el) = elapsed_desc {
-            lines.push(format!("> ├─ 执行耗时: `{}`", el));
+            lines.push(format!("> 执行耗时: `{}`", el));
         }
         if let Some(c) = commit_hash {
             let short = if c.len() > 8 { &c[..8] } else { c };
-            lines.push(format!("> ├─ 交付提交: `{}`", short));
+            lines.push(format!("> 交付提交: `{}`", short));
         }
         if let Some(br) = worktree_branch {
-            lines.push(format!("> ├─ 隔离构建: `.worktrees/{}`", plan_id));
-            lines.push(format!("> └─ 隔离分支: `{}`", br));
+            lines.push(format!("> 隔离构建: `.worktrees/{}`", plan_id));
+            lines.push(format!("> 隔离分支: `{}`", br));
         } else {
-            lines.push("> └─ 隔离构建: `暂无活跃 worktree`".to_string());
+            lines.push("> 隔离构建: `暂无活跃 worktree`".to_string());
         }
 
         if !steps.is_empty() {
@@ -917,9 +935,9 @@ impl CardBuilder {
         };
 
         format!(
-            "🔍 *代码改动 Diff 预览*\n\
-            > ├─ 方案标识: `{}`\n\
-            > └─ 比较基准: `{}`\n\n\
+            "*OneSpace* ╎ 代码改动 Diff 预览\n\
+            > 方案标识: `{}`\n\
+            > 比较基准: `{}`\n\n\
             📊 *改动概览*：\n\
             ```text\n\
             {}\n\
@@ -941,9 +959,9 @@ impl CardBuilder {
     pub fn diagnostic_log_card(plan_id: &str, source_file: Option<&str>, log_content: &str) -> (String, InlineKeyboardMarkup) {
         let src = source_file.unwrap_or("reports/diagnostic.log");
         let text = format!(
-            "📄 *方案诊断日志*\n\
-            > ├─ 方案标识: `{}`\n\
-            > └─ 日志来源: `{}`\n\n\
+            "*OneSpace* ╎ 方案诊断日志\n\
+            > 方案标识: `{}`\n\
+            > 日志来源: `{}`\n\n\
             📝 *执行日志末尾截取*：\n\
             ```text\n\
             {}\n\
@@ -968,45 +986,48 @@ impl CardBuilder {
 
     /// 卡片 22: 任务中断与取消确认卡片
     pub fn task_cancelled_card() -> String {
-        "🛑 *已请求取消，任务已终止*\n\
-        > ▫️ 任务与受管进程组: `已终止`\n\
-        > ▫️ 结果: `该任务迟到的执行结果会被丢弃`\n\n\
+        "*OneSpace* ╎ 任务已取消\n\
+        > 🛑 *已请求取消，任务已终止*\n\
+        > 任务与受管进程组: `已终止`\n\
+        > 处理结果: `该任务迟到的执行结果会被丢弃`\n\n\
         您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
     }
 
     /// 取消请求在宽限期后升级为 SIGKILL 时的真实结果卡片。
     pub fn task_forced_cancel_card() -> String {
-        "🛑 *任务已被强制终止*\n\
-        > ▫️ 受管进程组: `宽限期后仍未退出，已强制结束`\n\
-        > ▫️ 结果: `该任务迟到的执行结果会被丢弃`\n\n\
+        "*OneSpace* ╎ 任务强制终止\n\
+        > 🛑 *任务已被强制终止*\n\
+        > 受管进程组: `宽限期后仍未退出，已强制结束`\n\
+        > 处理结果: `该任务迟到的执行结果会被丢弃`\n\n\
         您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
     }
 
     /// 没有受管任务可取消时的提示卡片。
     pub fn nothing_to_cancel_card() -> String {
-        "ℹ️ *没有正在运行的任务*\n\n\
+        "*OneSpace* ╎ 任务提示\n\
+        > ℹ️ *没有正在运行的任务*\n\n\
         当前没有本机受管任务需要取消；外部或托管 OpenCode 会话不受影响。\n\n\
         您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
     }
 
     /// 已取消任务遗留的权限审批卡片。
     pub fn permission_cancelled_card() -> String {
-        "⏹️ *权限请求已取消*\n\n\
-        所属任务已终止，本次审批已取消，不会再被处理。".to_string()
+        "*OneSpace* ╎ 权限请求已取消\n\n\
+        > ⏹️ 所属任务已终止，本次审批已取消，不会再被处理。".to_string()
     }
 
     /// 已取消任务遗留的提问卡片。
     pub fn question_cancelled_card() -> String {
-        "⏹️ *提问已取消*\n\n\
-        所属任务已终止，本次提问已取消，后续回答不会被接受。".to_string()
+        "*OneSpace* ╎ 提问已取消\n\n\
+        > ⏹️ 所属任务已终止，本次提问已取消，后续回答不会被接受。".to_string()
     }
 
     /// 卡片 23: 通用校验与异常报错卡片
     pub fn argument_error_card(command: &str, reason: &str, example: &str) -> String {
         format!(
-            "⚠️ *指令格式提示*\n\
-            > ├─ 触发指令: `{}`\n\
-            > └─ 提示原因: `{}`\n\n\
+            "*OneSpace* ╎ 指令格式提示\n\
+            > 触发指令: `{}`\n\
+            > 提示原因: `{}`\n\n\
             💡 *正确使用示例*：\n\
             `{}`\n\n\
             _（输入 `/help` 可查看全部可用指令用法）_",
@@ -1048,12 +1069,13 @@ impl CardBuilder {
         let agent_line = session.agent.as_deref().unwrap_or("default");
 
         let mut text = format!(
-            "🚀 *外部 OpenCode 运行中会话*\n\
-            > ├─ 目标项目: `{}`\n\
-            > ├─ 进程信息: `PID {}` · `{}` (已运行 {})\n\
-            > ├─ 会话标题: {}\n\
-            > ├─ 当前状态: {} `{}`{}\n\
-            > └─ 采用模型: `{}` (Agent: {})\n\n",
+            "*OpenCode* ╎ 外部会话实时监控\n\
+            > 🚀 *外部 OpenCode 运行中会话*\n\
+            > 目标项目: `{}`\n\
+            > 进程信息: `PID {}` · `{}` (已运行 {})\n\
+            > 会话标题: {}\n\
+            > 当前状态: {} `{}`{}\n\
+            > 采用模型: `{}` (Agent: {})\n\n",
             session.project_name,
             session.pid,
             session.command,
@@ -1079,7 +1101,7 @@ impl CardBuilder {
             text.push_str(&format!("> 💭 推理思考: {}\n", reasoning));
         }
         if session.last_tool.is_none() && session.last_reasoning.is_none() {
-            text.push_str("> ⏳ 等待执行下一轮操作...\n");
+            text.push_str("> 等待执行下一轮操作...\n");
         }
         text.push('\n');
 
@@ -1134,8 +1156,8 @@ impl CardBuilder {
 
     /// 卡片 25: 多个外部会话列表卡片
     pub fn multiple_external_sessions_card(sessions: &[ExternalOpenCodeSessionInfo]) -> (String, InlineKeyboardMarkup) {
-        let mut text = "🚀 *检测到多个终端正在运行 OpenCode 会话*\n\
-        > 💡 点击下方对应按钮查看该会话的详细进度：\n\n".to_string();
+        let mut text = "*OneSpace* ╎ 外部会话列表\n\
+        > 💡 检测到多个终端正在运行 OpenCode 会话，点击查看进度：\n\n".to_string();
 
         let mut buttons = Vec::new();
 
@@ -1145,7 +1167,7 @@ impl CardBuilder {
             let step = sess.current_step.map(|s| format!("Step {}", s)).unwrap_or_else(|| "启动中".to_string());
 
             text.push_str(&format!(
-                "{} *{}* · `{}`\n> ├─ 项目: `{}` (PID: {})\n> └─ 状态: {} `{}` · {}\n\n",
+                "{} *{}* · `{}`\n> 项目: `{}` (PID: {})\n> 状态: {} `{}` · {}\n\n",
                 Self::number_badge(idx + 1),
                 sess.project_name,
                 title,
@@ -1172,9 +1194,10 @@ impl CardBuilder {
     /// 卡片 26: 无外部会话卡片
     pub fn no_external_session_card(hostname: &str) -> (String, Option<InlineKeyboardMarkup>) {
         let text = format!(
-            "💡 *当前未检测到正在运行的外部 OpenCode 会话*\n\
-            > ▫️ 宿主主机: `{}`\n\
-            > ▫️ 探测范围: 终端 (Terminal / tmux) 及系统后台进程\n\n\
+            "*OneSpace* ╎ 终端会话探测\n\
+            > 宿主主机: `{}`\n\
+            > 探测范围: 终端 (Terminal / tmux) 及系统后台进程\n\n\
+            💡 *当前未检测到正在运行的外部 OpenCode 会话*\n\n\
             若您在终端启动了 `opencode` 或 `opencode --yolo`，在此发送 `/sessions` 即可实时查看会话进度、工具调用与任务清单。",
             hostname
         );
@@ -1194,9 +1217,10 @@ impl CardBuilder {
         let reasoning = session.last_reasoning.as_deref().unwrap_or("暂无思考内容");
 
         let text = format!(
-            "📝 *外部会话详细动态与思考*\n\
-            > ├─ 项目: `{}` (PID: {})\n\
-            > └─ 会话: {}\n\n\
+            "*OpenCode* ╎ 会话动态\n\
+            > 📝 *外部会话详细动态与思考*\n\
+            > 项目: `{}` (PID: {})\n\
+            > 会话: {}\n\n\
             🛠️ *最新工具执行*：\n\
             ```text\n\
             工具: {}\n\
@@ -1291,9 +1315,10 @@ impl CardBuilder {
         let sid_line = session.session_id.as_deref().unwrap_or("未知");
 
         let text = format!(
-            "💬 *向正在运行的 OpenCode 会话发送提示词*\n\
-            > ├─ 目标项目: `{}` (PID: {})\n\
-            > └─ 活跃会话: {} (`{}`)\n\n\
+            "*OpenCode* ╎ 发送提示词\n\
+            > 💬 *向正在运行的 OpenCode 会话发送提示词*\n\
+            > 目标项目: `{}` (PID: {})\n\
+            > 活跃会话: {} (`{}`)\n\n\
             👉 *请直接在此回复您想要发送的提示词内容*：\n\
             例如：`请帮我补充缺少的单元测试，并执行测试对账`\n\n\
             _（发送普通文字即可自动投递执行；若想放弃请点击下方取消按钮）_",
@@ -1314,11 +1339,12 @@ impl CardBuilder {
     /// 卡片 29: 提示词已投递确认卡片
     pub fn prompt_dispatched_ack_card(session: &super::types::PromptTargetSession, prompt: &str) -> String {
         format!(
-            "🚀 *提示词已投递给 OpenCode 会话*\n\
-            > ├─ 目标项目: `{}` (PID: {})\n\
-            > ├─ 会话标识: `{}`\n\
-            > └─ 提示词: {}\n\n\
-            ⏳ *OpenCode 正在推进执行，期间保持 typing 状态，执行完毕后将推送结果...*",
+            "*OpenCode* ╎ 提示词已投递\n\
+            > 🚀 *提示词已投递给 OpenCode 会话*\n\
+            > 目标项目: `{}` (PID: {})\n\
+            > 会话标识: `{}`\n\
+            > 提示词: {}\n\n\
+            ⏳ _OpenCode 正在推进执行，期间保持 typing 状态，执行完毕后将推送结果..._",
             session.project_name,
             session.pid,
             session.session_id,
@@ -1345,16 +1371,16 @@ impl CardBuilder {
         };
 
         let text = format!(
-            "🤖 *会话已成功交由 OneSpace + Telegram 完全托管*\n\
-            > ├─ 目标项目: `{}` (PID: {})\n\
-            > ├─ 会话标识: `{}`\n\
-            > ├─ 决策模式: `{}`\n\
-            > └─ 托管状态: `🟢 守护运行中 (Supervisor Active)`\n\n\
+            "*OneSpace* ╎ 会话完全托管\n\
+            > 🤖 *会话已成功交由 OneSpace + Telegram 完全托管*\n\
+            > 目标项目: `{}` (PID: {})\n\
+            > 会话标识: `{}`\n\
+            > 决策模式: `{}`\n\n\
             💡 *全托管守护策略说明*：\n\
             • 📢 *关键节点主动通知*：步骤推进与任务待办自动实时汇报；\n\
             • ❓ *交互提问自动接管*：{}\n\
             • 💬 *双向动态干预*：在此直接回复文字或输入 `/prompt` 即可向会话注入指令；\n\
-            • 🎉 *圆满交付报告*：任务执行完后自动推送耗时、Token统计及 Diff。",
+            • 🎉 *圆满交付报告*：任务执行完后自动推送耗时、Token 统计及 Diff。",
             project_name,
             pid,
             session_id,
@@ -1383,9 +1409,9 @@ impl CardBuilder {
         total_cnt: usize,
     ) -> String {
         format!(
-            "✅ *任务待办已达成* · `{}`\n\
-            > ├─ 达成项: {}\n\
-            > └─ 当前进度: `{}/{}` 项已完成\n\n\
+            "*OpenCode* ╎ 任务待办已达成 · `{}`\n\
+            > ✓ *达成项*: {}\n\
+            > 当前进度: `{}/{}` 项已完成\n\n\
             _OpenCode 正在继续推进剩余步骤..._",
             project_name,
             todo_content,
@@ -1402,9 +1428,10 @@ impl CardBuilder {
         options: &[super::types::HostedOptionItem],
     ) -> (String, InlineKeyboardMarkup) {
         let mut text = format!(
-            "❓ *OpenCode 提问与决策确认*\n\
-            > ├─ 目标项目: `{}`\n\
-            > └─ 托管会话: `{}`\n\n\
+            "*OpenCode* ╎ 决策确认\n\
+            > ❓ *OpenCode 提问与决策确认*\n\
+            > 目标项目: `{}`\n\
+            > 托管会话: `{}`\n\n\
             📋 *决策问题*：\n\
             {}\n\n\
             👇 *请直接点击下方按钮做出决策*：\n",
@@ -1444,7 +1471,8 @@ impl CardBuilder {
     pub fn hosted_sessions_overview_card(
         sessions: &[HostedSessionInfo],
     ) -> (String, InlineKeyboardMarkup) {
-        let mut summary = "🤖 *当前正在完全托管的会话*：\n\n".to_string();
+        let mut summary = "*OneSpace* ╎ 完全托管会话概览\n\n\
+        > 🤖 *SUPERVISOR ACTIVE* · 当前正在完全托管的会话：\n\n".to_string();
         let mut buttons = Vec::new();
         for (idx, h) in sessions.iter().enumerate() {
             let mode_str = match h.mode {
@@ -1452,7 +1480,7 @@ impl CardBuilder {
                 super::types::SessionHostingDecisionMode::AutoRecommended => "⚡ 自动推荐",
             };
             summary.push_str(&format!(
-                "{} *{}* (PID: {})\n> ├─ 会话: `{}`\n> ├─ 模式: `{}`\n> └─ 进度: Step {} · Todos {}/{} 完成\n",
+                "{} *{}* (PID: {})\n> 会话: `{}`\n> 模式: `{}`\n> 进度: Step {} · Todos {}/{} 完成\n",
                 Self::number_badge(idx + 1),
                 h.project_name,
                 h.pid,
@@ -1494,9 +1522,9 @@ impl CardBuilder {
     /// 待答提问已过期或在别处得到答复时的状态卡片。
     pub fn hosted_question_expired_card(session_id: &str) -> String {
         format!(
-            "⌛ *提问已失效*\n\
-            > ├─ 目标会话: `{}`\n\
-            > └─ 状态: `已不再等待该提问的答复`\n\n\
+            "*OpenCode* ╎ 提问已失效\n\
+            > ⌛ 目标会话: `{}`\n\
+            > 状态: `已不再等待该提问的答复`\n\n\
             该提问已在其他位置被回答，或已超时过期，本次没有提交任何答复。\n\
             发送 `/host` 查看当前托管会话，或等待新的提问。",
             session_id
@@ -1510,10 +1538,10 @@ impl CardBuilder {
         chosen_option: &str,
     ) -> String {
         format!(
-            "⚡ *托管决策代执行 (Auto-Approve)*\n\
-            > ├─ 目标项目: `{}`\n\
-            > ├─ 提问事项: {}\n\
-            > └─ 采纳推荐: `⭐️ {}`\n\n\
+            "*OpenCode* ╎ 托管决策代执行 (Auto-Approve)\n\
+            > ⚡ 目标项目: `{}`\n\
+            > 提问事项: {}\n\
+            > 采纳推荐: `⭐️ {}`\n\n\
             _已自动注入该选项应答，外部会话已恢复并继续全速执行。_",
             project_name,
             question_text,
@@ -1538,14 +1566,15 @@ impl CardBuilder {
         );
 
         let text = format!(
-            "🎉 *外部 OpenCode 会话圆满交付*\n\
-            > ├─ 目标项目: `{}` (PID: {})\n\
-            > ├─ 会话标识: `{}`\n\
-            > ├─ 交付耗时: `{}`\n\
-            > ├─ 总执行步数: `Step {}`\n\
-            > ├─ 资源消耗: {}\n\
-            > └─ 托管状态: `🏁 任务已完成，自动解除托管`\n\n\
-            ✅ *所有待办步骤已全部完成，终端进程已恢复空闲！*",
+            "*OpenCode* ╎ 外部 OpenCode 会话圆满交付\n\
+            > ✓ *COMPLETED* · 终端进程已恢复空闲\n\
+            > 目标项目: `{}` (PID: {})\n\
+            > 会话标识: `{}`\n\
+            > 交付耗时: `{}`\n\
+            > 总执行步数: `Step {}`\n\
+            > 资源消耗: {}\n\
+            > 托管状态: `🏁 任务已完成，自动解除托管`\n\n\
+            ✅ *所有待办步骤已全部完成！*",
             project_name,
             pid,
             session_id,
@@ -1572,44 +1601,44 @@ impl CardBuilder {
         progress: Option<&SessionProgressDetail>,
     ) -> (String, Option<InlineKeyboardMarkup>) {
         let mut lines = vec![
-            "🔎 *会话详情*".to_string(),
-            format!("> ├─ 项目: `{}`", entry.project_name),
-            format!("> ├─ 会话标识: `{}`", entry.session_id_marker),
+            "*OneSpace* ╎ 会话详情".to_string(),
+            format!("> 项目: `{}`", entry.project_name),
+            format!("> 会话标识: `{}`", entry.session_id_marker),
         ];
         if let Some(pid) = entry.pid {
-            lines.push(format!("> ├─ PID: `{}`", pid));
+            lines.push(format!("> PID: `{}`", pid));
         }
         if let Some(plan_id) = &entry.plan_id {
-            lines.push(format!("> ├─ 方案标识: `{}`", plan_id));
+            lines.push(format!("> 方案标识: `{}`", plan_id));
         }
-        lines.push(format!("> └─ 状态: `{}`", entry.status_label));
+        lines.push(format!("> 状态: `{}`", entry.status_label));
 
         lines.push(String::new());
         lines.push("▫️ *执行进度*".to_string());
         match progress {
             Some(detail) => {
                 match detail.current_step {
-                    Some(step) => lines.push(format!("> ├─ 当前步骤: `{}`", step)),
-                    None => lines.push("> ├─ 当前步骤: `unavailable`".to_string()),
+                    Some(step) => lines.push(format!("> 当前步骤: `{}`", step)),
+                    None => lines.push("> 当前步骤: `unavailable`".to_string()),
                 }
                 match detail.last_tool.as_deref() {
                     Some(tool) => lines.push(format!(
-                        "> ├─ 最近工具: `{}` (状态: `{}`)",
+                        "> 最近工具: `{}` (状态: `{}`)",
                         tool,
                         detail.last_tool_status.as_deref().unwrap_or("unavailable")
                     )),
-                    None => lines.push("> ├─ 最近工具: `unavailable`".to_string()),
+                    None => lines.push("> 最近工具: `unavailable`".to_string()),
                 }
                 match detail.last_tool_input_preview.as_deref() {
                     Some(preview) => lines.push(format!(
-                        "> ├─ 工具入参: {}",
+                        "> 工具入参: {}",
                         Self::clip_chars(preview, 100, true)
                     )),
-                    None => lines.push("> ├─ 工具入参: `unavailable`".to_string()),
+                    None => lines.push("> 工具入参: `unavailable`".to_string()),
                 }
 
                 if detail.todos.is_empty() {
-                    lines.push("> └─ 待办清单: `unavailable`".to_string());
+                    lines.push("> 待办清单: `unavailable`".to_string());
                 } else {
                     let completed = detail
                         .todos
@@ -1617,7 +1646,7 @@ impl CardBuilder {
                         .filter(|todo| todo.status == "completed")
                         .count();
                     lines.push(format!(
-                        "> └─ 待办清单: {}/{} 完成",
+                        "> 待办清单: {}/{} 完成",
                         completed,
                         detail.todos.len()
                     ));
@@ -1636,10 +1665,10 @@ impl CardBuilder {
                 }
             }
             None => {
-                lines.push("> ├─ 当前步骤: `unavailable`".to_string());
-                lines.push("> ├─ 最近工具: `unavailable`".to_string());
-                lines.push("> ├─ 工具入参: `unavailable`".to_string());
-                lines.push("> └─ 待办清单: `unavailable`".to_string());
+                lines.push("> 当前步骤: `unavailable`".to_string());
+                lines.push("> 最近工具: `unavailable`".to_string());
+                lines.push("> 工具入参: `unavailable`".to_string());
+                lines.push("> 待办清单: `unavailable`".to_string());
             }
         }
 
@@ -1749,7 +1778,7 @@ impl CardBuilder {
 
         let summary = super::session_inventory::plan_execution_summary(&info.plan_id, execution);
         let text = format!(
-            "{}\n\n▫️ *执行会话 (Session)*\n> ├─ 会话标识: `{}`\n> └─ 执行状态: `{}`",
+            "{}\n\n▫️ *执行会话 (Session)*\n> 会话标识: `{}`\n> 执行状态: `{}`",
             base, summary.session_id_marker, summary.execution_status
         );
 
@@ -1781,15 +1810,14 @@ impl CardBuilder {
     pub fn identifier_error_text(raw: &str, resolution: &IdentifierResolution) -> String {
         match resolution {
             IdentifierResolution::Unknown => format!(
-                "⚠️ *未找到匹配的会话或方案*\n\
-                > ▫️ 输入标识符: `{}`\n\n\
+                "*OneSpace* ╎ 标识符提示\n\
+                > ⚠️ 未找到匹配的会话或方案: `{}`\n\n\
                 未执行任何操作。发送 `/sessions` 查看活跃会话，或使用 `/plans` 浏览方案。",
                 raw
             ),
             IdentifierResolution::Ambiguous(candidates) => format!(
-                "⚠️ *标识符存在歧义*\n\
-                > ├─ 输入标识符: `{}`\n\
-                > └─ 匹配到多个会话: `{}`\n\n\
+                "*OneSpace* ╎ 标识符歧义\n\
+                > ⚠️ 输入标识符 `{}` 匹配到多个候选项: `{}`\n\n\
                 未执行任何操作。请使用精确的会话 ID 或 PID 后重试。",
                 raw,
                 candidates.join("`、`")
