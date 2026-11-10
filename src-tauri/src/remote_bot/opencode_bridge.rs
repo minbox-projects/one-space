@@ -349,11 +349,14 @@ impl PermissionRuntime {
 
     /// Deny every pending request that has passed the timeout at `now`, edit
     /// its delivered card and notify the chat. Returns how many requests were
-    /// swept. A resolved request is already absent from the registry, so it is
-    /// never denied late; individual endpoint failures are logged and ignored.
+    /// committed. A resolved request is already absent from the registry, so it
+    /// is never denied late; individual endpoint failures are logged and
+    /// ignored. A failed deny reply keeps the request registered with its
+    /// original deadline and skips the card edit and notification, so a later
+    /// sweep retries it.
     pub(super) async fn expire_due(&self, server_url: &str, now: Instant) -> usize {
         let expired = self.registry.take_expired(now);
-        let count = expired.len();
+        let mut committed = 0;
         for request in expired {
             let replied = self
                 .reply_permission(
@@ -365,10 +368,13 @@ impl PermissionRuntime {
                 .await;
             if !replied {
                 warn!(
-                    "权限请求超时回复失败 (request {}): deny 未被接受",
+                    "权限请求超时回复失败 (request {}): deny 未被接受，保留待重试",
                     request.request_id
                 );
+                self.registry.insert(request);
+                continue;
             }
+            committed += 1;
 
             let text = CardBuilder::permission_timeout_card();
             if let Some(message_id) = request.card_message_id {
@@ -401,7 +407,7 @@ impl PermissionRuntime {
                 );
             }
         }
-        count
+        committed
     }
 
     /// Send `decision` to every known reply endpoint and report whether any

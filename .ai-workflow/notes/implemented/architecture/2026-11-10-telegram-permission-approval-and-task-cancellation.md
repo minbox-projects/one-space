@@ -10,7 +10,7 @@ Telegram could start planning and coding through `/planning` and `/coding`, but 
 
 ## Decision
 
-`src-tauri/src/remote_bot/permission.rs` exposes the pure classifier `classify_permission(permission_type, command)`, returning `PermissionRisk::Routine` or `PermissionRisk::HighRisk` without reading settings or performing I/O. Only an explicit allowlist is routine: read-only inspection, test/build/lint/format tooling, safe local Git including commits without `--amend`, `mkdir`/`touch` and `cd`/`sleep`. Compound segments, substitution, unlisted redirection, wrappers, unknown commands or permission types and empty input are high risk, so ambiguous input fails closed.
+`src-tauri/src/remote_bot/permission.rs` exposes the pure classifier `classify_permission(permission_type, command)`, returning `PermissionRisk::Routine` or `PermissionRisk::HighRisk` without reading settings or performing I/O. Only an explicit allowlist is routine: read-only inspection, test/build/lint/format tooling, safe local Git including commits without `--amend`, `mkdir`/`touch` and `cd`/`sleep` for shell requests, and the non-shell permission types `read`, `list`, `glob`, `grep`, `edit`, `write`, `patch` and `apply_patch`, which are auto-approved without a card when auto-approval is enabled. Compound segments, substitution, unlisted redirection, wrappers, unknown commands or permission types and empty input are high risk, so ambiguous input fails closed.
 
 `opencode_bridge.rs` reads `auto_approve_permissions` from the persisted config on every request. When enabled, routine requests are answered `once` with no card; when enabled and high risk, and for every request while disabled, the bridge sends a Telegram approval card and tracks the request in memory. A failed card delivery never auto-approves and the request stays pending until timeout. High-risk cards offer only Allow once and Deny; routine cards add Always allow. The first decision replies `once`, `always` or `deny`, edits the card and makes later taps no-ops; Always is forwarded to OpenCode, OneSpace stores no second authorization, and high-risk Always callbacks are ignored. `PERMISSION_TIMEOUT` is 30 minutes: the poller sweeps due requests, replies `deny` once, edits the card and notifies the chat, while resolved, cancelled or task-ended requests never time out and late taps are ignored.
 
@@ -30,7 +30,7 @@ Hosted questions are injected first and cleared only on success, so failed or du
 
 ## Consequences
 
-- Ambiguous shell input fails closed as high risk; the allowlist can only grow through an explicit classifier change and a matching test.
+- Non-shell `read`, `list`, `glob`, `grep`, `edit`, `write`, `patch` and `apply_patch` requests are routine and are auto-approved when `auto_approve_permissions` is on; ambiguous shell input fails closed as high risk, and the allowlist can only grow through an explicit classifier change and a matching test.
 - An unanswered request is denied once after 30 minutes and both the card and the chat show the timeout; it never stays pending indefinitely.
 - Routine cards can grant Always, but the high-risk path never offers it and ignores a stale or forged high-risk Always callback.
 - Pending permissions, questions, task generations and cancellation state live only in memory; `auto_approve_permissions` remains the only setting, no schema or migration changes, and the Telegram callbacks are additive.

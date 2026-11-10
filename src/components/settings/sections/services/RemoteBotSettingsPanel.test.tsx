@@ -134,6 +134,9 @@ describe("RemoteBotSettingsPanel auto-approve permission policy", () => {
       "30 分钟",
       "自动拒绝",
       "始终允许",
+      "文件",
+      "edit",
+      "write",
     ]) {
       expect(policyText).toContain(phrase);
     }

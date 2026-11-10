@@ -10,7 +10,7 @@ Telegram 已可通过 `/planning` 与 `/coding` 启动规划与编码，但 Open
 
 ## Decision
 
-`src-tauri/src/remote_bot/permission.rs` 提供纯分类器 `classify_permission(permission_type, command)`，在不读取设置、不做 I/O 的情况下返回 `PermissionRisk::Routine` 或 `PermissionRisk::HighRisk`。只有显式白名单算作常规：只读巡检、测试/构建/lint/格式化工具、不含 `--amend` 提交的安全本地 Git、`mkdir`/`touch` 与 `cd`/`sleep`。复合片段、替换、未列入的重定向、包装器、未知命令或权限类型以及空输入都属于高危，因此歧义输入一律 fail closed。
+`src-tauri/src/remote_bot/permission.rs` 提供纯分类器 `classify_permission(permission_type, command)`，在不读取设置、不做 I/O 的情况下返回 `PermissionRisk::Routine` 或 `PermissionRisk::HighRisk`。只有显式白名单算作常规：shell 请求中的只读巡检、测试/构建/lint/格式化工具、不含 `--amend` 提交的安全本地 Git、`mkdir`/`touch` 与 `cd`/`sleep`，以及非 shell 的权限类型 `read`、`list`、`glob`、`grep`、`edit`、`write`、`patch` 与 `apply_patch`；后者在开启自动批准时不发卡片直接批准。复合片段、替换、未列入的重定向、包装器、未知命令或权限类型以及空输入都属于高危，因此歧义输入一律 fail closed。
 
 `opencode_bridge.rs` 在每次请求时读取持久化配置中的 `auto_approve_permissions`。开启时常规请求直接回 `once` 且不发卡片；开启且高危以及关闭时的全部请求，桥接都会发送 Telegram 审批卡片并在内存中跟踪该请求。卡片投递失败绝不自动批准，请求保持待决策直到超时。高危卡片只提供 Allow once 与 Deny；常规卡片另有 Always allow。首个决策回复 `once`、`always` 或 `deny`，改写卡片并使后续点击成为空操作；Always 转发给 OpenCode，OneSpace 不保存第二份授权，高危 Always 回调被忽略。`PERMISSION_TIMEOUT` 为 30 分钟：轮询清理到期请求，回一次 `deny`、改写卡片并通知聊天，而已决、已取消或任务结束的请求不会超时，迟到点击被忽略。
 
@@ -30,7 +30,7 @@ Telegram 已可通过 `/planning` 与 `/coding` 启动规划与编码，但 Open
 
 ## Consequences
 
-- 歧义 shell 输入按高危 fail closed；白名单只能通过显式修改分类器与配套测试扩充。
+- 非 shell 的 `read`、`list`、`glob`、`grep`、`edit`、`write`、`patch` 与 `apply_patch` 请求算作常规，`auto_approve_permissions` 开启时自动批准；歧义 shell 输入按高危 fail closed，白名单只能通过显式修改分类器与配套测试扩充。
 - 未答复请求在 30 分钟后被拒绝一次，卡片与聊天都显示超时；它绝不会无限待决。
 - 常规卡片可授予 Always，但高危路径从不提供，并忽略过期或伪造的高危 Always 回调。
 - 待决权限、提问、任务世代与取消状态仅存内存；`auto_approve_permissions` 仍是唯一设置，无 schema 或迁移变更，Telegram 回调为增量新增。

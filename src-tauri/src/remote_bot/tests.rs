@@ -3006,6 +3006,23 @@ fn permission_classify_wrappers_and_env_assignments() {
 }
 
 #[test]
+fn permission_classify_environment_assignment_injection() {
+    for command in [
+        "PATH=/tmp/evil ls",
+        "LD_PRELOAD=/tmp/evil.dylib cargo test",
+        "DYLD_INSERT_LIBRARIES=/tmp/evil.dylib ls",
+        "BASH_ENV=/tmp/evil.sh ls",
+        "ENV=/tmp/evil.sh ls",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=/tmp/evil git status",
+        "NODE_OPTIONS=--require=/tmp/evil.js npm run build",
+    ] {
+        expect_high_risk("bash", Some(command));
+    }
+    expect_routine("bash", Some("FOO=bar cargo test"));
+    expect_routine("bash", Some("A=1 B=2 ls"));
+}
+
+#[test]
 fn permission_classify_non_shell_permission_types() {
     for permission_type in [
         "edit",
@@ -4436,6 +4453,99 @@ async fn permission_timeout_denies_and_notifies() {
     let edits = permission_edit_messages(server.requests());
     assert_eq!(edits.len(), 1, "exactly one timeout card edit: {edits:?}");
     server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_timeout_reply_failure_retries_before_commit() {
+    let failing_server = FakeHttpServer::start().await;
+    failing_server.fail_permission_reply(true);
+    let succeeding_server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&failing_server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let now = Instant::now();
+    registry.insert(permission_pending(
+        "per_tmo_fail_1",
+        PermissionRisk::Routine,
+        now,
+    ));
+
+    let expired = runtime
+        .expire_due(&failing_server.url(), now + PERMISSION_TIMEOUT)
+        .await;
+    assert_eq!(
+        expired, 0,
+        "a failed deny reply must not commit the timeout sweep"
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        registry.get("per_tmo_fail_1").is_some(),
+        "a failed deny reply keeps the request registered for retry"
+    );
+    assert!(
+        permission_edit_messages(failing_server.requests()).is_empty(),
+        "a failed deny reply must not edit the card"
+    );
+    assert!(
+        permission_send_messages(failing_server.requests()).is_empty(),
+        "a failed deny reply must not notify the chat"
+    );
+
+    let retried = runtime
+        .expire_due(
+            &succeeding_server.url(),
+            now + PERMISSION_TIMEOUT * 2,
+        )
+        .await;
+    assert_eq!(retried, 1, "the retried sweep must deny the request");
+
+    let reply = permission_wait_for_request(
+        &succeeding_server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_tmo_fail_1")
+        },
+        "retried timeout deny reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"deny\""),
+        "retried timeout must reply deny: {}",
+        reply.body
+    );
+
+    let edit = permission_wait_for_request(
+        &failing_server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "timeout card edit after retry",
+    )
+    .await;
+    assert!(
+        edit.body.contains("已超时"),
+        "retried timeout card must show the timeout result: {}",
+        edit.body
+    );
+
+    let notification = permission_wait_for_request(
+        &failing_server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "timeout notification after retry",
+    )
+    .await;
+    assert!(
+        notification.body.contains("自动拒绝"),
+        "retried timeout notification must mention auto-deny: {}",
+        notification.body
+    );
+
+    assert!(
+        registry.get("per_tmo_fail_1").is_none(),
+        "a committed timeout must leave the registry"
+    );
+    failing_server.shutdown();
+    succeeding_server.shutdown();
 }
 
 #[tokio::test]
