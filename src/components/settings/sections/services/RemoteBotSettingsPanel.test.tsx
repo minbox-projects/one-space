@@ -137,5 +137,12 @@ describe("RemoteBotSettingsPanel auto-approve permission policy", () => {
     ]) {
       expect(policyText).toContain(phrase);
     }
+
+    // The surrounding copy must warn that saving or restarting the remote
+    // workbench terminates the active remote task because the bot reloads.
+    const policyCopy = policy.parentElement?.textContent ?? policyText;
+    for (const lifecyclePhrase of ["保存", "重启", "终止", "当前远程任务"]) {
+      expect(policyCopy).toContain(lifecyclePhrase);
+    }
   });
 });
