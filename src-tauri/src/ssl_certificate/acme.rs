@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use instant_acme::{
-    Account, AccountCredentials, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
-    OrderStatus, RetryPolicy,
+    Account, AccountCredentials, AuthorizationStatus, ChallengeStatus, ChallengeType, Identifier,
+    LetsEncrypt, NewAccount, NewOrder, Order, OrderStatus, RetryPolicy,
 };
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use uuid::Uuid;
@@ -236,10 +236,47 @@ pub async fn create_acme_order(req: SslOrderRequest) -> Result<SslOrderResponse,
     })
 }
 
+struct VerifyError {
+    message: String,
+    retain: bool,
+}
+
+impl VerifyError {
+    fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retain: false,
+        }
+    }
+}
+
+impl From<String> for VerifyError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            retain: true,
+        }
+    }
+}
+
 pub async fn verify_and_finalize_order(order_id: &str) -> Result<SslIssuedCertificate, String> {
     let state = with_orders(|orders| orders.remove(order_id))
         .ok_or_else(|| format!("Order not found or already completed: {}", order_id))?;
 
+    match verify_order(&state).await {
+        Ok(certificate) => Ok(certificate),
+        Err(error) => {
+            if error.retain {
+                with_orders(|orders| {
+                    orders.insert(order_id.to_string(), state);
+                });
+            }
+            Err(error.message)
+        }
+    }
+}
+
+async fn verify_order(state: &ActiveOrderState) -> Result<SslIssuedCertificate, VerifyError> {
     let creds: AccountCredentials = serde_json::from_str(&state.account_creds_json)
         .map_err(|e| format!("Invalid credentials JSON: {}", e))?;
 
@@ -253,64 +290,122 @@ pub async fn verify_and_finalize_order(order_id: &str) -> Result<SslIssuedCertif
         .await
         .map_err(|e| format!("Failed to fetch order: {}", e))?;
 
-    // 1. Notify ACME server that each challenge is ready
-    let mut authorizations = order.authorizations();
-    while let Some(res) = authorizations.next().await {
-        let mut authz = res.map_err(|e| format!("Authorization error: {}", e))?;
-        if let Some(mut ch) = authz.challenge(ChallengeType::Dns01) {
-            ch.set_ready()
+    let mut status = order.state().status;
+    if status == OrderStatus::Pending {
+        notify_pending_challenges(&mut order).await?;
+        status = wait_for_ready(&mut order, state).await?;
+    }
+
+    match status {
+        OrderStatus::Invalid => return Err(invalid_order_error(state).await),
+        OrderStatus::Ready => {
+            order
+                .finalize_csr(&state.csr_der)
                 .await
-                .map_err(|e| format!("Failed to set challenge ready: {}", e))?;
+                .map_err(|e| format!("Failed to finalize CSR: {}", e))?;
         }
+        OrderStatus::Pending | OrderStatus::Processing | OrderStatus::Valid => {}
     }
 
-    // 2. Poll order status until Ready or Valid
-    let status = order
-        .poll_ready(&RetryPolicy::default())
-        .await
-        .map_err(|e| format!("Order poll ready error: {}", e))?;
-
-    if status != OrderStatus::Ready && status != OrderStatus::Valid {
-        cleanup_cf(&state).await;
-        return Err(format!("Unexpected order status: {:?}", status));
-    }
-
-    // 3. Finalize order with CSR
-    order
-        .finalize_csr(&state.csr_der)
-        .await
-        .map_err(|e| format!("Failed to finalize CSR: {}", e))?;
-
-    // 4. Download certificate
     let fullchain_pem = order
         .poll_certificate(&RetryPolicy::default())
         .await
         .map_err(|e| format!("Failed to download certificate: {}", e))?;
 
-    // Clean up temporary Cloudflare records
-    cleanup_cf(&state).await;
+    cleanup_cf(state).await;
 
-    // 5. Split fullchain.pem into cert.pem and chain.pem
     let (cert_pem, chain_pem) = split_fullchain(&fullchain_pem);
-
-    // 6. Parse certificate to extract timestamps and issuer
     let (issued_at, expires_at, issuer) = parse_cert_metadata(&cert_pem);
 
     let cert_id = Uuid::new_v4().to_string();
 
     save_issued_certificate(
         cert_id,
-        state.primary_domain,
-        state.san_domains,
+        state.primary_domain.clone(),
+        state.san_domains.clone(),
         issuer,
         issued_at,
         expires_at,
-        state.key_type,
+        state.key_type.clone(),
         cert_pem,
         chain_pem,
         fullchain_pem,
         &state.private_key_pem,
     )
+    .map_err(VerifyError::from)
+}
+
+async fn notify_pending_challenges(order: &mut Order) -> Result<(), VerifyError> {
+    let mut authorizations = order.authorizations();
+    while let Some(res) = authorizations.next().await {
+        let mut authz = res.map_err(|e| format!("Authorization error: {}", e))?;
+        if authz.status == AuthorizationStatus::Valid {
+            continue;
+        }
+        if let Some(mut challenge) = authz.challenge(ChallengeType::Dns01) {
+            if challenge.status == ChallengeStatus::Pending {
+                challenge
+                    .set_ready()
+                    .await
+                    .map_err(|e| format!("Failed to set challenge ready: {}", e))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn wait_for_ready(
+    order: &mut Order,
+    state: &ActiveOrderState,
+) -> Result<OrderStatus, VerifyError> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        let (status, problem) = {
+            let current = order
+                .refresh()
+                .await
+                .map_err(|e| format!("Order refresh error: {}", e))?;
+            (
+                current.status,
+                current.error.as_ref().map(|error| error.to_string()),
+            )
+        };
+
+        if let Some(problem) = problem {
+            return Err(fatal_order_error(state, problem).await);
+        }
+
+        match status {
+            OrderStatus::Ready | OrderStatus::Processing | OrderStatus::Valid => return Ok(status),
+            OrderStatus::Invalid => return Err(invalid_order_error(state).await),
+            OrderStatus::Pending => {}
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(VerifyError::from(format!(
+                "Timed out waiting for ACME order to become ready: {}",
+                state.order_id
+            )));
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+async fn invalid_order_error(state: &ActiveOrderState) -> VerifyError {
+    cleanup_cf(state).await;
+    VerifyError::fatal(format!(
+        "ACME order for {} is invalid; a new certificate request is required",
+        state.primary_domain
+    ))
+}
+
+async fn fatal_order_error(state: &ActiveOrderState, problem: String) -> VerifyError {
+    cleanup_cf(state).await;
+    VerifyError::fatal(format!(
+        "ACME order for {} failed: {}; a new certificate request is required",
+        state.primary_domain, problem
+    ))
 }
 
 async fn cleanup_cf(state: &ActiveOrderState) {
