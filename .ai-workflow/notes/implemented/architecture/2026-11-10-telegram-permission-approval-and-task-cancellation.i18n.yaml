@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-11-10-telegram-permission-approval-and-task-cancellation.md
-2026-11-10-telegram-permission-approval-and-task-cancellation.md: 9cccaaf67a2c919d705bbaf23892812b7655933c
-2026-11-10-telegram-permission-approval-and-task-cancellation.zh.md: 98ab92edc682da7f94431821206a56d6054a43c0
+2026-11-10-telegram-permission-approval-and-task-cancellation.md: f9cd4f77687b6014538bf73ccb20acb10ccfeb8c
+2026-11-10-telegram-permission-approval-and-task-cancellation.zh.md: c079e692de597e5c4db08a19e2a0e9ef60ae08e0

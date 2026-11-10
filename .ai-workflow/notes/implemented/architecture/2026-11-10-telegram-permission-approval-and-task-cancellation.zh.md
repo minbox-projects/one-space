@@ -10,9 +10,9 @@ Telegram 已可通过 `/planning` 与 `/coding` 启动规划与编码，但 Open
 
 ## Decision
 
-`src-tauri/src/remote_bot/permission.rs` 提供纯分类器 `classify_permission(permission_type, command)`，在不读取设置、不做 I/O 的情况下返回 `PermissionRisk::Routine` 或 `PermissionRisk::HighRisk`。只有显式白名单算作常规：shell 请求中的只读巡检、测试/构建/lint/格式化工具、不含 `--amend` 提交的安全本地 Git、`mkdir`/`touch` 与 `cd`/`sleep`，以及非 shell 的权限类型 `read`、`list`、`glob`、`grep`、`edit`、`write`、`patch` 与 `apply_patch`；后者在开启自动批准时不发卡片直接批准。复合片段、替换、未列入的重定向、包装器、未知命令或权限类型以及空输入都属于高危，因此歧义输入一律 fail closed。
+`src-tauri/src/remote_bot/permission.rs` 提供纯分类器 `classify_permission(permission_type, command)`，在不读取设置、不做 I/O 的情况下返回 `PermissionRisk::Routine` 或 `PermissionRisk::HighRisk`。只有显式白名单算作常规：shell 请求中的只读巡检、测试/构建/lint/格式化工具、不含 `--amend` 提交的安全本地 Git、`mkdir`/`touch` 与 `cd`/`sleep`，以及非 shell 的权限类型 `read`、`list`、`glob`、`grep`、`edit`、`write`、`patch` 与 `apply_patch`；后者在开启自动批准时不发卡片直接批准。复合片段、替换、未列入的重定向、包装器、未知命令或权限类型以及空输入都属于高危，因此歧义输入一律 fail closed。shell 命令开头的任何 `KEY=VALUE` 环境变量赋值同样属于高危并 fail closed，因为赋值键可改变命令解析、执行钩子或解释器与构建行为，普通赋值因此不再被当作透明的包装器。
 
-`opencode_bridge.rs` 在每次请求时读取持久化配置中的 `auto_approve_permissions`。开启时常规请求直接回 `once` 且不发卡片；开启且高危以及关闭时的全部请求，桥接都会发送 Telegram 审批卡片并在内存中跟踪该请求。卡片投递失败绝不自动批准，请求保持待决策直到超时。高危卡片只提供 Allow once 与 Deny；常规卡片另有 Always allow。首个决策回复 `once`、`always` 或 `deny`，改写卡片并使后续点击成为空操作；Always 转发给 OpenCode，OneSpace 不保存第二份授权，高危 Always 回调被忽略。`PERMISSION_TIMEOUT` 为 30 分钟：轮询清理到期请求，回一次 `deny`、改写卡片并通知聊天，而已决、已取消或任务结束的请求不会超时，迟到点击被忽略。
+`opencode_bridge.rs` 在每次请求时读取持久化配置中的 `auto_approve_permissions`。开启时常规请求直接回 `once` 且不发卡片；开启且高危以及关闭时的全部请求，桥接都会发送 Telegram 审批卡片并在内存中跟踪该请求。卡片投递失败绝不自动批准，请求保持待决策直到超时。高危卡片只提供 Allow once 与 Deny；常规卡片另有 Always allow。首个决策回复 `once`、`always` 或 `deny`，改写卡片并使后续点击成为空操作；Always 转发给 OpenCode，OneSpace 不保存第二份授权，高危 Always 回调被忽略。`PERMISSION_TIMEOUT` 为 30 分钟：轮询清理到期请求并回一次 `deny`，只有 deny 回复成功才提交这次超时，改写卡片并通知聊天；回复失败则保留该请求及其原始期限，由后续轮询重试，且不改写卡片也不通知聊天。已决、已取消或任务结束的请求不会超时，迟到点击被忽略。
 
 桥接任务在 Unix 上运行于自有进程组（`process_group(0)`）。`/cancel` 先发 SIGTERM，并在独立的 2 秒 `CANCEL_GRACE` 内升级为 SIGKILL，如实报告 `Cancelled`、`ForcedCancelled` 或 `NothingToCancel`。读取循环观察取消标记，任务世代守卫抑制迟到的成功或失败卡片，待决权限与提问卡片改写为已取消，任务状态与待决权限被清空。外部与托管会话以及共享 `opencode serve` 不受影响。管理器停止、重载、禁用、重启或保存以及应用退出都会调用 bridge `shutdown`，一并终止桥接自有的 `opencode serve`；`shutdown_runtime_services` 调用 `remote_bot::shutdown_runtime()`。
 

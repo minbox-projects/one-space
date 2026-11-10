@@ -2995,8 +2995,8 @@ fn permission_classify_substitution_and_redirection_fail_closed() {
 
 #[test]
 fn permission_classify_wrappers_and_env_assignments() {
-    expect_routine("bash", Some("FOO=bar cargo test"));
-    expect_routine("bash", Some("A=1 B=2 ls"));
+    expect_high_risk("bash", Some("FOO=bar cargo test"));
+    expect_high_risk("bash", Some("A=1 B=2 ls"));
     expect_routine("bash", Some("timeout 60 cargo test"));
     expect_routine("bash", Some("nice cargo build"));
     expect_routine("bash", Some("command ls"));
@@ -3006,7 +3006,7 @@ fn permission_classify_wrappers_and_env_assignments() {
 }
 
 #[test]
-fn permission_classify_environment_assignment_injection() {
+fn permission_classify_environment_assignments_fail_closed() {
     for command in [
         "PATH=/tmp/evil ls",
         "LD_PRELOAD=/tmp/evil.dylib cargo test",
@@ -3015,11 +3015,16 @@ fn permission_classify_environment_assignment_injection() {
         "ENV=/tmp/evil.sh ls",
         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=/tmp/evil git status",
         "NODE_OPTIONS=--require=/tmp/evil.js npm run build",
+        "PYTHONPATH=/tmp/x python -m pytest",
+        "RUSTC_WRAPPER=/tmp/x cargo test",
+        "CARGO_BUILD_RUSTC=/tmp/x cargo build",
+        "CARGO_HOME=/tmp/x cargo test",
+        "FOO=bar cargo test",
+        "A=1 B=2 ls",
+        "SAFE_LITERAL=1 ls",
     ] {
         expect_high_risk("bash", Some(command));
     }
-    expect_routine("bash", Some("FOO=bar cargo test"));
-    expect_routine("bash", Some("A=1 B=2 ls"));
 }
 
 #[test]

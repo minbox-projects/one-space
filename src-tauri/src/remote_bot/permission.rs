@@ -243,17 +243,7 @@ fn tokenize(segment: &str) -> Vec<Token> {
     tokens
 }
 
-/// Environment keys that alter how later commands resolve or execute, so a
-/// leading assignment for one can inject code even without shell metacharacters.
-fn is_dangerous_env_key(key: &str) -> bool {
-    let upper = key.to_ascii_uppercase();
-    matches!(
-        upper.as_str(),
-        "PATH" | "LD_PRELOAD" | "BASH_ENV" | "ENV" | "NODE_OPTIONS"
-    ) || upper.starts_with("DYLD_")
-        || upper.starts_with("GIT_CONFIG_")
-}
-
+/// Whether a token has the `KEY=VALUE` shape of a shell environment assignment.
 fn is_env_assignment(token: &str) -> bool {
     let Some((name, _)) = token.split_once('=') else {
         return false;
@@ -269,15 +259,13 @@ fn is_env_assignment(token: &str) -> bool {
 fn classify_segment(tokens: &[Token]) -> PermissionRisk {
     let mut index = 0;
     loop {
-        while index < tokens.len() && is_env_assignment(&tokens[index].text) {
-            if let Some((key, _)) = tokens[index].text.split_once('=') {
-                if is_dangerous_env_key(key) {
-                    return PermissionRisk::HighRisk;
-                }
-            }
-            index += 1;
-        }
         if index >= tokens.len() {
+            return PermissionRisk::HighRisk;
+        }
+        // A leading environment assignment fails closed because it can change
+        // command resolution, execution hooks, or interpreter and build
+        // behavior, so it is never treated as a harmless prefix.
+        if is_env_assignment(&tokens[index].text) {
             return PermissionRisk::HighRisk;
         }
         match tokens[index].text.as_str() {
