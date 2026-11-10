@@ -536,6 +536,7 @@ pub struct PendingPermissionRequest {
     pub command: Option<String>,
     pub risk: PermissionRisk,
     pub card_message_id: Option<i64>,
+    pub session_id: Option<String>,
     pub sent_at: Instant,
 }
 
@@ -555,8 +556,21 @@ impl PendingPermissionRequest {
             command,
             risk,
             card_message_id: None,
+            session_id: None,
             sent_at,
         }
+    }
+
+    /// Attach the OpenCode session that raised the request, when known.
+    pub fn with_session_id(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
+        self
+    }
+
+    /// Attach the Telegram message id of the delivered approval card.
+    pub fn with_card_message_id(mut self, card_message_id: Option<i64>) -> Self {
+        self.card_message_id = card_message_id;
+        self
     }
 }
 
@@ -595,6 +609,20 @@ impl PermissionRegistry {
 
     pub fn get(&self, id: &str) -> Option<PendingPermissionRequest> {
         self.lock().get(id).cloned()
+    }
+
+    /// Record the delivered approval card's message id on `request_id`.
+    ///
+    /// Returns `false` when no pending request with that id exists, so a card
+    /// delivered after the request resolved is simply ignored.
+    pub fn set_card_message_id(&self, request_id: &str, message_id: i64) -> bool {
+        match self.lock().get_mut(request_id) {
+            Some(request) => {
+                request.card_message_id = Some(message_id);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn len(&self) -> usize {

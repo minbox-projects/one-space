@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use log::{error, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,10 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
+use super::permission::{
+    classify_permission, PendingPermissionRequest, PermissionDecision, PermissionRegistry,
+    PermissionRisk,
+};
 use super::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 // =========================================================================
@@ -150,11 +154,127 @@ pub(super) struct BridgeSessionSnapshot {
     pub(super) task: Option<BridgeTaskSnapshot>,
 }
 
+/// Shared runtime for replying to and surfacing OpenCode permission requests.
+///
+/// Clones the HTTP client, Telegram client and pending registry so the poller
+/// task can act without borrowing the bridge.
+pub(super) struct PermissionRuntime {
+    http: Client,
+    telegram: Arc<TelegramClient>,
+    registry: Arc<PermissionRegistry>,
+}
+
+impl PermissionRuntime {
+    pub(super) fn new(
+        http: Client,
+        telegram: Arc<TelegramClient>,
+        registry: Arc<PermissionRegistry>,
+    ) -> Self {
+        Self {
+            http,
+            telegram,
+            registry,
+        }
+    }
+
+    pub(super) fn registry(&self) -> Arc<PermissionRegistry> {
+        self.registry.clone()
+    }
+
+    /// Send `decision` to every known reply endpoint and report whether any
+    /// endpoint accepted it. Individual transport or status failures are
+    /// ignored so a partial protocol mismatch cannot abort the poller.
+    pub(super) async fn reply_permission(
+        &self,
+        server_url: &str,
+        request_id: &str,
+        session_id: Option<&str>,
+        decision: PermissionDecision,
+    ) -> bool {
+        let reply = decision.as_reply().to_string();
+        let payload = PermissionReplyPayload {
+            reply: reply.clone(),
+            response: Some(reply),
+        };
+
+        let mut urls = vec![
+            format!("{}/permission/{}/reply", server_url, request_id),
+            format!(
+                "{}/api/permission/request/{}/reply",
+                server_url, request_id
+            ),
+        ];
+        if let Some(sid) = session_id {
+            urls.push(format!(
+                "{}/api/session/{}/permission/{}/reply",
+                server_url, sid, request_id
+            ));
+        }
+
+        for url in urls {
+            let response = self
+                .http
+                .post(&url)
+                .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
+                .json(&payload)
+                .send()
+                .await;
+            if let Ok(response) = response {
+                if response.status().is_success() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Deliver an approval card for `request_id`, recording its message id on
+    /// success. A failure keeps the request registered so it can be retried.
+    pub(super) async fn send_request_card(
+        &self,
+        chat_id: i64,
+        project: Option<&str>,
+        permission_type: &str,
+        command: Option<&str>,
+        risk: PermissionRisk,
+        request_id: &str,
+        session_id: Option<&str>,
+    ) -> bool {
+        let (text, markup) = CardBuilder::permission_request_card(
+            project.unwrap_or("unassigned"),
+            session_id,
+            permission_type,
+            command,
+            risk,
+            request_id,
+        );
+
+        match self
+            .telegram
+            .send_message(chat_id, &text, Some(markup), Some("Markdown"))
+            .await
+        {
+            Ok(message) => {
+                self.registry.set_card_message_id(request_id, message.message_id);
+                true
+            }
+            Err(e) => {
+                warn!(
+                    "权限审批卡片发送失败 (request {}): {}",
+                    request_id, e
+                );
+                false
+            }
+        }
+    }
+}
+
 pub struct OpenCodeBridge {
     server_process: Mutex<Option<Child>>,
     server_url: RwLock<Option<String>>,
     http_client: Client,
     telegram_client: Arc<TelegramClient>,
+    permission_runtime: Arc<PermissionRuntime>,
     active_question: Arc<RwLock<Option<OpenCodeQuestionRequest>>>,
     active_session_id: RwLock<Option<String>>,
     active_project_dir: RwLock<Option<PathBuf>>,
@@ -168,14 +288,21 @@ pub struct OpenCodeBridge {
 
 impl OpenCodeBridge {
     pub fn new(telegram_client: Arc<TelegramClient>) -> Self {
+        let http_client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        let permission_runtime = Arc::new(PermissionRuntime::new(
+            http_client.clone(),
+            telegram_client.clone(),
+            Arc::new(PermissionRegistry::new()),
+        ));
         Self {
             server_process: Mutex::new(None),
             server_url: RwLock::new(None),
-            http_client: Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
+            http_client,
             telegram_client,
+            permission_runtime,
             active_question: Arc::new(RwLock::new(None)),
             active_session_id: RwLock::new(None),
             active_project_dir: RwLock::new(None),
@@ -632,6 +759,8 @@ impl OpenCodeBridge {
             status_msg.message_id,
             server_url.clone(),
             cancel_flag.clone(),
+            project_name_of(&project_dir),
+            auto_approve_permissions_policy(),
         );
         let typing_guard = self.spawn_typing_heartbeat(chat_id, cancel_flag.clone());
 
@@ -780,16 +909,24 @@ impl OpenCodeBridge {
         Ok(())
     }
 
+    /// Return the shared permission runtime (registry, reply and card delivery).
+    pub(super) fn permission_runtime(&self) -> Arc<PermissionRuntime> {
+        self.permission_runtime.clone()
+    }
+
     /// 轮询并转发 /question 与 /permission 请求到 Telegram
-    fn spawn_question_and_permission_poller(
+    pub(super) fn spawn_question_and_permission_poller(
         &self,
         chat_id: i64,
         _status_msg_id: i64,
         server_url: String,
         cancel_flag: Arc<AtomicBool>,
+        project_name: Option<String>,
+        policy: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> tokio::task::JoinHandle<()> {
         let http = self.http_client.clone();
         let tg = self.telegram_client.clone();
+        let runtime = self.permission_runtime.clone();
         let active_q_holder = self.active_question.clone();
 
         tokio::spawn(async move {
@@ -869,28 +1006,51 @@ impl OpenCodeBridge {
                         if asked_permissions.contains(&p.id) {
                             continue;
                         }
-                        asked_permissions.insert(p.id.clone());
 
-                        // 默认常规自动批准 "once" (兼容 v1 与 v2 路径)
-                        let payload = PermissionReplyPayload {
-                            reply: "once".to_string(),
-                            response: Some("once".to_string()),
-                        };
-                        let reply_url = format!("{}/permission/{}/reply", server_url, p.id);
-                        let v2_reply_url = format!("{}/api/permission/request/{}/reply", server_url, p.id);
-                        let _ = http.post(&reply_url)
-                            .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
-                            .json(&payload).send().await;
-                        let _ = http.post(&v2_reply_url)
-                            .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
-                            .json(&payload).send().await;
+                        let permission_type = p.permission.clone().unwrap_or_default();
+                        let risk = classify_permission(&permission_type, p.command.as_deref());
+                        let auto_approve = policy();
 
-                        if let Some(ref sid) = p.session_id {
-                            let v2_session_perm_url = format!("{}/api/session/{}/permission/{}/reply", server_url, sid, p.id);
-                            let _ = http.post(&v2_session_perm_url)
-                                .basic_auth("opencode", Some(OPENCODE_INTERNAL_AUTH))
-                                .json(&payload).send().await;
+                        // Auto-approve routine work only while the policy allows it.
+                        if auto_approve && risk == PermissionRisk::Routine {
+                            let replied = runtime
+                                .reply_permission(
+                                    &server_url,
+                                    &p.id,
+                                    p.session_id.as_deref(),
+                                    PermissionDecision::Once,
+                                )
+                                .await;
+                            if replied {
+                                asked_permissions.insert(p.id.clone());
+                            }
+                            continue;
                         }
+
+                        // Otherwise ask a human; the request stays registered even
+                        // when card delivery fails.
+                        let pending = PendingPermissionRequest::new(
+                            p.id.clone(),
+                            chat_id,
+                            permission_type.clone(),
+                            p.command.clone(),
+                            risk,
+                            Instant::now(),
+                        )
+                        .with_session_id(p.session_id.clone());
+                        runtime.registry().insert(pending);
+                        runtime
+                            .send_request_card(
+                                chat_id,
+                                project_name.as_deref(),
+                                &permission_type,
+                                p.command.as_deref(),
+                                risk,
+                                &p.id,
+                                p.session_id.as_deref(),
+                            )
+                            .await;
+                        asked_permissions.insert(p.id.clone());
                     }
                 }
 
@@ -1134,6 +1294,8 @@ impl OpenCodeBridge {
             status_msg.message_id,
             server_url.clone(),
             cancel_flag.clone(),
+            project_name_of(&project_dir),
+            auto_approve_permissions_policy(),
         );
         let typing_guard = self.spawn_typing_heartbeat(chat_id, cancel_flag.clone());
 
@@ -1269,6 +1431,16 @@ fn project_name_of(project_dir: &Path) -> Option<String> {
     project_dir
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
+}
+
+/// Read the auto-approval setting on every call; a missing config fails closed
+/// so permissions still require a human decision.
+fn auto_approve_permissions_policy() -> Arc<dyn Fn() -> bool + Send + Sync> {
+    Arc::new(|| {
+        super::storage::load_config()
+            .map(|config| config.auto_approve_permissions)
+            .unwrap_or(false)
+    })
 }
 
 /// 从 OpenCode JSON 事件中提取会话 ID，兼容顶层与 `part` 嵌套的三种字段名。

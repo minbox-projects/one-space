@@ -3562,3 +3562,424 @@ fn permission_callback_rejects_malformed_data() {
         );
     }
 }
+
+// --- Permission policy, auto-approval and card delivery ---
+// These tests drive the real poller against a loopback HTTP server so the
+// observable contract is the exact reply bytes and Telegram payloads sent over
+// the wire. The server records every request and can serve configured
+// permission payloads or fail Telegram sendMessage delivery.
+
+use super::client::TelegramClient;
+use super::opencode_bridge::OpenCodeBridge;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+#[derive(Clone, Debug)]
+struct RecordedRequest {
+    method: String,
+    path: String,
+    body: String,
+}
+
+struct FakeServerState {
+    requests: Mutex<Vec<RecordedRequest>>,
+    permissions_json: Mutex<String>,
+    fail_send_message: AtomicBool,
+}
+
+struct FakeHttpServer {
+    addr: SocketAddr,
+    state: Arc<FakeServerState>,
+    accept_handle: tokio::task::JoinHandle<()>,
+}
+
+impl FakeHttpServer {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake HTTP server");
+        let addr = listener.local_addr().expect("fake HTTP server address");
+        let state = Arc::new(FakeServerState {
+            requests: Mutex::new(Vec::new()),
+            permissions_json: Mutex::new("[]".to_string()),
+            fail_send_message: AtomicBool::new(false),
+        });
+        let accept_state = state.clone();
+        let accept_handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let connection_state = accept_state.clone();
+                tokio::spawn(async move {
+                    fake_handle_connection(stream, connection_state).await;
+                });
+            }
+        });
+        Self {
+            addr,
+            state,
+            accept_handle,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    fn telegram_base_url(&self) -> String {
+        format!("http://{}/botTEST", self.addr)
+    }
+
+    fn set_permissions_json(&self, json_array: &str) {
+        *self.state.permissions_json.lock().unwrap() = json_array.to_string();
+    }
+
+    fn fail_send_message(&self, fail: bool) {
+        self.state.fail_send_message.store(fail, Ordering::SeqCst);
+    }
+
+    fn requests(&self) -> Vec<RecordedRequest> {
+        self.state.requests.lock().unwrap().clone()
+    }
+
+    fn shutdown(&self) {
+        self.accept_handle.abort();
+    }
+}
+
+fn fake_find_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+}
+
+async fn fake_handle_connection(mut stream: TcpStream, state: Arc<FakeServerState>) {
+    let mut received = Vec::new();
+    let mut chunk = [0u8; 1024];
+    let head_end = loop {
+        let Ok(read) = stream.read(&mut chunk).await else {
+            return;
+        };
+        if read == 0 {
+            return;
+        }
+        received.extend_from_slice(&chunk[..read]);
+        if let Some(head_end) = fake_find_header_end(&received) {
+            break head_end;
+        }
+        if received.len() > 64 * 1024 {
+            return;
+        }
+    };
+
+    let head = String::from_utf8_lossy(&received[..head_end]).to_string();
+    let mut head_lines = head.split("\r\n");
+    let request_line = head_lines.next().unwrap_or_default();
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or_default().to_string();
+    let path = request_parts.next().unwrap_or_default().to_string();
+    let content_length = head_lines
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .filter_map(|(_, value)| value.trim().parse::<usize>().ok())
+        .next()
+        .unwrap_or(0);
+
+    let mut body = received[head_end..].to_vec();
+    while body.len() < content_length {
+        let Ok(read) = stream.read(&mut chunk).await else {
+            return;
+        };
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    body.truncate(content_length);
+
+    state.requests.lock().unwrap().push(RecordedRequest {
+        method: method.clone(),
+        path: path.clone(),
+        body: String::from_utf8_lossy(&body).to_string(),
+    });
+
+    let (status, response_body) = fake_response(&state, &method, &path);
+    let status_text = if status == 200 {
+        "OK"
+    } else {
+        "Internal Server Error"
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        response_body.len(),
+        response_body
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+fn fake_response(state: &FakeServerState, method: &str, path: &str) -> (u16, String) {
+    let telegram_success = "{\"ok\":true,\"result\":{\"message_id\":777,\"chat\":{\"id\":42,\"type\":\"private\"},\"date\":1,\"text\":\"ok\"}}";
+    if method == "GET" && (path == "/question" || path == "/api/form") {
+        (200, "{\"data\":[]}".to_string())
+    } else if method == "GET" && (path == "/permission" || path == "/api/permission/request") {
+        let permissions = state.permissions_json.lock().unwrap().clone();
+        (200, format!("{{\"data\":{permissions}}}"))
+    } else if method == "POST" && path.ends_with("/reply") {
+        (200, "{\"ok\":true}".to_string())
+    } else if method == "POST" && path.ends_with("/sendMessage") {
+        if state.fail_send_message.load(Ordering::SeqCst) {
+            (
+                500,
+                "{\"ok\":false,\"description\":\"delivery failed\"}".to_string(),
+            )
+        } else {
+            (200, telegram_success.to_string())
+        }
+    } else if method == "POST" && path.ends_with("/editMessageText") {
+        (200, telegram_success.to_string())
+    } else {
+        (404, "{\"ok\":false,\"description\":\"not found\"}".to_string())
+    }
+}
+
+async fn permission_wait_for_request(
+    server: &FakeHttpServer,
+    predicate: impl Fn(&RecordedRequest) -> bool,
+    label: &str,
+) -> RecordedRequest {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(found) = server.requests().into_iter().find(|request| predicate(request)) {
+            return found;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {label}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn permission_wait_until(mut predicate: impl FnMut() -> bool, label: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if predicate() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {label}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn permission_test_bridge(server: &FakeHttpServer) -> OpenCodeBridge {
+    OpenCodeBridge::new(Arc::new(TelegramClient::with_base_url(
+        "test-token",
+        server.telegram_base_url(),
+    )))
+}
+
+fn permission_reply_posts(requests: Vec<RecordedRequest>) -> Vec<RecordedRequest> {
+    requests
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path.ends_with("/reply"))
+        .collect()
+}
+
+fn permission_send_messages(requests: Vec<RecordedRequest>) -> Vec<RecordedRequest> {
+    requests
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path.ends_with("/sendMessage"))
+        .collect()
+}
+
+#[tokio::test]
+async fn permission_policy_auto_approves_routine_without_card() {
+    let server = FakeHttpServer::start().await;
+    server.set_permissions_json(
+        r#"[{"id":"per_auto_1","permission":"bash","command":"cargo test"}]"#,
+    );
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.body.contains("\"reply\":\"once\"")
+                && request.body.contains("\"response\":\"once\"")
+        },
+        "auto-approved routine permission reply",
+    )
+    .await;
+    assert!(
+        reply.path.contains("per_auto_1"),
+        "reply must target the routine request: {}",
+        reply.path
+    );
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+
+    let cards = permission_send_messages(server.requests());
+    assert!(
+        cards.is_empty(),
+        "routine auto-approval must not send a permission card: {cards:?}"
+    );
+    assert!(
+        registry.get("per_auto_1").is_none(),
+        "auto-approved request must not stay pending"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_poller_high_risk_enabled_requests_approval() {
+    let server = FakeHttpServer::start().await;
+    server.set_permissions_json(
+        r#"[{"id":"per_high_1","permission":"bash","command":"rm -rf target"}]"#,
+    );
+    let bridge = permission_test_bridge(&server);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    let card = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "high-risk approval card",
+    )
+    .await;
+    assert!(
+        card.body.contains("perm_deny:per_high_1"),
+        "high-risk card must offer deny: {}",
+        card.body
+    );
+    assert!(
+        !card.body.contains("perm_always:per_high_1"),
+        "high-risk card must not offer always-allow: {}",
+        card.body
+    );
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+
+    let replies = permission_reply_posts(server.requests());
+    assert!(
+        replies.is_empty(),
+        "high-risk requests must wait for a human decision, not auto-reply: {replies:?}"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_policy_disabled_routine_requests_approval() {
+    let server = FakeHttpServer::start().await;
+    server.set_permissions_json(
+        r#"[{"id":"per_routine_1","permission":"bash","command":"cargo test"}]"#,
+    );
+    let bridge = permission_test_bridge(&server);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    let card = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "routine approval card",
+    )
+    .await;
+    assert!(
+        card.body.contains("perm_always:per_routine_1"),
+        "routine card must offer always-allow: {}",
+        card.body
+    );
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+
+    let replies = permission_reply_posts(server.requests());
+    assert!(
+        replies.is_empty(),
+        "disabled auto-approval must not reply for a routine request: {replies:?}"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_card_delivery_failure_keeps_request_pending() {
+    let server = FakeHttpServer::start().await;
+    server.set_permissions_json(
+        r#"[{"id":"per_fail_1","permission":"bash","command":"rm -rf target"}]"#,
+    );
+    server.fail_send_message(true);
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "failed delivery attempt",
+    )
+    .await;
+    permission_wait_until(
+        || registry.get("per_fail_1").is_some(),
+        "failed permission to stay pending",
+    )
+    .await;
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+
+    let replies = permission_reply_posts(server.requests());
+    assert!(
+        replies.is_empty(),
+        "a failed card delivery must not auto-reply: {replies:?}"
+    );
+    assert!(
+        registry.get("per_fail_1").is_some(),
+        "the undelivered request must remain pending"
+    );
+    server.shutdown();
+}
