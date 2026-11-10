@@ -742,7 +742,7 @@ export function RemoteBotSettingsPanel({ t, onShowToast }: RemoteBotSettingsPane
               Coding 阶段常规权限自动通过
             </h4>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              开启后 OpenCode 读写代码、运行测试将自动授权，仅高危操作抛出手机端卡片审批；大幅提升远程免确认流畅度。
+              开启时：常规只读、测试、构建与格式化命令自动批准，且不发送审批卡片；高危权限始终需要手机端审批。关闭时：所有权限请求都需要手机端审批。审批卡片 30 分钟未处理会自动拒绝；高危审批卡片不提供「始终允许」。
             </p>
           </div>
           <Switch
