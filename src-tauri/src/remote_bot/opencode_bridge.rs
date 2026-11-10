@@ -759,6 +759,44 @@ impl OpenCodeBridge {
         outcome
     }
 
+    /// 关闭桥接：终止其拥有的任务进程组与 `opencode serve` 子进程并清空状态。
+    ///
+    /// 只作用于本桥接创建的进程；外部或托管会话的 OpenCode 进程绝不受影响。
+    /// 该方法幂等，空闲时同样安全。
+    pub async fn shutdown(&self) {
+        let busy = self.is_busy.load(Ordering::SeqCst);
+        let has_task = self.current_task.read().await.is_some();
+        let tracked_pid = *self.active_process_group.lock().await;
+
+        if busy || has_task || tracked_pid.is_some() {
+            // Reuse the real cancellation path so the owned process group is
+            // terminated, pending cards are invalidated and the generation
+            // guard suppresses any late task result.
+            let _ = self.cancel_active_task().await;
+        }
+
+        let mut proc_guard = self.server_process.lock().await;
+        if let Some(mut child) = proc_guard.take() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        drop(proc_guard);
+        *self.server_url.write().await = None;
+
+        self.clear_task_state().await;
+        *self.active_question_message_id.write().await = None;
+        *self.active_question_chat_id.write().await = None;
+        *self.active_process_group.lock().await = None;
+        self.task_generation.fetch_add(1, Ordering::SeqCst);
+        self.task_cancel_flag.store(true, Ordering::SeqCst);
+    }
+
+    /// 在测试中直接装入桥接拥有的服务子进程。
+    #[cfg(test)]
+    pub(super) async fn set_server_process_for_test(&self, child: Child) {
+        *self.server_process.lock().await = Some(child);
+    }
+
     /// 清空任务级状态；取消与正常结束共用同一套清理。
     async fn clear_task_state(&self) {
         *self.active_session_id.write().await = None;

@@ -154,6 +154,11 @@ impl CommandRouter {
         }
     }
 
+    /// 停止本路由拥有的桥接资源（任务进程组与 `opencode serve` 子进程）。
+    pub(super) async fn shutdown(&self) {
+        self.bridge.shutdown().await;
+    }
+
     /// 分发处理单条 Telegram Update
     pub async fn dispatch_update(&self, update: TelegramUpdate) -> Result<(), String> {
         if let Some(msg) = update.message {

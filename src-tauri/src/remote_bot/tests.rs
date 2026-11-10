@@ -4910,3 +4910,124 @@ async fn cancel_late_generation_does_not_clear_newer_task() {
     );
 }
 
+// --- Bridge shutdown ---
+// Shutdown must retire the tracked task process group and the bridge-owned
+// server child, clear observable state, and stay safe when repeated or idle.
+
+/// Poll until the process group led by `pid` no longer exists.
+#[cfg(unix)]
+async fn cancel_wait_group_exits(pid: u32, label: &str) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let alive = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(format!("-{pid}"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !alive {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("{label} process group {pid} must exit within three seconds");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_shutdown_terminates_task_and_server() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let (mut task_child, _task_guard) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let task_pid = task_child.id().expect("task sleep pid");
+    bridge.track_active_process(task_pid).await;
+    bridge.begin_conversation(Path::new("/tmp/cancel-shutdown")).await;
+
+    let (server_child, _server_guard) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let server_pid = server_child.id().expect("server sleep pid");
+    bridge.set_server_process_for_test(server_child).await;
+
+    let old_generation = bridge.task_generation();
+
+    let shutdown = tokio::time::timeout(Duration::from_secs(3), bridge.shutdown()).await;
+    assert!(
+        shutdown.is_ok(),
+        "bridge shutdown must complete without hanging"
+    );
+
+    let task_exited = tokio::time::timeout(Duration::from_secs(3), task_child.wait()).await;
+    assert!(
+        task_exited.is_ok(),
+        "shutdown must terminate and reap the tracked task process group"
+    );
+    cancel_wait_group_exits(server_pid, "bridge-owned server").await;
+
+    assert!(
+        bridge.session_snapshot().await.task.is_none(),
+        "shutdown must clear the active task snapshot"
+    );
+    assert!(
+        !bridge.should_publish_result(old_generation),
+        "shutdown must suppress results from the retired generation"
+    );
+    assert!(
+        bridge.permission_runtime().registry().is_empty(),
+        "shutdown must clear pending permissions"
+    );
+}
+
+#[tokio::test]
+async fn cancel_shutdown_is_idempotent() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+
+    for attempt in 1..=2 {
+        let shutdown = tokio::time::timeout(Duration::from_secs(3), bridge.shutdown()).await;
+        assert!(
+            shutdown.is_ok(),
+            "shutdown attempt {attempt} must complete without hanging"
+        );
+        assert!(
+            bridge.session_snapshot().await.task.is_none(),
+            "shutdown attempt {attempt} must leave no active task"
+        );
+        assert!(
+            bridge.permission_runtime().registry().is_empty(),
+            "shutdown attempt {attempt} must leave no pending permissions"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancel_shutdown_clears_pending_permission() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    registry.insert(permission_pending(
+        "per_shutdown_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+    assert_eq!(registry.len(), 1, "pending permission must be installed");
+
+    bridge.shutdown().await;
+
+    assert!(
+        registry.is_empty(),
+        "shutdown must clear the pending permission registry"
+    );
+    let expired = bridge
+        .permission_runtime()
+        .expire_due(&server.url(), Instant::now() + PERMISSION_TIMEOUT * 2)
+        .await;
+    assert_eq!(
+        expired, 0,
+        "a shutdown-cleared permission must not time out or be denied later"
+    );
+
+    server.shutdown();
+}
+
