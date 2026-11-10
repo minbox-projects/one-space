@@ -5182,3 +5182,118 @@ fn hosted_completion_waits_for_pending_question() {
     assert!(!completion_due(1, false));
     assert!(!completion_due(5, true));
 }
+
+// ---------------------------------------------------------------------------
+// Hosted question visibility: `/host` overview, `/sessions` detail re-send,
+// and expired-question status.
+// ---------------------------------------------------------------------------
+
+fn hosted_ui_session(question_summary: Option<&str>) -> super::types::HostedSessionInfo {
+    super::types::HostedSessionInfo {
+        session_id: "ses_hosted_ui".to_string(),
+        pid: 4242,
+        cwd: "/tmp/proj".to_string(),
+        project_name: "proj".to_string(),
+        chat_id: 42,
+        mode: super::types::SessionHostingDecisionMode::Manual,
+        started_at: 1,
+        last_observed_step: 3,
+        completed_todos_count: 1,
+        total_todos_count: 2,
+        active_question_summary: question_summary.map(|s| s.to_string()),
+    }
+}
+
+fn flatten_callbacks(markup: &InlineKeyboardMarkup) -> Vec<String> {
+    markup
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .filter_map(|button| button.callback_data.clone())
+        .collect()
+}
+
+fn flatten_labels(markup: &InlineKeyboardMarkup) -> Vec<String> {
+    markup
+        .inline_keyboard
+        .iter()
+        .flatten()
+        .map(|button| button.text.clone())
+        .collect()
+}
+
+#[test]
+fn hosted_overview_card_shows_pending_question() {
+    use super::card_builder::CardBuilder;
+
+    let session = hosted_ui_session(Some("Choose deployment target"));
+    let (text, markup) = CardBuilder::hosted_sessions_overview_card(&[session]);
+    assert!(text.contains("待答"), "overview text: {}", text);
+    assert!(text.contains("Choose deployment target"));
+    let callbacks = flatten_callbacks(&markup);
+    let labels = flatten_labels(&markup);
+    assert!(callbacks.iter().any(|c| c == "host_question:ses_hosted_ui"));
+    assert!(labels.iter().any(|l| l.contains("查看待答提问")));
+    assert!(callbacks.iter().any(|c| c.starts_with("toggle_host_mode:")));
+    assert!(callbacks.iter().any(|c| c.starts_with("stop_host:")));
+}
+
+#[test]
+fn hosted_overview_card_without_question_has_no_resend() {
+    use super::card_builder::CardBuilder;
+
+    let session = hosted_ui_session(None);
+    let (text, markup) = CardBuilder::hosted_sessions_overview_card(&[session]);
+    assert!(!text.contains("待答"), "overview text: {}", text);
+    let callbacks = flatten_callbacks(&markup);
+    assert!(!callbacks.iter().any(|c| c.starts_with("host_question:")));
+}
+
+#[test]
+fn hosted_session_detail_card_shows_question_and_action() {
+    use super::card_builder::CardBuilder;
+    use super::session_inventory::{SessionEntry, SessionEntryKind};
+
+    let entry = SessionEntry {
+        primary_kind: SessionEntryKind::Hosted,
+        kinds: vec![SessionEntryKind::Hosted],
+        session_id: Some("ses_hosted_ui".to_string()),
+        session_id_marker: String::new(),
+        plan_id: None,
+        pid: Some(4242),
+        project_name: "proj".to_string(),
+        status_label: "Hosted".to_string(),
+        is_busy: false,
+    };
+
+    let (text, markup) = CardBuilder::session_detail_card_with_hosted_question(
+        &entry,
+        None,
+        Some("Choose deployment target"),
+    );
+    assert!(text.contains("待答提问"), "detail text: {}", text);
+    assert!(text.contains("Choose deployment target"));
+    let markup = markup.expect("hosted question detail must carry a keyboard");
+    assert!(flatten_callbacks(&markup)
+        .iter()
+        .any(|c| c == "host_question:ses_hosted_ui"));
+
+    let (plain_text, plain_markup) =
+        CardBuilder::session_detail_card_with_hosted_question(&entry, None, None);
+    assert!(!plain_text.contains("待答提问"), "detail text: {}", plain_text);
+    let plain_callbacks = plain_markup
+        .as_ref()
+        .map(flatten_callbacks)
+        .unwrap_or_default();
+    assert!(!plain_callbacks.iter().any(|c| c.starts_with("host_question:")));
+}
+
+#[test]
+fn hosted_question_expired_card_reports_status() {
+    use super::card_builder::CardBuilder;
+
+    let text = CardBuilder::hosted_question_expired_card("ses_hosted_ui");
+    assert!(text.contains("已不再等待"), "expired card: {}", text);
+    assert!(text.contains("ses_hosted_ui"));
+    assert!(!text.contains("决策已收到"));
+}

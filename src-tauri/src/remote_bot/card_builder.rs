@@ -5,7 +5,9 @@ use super::session_inventory::{
     IdentifierResolution, PlanExecutionState, SessionEntry, SessionEntryKind,
     SessionProgressDetail,
 };
-use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup};
+use super::types::{
+    ExternalOpenCodeSessionInfo, HostedSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup,
+};
 
 /// Telegram 移动端高可读性卡片构建器
 pub struct CardBuilder;
@@ -1438,6 +1440,69 @@ impl CardBuilder {
         (text, InlineKeyboardMarkup::new(buttons))
     }
 
+    /// `/host` 无参数时的托管会话概览，逐会话列出待答提问与重新发送入口。
+    pub fn hosted_sessions_overview_card(
+        sessions: &[HostedSessionInfo],
+    ) -> (String, InlineKeyboardMarkup) {
+        let mut summary = "🤖 *当前正在完全托管的会话*：\n\n".to_string();
+        let mut buttons = Vec::new();
+        for (idx, h) in sessions.iter().enumerate() {
+            let mode_str = match h.mode {
+                super::types::SessionHostingDecisionMode::Manual => "🎯 手动决断",
+                super::types::SessionHostingDecisionMode::AutoRecommended => "⚡ 自动推荐",
+            };
+            summary.push_str(&format!(
+                "{} *{}* (PID: {})\n> ├─ 会话: `{}`\n> ├─ 模式: `{}`\n> └─ 进度: Step {} · Todos {}/{} 完成\n",
+                Self::number_badge(idx + 1),
+                h.project_name,
+                h.pid,
+                h.session_id,
+                mode_str,
+                h.last_observed_step,
+                h.completed_todos_count,
+                h.total_todos_count
+            ));
+            if let Some(question) = &h.active_question_summary {
+                summary.push_str(&format!(
+                    "> ❓ 待答提问: {}\n",
+                    Self::clip_chars(question, 120, true)
+                ));
+            }
+            summary.push('\n');
+
+            buttons.push(vec![
+                InlineKeyboardButton::callback(
+                    format!("⚙️ 切换模式 ({})", h.project_name),
+                    format!("toggle_host_mode:{}", h.session_id),
+                ),
+                InlineKeyboardButton::callback(
+                    format!("🛑 退出托管 ({})", h.project_name),
+                    format!("stop_host:{}", h.session_id),
+                ),
+            ]);
+            if h.active_question_summary.is_some() {
+                buttons.push(vec![InlineKeyboardButton::callback(
+                    "❓ 查看待答提问",
+                    format!("host_question:{}", h.session_id),
+                )]);
+            }
+        }
+        summary.push_str("_可在聊天框直接回复以注入指令，或发送 `/unhost` 退出托管。_");
+        (summary, InlineKeyboardMarkup::new(buttons))
+    }
+
+    /// 待答提问已过期或在别处得到答复时的状态卡片。
+    pub fn hosted_question_expired_card(session_id: &str) -> String {
+        format!(
+            "⌛ *提问已失效*\n\
+            > ├─ 目标会话: `{}`\n\
+            > └─ 状态: `已不再等待该提问的答复`\n\n\
+            该提问已在其他位置被回答，或已超时过期，本次没有提交任何答复。\n\
+            发送 `/host` 查看当前托管会话，或等待新的提问。",
+            session_id
+        )
+    }
+
     /// 卡片 33: 托管自主决策代执行通知
     pub fn hosted_auto_decision_card(
         project_name: &str,
@@ -1622,6 +1687,39 @@ impl CardBuilder {
         };
 
         (lines.join("\n"), markup)
+    }
+
+    /// 在托管会话详情后追加待答提问，并提供重新发送该提问的按钮。
+    pub fn session_detail_card_with_hosted_question(
+        entry: &SessionEntry,
+        progress: Option<&SessionProgressDetail>,
+        active_question_summary: Option<&str>,
+    ) -> (String, Option<InlineKeyboardMarkup>) {
+        let (mut text, mut markup) = Self::session_detail_card(entry, progress);
+        if entry.primary_kind != SessionEntryKind::Hosted {
+            return (text, markup);
+        }
+        let Some(summary) = active_question_summary else {
+            return (text, markup);
+        };
+
+        text.push_str(&format!(
+            "\n\n▫️ *待答提问*\n> ❓ {}\n\n_点击下方按钮重新发送该提问。_",
+            Self::clip_chars(summary, 120, true)
+        ));
+
+        if let Some(session_id) = entry.session_id.as_deref() {
+            let button = InlineKeyboardButton::callback(
+                "❓ 查看待答提问",
+                format!("host_question:{}", session_id),
+            );
+            match markup.as_mut() {
+                Some(existing) => existing.inline_keyboard.push(vec![button]),
+                None => markup = Some(InlineKeyboardMarkup::new(vec![vec![button]])),
+            }
+        }
+
+        (text, markup)
     }
 
     /// 方案进度详情，并附带当前方案执行的会话标识与执行状态。

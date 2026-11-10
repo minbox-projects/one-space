@@ -604,8 +604,32 @@ impl CommandRouter {
                                 &super::opencode_inspector::resolve_opencode_db_path(),
                             )
                         });
-                        let (text, markup) =
-                            CardBuilder::session_detail_card(&entry, progress.as_ref());
+                        let active_question_summary = if entry.primary_kind
+                            == super::session_inventory::SessionEntryKind::Hosted
+                        {
+                            self.supervisor
+                                .list_hosted_sessions(None)
+                                .await
+                                .into_iter()
+                                .find(|hosted| {
+                                    Some(hosted.session_id.as_str())
+                                        == entry.session_id.as_deref()
+                                })
+                                .and_then(|hosted| hosted.active_question_summary)
+                        } else {
+                            None
+                        };
+                        let (text, markup) = if entry.primary_kind
+                            == super::session_inventory::SessionEntryKind::Hosted
+                        {
+                            CardBuilder::session_detail_card_with_hosted_question(
+                                &entry,
+                                progress.as_ref(),
+                                active_question_summary.as_deref(),
+                            )
+                        } else {
+                            CardBuilder::session_detail_card(&entry, progress.as_ref())
+                        };
                         self.client
                             .send_message(chat_id, &text, markup, Some("Markdown"))
                             .await?;
@@ -703,31 +727,11 @@ impl CommandRouter {
         // 2. 无参数：检查当前是否已有托管中的会话
         let current_hosted = self.supervisor.list_hosted_sessions(Some(chat_id)).await;
         if !current_hosted.is_empty() {
-            let mut summary = "🤖 *当前正在完全托管的会话*：\n\n".to_string();
-            let mut buttons = Vec::new();
-            for (idx, h) in current_hosted.iter().enumerate() {
-                let mode_str = match h.mode {
-                    super::types::SessionHostingDecisionMode::Manual => "🎯 手动决断",
-                    super::types::SessionHostingDecisionMode::AutoRecommended => "⚡ 自动推荐",
-                };
-                summary.push_str(&format!(
-                    "{} *{}* (PID: {})\n> ├─ 会话: `{}`\n> ├─ 模式: `{}`\n> └─ 进度: Step {} · Todos {}/{} 完成\n\n",
-                    CardBuilder::number_badge(idx + 1),
-                    h.project_name,
-                    h.pid,
-                    h.session_id,
-                    mode_str,
-                    h.last_observed_step,
-                    h.completed_todos_count,
-                    h.total_todos_count
-                ));
-                buttons.push(vec![
-                    InlineKeyboardButton::callback(format!("⚙️ 切换模式 ({})", h.project_name), format!("toggle_host_mode:{}", h.session_id)),
-                    InlineKeyboardButton::callback(format!("🛑 退出托管 ({})", h.project_name), format!("stop_host:{}", h.session_id)),
-                ]);
-            }
-            summary.push_str("_可在聊天框直接回复以注入指令，或发送 `/unhost` 退出托管。_");
-            self.client.send_message(chat_id, &summary, Some(InlineKeyboardMarkup::new(buttons)), Some("Markdown")).await?;
+            let (summary, markup) =
+                CardBuilder::hosted_sessions_overview_card(&current_hosted);
+            self.client
+                .send_message(chat_id, &summary, Some(markup), Some("Markdown"))
+                .await?;
             return Ok(());
         }
 
@@ -1674,6 +1678,37 @@ impl CommandRouter {
                     let notice = format!("🔄 会话 `{}` 的托管决策模式已切换为：*{}*", sid, mode_str);
                     self.client.send_message(msg.chat.id, &notice, Some(CardBuilder::sessions_actions()), Some("Markdown")).await?;
                 }
+            }
+        } else if let Some(sid) = data.strip_prefix("host_question:") {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            if let Some(question) = self.supervisor.get_active_question(sid).await {
+                let project_name = self
+                    .supervisor
+                    .list_hosted_sessions(None)
+                    .await
+                    .into_iter()
+                    .find(|hosted| hosted.session_id == sid)
+                    .map(|hosted| hosted.project_name)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let (text, markup) = CardBuilder::hosted_question_card(
+                    &project_name,
+                    sid,
+                    &question.question_text,
+                    &question.options,
+                );
+                self.client
+                    .send_message(chat_id, &text, Some(markup), Some("Markdown"))
+                    .await?;
+            } else {
+                let text = CardBuilder::hosted_question_expired_card(sid);
+                self.client
+                    .send_message(
+                        chat_id,
+                        &text,
+                        Some(CardBuilder::sessions_actions()),
+                        Some("Markdown"),
+                    )
+                    .await?;
             }
         } else if let Some(ans_payload) = data.strip_prefix("host_ans:") {
             // host_ans:<session_id>:<opt_idx>
