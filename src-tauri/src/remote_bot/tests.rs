@@ -5031,3 +5031,154 @@ async fn cancel_shutdown_clears_pending_permission() {
     server.shutdown();
 }
 
+
+fn hosted_test_session(session_id: &str, pid: u32) -> super::types::ExternalOpenCodeSessionInfo {
+    super::types::ExternalOpenCodeSessionInfo {
+        pid,
+        ppid: 1,
+        elapsed: "00:00".to_string(),
+        command: "opencode".to_string(),
+        cwd: "/tmp".to_string(),
+        project_name: "proj".to_string(),
+        session_id: Some(session_id.to_string()),
+        title: None,
+        model: None,
+        agent: None,
+        is_busy: false,
+        current_step: None,
+        last_tool: None,
+        last_tool_status: None,
+        last_tool_input_preview: None,
+        last_reasoning: None,
+        todos: Vec::new(),
+        tokens_input: 0,
+        tokens_output: 0,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        updated_at: None,
+    }
+}
+
+fn hosted_test_question(call_id: &str, question_text: &str) -> super::types::HostedQuestionItem {
+    super::types::HostedQuestionItem {
+        call_id: call_id.to_string(),
+        question_text: question_text.to_string(),
+        options: vec![super::types::HostedOptionItem {
+            index: 1,
+            label: "A".to_string(),
+            description: None,
+            is_recommended: false,
+        }],
+    }
+}
+
+fn hosted_test_supervisor() -> super::session_supervisor::SessionSupervisor {
+    let client = Arc::new(super::client::TelegramClient::with_base_url(
+        "test-token",
+        "http://127.0.0.1:9",
+    ));
+    let bridge = Arc::new(super::opencode_bridge::OpenCodeBridge::new(client.clone()));
+    super::session_supervisor::SessionSupervisor::new(client, bridge)
+}
+
+#[tokio::test]
+async fn hosted_failed_answer_keeps_question_retryable() {
+    let client = Arc::new(super::client::TelegramClient::with_base_url(
+        "test-token",
+        "http://127.0.0.1:9",
+    ));
+    let bridge = Arc::new(super::opencode_bridge::OpenCodeBridge::new(client.clone()));
+    let supervisor = super::session_supervisor::SessionSupervisor::new(client, bridge.clone());
+    supervisor
+        .start_hosting(
+            42,
+            hosted_test_session("ses_hosted_1", 4242),
+            super::types::SessionHostingDecisionMode::Manual,
+        )
+        .await
+        .expect("hosting must start");
+
+    let question = hosted_test_question("call-1", "Choose an option");
+    supervisor
+        .set_active_question("ses_hosted_1", question.clone())
+        .await;
+
+    bridge.set_busy_for_test(true);
+    let result = supervisor
+        .handle_answer_question(42, "ses_hosted_1", 1)
+        .await;
+    assert!(result.is_err(), "busy injection must fail");
+
+    assert_eq!(
+        supervisor.get_active_question("ses_hosted_1").await,
+        Some(question),
+        "a failed injection must keep the question retryable"
+    );
+    let hosted = supervisor.list_hosted_sessions(Some(42)).await;
+    let record = hosted
+        .iter()
+        .find(|h| h.session_id == "ses_hosted_1")
+        .expect("session must still be hosted");
+    assert_eq!(
+        record.active_question_summary,
+        Some("Choose an option".to_string())
+    );
+
+    bridge.set_busy_for_test(false);
+    supervisor.stop_hosting("ses_hosted_1").await;
+}
+
+#[tokio::test]
+async fn hosted_stale_question_clear_and_detection() {
+    use super::session_supervisor::question_stale;
+
+    assert!(!question_stale(Some("call-1"), Some("call-1")));
+    assert!(question_stale(Some("call-1"), Some("call-2")));
+    assert!(question_stale(Some("call-1"), None));
+    assert!(!question_stale(None, Some("call-1")));
+
+    let supervisor = hosted_test_supervisor();
+    supervisor
+        .start_hosting(
+            43,
+            hosted_test_session("ses_hosted_2", 4343),
+            super::types::SessionHostingDecisionMode::Manual,
+        )
+        .await
+        .expect("hosting must start");
+    supervisor
+        .set_active_question("ses_hosted_2", hosted_test_question("call-1", "Choose an option"))
+        .await;
+    assert!(supervisor.get_active_question("ses_hosted_2").await.is_some());
+
+    supervisor.clear_active_question("ses_hosted_2").await;
+    assert_eq!(supervisor.get_active_question("ses_hosted_2").await, None);
+    let hosted = supervisor.list_hosted_sessions(Some(43)).await;
+    let record = hosted
+        .iter()
+        .find(|h| h.session_id == "ses_hosted_2")
+        .expect("session must still be hosted");
+    assert_eq!(record.active_question_summary, None);
+
+    supervisor.stop_hosting("ses_hosted_2").await;
+}
+
+#[test]
+fn hosted_idle_resets_while_question_pending() {
+    use super::session_supervisor::next_idle_checks;
+
+    assert_eq!(next_idle_checks(1, false, true), 0);
+    assert_eq!(next_idle_checks(1, true, false), 0);
+    assert_eq!(next_idle_checks(0, false, false), 1);
+    assert_eq!(next_idle_checks(1, false, false), 2);
+}
+
+#[test]
+fn hosted_completion_waits_for_pending_question() {
+    use super::session_supervisor::completion_due;
+
+    assert!(!completion_due(2, true));
+    assert!(completion_due(2, false));
+    assert!(!completion_due(1, false));
+    assert!(!completion_due(5, true));
+}

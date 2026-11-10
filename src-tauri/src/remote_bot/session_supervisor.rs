@@ -26,6 +26,7 @@ struct HostedSessionRecord {
 pub struct SessionSupervisor {
     hosted_sessions: Arc<RwLock<HashMap<String, HostedSessionRecord>>>,
     active_questions: Arc<RwLock<HashMap<String, HostedQuestionItem>>>,
+    answering: Arc<RwLock<HashSet<String>>>,
     client: Arc<TelegramClient>,
     bridge: Arc<OpenCodeBridge>,
 }
@@ -35,6 +36,7 @@ impl SessionSupervisor {
         Self {
             hosted_sessions: Arc::new(RwLock::new(HashMap::new())),
             active_questions: Arc::new(RwLock::new(HashMap::new())),
+            answering: Arc::new(RwLock::new(HashSet::new())),
             client,
             bridge,
         }
@@ -160,6 +162,27 @@ impl SessionSupervisor {
         self.active_questions.read().await.get(session_id).cloned()
     }
 
+    /// 注册待答复提问，并在托管记录中同步问题摘要。
+    pub async fn set_active_question(&self, session_id: &str, item: HostedQuestionItem) {
+        self.active_questions
+            .write()
+            .await
+            .insert(session_id.to_string(), item.clone());
+        let mut hosts = self.hosted_sessions.write().await;
+        if let Some(rec) = hosts.get_mut(session_id) {
+            rec.info.active_question_summary = Some(item.question_text);
+        }
+    }
+
+    /// 清除待答复提问及其托管记录中的问题摘要。
+    pub async fn clear_active_question(&self, session_id: &str) {
+        self.active_questions.write().await.remove(session_id);
+        let mut hosts = self.hosted_sessions.write().await;
+        if let Some(rec) = hosts.get_mut(session_id) {
+            rec.info.active_question_summary = None;
+        }
+    }
+
     /// 用户在 Telegram 点击提问选项后进行回答注入
     pub async fn handle_answer_question(
         &self,
@@ -167,28 +190,47 @@ impl SessionSupervisor {
         session_id: &str,
         option_index: usize,
     ) -> Result<String, String> {
-        let (cwd, chosen_label) = {
-            let mut q_map = self.active_questions.write().await;
-            let q_item = match q_map.get(session_id) {
+        {
+            let mut answering = self.answering.write().await;
+            if !answering.insert(session_id.to_string()) {
+                return Err("该提问正在处理中，请勿重复提交".to_string());
+            }
+        }
+
+        let result = self
+            .answer_question_inner(chat_id, session_id, option_index)
+            .await;
+
+        self.answering.write().await.remove(session_id);
+        result
+    }
+
+    /// 执行回答注入；仅在注入成功后清除提问，失败时保留以便重试。
+    async fn answer_question_inner(
+        &self,
+        chat_id: i64,
+        session_id: &str,
+        option_index: usize,
+    ) -> Result<String, String> {
+        let chosen_label = {
+            let questions = self.active_questions.read().await;
+            let q_item = match questions.get(session_id) {
                 Some(q) => q,
                 None => return Err("未找到待应答的提问（可能已被处理或过期）".to_string()),
             };
 
-            let opt = match q_item.options.iter().find(|o| o.index == option_index) {
-                Some(o) => o.clone(),
+            match q_item.options.iter().find(|o| o.index == option_index) {
+                Some(o) => o.label.clone(),
                 None => return Err(format!("未找到选项序号 {}", option_index)),
-            };
+            }
+        };
 
+        let cwd = {
             let hosts = self.hosted_sessions.read().await;
-            let host_rec = match hosts.get(session_id) {
-                Some(r) => r,
+            match hosts.get(session_id) {
+                Some(r) => r.info.cwd.clone(),
                 None => return Err("该会话未处于托管状态".to_string()),
-            };
-
-            let cwd = host_rec.info.cwd.clone();
-            let label = opt.label.clone();
-            q_map.remove(session_id);
-            (cwd, label)
+            }
         };
 
         // 将选中的选项内容注入已有会话继续执行
@@ -199,6 +241,7 @@ impl SessionSupervisor {
             &chosen_label,
         ).await?;
 
+        self.clear_active_question(session_id).await;
         Ok(chosen_label)
     }
 
@@ -238,7 +281,7 @@ impl SessionSupervisor {
             let mut last_step: u32 = 0;
             let mut known_completed_todos: HashSet<String> = HashSet::new();
             let mut handled_question_calls: HashSet<String> = HashSet::new();
-            let mut consecutive_idle_checks = 0;
+            let mut consecutive_idle_checks: u32 = 0;
 
             // 初始化已知完成待办
             if let Some(snap) = inspect_session_db(&db_path, &session_id) {
@@ -261,6 +304,7 @@ impl SessionSupervisor {
 
                 // 纯同步检查数据库快照，确保 Connection 不跨越任何 await 点
                 let snap_opt = inspect_session_db(&db_path, &session_id);
+                let mut db_call_id: Option<String> = None;
 
                 if let Some(snap) = snap_opt {
                     // A. 待办进展检测 (Todo Milestone Progression)
@@ -308,6 +352,7 @@ impl SessionSupervisor {
 
                     // C. 提问与决策检测 (Interactive Questioning & Decision)
                     if let Some((call_id, q_text, options)) = snap.pending_question {
+                        db_call_id = Some(call_id.clone());
                         if !handled_question_calls.contains(&call_id) {
                             let question_item = HostedQuestionItem {
                                 call_id: call_id.clone(),
@@ -344,6 +389,11 @@ impl SessionSupervisor {
                             } else {
                                 // 人工决断：注册至待答复并推送带有选项按钮的卡片
                                 active_questions.write().await.insert(session_id.clone(), question_item);
+                                let mut hosts = hosted_sessions.write().await;
+                                if let Some(rec) = hosts.get_mut(&session_id) {
+                                    rec.info.active_question_summary = Some(q_text.clone());
+                                }
+                                drop(hosts);
 
                                 let (q_msg, markup) = CardBuilder::hosted_question_card(
                                     &project_name,
@@ -357,16 +407,32 @@ impl SessionSupervisor {
                     }
                 }
 
+                // 对账：内存中的提问若已不在数据库待答状态，则视为过期并清除
+                let memory_call_id = {
+                    let questions = active_questions.read().await;
+                    questions.get(&session_id).map(|q| q.call_id.clone())
+                };
+                let mut memory_question_present = false;
+                if let Some(memory_id) = memory_call_id {
+                    if question_stale(Some(&memory_id), db_call_id.as_deref()) {
+                        active_questions.write().await.remove(&session_id);
+                        let mut hosts = hosted_sessions.write().await;
+                        if let Some(rec) = hosts.get_mut(&session_id) {
+                            rec.info.active_question_summary = None;
+                        }
+                    } else {
+                        memory_question_present = true;
+                    }
+                }
+                let has_pending_question = memory_question_present || db_call_id.is_some();
+
                 // D. 状态与完工检测 (Idle / Completion Detection)
                 let is_busy = check_session_busy_state(&log_path, &session_id);
-                if !is_busy {
-                    consecutive_idle_checks += 1;
-                } else {
-                    consecutive_idle_checks = 0;
-                }
+                consecutive_idle_checks =
+                    next_idle_checks(consecutive_idle_checks, is_busy, has_pending_question);
 
-                // 连续 2 次（约 4 秒）确认处于 Idle，判定会话圆满交付并结束托管
-                if consecutive_idle_checks >= 2 {
+                // 连续 2 次（约 4 秒）空闲且无待答提问，判定会话圆满交付并结束托管
+                if completion_due(consecutive_idle_checks, has_pending_question) {
                     info!("[Supervisor] 会话 {} (PID: {}) 已圆满结束执行，推送最终报告", session_id, pid);
 
                     let (started_at, total_steps) = {
@@ -406,6 +472,29 @@ impl SessionSupervisor {
 
             info!("[Supervisor] 会话 {} 的托管守护协程已正常退出", session_id);
         });
+    }
+}
+
+/// 计算连续空闲检查次数：忙碌或仍有待答提问时归零，否则累加。
+pub(super) fn next_idle_checks(current: u32, is_busy: bool, has_pending_question: bool) -> u32 {
+    if is_busy || has_pending_question {
+        0
+    } else {
+        current.saturating_add(1)
+    }
+}
+
+/// 连续两次空闲且无待答提问时才判定会话完工。
+pub(super) fn completion_due(idle_checks: u32, has_pending_question: bool) -> bool {
+    !has_pending_question && idle_checks >= 2
+}
+
+/// 仅当内存中存在提问且其 call ID 与数据库待答 call ID 不一致时视为过期；
+/// 数据库无待答提问（`None`）同样视为过期。
+pub(super) fn question_stale(memory_call_id: Option<&str>, db_call_id: Option<&str>) -> bool {
+    match memory_call_id {
+        Some(memory_id) => Some(memory_id) != db_call_id,
+        None => false,
     }
 }
 

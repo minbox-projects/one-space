@@ -797,6 +797,12 @@ impl OpenCodeBridge {
         *self.server_process.lock().await = Some(child);
     }
 
+    /// 在测试中直接设置桥接忙碌状态。
+    #[cfg(test)]
+    pub(super) fn set_busy_for_test(&self, busy: bool) {
+        self.is_busy.store(busy, Ordering::SeqCst);
+    }
+
     /// 清空任务级状态；取消与正常结束共用同一套清理。
     async fn clear_task_state(&self) {
         *self.active_session_id.write().await = None;
