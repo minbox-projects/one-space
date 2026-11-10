@@ -575,41 +575,55 @@ fn test_resolve_executable_path() {
 #[test]
 fn test_resolve_project_dir_multi_workspaces() {
     use super::router::{resolve_project_dir, collect_all_workspaces, collect_featured_projects};
-    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let current_dir = env::current_dir().unwrap_or_default();
-    let canon_current = std::fs::canonicalize(&current_dir).unwrap_or_else(|_| current_dir.clone());
-    let current_str = canon_current.to_string_lossy().to_string();
-    let folder_name = canon_current.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // 使用进程内唯一的临时目录，避免依赖机器上的全局工作空间记录或仓库目录名。
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_path = std::env::temp_dir().join(format!(
+        "onespace-remote-bot-workspace-{}-{}",
+        std::process::id(),
+        unique
+    ));
+    std::fs::create_dir_all(&temp_path).expect("临时工作目录必须创建成功");
+    let canon_temp = std::fs::canonicalize(&temp_path).expect("临时工作目录必须可规范化");
+    let temp_str = canon_temp.to_string_lossy().to_string();
+    let folder_name = canon_temp
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
 
     let mut config = RemoteBotConfig::default();
-    config.workspace_directories = vec![current_str.clone()];
+    config.workspace_directories = vec![temp_str.clone()];
 
     // 1. active_workspace 命中 workspace_directories 中的文件夹名
-    if !folder_name.is_empty() {
-        config.active_workspace = Some(folder_name.clone());
-        let resolved = resolve_project_dir(&config);
-        assert_eq!(resolved, canon_current);
-    }
+    assert!(!folder_name.is_empty());
+    config.active_workspace = Some(folder_name.clone());
+    let resolved = resolve_project_dir(&config);
+    assert_eq!(resolved, canon_temp);
 
     // 2. active_workspace 直接是绝对路径
-    config.active_workspace = Some(current_str.clone());
+    config.active_workspace = Some(temp_str.clone());
     let resolved = resolve_project_dir(&config);
-    assert_eq!(resolved, canon_current);
+    assert_eq!(resolved, canon_temp);
 
     // 3. active_workspace 为 None 时，自动使用 workspace_directories 中的第一个有效目录
     config.active_workspace = None;
     let resolved = resolve_project_dir(&config);
-    assert_eq!(resolved, canon_current);
+    assert_eq!(resolved, canon_temp);
 
-    // 4. 验证 collect_all_workspaces 包含当前工作目录
+    // 4. 验证 collect_all_workspaces 包含临时工作目录
     let all = collect_all_workspaces(&config);
-    assert!(all.iter().any(|it| it.path == canon_current));
+    assert!(all.iter().any(|it| it.path == canon_temp));
 
     // 5. 验证 collect_featured_projects 数量受控（上限不超过 8）
     let featured = collect_featured_projects(&config);
     assert!(featured.len() <= 8);
-    assert!(featured.iter().any(|it| it.path == canon_current));
+    assert!(featured.iter().any(|it| it.path == canon_temp));
+
+    let _ = std::fs::remove_dir_all(&temp_path);
 }
 
 #[test]
@@ -1084,9 +1098,14 @@ fn test_opencode_process_filter_and_project_detection() {
     assert!(is_opencode_executable_process("opencode run 'fix bugs'"));
 
     // 3. 有意义项目名称推导：子目录优先解析到 Git 仓库根目录
-    let cwd_sub = env!("CARGO_MANIFEST_DIR"); // .../onespace-app/src-tauri
+    let cwd_sub = env!("CARGO_MANIFEST_DIR"); // .../<仓库根目录>/src-tauri
+    let repo_root_name = std::path::Path::new(cwd_sub)
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .expect("src-tauri 必须位于仓库根目录下");
     let proj_name = detect_meaningful_project_name(cwd_sub);
-    assert_eq!(proj_name, "onespace-app");
+    assert_eq!(proj_name, repo_root_name);
 }
 
 #[test]
@@ -4602,5 +4621,292 @@ async fn permission_poller_expiry_clears_stale_request() {
     cancel.store(true, Ordering::SeqCst);
     let _ = handle.await;
     server.shutdown();
+}
+
+// --- Active task cancellation ---
+// Cancelling must terminate the owned process group, escalate when a child
+// ignores SIGTERM, leave unrelated groups running, suppress a late result from
+// the cancelled generation, and retire pending interaction cards.
+
+use super::opencode_bridge::CancelOutcome;
+use std::path::Path;
+
+/// Best-effort process-group cleanup for a test that fails before reaping.
+#[cfg(unix)]
+struct CancelGroupGuard {
+    pgid: u32,
+}
+
+#[cfg(unix)]
+impl Drop for CancelGroupGuard {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(format!("-{}", self.pgid))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Spawn a child in its own process group so group signals are observable.
+#[cfg(unix)]
+async fn cancel_spawn_group(
+    program: &str,
+    args: &[&str],
+) -> (tokio::process::Child, CancelGroupGuard) {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command.as_std_mut().process_group(0);
+    let child = command.spawn().expect("spawn grouped child");
+    let pgid = child.id().expect("grouped child pid");
+    (child, CancelGroupGuard { pgid })
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_process_group_terminates_sleep_child() {
+    use super::opencode_bridge::terminate_process_group;
+
+    let (mut child, _guard) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let pid = child.id().expect("sleep pid");
+
+    let outcome = terminate_process_group(pid, Duration::from_secs(2)).await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+
+    let waited = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    assert!(
+        waited.is_ok(),
+        "a terminated sleep child must be reaped within two seconds"
+    );
+    let _ = waited;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_process_group_force_kills_after_grace() {
+    use super::opencode_bridge::terminate_process_group;
+
+    let (mut child, _guard) =
+        cancel_spawn_group("/bin/sh", &["-c", "trap \"\" TERM; sleep 30"]).await;
+    let pid = child.id().expect("shell pid");
+
+    let outcome = terminate_process_group(pid, Duration::from_millis(300)).await;
+    assert_eq!(outcome, CancelOutcome::ForcedCancelled);
+
+    let waited = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+    assert!(
+        waited.is_ok(),
+        "a SIGTERM-ignoring child must exit after the forced SIGKILL"
+    );
+    let _ = waited;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_process_group_leaves_unrelated_group_running() {
+    use super::opencode_bridge::terminate_process_group;
+
+    let (mut child_a, _guard_a) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let pid_a = child_a.id().expect("first sleep pid");
+    let (mut child_b, _guard_b) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let pid_b = child_b.id().expect("second sleep pid");
+
+    let outcome = terminate_process_group(pid_a, Duration::from_secs(2)).await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+
+    let waited = tokio::time::timeout(Duration::from_secs(2), child_a.wait()).await;
+    assert!(waited.is_ok(), "the targeted group must be reaped");
+    let _ = waited;
+    assert!(
+        child_b.try_wait().expect("probe unrelated child").is_none(),
+        "an unrelated process group must keep running"
+    );
+
+    let _ = terminate_process_group(pid_b, Duration::from_secs(2)).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), child_b.wait()).await;
+}
+
+#[tokio::test]
+async fn cancel_reports_nothing_when_idle() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let generation_before = bridge.task_generation();
+    let snapshot_before = bridge.session_snapshot().await;
+
+    let outcome = bridge.cancel_active_task().await;
+
+    assert_eq!(outcome, CancelOutcome::NothingToCancel);
+    assert_eq!(bridge.task_generation(), generation_before);
+    let snapshot_after = bridge.session_snapshot().await;
+    assert!(snapshot_after.task.is_none());
+    assert_eq!(
+        snapshot_after.conversation_busy,
+        snapshot_before.conversation_busy
+    );
+    assert_eq!(
+        snapshot_after.conversation_session_id,
+        snapshot_before.conversation_session_id
+    );
+    assert_eq!(
+        snapshot_after.conversation_project_name,
+        snapshot_before.conversation_project_name
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_terminates_owned_process_and_suppresses_late_result() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let (mut child, _guard) = cancel_spawn_group("/bin/sleep", &["30"]).await;
+    let pid = child.id().expect("sleep pid");
+
+    bridge.track_active_process(pid).await;
+    bridge.begin_conversation(Path::new("/tmp/cancel-a")).await;
+    let old_generation = bridge.task_generation();
+
+    let outcome = bridge.cancel_active_task().await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+
+    let waited = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    assert!(
+        waited.is_ok(),
+        "cancelling must terminate the tracked process group"
+    );
+    let _ = waited;
+
+    assert!(
+        !bridge.should_publish_result(old_generation),
+        "a result from the cancelled generation must be suppressed"
+    );
+    let current_generation = bridge.task_generation();
+    assert!(
+        bridge.should_publish_result(current_generation),
+        "the current generation must stay publishable"
+    );
+    assert!(
+        bridge.session_snapshot().await.task.is_none(),
+        "cancelling must clear the active task snapshot"
+    );
+}
+
+#[tokio::test]
+async fn cancel_edits_pending_interaction_cards() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    registry.insert(permission_pending(
+        "per_cancel_card_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+    bridge.track_question_message(778).await;
+    bridge.begin_conversation(Path::new("/tmp/cancel-cards")).await;
+
+    let outcome = bridge.cancel_active_task().await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+    assert!(registry.is_empty(), "cancel must drop pending permissions");
+
+    permission_wait_until(
+        || {
+            permission_edit_messages(server.requests())
+                .iter()
+                .filter(|request| request.body.contains("已取消"))
+                .count()
+                == 2
+        },
+        "both pending interaction cards to be edited as cancelled",
+    )
+    .await;
+    let cancelled_edits: Vec<RecordedRequest> = permission_edit_messages(server.requests())
+        .into_iter()
+        .filter(|request| request.body.contains("已取消"))
+        .collect();
+    assert_eq!(
+        cancelled_edits.len(),
+        2,
+        "the pending question and permission cards must both be cancelled: {cancelled_edits:?}"
+    );
+
+    let expired = bridge
+        .permission_runtime()
+        .expire_due(&server.url(), Instant::now() + PERMISSION_TIMEOUT * 2)
+        .await;
+    assert_eq!(
+        expired, 0,
+        "cancelled cards must not expire or be denied later"
+    );
+    let deny_replies = permission_reply_posts(server.requests())
+        .into_iter()
+        .filter(|request| request.body.contains("\"reply\":\"deny\""))
+        .count();
+    assert_eq!(
+        deny_replies, 0,
+        "a cancelled pending card must not send a deny reply"
+    );
+    server.shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_forced_outcome_reported() {
+    use super::opencode_bridge::CANCEL_GRACE;
+
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let (mut child, _guard) =
+        cancel_spawn_group("/bin/sh", &["-c", "trap \"\" TERM; sleep 30"]).await;
+    let pid = child.id().expect("shell pid");
+
+    bridge.track_active_process(pid).await;
+    bridge.begin_conversation(Path::new("/tmp/cancel-forced")).await;
+
+    let outcome = bridge.cancel_active_task().await;
+    assert_eq!(outcome, CancelOutcome::ForcedCancelled);
+
+    let waited = tokio::time::timeout(CANCEL_GRACE + Duration::from_secs(3), child.wait()).await;
+    assert!(
+        waited.is_ok(),
+        "forced cancellation must reap the SIGTERM-ignoring child"
+    );
+    let _ = waited;
+}
+
+#[tokio::test]
+async fn cancel_late_generation_does_not_clear_newer_task() {
+    use super::opencode_bridge::BridgeTaskKind;
+
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    bridge.begin_conversation(Path::new("/tmp/cancel-old")).await;
+    let old_generation = bridge.task_generation();
+
+    let outcome = bridge.cancel_active_task().await;
+    assert_eq!(outcome, CancelOutcome::Cancelled);
+
+    bridge.begin_conversation(Path::new("/tmp/cancel-new")).await;
+    assert!(
+        !bridge.should_publish_result(old_generation),
+        "the cancelled generation must stay stale after a newer task starts"
+    );
+    assert!(
+        bridge.should_publish_result(bridge.task_generation()),
+        "the newer conversation generation must be publishable"
+    );
+
+    let snapshot = bridge.session_snapshot().await;
+    let task = snapshot
+        .task
+        .expect("the newer conversation must remain the active task");
+    assert_eq!(task.kind, BridgeTaskKind::Conversation);
+    assert_eq!(task.project_name.as_deref(), Some("cancel-new"));
+    assert_eq!(
+        snapshot.conversation_project_name.as_deref(),
+        Some("cancel-new")
+    );
 }
 

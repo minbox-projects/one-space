@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use log::{error, info, warn};
@@ -119,6 +119,103 @@ pub fn get_opencode_major_version(bin: &str) -> u32 {
         }
     }
     1
+}
+
+/// 取消一个受管任务时的真实结果，用于向用户如实汇报。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CancelOutcome {
+    NothingToCancel,
+    Cancelled,
+    ForcedCancelled,
+}
+
+/// SIGTERM 之后等待进程组自行退出的宽限期。
+pub(super) const CANCEL_GRACE: Duration = Duration::from_secs(2);
+
+/// 终止 `opencode run` 独占的进程组：先 SIGTERM，宽限期后仍未退出则 SIGKILL。
+///
+/// 该函数只接受由调用方以独立进程组启动的子进程 pid，绝不会作用于
+/// 当前进程组。
+pub(super) async fn terminate_process_group(pid: u32, grace: Duration) -> CancelOutcome {
+    #[cfg(unix)]
+    {
+        if !process_group_alive(pid) {
+            return CancelOutcome::Cancelled;
+        }
+        signal_process_group(pid, "TERM");
+        let deadline = Instant::now() + grace;
+        while Instant::now() < deadline {
+            if !process_group_alive(pid) {
+                return CancelOutcome::Cancelled;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        signal_process_group(pid, "KILL");
+        let kill_deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < kill_deadline {
+            if !process_group_alive(pid) {
+                return CancelOutcome::ForcedCancelled;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        CancelOutcome::ForcedCancelled
+    }
+    #[cfg(windows)]
+    {
+        let _ = grace;
+        let _ = std::process::Command::new("taskkill")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .arg("/T")
+            .arg("/F")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        CancelOutcome::Cancelled
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (pid, grace);
+        CancelOutcome::Cancelled
+    }
+}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: &str) {
+    let _ = std::process::Command::new("kill")
+        .arg(format!("-{signal}"))
+        .arg(format!("-{pid}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(unix)]
+fn process_group_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(format!("-{pid}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// 让子进程独占一个进程组，取消时才能整组终止其派生的子进程。
+fn configure_owned_process(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.as_std_mut().process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cmd;
+    }
 }
 
 // =========================================================================
@@ -406,6 +503,11 @@ pub struct OpenCodeBridge {
     active_project_dir: RwLock<Option<PathBuf>>,
     active_options: RwLock<std::collections::HashMap<usize, String>>,
     is_busy: Arc<AtomicBool>,
+    task_generation: Arc<AtomicU64>,
+    task_cancel_flag: Arc<AtomicBool>,
+    active_process_group: Arc<Mutex<Option<u32>>>,
+    active_question_message_id: Arc<RwLock<Option<i64>>>,
+    active_question_chat_id: Arc<RwLock<Option<i64>>>,
     conversation_session_id: RwLock<Option<String>>,
     conversation_project_name: RwLock<Option<String>>,
     conversation_busy: AtomicBool,
@@ -434,6 +536,11 @@ impl OpenCodeBridge {
             active_project_dir: RwLock::new(None),
             active_options: RwLock::new(std::collections::HashMap::new()),
             is_busy: Arc::new(AtomicBool::new(false)),
+            task_generation: Arc::new(AtomicU64::new(0)),
+            task_cancel_flag: Arc::new(AtomicBool::new(false)),
+            active_process_group: Arc::new(Mutex::new(None)),
+            active_question_message_id: Arc::new(RwLock::new(None)),
+            active_question_chat_id: Arc::new(RwLock::new(None)),
             conversation_session_id: RwLock::new(None),
             conversation_project_name: RwLock::new(None),
             conversation_busy: AtomicBool::new(false),
@@ -544,8 +651,116 @@ impl OpenCodeBridge {
         None
     }
 
-    /// 取消当前正在进行的任务与会话
-    pub async fn cancel_active_task(&self) {
+    /// 当前任务世代；取消会递增它，使旧任务的迟到结果失效。
+    pub(super) fn task_generation(&self) -> u64 {
+        self.task_generation.load(Ordering::SeqCst)
+    }
+
+    /// 仅当 `generation` 仍是当前世代时才允许发布任务结果。
+    pub(super) fn should_publish_result(&self, generation: u64) -> bool {
+        self.task_generation.load(Ordering::SeqCst) == generation
+    }
+
+    /// 开始新任务：复位取消标记并清理上一任务遗留的交互状态。
+    async fn begin_task_generation(&self) -> u64 {
+        let generation = self.task_generation.load(Ordering::SeqCst);
+        self.task_cancel_flag.store(false, Ordering::SeqCst);
+        *self.active_question_message_id.write().await = None;
+        *self.active_question_chat_id.write().await = None;
+        self.permission_runtime.registry().clear();
+        generation
+    }
+
+    /// 记录当前任务独占的进程组，供取消时整组终止。
+    pub(super) async fn track_active_process(&self, pid: u32) {
+        *self.active_process_group.lock().await = Some(pid);
+    }
+
+    /// 仅当记录的仍是 `pid` 时才清除，避免旧任务清掉新任务的记录。
+    async fn clear_active_process(&self, pid: u32) {
+        let mut guard = self.active_process_group.lock().await;
+        if guard.as_ref() == Some(&pid) {
+            *guard = None;
+        }
+    }
+
+    /// 记录最近发出的提问卡片，取消时可将其改为已取消。
+    pub(super) async fn track_question_message(&self, message_id: i64) {
+        *self.active_question_message_id.write().await = Some(message_id);
+    }
+
+    /// 当前是否存在待答复的 OpenCode 提问。
+    pub(super) async fn has_active_question(&self) -> bool {
+        self.active_question.read().await.is_some()
+    }
+
+    /// 取消当前任务：终止受管进程组、作废迟到结果并清理交互卡片。
+    pub async fn cancel_active_task(&self) -> CancelOutcome {
+        let busy = self.is_busy.load(Ordering::SeqCst);
+        let has_task = self.current_task.read().await.is_some();
+        let tracked_pid = *self.active_process_group.lock().await;
+
+        if !busy
+            && !has_task
+            && tracked_pid.is_none()
+            && self.permission_runtime.registry().is_empty()
+        {
+            return CancelOutcome::NothingToCancel;
+        }
+
+        self.task_generation.fetch_add(1, Ordering::SeqCst);
+        self.task_cancel_flag.store(true, Ordering::SeqCst);
+
+        let outcome = if let Some(pid) = tracked_pid {
+            let result = terminate_process_group(pid, CANCEL_GRACE).await;
+            self.clear_active_process(pid).await;
+            result
+        } else {
+            CancelOutcome::Cancelled
+        };
+
+        let question_message_id = self.active_question_message_id.write().await.take();
+        let question_chat_id = self.active_question_chat_id.write().await.take();
+
+        let pending = self.permission_runtime.registry().clear();
+        let fallback_chat_id = pending.first().map(|request| request.chat_id);
+        let telegram = self.telegram_client.clone();
+        for request in pending {
+            if let Some(message_id) = request.card_message_id {
+                let telegram = telegram.clone();
+                tokio::spawn(async move {
+                    let text = CardBuilder::permission_cancelled_card();
+                    let _ = telegram
+                        .edit_message_text(
+                            request.chat_id,
+                            message_id,
+                            &text,
+                            None,
+                            Some("Markdown"),
+                        )
+                        .await;
+                });
+            }
+        }
+
+        if let Some(message_id) = question_message_id {
+            if let Some(chat_id) = question_chat_id.or(fallback_chat_id) {
+                let telegram = telegram.clone();
+                tokio::spawn(async move {
+                    let text = CardBuilder::question_cancelled_card();
+                    let _ = telegram
+                        .edit_message_text(chat_id, message_id, &text, None, Some("Markdown"))
+                        .await;
+                });
+            }
+        }
+
+        self.clear_task_state().await;
+        outcome
+    }
+
+    /// 清空任务级状态；取消与正常结束共用同一套清理。
+    async fn clear_task_state(&self) {
         *self.active_session_id.write().await = None;
         *self.active_project_dir.write().await = None;
         *self.active_question.write().await = None;
@@ -656,6 +871,7 @@ impl OpenCodeBridge {
         if self.is_busy.swap(true, Ordering::SeqCst) {
             return Err("已有正在运行的任务，请等待当前任务完成或执行 /cancel".to_string());
         }
+        let generation = self.begin_task_generation().await;
 
         // 清理旧会话状态并保存目标工作区
         *self.active_session_id.write().await = None;
@@ -681,17 +897,19 @@ impl OpenCodeBridge {
                     },
                 )
                 .await;
-            bridge.finish_task().await;
-            bridge.is_busy.store(false, Ordering::SeqCst);
-            if let Err(e) = res {
-                error!("任务执行失败: {}", e);
-                let error_text = format!("❌ *执行阶段异常中断*\n\n原因:\n```\n{}\n```", e);
-                let _ = bridge.telegram_client.send_message(
-                    chat_id,
-                    &error_text,
-                    None,
-                    Some("Markdown"),
-                ).await;
+            if bridge.should_publish_result(generation) {
+                bridge.finish_task().await;
+                bridge.is_busy.store(false, Ordering::SeqCst);
+                if let Err(e) = res {
+                    error!("任务执行失败: {}", e);
+                    let error_text = format!("❌ *执行阶段异常中断*\n\n原因:\n```\n{}\n```", e);
+                    let _ = bridge.telegram_client.send_message(
+                        chat_id,
+                        &error_text,
+                        None,
+                        Some("Markdown"),
+                    ).await;
+                }
             }
         });
 
@@ -707,6 +925,7 @@ impl OpenCodeBridge {
         if self.is_busy.swap(true, Ordering::SeqCst) {
             return Err("已有正在运行的任务，请等待当前轮次完成".to_string());
         }
+        let generation = self.begin_task_generation().await;
 
         let session_id = self.active_session_id.read().await.clone()
             .ok_or_else(|| "当前没有活跃的会话，请先使用 /planning 发起需求或直接发送文字".to_string())?;
@@ -738,17 +957,19 @@ impl OpenCodeBridge {
                     BridgeTaskKind::Conversation,
                 )
                 .await;
-            bridge.finish_task().await;
-            bridge.is_busy.store(false, Ordering::SeqCst);
-            if let Err(e) = res {
-                error!("推进规划失败: {}", e);
-                let error_text = format!("❌ *推进规划异常中断*\n\n原因:\n```\n{}\n```", e);
-                let _ = bridge.telegram_client.send_message(
-                    chat_id,
-                    &error_text,
-                    None,
-                    Some("Markdown"),
-                ).await;
+            if bridge.should_publish_result(generation) {
+                bridge.finish_task().await;
+                bridge.is_busy.store(false, Ordering::SeqCst);
+                if let Err(e) = res {
+                    error!("推进规划失败: {}", e);
+                    let error_text = format!("❌ *推进规划异常中断*\n\n原因:\n```\n{}\n```", e);
+                    let _ = bridge.telegram_client.send_message(
+                        chat_id,
+                        &error_text,
+                        None,
+                        Some("Markdown"),
+                    ).await;
+                }
             }
         });
 
@@ -766,6 +987,7 @@ impl OpenCodeBridge {
         if self.is_busy.swap(true, Ordering::SeqCst) {
             return Err("已有正在运行的任务，请等待当前轮次完成或发送 /cancel".to_string());
         }
+        let generation = self.begin_task_generation().await;
 
         *self.active_session_id.write().await = Some(session_id.to_string());
         *self.active_project_dir.write().await = Some(project_dir.clone());
@@ -787,17 +1009,19 @@ impl OpenCodeBridge {
                     BridgeTaskKind::Prompt,
                 )
                 .await;
-            bridge.finish_task().await;
-            bridge.is_busy.store(false, Ordering::SeqCst);
-            if let Err(e) = res {
-                error!("向 OpenCode 会话投递提示词失败: {}", e);
-                let error_text = format!("❌ *执行阶段异常中断*\n\n原因:\n```\n{}\n```", e);
-                let _ = bridge.telegram_client.send_message(
-                    chat_id,
-                    &error_text,
-                    None,
-                    Some("Markdown"),
-                ).await;
+            if bridge.should_publish_result(generation) {
+                bridge.finish_task().await;
+                bridge.is_busy.store(false, Ordering::SeqCst);
+                if let Err(e) = res {
+                    error!("向 OpenCode 会话投递提示词失败: {}", e);
+                    let error_text = format!("❌ *执行阶段异常中断*\n\n原因:\n```\n{}\n```", e);
+                    let _ = bridge.telegram_client.send_message(
+                        chat_id,
+                        &error_text,
+                        None,
+                        Some("Markdown"),
+                    ).await;
+                }
             }
         });
 
@@ -872,16 +1096,22 @@ impl OpenCodeBridge {
             cmd.arg("--session").arg(sid);
         }
 
+        configure_owned_process(&mut cmd);
+
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
         let mut child = cmd.spawn()
             .map_err(|e| format!("启动 OpenCode Planning 失败: {}", e))?;
+        let child_pid = child.id();
+        if let Some(pid) = child_pid {
+            self.track_active_process(pid).await;
+        }
 
         let stdout = child.stdout.take().ok_or_else(|| "无法获取 opencode stdout".to_string())?;
 
-        // 启动提问与权限轮询守卫，并维持 typing 状态心跳
-        let cancel_flag = Arc::new(AtomicBool::new(false));
+        // 取消标记由 bridge 持有，/cancel 可直接打断读取循环。
+        let cancel_flag = self.task_cancel_flag.clone();
         let poll_guard = self.spawn_question_and_permission_poller(
             chat_id,
             status_msg.message_id,
@@ -896,37 +1126,58 @@ impl OpenCodeBridge {
         let mut captured_session_id: Option<String> = session_id_opt.clone();
         let mut text_parts: Vec<String> = Vec::new();
 
-        while let Ok(Some(line)) = reader.next_line().await {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                // 兼容 v1 与 v2 的 sessionID 字段位置
-                if let Some(sid) = extract_session_id_from_event(&v) {
-                    if matches!(
-                        task_kind,
-                        BridgeTaskKind::Conversation | BridgeTaskKind::Planning
-                    ) {
-                        self.record_conversation_session(&sid).await;
+        loop {
+            tokio::select! {
+                line_res = reader.next_line() => {
+                    let Ok(Some(line)) = line_res else { break };
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
                     }
-                    captured_session_id = Some(sid);
-                }
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                        // 兼容 v1 与 v2 的 sessionID 字段位置
+                        if let Some(sid) = extract_session_id_from_event(&v) {
+                            if matches!(
+                                task_kind,
+                                BridgeTaskKind::Conversation | BridgeTaskKind::Planning
+                            ) {
+                                self.record_conversation_session(&sid).await;
+                            }
+                            captured_session_id = Some(sid);
+                        }
 
-                // 兼容 v1 与 v2 的 text 消息格式
-                let event_type = v.get("type").and_then(|t| t.as_str());
-                if event_type == Some("text") {
-                    if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
-                        text_parts.push(text.to_string());
-                    } else if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
-                        text_parts.push(text.to_string());
+                        // 兼容 v1 与 v2 的 text 消息格式
+                        let event_type = v.get("type").and_then(|t| t.as_str());
+                        if event_type == Some("text") {
+                            if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
+                                text_parts.push(text.to_string());
+                            } else if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                                text_parts.push(text.to_string());
+                            }
+                        } else if event_type == Some("message") {
+                            if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
+                                text_parts.push(content.to_string());
+                            }
+                        }
                     }
-                } else if event_type == Some("message") {
-                    if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
-                        text_parts.push(content.to_string());
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        break;
                     }
                 }
             }
+        }
+
+        if cancel_flag.load(Ordering::SeqCst) {
+            let _ = poll_guard.await;
+            let _ = typing_guard.await;
+            if let Some(pid) = child_pid {
+                let _ = terminate_process_group(pid, CANCEL_GRACE).await;
+                let _ = child.wait().await;
+                self.clear_active_process(pid).await;
+            }
+            return Err("任务已取消".to_string());
         }
 
         let output = child.wait_with_output().await
@@ -935,6 +1186,9 @@ impl OpenCodeBridge {
         cancel_flag.store(true, Ordering::SeqCst);
         let _ = poll_guard.await;
         let _ = typing_guard.await;
+        if let Some(pid) = child_pid {
+            self.clear_active_process(pid).await;
+        }
 
         if let Some(ref sid) = captured_session_id {
             *self.active_session_id.write().await = Some(sid.clone());
@@ -1077,6 +1331,8 @@ impl OpenCodeBridge {
         let tg = self.telegram_client.clone();
         let runtime = self.permission_runtime.clone();
         let active_q_holder = self.active_question.clone();
+        let question_message_holder = self.active_question_message_id.clone();
+        let question_chat_holder = self.active_question_chat_id.clone();
 
         tokio::spawn(async move {
             let mut asked_questions = std::collections::HashSet::new();
@@ -1127,7 +1383,10 @@ impl OpenCodeBridge {
 
                             let text = format_question_request_message(first_q);
                             let markup = InlineKeyboardMarkup::new(buttons);
-                            let _ = tg.send_message(chat_id, &text, Some(markup), None).await;
+                            if let Ok(message) = tg.send_message(chat_id, &text, Some(markup), None).await {
+                                *question_message_holder.write().await = Some(message.message_id);
+                                *question_chat_holder.write().await = Some(chat_id);
+                            }
                         }
                     }
                 }
@@ -1349,6 +1608,7 @@ impl OpenCodeBridge {
         if self.is_busy.swap(true, Ordering::SeqCst) {
             return Err("已有正在运行的任务，请等待当前任务完成".to_string());
         }
+        let generation = self.begin_task_generation().await;
 
         // 方案已获确认开始实施，清空旧的规划会话（对话会话状态保留）
         *self.active_session_id.write().await = None;
@@ -1367,23 +1627,25 @@ impl OpenCodeBridge {
 
         tokio::spawn(async move {
             let res = bridge.run_coding_inner(chat_id, project_dir, &plan_tag, custom_prompt).await;
-            bridge.finish_task().await;
-            bridge.is_busy.store(false, Ordering::SeqCst);
-            if let Err(e) = res {
-                error!("Coding 实施失败: {}", e);
-                let clean_plan = plan_tag
-                    .trim_start_matches(".ai-workflow/plans/")
-                    .trim_start_matches("plans/")
-                    .trim_matches('/');
+            if bridge.should_publish_result(generation) {
+                bridge.finish_task().await;
+                bridge.is_busy.store(false, Ordering::SeqCst);
+                if let Err(e) = res {
+                    error!("Coding 实施失败: {}", e);
+                    let clean_plan = plan_tag
+                        .trim_start_matches(".ai-workflow/plans/")
+                        .trim_start_matches("plans/")
+                        .trim_matches('/');
 
-                let (error_text, markup) = CardBuilder::coding_failed_card(&clean_plan, "实施与规范审查", &e);
+                    let (error_text, markup) = CardBuilder::coding_failed_card(&clean_plan, "实施与规范审查", &e);
 
-                let _ = bridge.telegram_client.send_message(
-                    chat_id,
-                    &error_text,
-                    Some(markup),
-                    Some("Markdown"),
-                ).await;
+                    let _ = bridge.telegram_client.send_message(
+                        chat_id,
+                        &error_text,
+                        Some(markup),
+                        Some("Markdown"),
+                    ).await;
+                }
             }
         });
 
@@ -1432,15 +1694,21 @@ impl OpenCodeBridge {
 
         apply_run_connection(&mut cmd, is_v2, &server_url, &project_dir);
 
+        configure_owned_process(&mut cmd);
+
         let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("启动 OpenCode Coding 失败: {}", e))?;
+        let child_pid = child.id();
+        if let Some(pid) = child_pid {
+            self.track_active_process(pid).await;
+        }
 
         let stdout = child.stdout.take().ok_or_else(|| "无法获取 stdout".to_string())?;
 
-        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_flag = self.task_cancel_flag.clone();
         let poll_guard = self.spawn_question_and_permission_poller(
             chat_id,
             status_msg.message_id,
@@ -1454,28 +1722,49 @@ impl OpenCodeBridge {
         let mut reader = BufReader::new(stdout).lines();
         let mut text_parts: Vec<String> = Vec::new();
 
-        while let Ok(Some(line)) = reader.next_line().await {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(sid) = extract_session_id_from_event(&v) {
-                    self.record_plan_execution_session(&sid).await;
-                }
-                let event_type = v.get("type").and_then(|t| t.as_str());
-                if event_type == Some("text") {
-                    if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
-                        text_parts.push(text.to_string());
-                    } else if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
-                        text_parts.push(text.to_string());
+        loop {
+            tokio::select! {
+                line_res = reader.next_line() => {
+                    let Ok(Some(line)) = line_res else { break };
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
                     }
-                } else if event_type == Some("message") {
-                    if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
-                        text_parts.push(content.to_string());
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                        if let Some(sid) = extract_session_id_from_event(&v) {
+                            self.record_plan_execution_session(&sid).await;
+                        }
+                        let event_type = v.get("type").and_then(|t| t.as_str());
+                        if event_type == Some("text") {
+                            if let Some(text) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str()) {
+                                text_parts.push(text.to_string());
+                            } else if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                                text_parts.push(text.to_string());
+                            }
+                        } else if event_type == Some("message") {
+                            if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
+                                text_parts.push(content.to_string());
+                            }
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        break;
                     }
                 }
             }
+        }
+
+        if cancel_flag.load(Ordering::SeqCst) {
+            let _ = poll_guard.await;
+            let _ = typing_guard.await;
+            if let Some(pid) = child_pid {
+                let _ = terminate_process_group(pid, CANCEL_GRACE).await;
+                let _ = child.wait().await;
+                self.clear_active_process(pid).await;
+            }
+            return Err("任务已取消".to_string());
         }
 
         let output = child.wait_with_output().await
@@ -1484,6 +1773,9 @@ impl OpenCodeBridge {
         cancel_flag.store(true, Ordering::SeqCst);
         let _ = poll_guard.await;
         let _ = typing_guard.await;
+        if let Some(pid) = child_pid {
+            self.clear_active_process(pid).await;
+        }
 
         let accumulated_text = text_parts.join("\n");
         let stderr = String::from_utf8_lossy(&output.stderr);

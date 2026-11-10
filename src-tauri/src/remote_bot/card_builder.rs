@@ -966,10 +966,37 @@ impl CardBuilder {
 
     /// 卡片 22: 任务中断与取消确认卡片
     pub fn task_cancelled_card() -> String {
-        "🛑 *已请求取消当前任务*\n\
-        > ▫️ 当前状态: `取消请求已发送`\n\
-        > ▫️ 提示: `本地 OpenCode 进程可能仍在收尾，请稍候`\n\n\
+        "🛑 *已请求取消，任务已终止*\n\
+        > ▫️ 任务与受管进程组: `已终止`\n\
+        > ▫️ 结果: `该任务迟到的执行结果会被丢弃`\n\n\
         您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
+    }
+
+    /// 取消请求在宽限期后升级为 SIGKILL 时的真实结果卡片。
+    pub fn task_forced_cancel_card() -> String {
+        "🛑 *任务已被强制终止*\n\
+        > ▫️ 受管进程组: `宽限期后仍未退出，已强制结束`\n\
+        > ▫️ 结果: `该任务迟到的执行结果会被丢弃`\n\n\
+        您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
+    }
+
+    /// 没有受管任务可取消时的提示卡片。
+    pub fn nothing_to_cancel_card() -> String {
+        "ℹ️ *没有正在运行的任务*\n\n\
+        当前没有本机受管任务需要取消；外部或托管 OpenCode 会话不受影响。\n\n\
+        您可以发送 `/sessions` 查看会话状态，或输入 `/help` 查看说明。".to_string()
+    }
+
+    /// 已取消任务遗留的权限审批卡片。
+    pub fn permission_cancelled_card() -> String {
+        "⏹️ *权限请求已取消*\n\n\
+        所属任务已终止，本次审批已取消，不会再被处理。".to_string()
+    }
+
+    /// 已取消任务遗留的提问卡片。
+    pub fn question_cancelled_card() -> String {
+        "⏹️ *提问已取消*\n\n\
+        所属任务已终止，本次提问已取消，后续回答不会被接受。".to_string()
     }
 
     /// 卡片 23: 通用校验与异常报错卡片

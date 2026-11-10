@@ -6,7 +6,7 @@ use tokio::process::Command;
 use super::auth::AuthGuard;
 use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
-use super::opencode_bridge::{OpenCodeBridge, PermissionDecisionOutcome};
+use super::opencode_bridge::{CancelOutcome, OpenCodeBridge, PermissionDecisionOutcome};
 use super::permission::{parse_permission_callback, PermissionCallback, PermissionDecision};
 use super::storage::{load_config, save_config};
 use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup, PromptTargetSession, TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
@@ -272,8 +272,14 @@ impl CommandRouter {
         } else if text.starts_with("/diff") {
             self.handle_diff_command(chat_id, text).await?;
         } else if text == "/cancel" {
-            self.bridge.cancel_active_task().await;
-            let cancel_text = CardBuilder::task_cancelled_card();
+            let outcome = self.bridge.cancel_active_task().await;
+            self.pending_prompt_targets.write().await.remove(&chat_id);
+            self.pending_prompt_choices.write().await.remove(&chat_id);
+            let cancel_text = match outcome {
+                CancelOutcome::NothingToCancel => CardBuilder::nothing_to_cancel_card(),
+                CancelOutcome::Cancelled => CardBuilder::task_cancelled_card(),
+                CancelOutcome::ForcedCancelled => CardBuilder::task_forced_cancel_card(),
+            };
             self.client
                 .send_message(
                     chat_id,
@@ -1377,6 +1383,10 @@ impl CommandRouter {
                 ).await;
             }
         } else if let Some(q_info) = data.strip_prefix("ans_q:") {
+            // 取消后的任务不再接受迟到的提问回答。
+            if !self.bridge.has_active_question().await {
+                return Ok(());
+            }
             // ans_q:<question_id>:<option_index>
             let parts: Vec<&str> = q_info.splitn(2, ':').collect();
             if parts.len() == 2 {
@@ -1475,11 +1485,18 @@ impl CommandRouter {
                     .await;
             }
         } else if data == "cancel_task" {
-            self.bridge.cancel_active_task().await;
+            let outcome = self.bridge.cancel_active_task().await;
             if let Some(ref msg) = cb.message {
-                let update_text = CardBuilder::task_cancelled_card();
+                let chat_id = msg.chat.id;
+                self.pending_prompt_targets.write().await.remove(&chat_id);
+                self.pending_prompt_choices.write().await.remove(&chat_id);
+                let update_text = match outcome {
+                    CancelOutcome::NothingToCancel => CardBuilder::nothing_to_cancel_card(),
+                    CancelOutcome::Cancelled => CardBuilder::task_cancelled_card(),
+                    CancelOutcome::ForcedCancelled => CardBuilder::task_forced_cancel_card(),
+                };
                 let _ = self.client.edit_message_text(
-                    msg.chat.id,
+                    chat_id,
                     msg.message_id,
                     &update_text,
                     Some(CardBuilder::quick_actions()),
