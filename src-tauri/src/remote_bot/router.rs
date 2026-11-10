@@ -6,7 +6,8 @@ use tokio::process::Command;
 use super::auth::AuthGuard;
 use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
-use super::opencode_bridge::OpenCodeBridge;
+use super::opencode_bridge::{OpenCodeBridge, PermissionDecisionOutcome};
+use super::permission::{parse_permission_callback, PermissionCallback, PermissionDecision};
 use super::storage::{load_config, save_config};
 use super::types::{ExternalOpenCodeSessionInfo, InlineKeyboardButton, InlineKeyboardMarkup, PromptTargetSession, TelegramCallbackQuery, TelegramMessage, TelegramUpdate};
 
@@ -1452,6 +1453,26 @@ impl CommandRouter {
                     Some(CardBuilder::quick_actions()),
                     None,
                 ).await;
+            }
+        } else if let Some(callback) = parse_permission_callback(data) {
+            let (request_id, decision) = match callback {
+                PermissionCallback::Once(id) => (id, PermissionDecision::Once),
+                PermissionCallback::Always(id) => (id, PermissionDecision::Always),
+                PermissionCallback::Deny(id) => (id, PermissionDecision::Deny),
+            };
+            // The runtime owns the result card edit; the router only warns when
+            // the agent reply itself failed and the tap can be retried.
+            if self
+                .bridge
+                .decide_permission(&request_id, decision)
+                .await
+                == PermissionDecisionOutcome::ReplyFailed
+            {
+                let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+                let _ = self
+                    .client
+                    .send_message(chat_id, "⚠️ 提交权限决议失败，请稍后重试。", None, None)
+                    .await;
             }
         } else if data == "cancel_task" {
             self.bridge.cancel_active_task().await;

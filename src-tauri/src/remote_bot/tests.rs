@@ -3588,6 +3588,7 @@ struct FakeServerState {
     requests: Mutex<Vec<RecordedRequest>>,
     permissions_json: Mutex<String>,
     fail_send_message: AtomicBool,
+    fail_permission_reply: AtomicBool,
 }
 
 struct FakeHttpServer {
@@ -3606,6 +3607,7 @@ impl FakeHttpServer {
             requests: Mutex::new(Vec::new()),
             permissions_json: Mutex::new("[]".to_string()),
             fail_send_message: AtomicBool::new(false),
+            fail_permission_reply: AtomicBool::new(false),
         });
         let accept_state = state.clone();
         let accept_handle = tokio::spawn(async move {
@@ -3640,6 +3642,14 @@ impl FakeHttpServer {
 
     fn fail_send_message(&self, fail: bool) {
         self.state.fail_send_message.store(fail, Ordering::SeqCst);
+    }
+
+    /// Make every `/reply` POST answer HTTP 500 so a decision cannot be
+    /// forwarded while Telegram card delivery stays unaffected.
+    fn fail_permission_reply(&self, fail: bool) {
+        self.state
+            .fail_permission_reply
+            .store(fail, Ordering::SeqCst);
     }
 
     fn requests(&self) -> Vec<RecordedRequest> {
@@ -3731,7 +3741,11 @@ fn fake_response(state: &FakeServerState, method: &str, path: &str) -> (u16, Str
         let permissions = state.permissions_json.lock().unwrap().clone();
         (200, format!("{{\"data\":{permissions}}}"))
     } else if method == "POST" && path.ends_with("/reply") {
-        (200, "{\"ok\":true}".to_string())
+        if state.fail_permission_reply.load(Ordering::SeqCst) {
+            (500, "{\"ok\":false}".to_string())
+        } else {
+            (200, "{\"ok\":true}".to_string())
+        }
     } else if method == "POST" && path.ends_with("/sendMessage") {
         if state.fail_send_message.load(Ordering::SeqCst) {
             (
@@ -3796,6 +3810,13 @@ fn permission_send_messages(requests: Vec<RecordedRequest>) -> Vec<RecordedReque
     requests
         .into_iter()
         .filter(|request| request.method == "POST" && request.path.ends_with("/sendMessage"))
+        .collect()
+}
+
+fn permission_edit_messages(requests: Vec<RecordedRequest>) -> Vec<RecordedRequest> {
+    requests
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.path.ends_with("/editMessageText"))
         .collect()
 }
 
@@ -3983,3 +4004,331 @@ async fn permission_card_delivery_failure_keeps_request_pending() {
     );
     server.shutdown();
 }
+
+// --- Permission decisions ---
+// A decision is single-use: exactly one reply reaches the agent, the delivered
+// card is edited in place to show the outcome, and any reply failure keeps the
+// request pending so the operator can tap again.
+
+use super::opencode_bridge::PermissionDecisionOutcome;
+
+fn permission_pending(
+    request_id: &str,
+    risk: PermissionRisk,
+    sent_at: Instant,
+) -> PendingPermissionRequest {
+    PendingPermissionRequest::new(
+        request_id,
+        42,
+        "bash",
+        Some("cargo test".to_string()),
+        risk,
+        sent_at,
+    )
+    .with_card_message_id(Some(777))
+    .with_session_id(None)
+}
+
+#[tokio::test]
+async fn permission_decide_once_replies_once_and_edits_card() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_once_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_once_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionDecisionOutcome::Applied(PermissionDecision::Once)
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_once_1")
+        },
+        "once permission reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"once\""),
+        "reply payload must forward once: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains("\"response\":\"once\""),
+        "reply payload must forward once as response: {}",
+        reply.body
+    );
+
+    permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "card edit after once decision",
+    )
+    .await;
+    let edits = permission_edit_messages(server.requests());
+    assert_eq!(edits.len(), 1, "exactly one card edit: {edits:?}");
+    assert!(
+        edits[0].body.contains("已允许一次"),
+        "edited card must show the once outcome: {}",
+        edits[0].body
+    );
+    assert!(
+        registry.get("per_once_1").is_none(),
+        "a resolved request must leave the registry"
+    );
+
+    let outcome = runtime
+        .decide(&server.url(), "per_once_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::Ignored);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let replies = permission_reply_posts(server.requests());
+    assert_eq!(replies.len(), 1, "single-use decision sends one reply: {replies:?}");
+    let edits = permission_edit_messages(server.requests());
+    assert_eq!(edits.len(), 1, "single-use decision edits one card: {edits:?}");
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_always_forwards_always() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_always_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_always_1", PermissionDecision::Always)
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionDecisionOutcome::Applied(PermissionDecision::Always)
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_always_1")
+        },
+        "always permission reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"always\""),
+        "reply payload must forward always: {}",
+        reply.body
+    );
+
+    let edit = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "card edit after always decision",
+    )
+    .await;
+    assert!(
+        edit.body.contains("已始终允许"),
+        "edited card must show the always outcome: {}",
+        edit.body
+    );
+    assert!(
+        registry.get("per_always_1").is_none(),
+        "a resolved request must leave the registry"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_deny_forwards_deny() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_deny_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_deny_1", PermissionDecision::Deny)
+        .await;
+    assert_eq!(
+        outcome,
+        PermissionDecisionOutcome::Applied(PermissionDecision::Deny)
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_deny_1")
+        },
+        "deny permission reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"deny\""),
+        "reply payload must forward deny: {}",
+        reply.body
+    );
+
+    let edit = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "card edit after deny decision",
+    )
+    .await;
+    assert!(
+        edit.body.contains("已拒绝"),
+        "edited card must show the deny outcome: {}",
+        edit.body
+    );
+    assert!(
+        registry.get("per_deny_1").is_none(),
+        "a resolved request must leave the registry"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_reply_failure_keeps_pending() {
+    let server = FakeHttpServer::start().await;
+    server.fail_permission_reply(true);
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_fail_reply_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_fail_reply_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::ReplyFailed);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !permission_reply_posts(server.requests()).is_empty(),
+        "the decision must have been attempted"
+    );
+    assert!(
+        permission_edit_messages(server.requests()).is_empty(),
+        "a failed reply must not claim the card was decided"
+    );
+    assert!(
+        registry.get("per_fail_reply_1").is_some(),
+        "a failed reply keeps the request pending"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_ignores_high_risk_always() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    registry.insert(permission_pending(
+        "per_high_always_1",
+        PermissionRisk::HighRisk,
+        Instant::now(),
+    ));
+
+    let outcome = runtime
+        .decide(
+            &server.url(),
+            "per_high_always_1",
+            PermissionDecision::Always,
+        )
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::Ignored);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        permission_reply_posts(server.requests()).is_empty(),
+        "a high-risk request must never honor always"
+    );
+    assert!(
+        permission_edit_messages(server.requests()).is_empty(),
+        "an ignored decision must not edit the card"
+    );
+    assert!(
+        registry.get("per_high_always_1").is_some(),
+        "an ignored decision keeps the request pending"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_expired_tap_is_ignored() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let sent_at = Instant::now()
+        .checked_sub(PERMISSION_TIMEOUT + Duration::from_secs(1))
+        .expect("clock");
+    registry.insert(permission_pending(
+        "per_expired_1",
+        PermissionRisk::Routine,
+        sent_at,
+    ));
+
+    let outcome = runtime
+        .decide(&server.url(), "per_expired_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::Expired);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        permission_reply_posts(server.requests()).is_empty(),
+        "an expired request must not reply"
+    );
+    assert!(
+        registry.get("per_expired_1").is_some(),
+        "an expired tap leaves the stale request untouched"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_decide_unknown_is_ignored() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+
+    let outcome = runtime
+        .decide(&server.url(), "per_unknown_1", PermissionDecision::Once)
+        .await;
+    assert_eq!(outcome, PermissionDecisionOutcome::Ignored);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        server.requests().is_empty(),
+        "an unknown request must not produce traffic: {:?}",
+        server.requests()
+    );
+    server.shutdown();
+}
+

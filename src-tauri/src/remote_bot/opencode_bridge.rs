@@ -13,8 +13,8 @@ use tokio::sync::{Mutex, RwLock};
 use super::card_builder::CardBuilder;
 use super::client::TelegramClient;
 use super::permission::{
-    classify_permission, PendingPermissionRequest, PermissionDecision, PermissionRegistry,
-    PermissionRisk,
+    classify_permission, permission_timed_out, PendingPermissionRequest, PermissionDecision,
+    PermissionRegistry, PermissionRisk,
 };
 use super::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
@@ -154,6 +154,15 @@ pub(super) struct BridgeSessionSnapshot {
     pub(super) task: Option<BridgeTaskSnapshot>,
 }
 
+/// Result of applying a single human permission decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PermissionDecisionOutcome {
+    Applied(PermissionDecision),
+    Expired,
+    Ignored,
+    ReplyFailed,
+}
+
 /// Shared runtime for replying to and surfacing OpenCode permission requests.
 ///
 /// Clones the HTTP client, Telegram client and pending registry so the poller
@@ -179,6 +188,66 @@ impl PermissionRuntime {
 
     pub(super) fn registry(&self) -> Arc<PermissionRegistry> {
         self.registry.clone()
+    }
+
+    /// Apply a human decision to a pending request at most once.
+    ///
+    /// A stale, already-resolved or high-risk always-allow tap leaves the
+    /// registry untouched, so a late or duplicate tap cannot change state. A
+    /// reply failure re-registers the original request so it can be retried,
+    /// and only a successful reply edits the delivered card.
+    pub(super) async fn decide(
+        &self,
+        server_url: &str,
+        request_id: &str,
+        decision: PermissionDecision,
+    ) -> PermissionDecisionOutcome {
+        let Some(pending) = self.registry.get(request_id) else {
+            return PermissionDecisionOutcome::Ignored;
+        };
+        if permission_timed_out(pending.sent_at, Instant::now()) {
+            return PermissionDecisionOutcome::Expired;
+        }
+        if pending.risk == PermissionRisk::HighRisk && decision == PermissionDecision::Always {
+            return PermissionDecisionOutcome::Ignored;
+        }
+
+        let Some(resolved_request) = self
+            .registry
+            .resolve(request_id, decision)
+            .map(|resolution| resolution.request)
+        else {
+            return PermissionDecisionOutcome::Ignored;
+        };
+
+        let replied = self
+            .reply_permission(
+                server_url,
+                request_id,
+                resolved_request.session_id.as_deref(),
+                decision,
+            )
+            .await;
+        if !replied {
+            self.registry.insert(resolved_request);
+            return PermissionDecisionOutcome::ReplyFailed;
+        }
+
+        if let Some(message_id) = resolved_request.card_message_id {
+            let text = CardBuilder::permission_decision_card(decision);
+            let _ = self
+                .telegram
+                .edit_message_text(
+                    resolved_request.chat_id,
+                    message_id,
+                    &text,
+                    None,
+                    Some("Markdown"),
+                )
+                .await;
+        }
+
+        PermissionDecisionOutcome::Applied(decision)
     }
 
     /// Send `decision` to every known reply endpoint and report whether any
@@ -912,6 +981,27 @@ impl OpenCodeBridge {
     /// Return the shared permission runtime (registry, reply and card delivery).
     pub(super) fn permission_runtime(&self) -> Arc<PermissionRuntime> {
         self.permission_runtime.clone()
+    }
+
+    /// Submit a human permission decision.
+    ///
+    /// An unavailable server counts as a failed reply so the pending request
+    /// is kept for another attempt instead of being silently dropped.
+    pub async fn decide_permission(
+        &self,
+        request_id: &str,
+        decision: PermissionDecision,
+    ) -> PermissionDecisionOutcome {
+        let server_url = match self.ensure_server().await {
+            Ok(url) => url,
+            Err(e) => {
+                warn!("无法提交权限决议 (request {}): {}", request_id, e);
+                return PermissionDecisionOutcome::ReplyFailed;
+            }
+        };
+        self.permission_runtime
+            .decide(&server_url, request_id, decision)
+            .await
     }
 
     /// 轮询并转发 /question 与 /permission 请求到 Telegram

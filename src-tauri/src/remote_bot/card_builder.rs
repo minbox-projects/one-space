@@ -1,5 +1,5 @@
 use super::opencode_inspector;
-use super::permission::PermissionRisk;
+use super::permission::{PermissionDecision, PermissionRisk};
 use super::plan_progress::{PlanExecutionStatus, PlanProgressInfo};
 use super::session_inventory::{
     IdentifierResolution, PlanExecutionState, SessionEntry, SessionEntryKind,
@@ -557,6 +557,21 @@ impl CardBuilder {
         )]);
 
         (text, InlineKeyboardMarkup::new(rows))
+    }
+
+    /// 权限决议结果卡片：替换原审批卡片，展示实际生效的决议。
+    pub fn permission_decision_card(decision: PermissionDecision) -> String {
+        let (result, hint) = match decision {
+            PermissionDecision::Once => ("已允许一次", "本次操作已放行，后续同类请求仍需审批。"),
+            PermissionDecision::Always => ("已始终允许", "后续同类请求将自动放行。"),
+            PermissionDecision::Deny => ("已拒绝", "该操作未获授权，代理已收到拒绝。"),
+        };
+        format!(
+            "🔐 *权限决议已提交*\n\
+            > ▫️ 决议结果: `{}`\n\n\
+            {}",
+            result, hint
+        )
     }
 
     /// 卡片 11: OpenCode 分析与自然对话回复卡片
