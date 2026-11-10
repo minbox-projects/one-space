@@ -574,6 +574,14 @@ impl CardBuilder {
         )
     }
 
+    /// 权限请求超时结果卡片：替换原审批卡片，说明请求未在时限内处理。
+    pub fn permission_timeout_card() -> String {
+        "⏰ *权限请求已超时*\n\
+        > ▫️ 决议结果: `已超时`\n\n\
+        请求未在 30 分钟内处理，已自动拒绝。该操作未获授权，代理已收到拒绝。"
+            .to_string()
+    }
+
     /// 卡片 11: OpenCode 分析与自然对话回复卡片
     pub fn analysis_reply_card(workspace: &str, content: &str) -> String {
         let trimmed = content.trim();

@@ -250,6 +250,63 @@ impl PermissionRuntime {
         PermissionDecisionOutcome::Applied(decision)
     }
 
+    /// Deny every pending request that has passed the timeout at `now`, edit
+    /// its delivered card and notify the chat. Returns how many requests were
+    /// swept. A resolved request is already absent from the registry, so it is
+    /// never denied late; individual endpoint failures are logged and ignored.
+    pub(super) async fn expire_due(&self, server_url: &str, now: Instant) -> usize {
+        let expired = self.registry.take_expired(now);
+        let count = expired.len();
+        for request in expired {
+            let replied = self
+                .reply_permission(
+                    server_url,
+                    &request.request_id,
+                    request.session_id.as_deref(),
+                    PermissionDecision::Deny,
+                )
+                .await;
+            if !replied {
+                warn!(
+                    "权限请求超时回复失败 (request {}): deny 未被接受",
+                    request.request_id
+                );
+            }
+
+            let text = CardBuilder::permission_timeout_card();
+            if let Some(message_id) = request.card_message_id {
+                if let Err(e) = self
+                    .telegram
+                    .edit_message_text(
+                        request.chat_id,
+                        message_id,
+                        &text,
+                        None,
+                        Some("Markdown"),
+                    )
+                    .await
+                {
+                    warn!(
+                        "权限请求超时卡片更新失败 (request {}): {}",
+                        request.request_id, e
+                    );
+                }
+            }
+
+            if let Err(e) = self
+                .telegram
+                .send_message(request.chat_id, &text, None, None)
+                .await
+            {
+                warn!(
+                    "权限请求超时通知失败 (request {}): {}",
+                    request.request_id, e
+                );
+            }
+        }
+        count
+    }
+
     /// Send `decision` to every known reply endpoint and report whether any
     /// endpoint accepted it. Individual transport or status failures are
     /// ignored so a partial protocol mismatch cannot abort the poller.
@@ -434,6 +491,7 @@ impl OpenCodeBridge {
     pub(super) async fn finish_task(&self) {
         *self.current_task.write().await = None;
         self.conversation_busy.store(false, Ordering::SeqCst);
+        self.permission_runtime.registry().clear();
     }
 
     async fn start_conversation_task(&self, project_dir: &Path, session_id: Option<String>) {
@@ -497,6 +555,7 @@ impl OpenCodeBridge {
         self.conversation_busy.store(false, Ordering::SeqCst);
         *self.current_task.write().await = None;
         self.is_busy.store(false, Ordering::SeqCst);
+        self.permission_runtime.registry().clear();
     }
 
     /// 确保后台 opencode serve 进程正在运行并返回服务基础 URL
@@ -1024,6 +1083,9 @@ impl OpenCodeBridge {
             let mut asked_permissions = std::collections::HashSet::new();
 
             while !cancel_flag.load(Ordering::Relaxed) {
+                // 0. 先清理超过 30 分钟仍未处理的权限请求
+                runtime.expire_due(&server_url, Instant::now()).await;
+
                 // 1. 检查 /question 或 v2 的 /api/form
                 let q_url = format!("{}/question", server_url);
                 let q_resp = http.get(&q_url)

@@ -4332,3 +4332,275 @@ async fn permission_decide_unknown_is_ignored() {
     server.shutdown();
 }
 
+// --- Pending permission timeout sweep ---
+// An unanswered request is denied exactly once when the 30-minute deadline
+// passes: the agent receives `deny`, the delivered card is replaced with the
+// timeout result and the chat is notified. The poller performs the same sweep,
+// so a request that vanished from the agent listing still expires, and ending
+// or cancelling a task drops every pending request.
+
+#[tokio::test]
+async fn permission_timeout_denies_and_notifies() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let now = Instant::now();
+    registry.insert(permission_pending(
+        "per_to_1",
+        PermissionRisk::Routine,
+        now,
+    ));
+
+    let expired = runtime
+        .expire_due(&server.url(), now + PERMISSION_TIMEOUT)
+        .await;
+    assert_eq!(expired, 1, "one request must be swept");
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_to_1")
+        },
+        "timeout deny reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"deny\""),
+        "timeout must reply deny: {}",
+        reply.body
+    );
+
+    let edit = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/editMessageText"),
+        "timeout card edit",
+    )
+    .await;
+    assert!(
+        edit.body.contains("已超时") && edit.body.contains("自动拒绝"),
+        "timeout card must show both timeout and auto-deny: {}",
+        edit.body
+    );
+
+    let notification = permission_wait_for_request(
+        &server,
+        |request| request.method == "POST" && request.path.ends_with("/sendMessage"),
+        "timeout chat notification",
+    )
+    .await;
+    assert!(
+        notification.body.contains("自动拒绝"),
+        "timeout notification must mention auto-deny: {}",
+        notification.body
+    );
+
+    assert!(
+        registry.get("per_to_1").is_none(),
+        "a swept request must leave the registry"
+    );
+
+    let again = runtime
+        .expire_due(&server.url(), now + PERMISSION_TIMEOUT * 2)
+        .await;
+    assert_eq!(again, 0, "a repeated sweep must not expire anything");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let replies = permission_reply_posts(server.requests());
+    assert_eq!(
+        replies.len(),
+        1,
+        "a timed-out request must be denied exactly once: {replies:?}"
+    );
+    let edits = permission_edit_messages(server.requests());
+    assert_eq!(edits.len(), 1, "exactly one timeout card edit: {edits:?}");
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_timeout_sweep_boundary() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let now = Instant::now();
+    registry.insert(permission_pending(
+        "per_bound_1",
+        PermissionRisk::Routine,
+        now,
+    ));
+
+    let before = runtime
+        .expire_due(
+            &server.url(),
+            now + PERMISSION_TIMEOUT - Duration::from_secs(1),
+        )
+        .await;
+    assert_eq!(before, 0, "29m59s must still be pending");
+    assert!(
+        registry.get("per_bound_1").is_some(),
+        "a request short of the deadline stays registered"
+    );
+
+    let at_deadline = runtime
+        .expire_due(&server.url(), now + PERMISSION_TIMEOUT)
+        .await;
+    assert_eq!(at_deadline, 1, "exactly 30 minutes must expire");
+    assert!(
+        registry.get("per_bound_1").is_none(),
+        "the expired request leaves the registry"
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_timeout_ignores_resolved() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let runtime = bridge.permission_runtime();
+    let registry = runtime.registry();
+    let now = Instant::now();
+    registry.insert(permission_pending(
+        "per_resolved_1",
+        PermissionRisk::Routine,
+        now,
+    ));
+    let resolved = registry
+        .resolve("per_resolved_1", PermissionDecision::Once)
+        .expect("the pending request must resolve");
+    assert_eq!(resolved.decision, PermissionDecision::Once);
+
+    let expired = runtime
+        .expire_due(&server.url(), now + PERMISSION_TIMEOUT)
+        .await;
+    assert_eq!(expired, 0, "a resolved request must never time out");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        server.requests().is_empty(),
+        "a resolved request must not be denied, edited or announced: {:?}",
+        server.requests()
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn permission_clear_on_task_end_clears_pending() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let registry = bridge.permission_runtime().registry();
+    registry.insert(permission_pending(
+        "per_end_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    bridge.finish_task().await;
+
+    assert!(
+        registry.is_empty(),
+        "finishing a task must drop every pending permission"
+    );
+    assert!(
+        registry.get("per_end_1").is_none(),
+        "the finished task's pending request must be gone"
+    );
+}
+
+#[tokio::test]
+async fn permission_clear_on_cancel_clears_pending() {
+    let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
+    let registry = bridge.permission_runtime().registry();
+    registry.insert(permission_pending(
+        "per_cancel_1",
+        PermissionRisk::Routine,
+        Instant::now(),
+    ));
+
+    bridge.cancel_active_task().await;
+
+    assert!(
+        registry.is_empty(),
+        "cancelling a task must drop every pending permission"
+    );
+    assert!(
+        registry.get("per_cancel_1").is_none(),
+        "the cancelled task's pending request must be gone"
+    );
+}
+
+#[tokio::test]
+async fn permission_poller_expiry_clears_stale_request() {
+    let server = FakeHttpServer::start().await;
+    let bridge = permission_test_bridge(&server);
+    let registry = bridge.permission_runtime().registry();
+    let sent_at = Instant::now()
+        .checked_sub(PERMISSION_TIMEOUT + Duration::from_secs(1))
+        .expect("clock");
+    registry.insert(
+        PendingPermissionRequest::new(
+            "per_stale_1",
+            42,
+            "bash",
+            Some("rm -rf target".to_string()),
+            PermissionRisk::HighRisk,
+            sent_at,
+        )
+        .with_card_message_id(Some(778))
+        .with_session_id(None),
+    );
+
+    // The agent no longer lists the request, so only the poller's own sweep
+    // can observe that it has passed the deadline.
+    server.set_permissions_json("[]");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let policy: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+    let handle = bridge.spawn_question_and_permission_poller(
+        42,
+        1,
+        server.url(),
+        cancel.clone(),
+        Some("proj".to_string()),
+        policy,
+    );
+
+    let reply = permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/reply")
+                && request.path.contains("per_stale_1")
+                && request.body.contains("\"reply\":\"deny\"")
+        },
+        "poller timeout deny reply",
+    )
+    .await;
+    assert!(
+        reply.body.contains("\"reply\":\"deny\""),
+        "poller expiry must reply deny: {}",
+        reply.body
+    );
+
+    permission_wait_for_request(
+        &server,
+        |request| {
+            request.method == "POST"
+                && request.path.ends_with("/sendMessage")
+                && request.body.contains("自动拒绝")
+        },
+        "poller timeout notification",
+    )
+    .await;
+
+    permission_wait_until(
+        || registry.get("per_stale_1").is_none(),
+        "the poller to drop the stale request",
+    )
+    .await;
+
+    cancel.store(true, Ordering::SeqCst);
+    let _ = handle.await;
+    server.shutdown();
+}
+
