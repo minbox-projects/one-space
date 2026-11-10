@@ -4,7 +4,7 @@ use super::types::{SslOrderRequest, SslWatchItemInput};
 use super::watchlist::{add_watch_item, load_watchlist, remove_watch_item};
 use crate::config::ProxyConfig;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -29,6 +29,9 @@ impl FakeAcmeRequest {
 
 pub(crate) struct FakeAcmeState {
     finalized: AtomicBool,
+    challenge_ready: AtomicBool,
+    pending_order_failures: AtomicUsize,
+    pending_finalize_failures: AtomicUsize,
     cert_pem: String,
 }
 
@@ -36,8 +39,35 @@ impl FakeAcmeState {
     pub fn new(cert_pem: String) -> Arc<Self> {
         Arc::new(Self {
             finalized: AtomicBool::new(false),
+            challenge_ready: AtomicBool::new(false),
+            pending_order_failures: AtomicUsize::new(0),
+            pending_finalize_failures: AtomicUsize::new(0),
             cert_pem,
         })
+    }
+
+    fn fail_next_order_fetch(&self) {
+        self.pending_order_failures.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn fail_next_finalize(&self) {
+        self.pending_finalize_failures
+            .fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn consume_injected_failure(counter: &AtomicUsize) -> bool {
+    loop {
+        let remaining = counter.load(Ordering::SeqCst);
+        if remaining == 0 {
+            return false;
+        }
+        if counter
+            .compare_exchange(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return true;
+        }
     }
 }
 
@@ -272,17 +302,36 @@ fn fake_acme_response(request: &FakeAcmeRequest, state: &FakeAcmeState) -> FakeA
             fixture_authorization_json(),
         )),
         ("GET" | "POST", "/challenge/1") => {
+            state.challenge_ready.store(true, Ordering::SeqCst);
             nonce(FakeAcmeResponse::new(200, "OK", fixture_challenge_json()))
         }
         ("GET" | "POST", "/order") => {
+            if request.method == "POST"
+                && consume_injected_failure(&state.pending_order_failures)
+            {
+                return nonce(FakeAcmeResponse::new(
+                    500,
+                    "Internal Server Error",
+                    "<html>Bad Gateway</html>",
+                ));
+            }
             let body = if state.finalized.load(Ordering::SeqCst) {
                 fixture_order_json("valid", Some("http://acme.example.test/cert"))
-            } else {
+            } else if state.challenge_ready.load(Ordering::SeqCst) {
                 fixture_order_json("ready", None)
+            } else {
+                fixture_order_json("pending", None)
             };
             nonce(FakeAcmeResponse::new(200, "OK", body))
         }
         ("POST", "/finalize") => {
+            if consume_injected_failure(&state.pending_finalize_failures) {
+                return nonce(FakeAcmeResponse::new(
+                    500,
+                    "Internal Server Error",
+                    "<html>Bad Gateway</html>",
+                ));
+            }
             state.finalized.store(true, Ordering::SeqCst);
             nonce(FakeAcmeResponse::new(
                 200,
@@ -424,6 +473,108 @@ async fn acme_account_and_order_follow_proxy_switch() {
         .requests()
         .iter()
         .any(|request| request.target == "http://acme.example.test/order"));
+
+    publish_direct();
+}
+
+#[tokio::test]
+async fn verify_retains_order_after_transient_json_failure() {
+    let _serial = crate::proxy::test_support::SERIAL_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let state = FakeAcmeState::new(fixture_certificate_pem());
+    let proxy = FakeAcmeProxy::new_with_state(state.clone()).await;
+    let _home = crate::proxy::test_support::with_global_proxy(Some(http_proxy_config(&proxy)));
+    let _directory = super::acme::set_test_directory_url("http://acme.example.test/directory");
+
+    let created = super::acme::create_acme_order(SslOrderRequest {
+        domain: "acme.example.test".to_string(),
+        san_domains: Vec::new(),
+        email: None,
+        use_staging: false,
+        key_type: "ecc_p256".to_string(),
+        cloudflare_api_token: None,
+    })
+    .await
+    .expect("create the ACME order");
+
+    state.fail_next_order_fetch();
+
+    let first = super::acme::verify_and_finalize_order(&created.order_id).await;
+    assert!(
+        first.is_err(),
+        "the first verify must surface the injected transient JSON failure"
+    );
+
+    let issued = super::acme::verify_and_finalize_order(&created.order_id)
+        .await
+        .expect("retrying the same order must resume and issue a certificate");
+    assert_eq!(issued.primary_domain, "acme.example.test");
+    assert!(issued.cert_pem.contains("BEGIN CERTIFICATE"));
+
+    match super::acme::verify_and_finalize_order(&created.order_id).await {
+        Ok(_) => panic!("a completed order must be removed from memory"),
+        Err(error) => assert!(
+            error.contains("Order not found or already completed"),
+            "unexpected error after completion: {}",
+            error
+        ),
+    }
+
+    publish_direct();
+}
+
+#[tokio::test]
+async fn verify_resumes_ready_order_without_repeating_challenges() {
+    let _serial = crate::proxy::test_support::SERIAL_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let state = FakeAcmeState::new(fixture_certificate_pem());
+    let proxy = FakeAcmeProxy::new_with_state(state.clone()).await;
+    let _home = crate::proxy::test_support::with_global_proxy(Some(http_proxy_config(&proxy)));
+    let _directory = super::acme::set_test_directory_url("http://acme.example.test/directory");
+
+    let created = super::acme::create_acme_order(SslOrderRequest {
+        domain: "acme.example.test".to_string(),
+        san_domains: Vec::new(),
+        email: None,
+        use_staging: false,
+        key_type: "ecc_p256".to_string(),
+        cloudflare_api_token: None,
+    })
+    .await
+    .expect("create the ACME order");
+
+    state.fail_next_finalize();
+
+    let first = super::acme::verify_and_finalize_order(&created.order_id).await;
+    assert!(
+        first.is_err(),
+        "the first verify must fail after marking the challenge ready"
+    );
+
+    let snapshot = proxy.hits();
+    let issued = super::acme::verify_and_finalize_order(&created.order_id)
+        .await
+        .expect("retrying the ready order must issue a certificate");
+    assert!(issued.cert_pem.contains("BEGIN CERTIFICATE"));
+
+    let retried_operations: Vec<(String, String)> = proxy
+        .requests()
+        .into_iter()
+        .skip(snapshot)
+        .map(|request| (request.method, request_path(&request.target)))
+        .collect();
+    assert!(
+        !retried_operations.contains(&("POST".to_string(), "/authz/1".to_string())),
+        "retry must not re-fetch authorizations: {:?}",
+        retried_operations
+    );
+    assert!(
+        !retried_operations.contains(&("POST".to_string(), "/challenge/1".to_string())),
+        "retry must not re-notify challenges: {:?}",
+        retried_operations
+    );
 
     publish_direct();
 }
