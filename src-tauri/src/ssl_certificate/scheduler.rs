@@ -16,12 +16,33 @@ struct SslSchedulerControl {
     join: Option<JoinHandle<()>>,
 }
 
+static APP_HANDLE: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
+
+fn app_handle_slot() -> &'static Mutex<Option<AppHandle>> {
+    APP_HANDLE.get_or_init(|| Mutex::new(None))
+}
+
+pub fn capture_app_handle(app: AppHandle) {
+    let mut guard = app_handle_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = Some(app);
+}
+
+pub fn captured_app_handle() -> Option<AppHandle> {
+    app_handle_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
 fn scheduler_slot() -> &'static Mutex<Option<SslSchedulerControl>> {
     static SCHEDULER: OnceLock<Mutex<Option<SslSchedulerControl>>> = OnceLock::new();
     SCHEDULER.get_or_init(|| Mutex::new(None))
 }
 
 pub fn start_ssl_scheduler(app: AppHandle) -> bool {
+    capture_app_handle(app.clone());
     let mut slot = scheduler_slot()
         .lock()
         .unwrap_or_else(|e| e.into_inner());

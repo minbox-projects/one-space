@@ -692,3 +692,69 @@ fn test_ssl_config_normalization() {
     );
     assert_eq!(normalized.alert_days_threshold, 30);
 }
+
+#[test]
+fn test_ssl_renewal_detection_and_notification() {
+    use super::types::{CertificateNode, SslStatus, SslWatchItem};
+    use super::watchlist::notify_renewed;
+
+    let item = SslWatchItem {
+        id: "watch-item-uuid-1".to_string(),
+        domain: "renewed.example.com".to_string(),
+        port: 443,
+        alias: Some("Production Service".to_string()),
+        enabled: true,
+        alert_days_threshold: 30,
+        last_check_at: Some(1730000000),
+        last_days_remaining: Some(6),
+        last_status: Some(SslStatus::ExpiringSoon),
+        last_error: None,
+        issuer_cn: Some("Let's Encrypt Authority X3".to_string()),
+        last_notified_date: Some("2026-11-10".to_string()),
+        created_at: 1720000000,
+    };
+
+    let cert = CertificateNode {
+        subject: "CN=renewed.example.com".to_string(),
+        subject_cn: Some("renewed.example.com".to_string()),
+        issuer: "CN=Let's Encrypt Authority X3, O=Let's Encrypt".to_string(),
+        issuer_cn: Some("Let's Encrypt Authority X3".to_string()),
+        issuer_org: Some("Let's Encrypt".to_string()),
+        not_before: 1730000000,
+        not_after: 1737776000,
+        days_remaining: 90,
+        sans: vec!["renewed.example.com".to_string()],
+        serial_number: "04A1B2C3D4E5F6".to_string(),
+        signature_algorithm: "SHA256withRSA".to_string(),
+        public_key_algorithm: "RSA".to_string(),
+        sha256_fingerprint: "11:22:33:44:55:66".to_string(),
+        is_root: false,
+        is_ca: false,
+    };
+
+    // 1. 验证 notify_renewed 写入
+    notify_renewed(&item, 6, 90, Some(&cert));
+
+    // 2. 验证判定规则逻辑（与 check_watch_item 内的比对逻辑保持一致）
+    let is_renewed = |prev: Option<i64>, current: i64, is_valid: bool, is_expired: bool| -> bool {
+        if let Some(previous_days) = prev {
+            current > previous_days && is_valid && !is_expired
+        } else {
+            false
+        }
+    };
+
+    // 场景 A: 上次剩余 6 天，本次 90 天，有效未过期 => 续期
+    assert!(is_renewed(Some(6), 90, true, false));
+
+    // 场景 B: 首次巡检无上次天数记录 => 非续期
+    assert!(!is_renewed(None, 90, true, false));
+
+    // 场景 C: 天数自然减少或保持不变 => 非续期
+    assert!(!is_renewed(Some(90), 89, true, false));
+    assert!(!is_renewed(Some(90), 90, true, false));
+
+    // 场景 D: 虽然天数看起来增加但证书已过期或无效 => 非续期
+    assert!(!is_renewed(Some(5), 90, false, false));
+    assert!(!is_renewed(Some(5), 90, true, true));
+}

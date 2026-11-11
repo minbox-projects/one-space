@@ -111,6 +111,15 @@ export const FOCUSED_MESSAGE_TYPE_CATALOG: FocusedMessageTypeDef[] = [
     descKey: "msgType_ssl_certificate_expiring_soon_desc",
     isRecommended: true,
   },
+  {
+    id: "ssl_certificate:renewed",
+    source: "ssl_certificate",
+    category: "renewed",
+    defaultSeverity: "success",
+    nameKey: "msgType_ssl_certificate_renewed_title",
+    descKey: "msgType_ssl_certificate_renewed_desc",
+    isRecommended: true,
+  },
 
   // --- SSH 隧道 ---
   {

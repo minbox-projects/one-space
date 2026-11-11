@@ -12,4 +12,6 @@ pub mod types;
 pub mod watchlist;
 
 pub use commands::*;
-pub use scheduler::{start_ssl_scheduler, stop_ssl_scheduler};
+pub use scheduler::{
+    capture_app_handle, captured_app_handle, start_ssl_scheduler, stop_ssl_scheduler,
+};

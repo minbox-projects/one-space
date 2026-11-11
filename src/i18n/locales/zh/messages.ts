@@ -73,6 +73,8 @@ const messages = {
   "msgType_server_monitor_collect_failed_desc": "服务器监控指标采集失败或目标主机不可达时告警",
   "msgType_ssl_certificate_expiring_soon_title": "SSL 证书临期告警",
   "msgType_ssl_certificate_expiring_soon_desc": "监控的域名 SSL 证书剩余有效期低于安全阈值时告警",
+  "msgType_ssl_certificate_renewed_title": "SSL 证书续期提醒",
+  "msgType_ssl_certificate_renewed_desc": "监控的域名 SSL 证书剩余有效期增加检测到续期时提醒",
   "messageCenterSearchPlaceholder": "搜索消息内容、错误堆栈、模块来源...",
   "messageCenterFilterSourceAll": "全部模块来源",
   "messageCenterNoSearchResults": "没有找到匹配的消息",

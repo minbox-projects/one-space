@@ -73,6 +73,8 @@ const messages = {
   "msgType_server_monitor_collect_failed_desc": "Triggered when server metric collection fails or host is unreachable",
   "msgType_ssl_certificate_expiring_soon_title": "SSL Certificate Expiring Soon",
   "msgType_ssl_certificate_expiring_soon_desc": "Triggered when an SSL certificate is nearing expiration",
+  "msgType_ssl_certificate_renewed_title": "SSL Certificate Renewed",
+  "msgType_ssl_certificate_renewed_desc": "Triggered when domain SSL certificate remaining days increase indicating renewal",
   "messageCenterSearchPlaceholder": "Search messages, stack traces, sources...",
   "messageCenterFilterSourceAll": "All Sources",
   "messageCenterNoSearchResults": "No matching messages found",
