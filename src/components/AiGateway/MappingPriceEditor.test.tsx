@@ -19,6 +19,8 @@ function blankDraft(
     output: "",
     enable_off_peak: false,
     off_peaks: [],
+    enable_context_tiers: false,
+    context_tiers: [],
     ...overrides,
   };
 }
@@ -213,5 +215,29 @@ describe("MappingPriceEditor 映射行价格编辑器", () => {
     expect(
       screen.getByTestId("ai-gateway-off-peak-0-day-0-2"),
     ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("mapping_price_editor_toggles_context_tiers_and_edits_limits_and_rates", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderWithProviders(<ControlledEditor initial={blankDraft()} onChange={onChange} />);
+
+    // Toggle context tiers on
+    const toggle = screen.getByTestId("ai-gateway-price-0-context-tiers");
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+
+    // Should create a default blank tier
+    expect(screen.getByTestId("ai-gateway-context-tier-0-limit-0")).toBeInTheDocument();
+
+    // Input limit: 100000
+    const limitInput = screen.getByTestId("ai-gateway-context-tier-0-limit-0");
+    await user.type(limitInput, "100000");
+
+    // Input rate: 0.1
+    const tierInput = screen.getByTestId("ai-gateway-context-tier-0-input-0");
+    await user.type(tierInput, "0.1");
+
+    expect(onChange).toHaveBeenCalled();
   });
 });

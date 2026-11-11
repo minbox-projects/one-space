@@ -1,4 +1,10 @@
-import type { GatewayPriceDraft, GatewayUpstreamProvider, ModelPrice, OffPeakPrice } from "./types";
+import type {
+  ContextPriceTier,
+  GatewayPriceDraft,
+  GatewayUpstreamProvider,
+  ModelPrice,
+  OffPeakPrice,
+} from "./types";
 
 /** Distinct non-blank mapping upstream models in first-seen order. */
 export function mappedUpstreamModels(provider: GatewayUpstreamProvider): string[] {
@@ -55,10 +61,13 @@ export function priceRowToDraft(
       output: "",
       enable_off_peak: false,
       off_peaks: [],
+      enable_context_tiers: false,
+      context_tiers: [],
     };
   }
 
   const rawOffPeaks = price.off_peaks ?? [];
+  const rawContextTiers = price.context_tiers ?? [];
 
   const stringifyTier = (value: number | null | undefined): string =>
     value !== undefined && value !== null ? String(value) : "";
@@ -81,15 +90,33 @@ export function priceRowToDraft(
       output: stringifyTier(op.output),
       days: op.days ?? [],
     })),
+    enable_context_tiers: rawContextTiers.length > 0,
+    context_tiers: rawContextTiers.map((tier, index) => ({
+      id: `${idPrefix}-ctx-${index}`,
+      max_context: tier.max_context != null ? String(tier.max_context) : "",
+      input: stringifyTier(tier.input),
+      cache_read: stringifyTier(tier.cache_read),
+      cache_write: stringifyTier(tier.cache_write),
+      output: stringifyTier(tier.output),
+    })),
   };
 }
 
 
-/** A draft is priced when at least one standard tier holds a non-blank value. */
+/** A draft is priced when at least one standard tier or context tier holds a non-blank value. */
 export function isPriceDraftPriced(draft: GatewayPriceDraft): boolean {
-  return [draft.input, draft.cache_read, draft.cache_write, draft.output].some(
+  const hasBasePrice = [draft.input, draft.cache_read, draft.cache_write, draft.output].some(
     (value) => value.trim() !== "",
   );
+  if (hasBasePrice) return true;
+  if (draft.enable_context_tiers && draft.context_tiers.length > 0) {
+    return draft.context_tiers.some((tier) =>
+      [tier.input, tier.cache_read, tier.cache_write, tier.output, tier.max_context].some(
+        (v) => v.trim() !== "",
+      ),
+    );
+  }
+  return false;
 }
 
 
@@ -121,6 +148,35 @@ export function draftToPriceRow(draft: GatewayPriceDraft): ModelPrice | null {
       };
     });
     row.off_peaks = offPeaks;
+  }
+
+  if (draft.enable_context_tiers && draft.context_tiers.length > 0) {
+    const validTiers: ContextPriceTier[] = draft.context_tiers
+      .filter((tier) =>
+        [tier.input, tier.cache_read, tier.cache_write, tier.output, tier.max_context].some(
+          (v) => v.trim() !== "",
+        ),
+      )
+      .map((tier) => {
+        const trimmedMax = tier.max_context.trim();
+        const max = trimmedMax !== "" ? parsePriceNumber(trimmedMax) : null;
+        return {
+          max_context: max && max > 0 ? max : null,
+          input: parsePriceNumber(tier.input || draft.input),
+          cache_read: parsePriceNumber(tier.cache_read || draft.cache_read),
+          cache_write: parsePriceNumber(tier.cache_write || draft.cache_write),
+          output: parsePriceNumber(tier.output || draft.output),
+        };
+      });
+    if (validTiers.length > 0) {
+      row.context_tiers = validTiers;
+      if (row.input === 0 && row.output === 0 && validTiers[0]) {
+        row.input = validTiers[0].input;
+        row.output = validTiers[0].output;
+        row.cache_read = validTiers[0].cache_read;
+        row.cache_write = validTiers[0].cache_write;
+      }
+    }
   }
 
   return row;

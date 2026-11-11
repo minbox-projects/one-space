@@ -115,7 +115,8 @@ pub fn apply_create_provider_from_template(
                 || model.output > 0.0
                 || model.cache_read > 0.0
                 || model.cache_write > 0.0
-                || !model.off_peaks.is_empty())
+                || !model.off_peaks.is_empty()
+                || !model.context_tiers.is_empty())
         {
             next.model_prices.push(ModelPrice {
                 provider_id: Some(provider_id.clone()),
@@ -125,6 +126,7 @@ pub fn apply_create_provider_from_template(
                 cache_write: model.cache_write,
                 output: model.output,
                 off_peaks: model.off_peaks.clone(),
+                context_tiers: model.context_tiers.clone(),
             });
         }
     }

@@ -1,8 +1,8 @@
 //! Raw provider-template snapshot shape and tolerant parsing.
 
 use super::super::types_config::{
-    ErrorStrategy, OffPeakPrice, ProviderTemplate, ProviderTemplateModel, QuotaStrategy,
-    SyncStrategy, TransportStrategy, UpstreamProtocol,
+    ContextPriceTier, ErrorStrategy, OffPeakPrice, ProviderTemplate, ProviderTemplateModel,
+    QuotaStrategy, SyncStrategy, TransportStrategy, UpstreamProtocol,
 };
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -66,6 +66,8 @@ struct RawTemplateModel {
     reasoning_efforts: Vec<String>,
     #[serde(default)]
     context_window: Option<u32>,
+    #[serde(default)]
+    context_tiers: Vec<ContextPriceTier>,
 }
 
 fn parse_protocol(raw: &str) -> Option<UpstreamProtocol> {
@@ -170,6 +172,7 @@ pub fn parse_template_snapshot(json: &str) -> Result<Vec<ProviderTemplate>, Stri
                 off_peaks: raw_model.off_peaks,
                 reasoning_efforts: raw_model.reasoning_efforts,
                 context_window: raw_model.context_window,
+                context_tiers: raw_model.context_tiers,
             });
         }
 

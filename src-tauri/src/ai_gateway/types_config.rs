@@ -22,7 +22,7 @@ pub use pool::{
     PoolDefaultReasoningEffort, PoolReasoningAction, PoolReasoningBudget, PoolReasoningEffort,
     PoolReasoningMapping, PoolReasoningProfile,
 };
-pub use price::{ModelPrice, OffPeakPrice};
+pub use price::{ContextPriceTier, ModelPrice, OffPeakPrice};
 pub use protocol::{
     ErrorStrategy, QuotaStrategy, SyncStrategy, TransportStrategy, UpstreamProtocol,
 };

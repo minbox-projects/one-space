@@ -1,10 +1,11 @@
 import { useTranslation } from "react-i18next";
-import { Moon, Plus, Trash2 } from "lucide-react";
+import { Layers, Moon, Plus, Trash2 } from "lucide-react";
 import {
   GATEWAY_WEEKDAY_ORDER,
   gatewayWeekdayTranslationKey,
   normalizeDraftDays,
   type GatewayPriceDraft,
+  type GatewayPriceDraftContextTier,
   type GatewayPriceDraftOffPeak,
 } from "@/lib/aiGateway";
 
@@ -69,6 +70,17 @@ function blankOffPeak(): GatewayPriceDraftOffPeak {
   };
 }
 
+function blankContextTier(): GatewayPriceDraftContextTier {
+  return {
+    id: `ctx-${Date.now()}-${Math.random()}`,
+    max_context: "",
+    input: "",
+    cache_read: "",
+    cache_write: "",
+    output: "",
+  };
+}
+
 /**
  * Price editor for a single upstream model, rendered on demand by the mapping
  * row's expandable section when it is expanded: four standard tiers plus an
@@ -88,6 +100,17 @@ export function MappingPriceEditor({
     onChange({
       off_peaks: draft.off_peaks.map((op, opIndex) =>
         opIndex === windowIndex ? { ...op, ...patch } : op,
+      ),
+    });
+  };
+
+  const updateContextTier = (
+    tierIndex: number,
+    patch: Partial<GatewayPriceDraftContextTier>,
+  ) => {
+    onChange({
+      context_tiers: draft.context_tiers.map((tier, idx) =>
+        idx === tierIndex ? { ...tier, ...patch } : tier,
       ),
     });
   };
@@ -300,6 +323,142 @@ export function MappingPriceEditor({
                   >
                     {t("aiGatewayEveryDay", "Every day")}
                   </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-2">
+        <label className="inline-flex cursor-pointer select-none items-center gap-2 text-xs font-medium text-foreground">
+          <input
+            type="checkbox"
+            checked={draft.enable_context_tiers}
+            data-testid={`ai-gateway-price-${index}-context-tiers`}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              onChange({
+                enable_context_tiers: checked,
+                context_tiers:
+                  checked && draft.context_tiers.length === 0
+                    ? [blankContextTier()]
+                    : draft.context_tiers,
+              });
+            }}
+            className="h-3.5 w-3.5 rounded border-border text-primary focus:ring-primary"
+          />
+          <Layers className="h-3 w-3 text-muted-foreground" />
+          <span>{t("aiGatewayContextTiersEnable", "Enable context-based pricing")}</span>
+        </label>
+
+        {draft.enable_context_tiers ? (
+          <button
+            type="button"
+            data-testid={`ai-gateway-context-tier-${index}-add`}
+            onClick={() =>
+              onChange({
+                context_tiers: [...draft.context_tiers, blankContextTier()],
+              })
+            }
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium transition hover:bg-muted"
+          >
+            <Plus className="h-3 w-3" />
+            <span>{t("aiGatewayContextTiersAdd", "Add context tier")}</span>
+          </button>
+        ) : null}
+      </div>
+
+      {draft.enable_context_tiers ? (
+        <div className="space-y-2">
+          <p className="text-[11px] text-muted-foreground">
+            {t(
+              "aiGatewayContextTiersHint",
+              "Rates match against the request input context tokens (Input + Cache); requests exceeding all limits use the unbounded fallback.",
+            )}
+          </p>
+
+          {draft.context_tiers.map((tier, tierIndex) => (
+            <div
+              key={tier.id}
+              className="space-y-2 rounded-md border border-border/70 bg-card/60 p-2.5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2">
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-[11px] font-semibold text-foreground">
+                    {t("aiGatewayContextTierIndex", {
+                      index: tierIndex + 1,
+                      defaultValue: `Tier #${tierIndex + 1}`,
+                    })}
+                  </span>
+                  <span className="font-medium text-muted-foreground">
+                    {t("aiGatewayContextTierLimit", "Context limit (Tokens)")}:
+                  </span>
+                  <input
+                    type="number"
+                    value={tier.max_context}
+                    data-testid={`ai-gateway-context-tier-${index}-limit-${tierIndex}`}
+                    onChange={(event) =>
+                      updateContextTier(tierIndex, { max_context: event.target.value })
+                    }
+                    placeholder={t(
+                      "aiGatewayContextTierLimitPlaceholder",
+                      "e.g. 100000 (blank for unbounded)",
+                    )}
+                    aria-label={t("aiGatewayContextTierLimit", "Context limit (Tokens)")}
+                    className="w-36 rounded border border-border bg-background px-2 py-1 text-center font-mono text-xs focus:border-primary focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    data-testid={`ai-gateway-context-tier-${index}-remove-${tierIndex}`}
+                    onClick={() =>
+                      onChange({
+                        context_tiers: draft.context_tiers.filter(
+                          (_, idx) => idx !== tierIndex,
+                        ),
+                      })
+                    }
+                    aria-label={t(
+                      "aiGatewayContextTierDeleteAria",
+                      "Delete this context tier",
+                    )}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
+                  {t("aiGatewayContextTierRates", "Tier rates ($/1M tokens)")}
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {TIERS.map((sub) => (
+                    <div key={sub.suffix}>
+                      <label className="mb-1 block text-[10px] text-muted-foreground">
+                        {t(sub.labelKey, sub.suffix)}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={sub.get(tier)}
+                        data-testid={`ai-gateway-context-tier-${index}-${sub.suffix}-${tierIndex}`}
+                        aria-label={`${t(sub.labelKey, sub.suffix)} (${t(
+                          "aiGatewayContextTierIndex",
+                          { index: tierIndex + 1 },
+                        )})`}
+                        onChange={(event) => {
+                          const val = event.target.value;
+                          if (sub.suffix === "input") updateContextTier(tierIndex, { input: val });
+                          else if (sub.suffix === "cache-read") updateContextTier(tierIndex, { cache_read: val });
+                          else if (sub.suffix === "cache-write") updateContextTier(tierIndex, { cache_write: val });
+                          else if (sub.suffix === "output") updateContextTier(tierIndex, { output: val });
+                        }}
+                        className={`${tierInputClass} min-w-[5rem]`}
+                      />
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::default_true;
-use super::price::{is_zero_f64, OffPeakPrice};
+use super::price::{is_zero_f64, ContextPriceTier, OffPeakPrice};
 use super::protocol::{
     ErrorStrategy, QuotaStrategy, SyncStrategy, TransportStrategy, UpstreamProtocol,
 };
@@ -39,6 +39,8 @@ pub struct ProviderTemplateModel {
     /// older configuration without the field reads as unknown rather than zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_tiers: Vec<ContextPriceTier>,
 }
 
 impl Default for ProviderTemplateModel {
@@ -56,6 +58,7 @@ impl Default for ProviderTemplateModel {
             off_peaks: Vec::new(),
             reasoning_efforts: Vec::new(),
             context_window: None,
+            context_tiers: Vec::new(),
         }
     }
 }

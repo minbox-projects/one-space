@@ -101,6 +101,19 @@ export function CostDetail({
         <div className="border-b pb-1 text-[11px] font-semibold text-muted-foreground">
           {t("aiGatewayLogsCostDetail", "Cost details")}
         </div>
+        {breakdown?.matched_context_tier ? (
+          <div className="flex items-center justify-between gap-2 border-b pb-1 pt-0.5 text-[11px]">
+            <span className="text-muted-foreground">
+              {t("aiGatewayLogsMatchedContextTier", "Effective context tier")}
+            </span>
+            <span
+              data-testid="ai-gateway-cost-detail-matched-tier"
+              className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary"
+            >
+              {breakdown.matched_context_tier}
+            </span>
+          </div>
+        ) : null}
         <div className="space-y-0.5 pt-0.5 text-[11px]">
           <div className="text-muted-foreground">{t("aiGatewayLogsCostFees", "Fees (USD)")}</div>
           <dl className="space-y-0.5">

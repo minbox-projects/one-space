@@ -491,6 +491,7 @@ fn daily_reset_due_scan_recovers_due_marks_and_emits_after_persisting() {
         cache_write: 0.0,
         output: 2.0,
         off_peaks: Vec::new(),
+        context_tiers: Vec::new(),
     });
     config.providers.push(GatewayUpstreamProvider {
         id: "p-mixed".to_string(),

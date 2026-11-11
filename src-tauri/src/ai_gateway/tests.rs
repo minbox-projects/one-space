@@ -34381,6 +34381,7 @@ fn usage_cost_breakdown_fixture() -> UsageCostBreakdown {
         output_cost: 4.0,
         cache_read_cost: 1.0,
         cache_write_cost: 1.0,
+        matched_context_tier: None,
     }
 }
 
@@ -35517,4 +35518,120 @@ fn template_delete_refusal_while_bound_red() {
     assert_eq!(cfg.providers[0].template_id, before_binding);
     let p = &cfg.providers[0];
     assert_eq!(crate::ai_gateway::templates::effective_transport_strategy(&cfg, &p), TransportStrategy::OpencodeZenSidecar);
+}
+
+#[test]
+fn gateway_cost_breakdown_claude_haiku_context_tiers() {
+    use crate::ai_gateway::types_config::ContextPriceTier;
+    let haiku_price = ModelPrice {
+        provider_id: Some("prov-cc".to_string()),
+        upstream_model: "claude-haiku-5-5".to_string(),
+        input: 0.1,
+        cache_read: 0.01,
+        cache_write: 0.125,
+        output: 0.5,
+        off_peaks: Vec::new(),
+        context_tiers: vec![
+            ContextPriceTier {
+                max_context: Some(100_000),
+                input: 0.1,
+                output: 0.5,
+                cache_read: 0.01,
+                cache_write: 0.125,
+                off_peaks: Vec::new(),
+            },
+            ContextPriceTier {
+                max_context: None,
+                input: 0.5,
+                output: 2.5,
+                cache_read: 0.05,
+                cache_write: 0.625,
+                off_peaks: Vec::new(),
+            },
+        ],
+    };
+    let timestamp = utc8_timestamp_ms(2026, 11, 11, 12, 0);
+
+    // 1. Context <= 100K: input 50K, cache_read 30K, cache_write 10K, total context 90K <= 100K
+    let small_req = tokens(50_000, 30_000, 10_000, 20_000);
+    let (total_small, breakdown_small) =
+        compute_cost_at_time_with_breakdown(&haiku_price, &small_req, timestamp);
+    assert_eq!(breakdown_small.matched_context_tier.as_deref(), Some("≤ 100K"));
+    assert_eq!(breakdown_small.input_price, 0.1);
+    assert_eq!(breakdown_small.output_price, 0.5);
+    assert_eq!(breakdown_small.cache_read_price, 0.01);
+    assert_eq!(breakdown_small.cache_write_price, 0.125);
+    // 50K*0.1 + 30K*0.01 + 10K*0.125 + 20K*0.5 = 5000 + 300 + 1250 + 10000 = 16550 / 1_000_000 = 0.01655
+    assert!((total_small - 0.01655).abs() < 1e-9);
+
+    // 2. Context > 100K: input 80K, cache_read 20K, cache_write 10K, total context 110K > 100K
+    let large_req = tokens(80_000, 20_000, 10_000, 20_000);
+    let (total_large, breakdown_large) =
+        compute_cost_at_time_with_breakdown(&haiku_price, &large_req, timestamp);
+    assert_eq!(breakdown_large.matched_context_tier.as_deref(), Some("> 100K"));
+    assert_eq!(breakdown_large.input_price, 0.5);
+    assert_eq!(breakdown_large.output_price, 2.5);
+    assert_eq!(breakdown_large.cache_read_price, 0.05);
+    assert_eq!(breakdown_large.cache_write_price, 0.625);
+    // 80K*0.5 + 20K*0.05 + 10K*0.625 + 20K*2.5 = 40000 + 1000 + 6250 + 50000 = 97250 / 1_000_000 = 0.09725
+    assert!((total_large - 0.09725).abs() < 1e-9);
+}
+
+#[test]
+fn gateway_cost_breakdown_qwen_flash_multi_tiers() {
+    use crate::ai_gateway::types_config::ContextPriceTier;
+    let qwen_price = ModelPrice {
+        provider_id: Some("prov-cc".to_string()),
+        upstream_model: "Qwen/Qwen3.7-Flash".to_string(),
+        input: 0.03,
+        cache_read: 0.006,
+        cache_write: 0.038,
+        output: 0.13,
+        off_peaks: Vec::new(),
+        context_tiers: vec![
+            ContextPriceTier {
+                max_context: Some(32_000),
+                input: 0.03,
+                output: 0.13,
+                cache_read: 0.006,
+                cache_write: 0.038,
+                off_peaks: Vec::new(),
+            },
+            ContextPriceTier {
+                max_context: Some(256_000),
+                input: 0.1,
+                output: 0.4,
+                cache_read: 0.02,
+                cache_write: 0.125,
+                off_peaks: Vec::new(),
+            },
+            ContextPriceTier {
+                max_context: None,
+                input: 0.2,
+                output: 0.8,
+                cache_read: 0.04,
+                cache_write: 0.25,
+                off_peaks: Vec::new(),
+            },
+        ],
+    };
+    let timestamp = utc8_timestamp_ms(2026, 11, 11, 12, 0);
+
+    // Tier 1: 30K context <= 32K
+    let req_tier1 = tokens(30_000, 0, 0, 10_000);
+    let (_, b1) = compute_cost_at_time_with_breakdown(&qwen_price, &req_tier1, timestamp);
+    assert_eq!(b1.matched_context_tier.as_deref(), Some("≤ 32K"));
+    assert_eq!(b1.input_price, 0.03);
+
+    // Tier 2: 100K context (32K < 100K <= 256K)
+    let req_tier2 = tokens(100_000, 0, 0, 10_000);
+    let (_, b2) = compute_cost_at_time_with_breakdown(&qwen_price, &req_tier2, timestamp);
+    assert_eq!(b2.matched_context_tier.as_deref(), Some("≤ 256K"));
+    assert_eq!(b2.input_price, 0.1);
+
+    // Tier 3: 300K context (> 256K)
+    let req_tier3 = tokens(300_000, 0, 0, 10_000);
+    let (_, b3) = compute_cost_at_time_with_breakdown(&qwen_price, &req_tier3, timestamp);
+    assert_eq!(b3.matched_context_tier.as_deref(), Some("> 256K"));
+    assert_eq!(b3.input_price, 0.2);
 }

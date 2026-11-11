@@ -547,6 +547,7 @@ async fn buffered_native_nested_and_dual_usage_log_identical_exclusive_tiers() {
         );
         let breakdown = record
             .cost_breakdown
+            .clone()
             .expect("a priced row carries a cost breakdown");
         assert!(
             (breakdown.input_cost - 2.0 / 1_000_000.0).abs() < 1e-12,

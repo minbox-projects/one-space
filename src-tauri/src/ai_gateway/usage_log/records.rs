@@ -55,7 +55,7 @@ impl UsageResult {
 
 /// Effective USD-per-million rates and unrounded USD fees frozen for one row.
 /// The total remains exclusively in [`UsageLogRecord::amount`].
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageCostBreakdown {
     pub input_price: f64,
     pub output_price: f64,
@@ -65,6 +65,8 @@ pub struct UsageCostBreakdown {
     pub output_cost: f64,
     pub cache_read_cost: f64,
     pub cache_write_cost: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_context_tier: Option<String>,
 }
 
 /// Pool-only native reasoning evidence recorded for one attempt.

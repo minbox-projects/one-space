@@ -11,11 +11,7 @@ use chrono::{Datelike, Timelike};
 /// [`compute_cost_at_time_with_breakdown`].
 #[cfg(test)]
 pub fn compute_cost(price: &ModelPrice, tokens: &UsageTokens) -> f64 {
-    (price.input * tokens.input_tokens as f64
-        + price.cache_read * tokens.cache_read_tokens as f64
-        + price.cache_write * tokens.cache_write_tokens as f64
-        + price.output * tokens.output_tokens as f64)
-        / 1_000_000.0
+    compute_cost_at_time_with_breakdown(price, tokens, 0).0
 }
 
 /// Check whether a timestamp_ms falls into the off-peak time window [start_time, end_time) in UTC+8.
@@ -110,13 +106,90 @@ pub fn compute_cost_at_time(
     compute_cost_at_time_with_breakdown(price, tokens, timestamp_ms).0
 }
 
+fn format_context_tier_label(max_context: Option<u64>, prev_max: Option<u64>) -> String {
+    match max_context {
+        Some(max) => {
+            if max >= 1000 && max % 1000 == 0 {
+                format!("≤ {}K", max / 1000)
+            } else {
+                format!("≤ {max}")
+            }
+        }
+        None => match prev_max {
+            Some(prev) => {
+                if prev >= 1000 && prev % 1000 == 0 {
+                    format!("> {}K", prev / 1000)
+                } else {
+                    format!("> {prev}")
+                }
+            }
+            None => "Standard".to_string(),
+        },
+    }
+}
+
 /// Cost and frozen pricing details for the effective UTC+8 tier.
 pub fn compute_cost_at_time_with_breakdown(
     price: &ModelPrice,
     tokens: &UsageTokens,
     timestamp_ms: i64,
 ) -> (f64, UsageCostBreakdown) {
-    let window = price.off_peaks.iter().find(|window| {
+    let context_tokens = tokens
+        .input_tokens
+        .saturating_add(tokens.cache_read_tokens)
+        .saturating_add(tokens.cache_write_tokens);
+
+    let (base_input, base_cache_read, base_cache_write, base_output, off_peaks_candidate, matched_tier_label) =
+        if !price.context_tiers.is_empty() {
+            let mut sorted_tiers: Vec<_> = price.context_tiers.iter().collect();
+            sorted_tiers.sort_by_key(|t| t.max_context.unwrap_or(u64::MAX));
+
+            let mut matched = None;
+            let mut prev_max = None;
+            for tier in &sorted_tiers {
+                if let Some(max) = tier.max_context {
+                    if context_tokens <= max {
+                        let label = format_context_tier_label(Some(max), prev_max);
+                        matched = Some((*tier, label));
+                        break;
+                    }
+                    prev_max = Some(max);
+                } else {
+                    let label = format_context_tier_label(None, prev_max);
+                    matched = Some((*tier, label));
+                    break;
+                }
+            }
+            let (tier, label) = matched.unwrap_or_else(|| {
+                let last = sorted_tiers.last().unwrap();
+                let label = format_context_tier_label(None, prev_max);
+                (*last, label)
+            });
+            let off_peaks = if !tier.off_peaks.is_empty() {
+                &tier.off_peaks
+            } else {
+                &price.off_peaks
+            };
+            (
+                tier.input,
+                tier.cache_read,
+                tier.cache_write,
+                tier.output,
+                off_peaks,
+                Some(label),
+            )
+        } else {
+            (
+                price.input,
+                price.cache_read,
+                price.cache_write,
+                price.output,
+                &price.off_peaks,
+                None,
+            )
+        };
+
+    let window = off_peaks_candidate.iter().find(|window| {
         is_off_peak_with_days(
             timestamp_ms,
             &window.start_time,
@@ -126,7 +199,7 @@ pub fn compute_cost_at_time_with_breakdown(
     });
     let (input_price, cache_read_price, cache_write_price, output_price) = match window {
         Some(window) => (window.input, window.cache_read, window.cache_write, window.output),
-        None => (price.input, price.cache_read, price.cache_write, price.output),
+        None => (base_input, base_cache_read, base_cache_write, base_output),
     };
     let input = input_price * tokens.input_tokens as f64;
     let cache_read = cache_read_price * tokens.cache_read_tokens as f64;
@@ -145,6 +218,7 @@ pub fn compute_cost_at_time_with_breakdown(
             output_cost: output / 1_000_000.0,
             cache_read_cost: cache_read / 1_000_000.0,
             cache_write_cost: cache_write / 1_000_000.0,
+            matched_context_tier: matched_tier_label,
         },
     )
 }

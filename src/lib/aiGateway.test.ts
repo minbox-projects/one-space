@@ -1720,6 +1720,8 @@ function priceDraft(
     output: "",
     enable_off_peak: false,
     off_peaks: [],
+    enable_context_tiers: false,
+    context_tiers: [],
     ...overrides,
   };
 }
@@ -1985,6 +1987,70 @@ describe("aiGateway provider price helpers", () => {
     expect(normalizeDraftDays([])).toEqual([]);
     expect(normalizeDraftDays(null)).toEqual([]);
     expect(normalizeDraftDays(undefined)).toEqual([]);
+  });
+
+  it("price_row_to_draft_and_draft_to_price_row_roundtrips_context_tiers", () => {
+    const original: ModelPrice = {
+      upstream_model: "claude-haiku-5-5",
+      input: 0.1,
+      output: 0.5,
+      cache_read: 0.01,
+      cache_write: 0.125,
+      context_tiers: [
+        {
+          max_context: 100000,
+          input: 0.1,
+          output: 0.5,
+          cache_read: 0.01,
+          cache_write: 0.125,
+        },
+        {
+          max_context: null,
+          input: 0.5,
+          output: 2.5,
+          cache_read: 0.05,
+          cache_write: 0.625,
+        },
+      ],
+    };
+    const draft = priceRowToDraft(original, "claude-haiku-5-5", "p0");
+    expect(draft.enable_context_tiers).toBe(true);
+    expect(draft.context_tiers).toHaveLength(2);
+    expect(draft.context_tiers[0].max_context).toBe("100000");
+    expect(draft.context_tiers[1].max_context).toBe("");
+
+    const roundtrip = draftToPriceRow(draft);
+    expect(roundtrip).not.toBeNull();
+    expect(roundtrip!.context_tiers).toHaveLength(2);
+    expect(roundtrip!.context_tiers![0].max_context).toBe(100000);
+    expect(roundtrip!.context_tiers![0].input).toBe(0.1);
+    expect(roundtrip!.context_tiers![1].max_context).toBeNull();
+    expect(roundtrip!.context_tiers![1].input).toBe(0.5);
+  });
+
+  it("is_price_draft_priced_accepts_context_tiers_only", () => {
+    const draft = priceDraft({
+      input: "",
+      output: "",
+      cache_read: "",
+      cache_write: "",
+      enable_context_tiers: true,
+      context_tiers: [
+        {
+          id: "c1",
+          max_context: "32000",
+          input: "0.03",
+          output: "0.13",
+          cache_read: "0.006",
+          cache_write: "0.038",
+        },
+      ],
+    });
+    expect(isPriceDraftPriced(draft)).toBe(true);
+    const row = draftToPriceRow(draft);
+    expect(row).not.toBeNull();
+    expect(row!.context_tiers).toHaveLength(1);
+    expect(row!.context_tiers![0].input).toBe(0.03);
   });
 
   it("parse_price_number_trims_parses_and_guards_non_finite", () => {

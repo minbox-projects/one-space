@@ -448,6 +448,7 @@ export interface UsageCostBreakdown {
   output_cost: number;
   cache_read_cost: number;
   cache_write_cost: number;
+  matched_context_tier?: string | null;
 }
 
 
@@ -632,6 +633,17 @@ export interface OffPeakPrice {
 }
 
 
+export interface ContextPriceTier {
+  /** Upper bound of context tokens (inclusive). null/undefined indicates unbounded / fallback (e.g. > 100K). */
+  max_context?: number | null;
+  input: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+  off_peaks?: OffPeakPrice[];
+}
+
+
 export interface ModelPrice {
   provider_id?: string | null;
   upstream_model: string;
@@ -641,7 +653,19 @@ export interface ModelPrice {
   cache_write: number;
   output: number;
   off_peaks?: OffPeakPrice[];
+  context_tiers?: ContextPriceTier[];
 }
+
+
+/** Editable string-form context tier for one mapping-row price draft. */
+export type GatewayPriceDraftContextTier = {
+  id: string;
+  max_context: string;
+  input: string;
+  cache_read: string;
+  cache_write: string;
+  output: string;
+};
 
 
 /** Editable string-form off-peak window for one mapping-row price draft. */
@@ -667,6 +691,8 @@ export type GatewayPriceDraft = {
   output: string;
   enable_off_peak: boolean;
   off_peaks: GatewayPriceDraftOffPeak[];
+  enable_context_tiers: boolean;
+  context_tiers: GatewayPriceDraftContextTier[];
 };
 
 
@@ -913,6 +939,7 @@ export interface GatewayProviderTemplateModel {
   reasoning_efforts?: string[];
   /** Declared total context window in tokens; absent/null means unspecified. */
   context_window?: number | null;
+  context_tiers?: ContextPriceTier[];
 }
 
 

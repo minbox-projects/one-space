@@ -1,12 +1,118 @@
 //! Model-list source parsing and template model fetching.
 
 use super::super::types_config::{
-    ProviderTemplate, ProviderTemplateModel, SyncStrategy, UpstreamProtocol,
+    ContextPriceTier, ProviderTemplate, ProviderTemplateModel, SyncStrategy, UpstreamProtocol,
 };
 use serde_json::Value;
 use std::time::Duration;
 
-/// Transform a raw identifier part into display words: runs of characters
+fn resolve_source_pricing_rates(
+    object: &serde_json::Map<String, Value>,
+    previous: Option<&ProviderTemplateModel>,
+) -> (f64, f64, f64, f64) {
+    if let Some(pricing) = object.get("pricing").and_then(Value::as_object) {
+        let input = pricing
+            .get("inputCost")
+            .or_else(|| pricing.get("input"))
+            .and_then(Value::as_f64);
+        let output = pricing
+            .get("outputCost")
+            .or_else(|| pricing.get("output"))
+            .and_then(Value::as_f64);
+        let cache_read = pricing
+            .get("cacheReadCost")
+            .or_else(|| pricing.get("cacheRead"))
+            .or_else(|| pricing.get("cache_read"))
+            .and_then(Value::as_f64);
+        let cache_write = pricing
+            .get("cacheWriteCost")
+            .or_else(|| pricing.get("cacheWrite"))
+            .or_else(|| pricing.get("cache_write"))
+            .and_then(Value::as_f64);
+        if input.is_some() || output.is_some() || cache_read.is_some() || cache_write.is_some() {
+            return (
+                input.unwrap_or(0.0),
+                cache_read.unwrap_or(0.0),
+                cache_write.unwrap_or(0.0),
+                output.unwrap_or(0.0),
+            );
+        }
+    }
+    (
+        previous.map(|model| model.input).unwrap_or(0.0),
+        previous.map(|model| model.cache_read).unwrap_or(0.0),
+        previous.map(|model| model.cache_write).unwrap_or(0.0),
+        previous.map(|model| model.output).unwrap_or(0.0),
+    )
+}
+
+fn resolve_source_context_tiers(
+    object: &serde_json::Map<String, Value>,
+    previous: Option<&ProviderTemplateModel>,
+) -> Vec<ContextPriceTier> {
+    let raw_tiers = object
+        .get("pricing")
+        .and_then(Value::as_object)
+        .and_then(|p| p.get("contextTiers"))
+        .or_else(|| object.get("contextTiers"))
+        .and_then(Value::as_array);
+
+    if let Some(tiers_arr) = raw_tiers {
+        let mut tiers = Vec::new();
+        for item in tiers_arr {
+            let Some(item_obj) = item.as_object() else {
+                continue;
+            };
+            let max_context = item_obj
+                .get("maxContext")
+                .or_else(|| item_obj.get("max_context"))
+                .or_else(|| item_obj.get("context"))
+                .or_else(|| item_obj.get("upTo"))
+                .or_else(|| item_obj.get("up_to"))
+                .and_then(Value::as_u64);
+            let rates = item_obj
+                .get("rates")
+                .and_then(Value::as_object)
+                .unwrap_or(item_obj);
+            let input = rates
+                .get("inputCost")
+                .or_else(|| rates.get("input"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let output = rates
+                .get("outputCost")
+                .or_else(|| rates.get("output"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let cache_read = rates
+                .get("cacheReadCost")
+                .or_else(|| rates.get("cacheRead"))
+                .or_else(|| rates.get("cache_read"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let cache_write = rates
+                .get("cacheWriteCost")
+                .or_else(|| rates.get("cacheWrite"))
+                .or_else(|| rates.get("cache_write"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            tiers.push(ContextPriceTier {
+                max_context,
+                input,
+                cache_read,
+                cache_write,
+                output,
+                off_peaks: Vec::new(),
+            });
+        }
+        if !tiers.is_empty() {
+            return tiers;
+        }
+    }
+    previous
+        .map(|model| model.context_tiers.clone())
+        .unwrap_or_default()
+}
 /// outside `[A-Za-z0-9.]` become single spaces, edge dots are trimmed, and a
 /// leading lowercase ASCII letter of each word is upper-cased. Keeping `.`
 /// inside words leaves version numbers such as `2.1` or `K2.7` intact.
@@ -110,10 +216,164 @@ pub(super) fn complete_model_display_name(base: Option<&str>, identifier: &str) 
 const COMMANDCODE_TEMPLATE_ID: &str = "commandcode";
 const COMMANDCODE_ORDINARY_URL: &str = "https://api.commandcode.ai/provider/v1/models";
 const COMMANDCODE_CLIENT_URL: &str = "https://api.commandcode.ai/provider/v1/models?view=client";
+const COMMANDCODE_GOAT_PLAN_URL: &str = "https://commandcode.ai/docs/plans/goat";
 
 /// Provider API reasoning-effort values CommandCode accepts; `off` is a CLI
 /// control that must never be exported as an upstream effort.
 const COMMANDCODE_PROVIDER_API_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+fn parse_context_str(ctx: &str) -> Option<u64> {
+    let ctx = ctx.trim();
+    if ctx.contains('>') {
+        return None;
+    }
+    let mut num_str = String::new();
+    for c in ctx.chars() {
+        if c.is_ascii_digit() || c == '.' {
+            num_str.push(c);
+        } else if !num_str.is_empty() && (c == 'K' || c == 'k' || c == 'M' || c == 'm' || c.is_whitespace()) {
+            break;
+        }
+    }
+    let val: f64 = num_str.parse().ok()?;
+    if ctx.contains('M') || ctx.contains('m') {
+        Some((val * 1_000_000.0) as u64)
+    } else if ctx.contains('K') || ctx.contains('k') {
+        Some((val * 1_000.0) as u64)
+    } else {
+        Some(val as u64)
+    }
+}
+
+/// Lenient scraper for context pricing tiers from the CommandCode GOAT documentation webpage.
+pub(super) fn parse_goat_web_tiers(
+    raw_html: &str,
+) -> std::collections::HashMap<String, Vec<ContextPriceTier>> {
+    let mut results = std::collections::HashMap::new();
+    let mut pos = 0;
+    while pos < raw_html.len() {
+        let p_unescaped = raw_html[pos..].find("\"id\":\"").map(|p| (p, "\"id\":\"".len()));
+        let p_escaped = raw_html[pos..].find(r#"\"id\":\""#).map(|p| (p, r#"\"id\":\""#.len()));
+        let found = match (p_unescaped, p_escaped) {
+            (Some((p1, len1)), Some((p2, len2))) => {
+                if p1 <= p2 {
+                    Some((pos + p1, len1))
+                } else {
+                    Some((pos + p2, len2))
+                }
+            }
+            (Some((p1, len1)), None) => Some((pos + p1, len1)),
+            (None, Some((p2, len2))) => Some((pos + p2, len2)),
+            (None, None) => None,
+        };
+        let Some((id_match_start, prefix_len)) = found else {
+            break;
+        };
+        let id_val_start = id_match_start + prefix_len;
+        let Some(id_val_len) = raw_html[id_val_start..].find('"') else {
+            break;
+        };
+        let model_id = raw_html[id_val_start..id_val_start + id_val_len].trim_end_matches('\\');
+        let search_start = id_val_start + id_val_len;
+        let search_window_end = std::cmp::min(raw_html.len(), search_start + 4000);
+        let search_window = &raw_html[search_start..search_window_end];
+
+        let t_unescaped = search_window.find("\"tiers\":[").map(|p| (p, "\"tiers\":".len(), false));
+        let t_escaped = search_window.find(r#"\"tiers\":["#).map(|p| (p, r#"\"tiers\":"#.len(), true));
+        let tiers_match = match (t_unescaped, t_escaped) {
+            (Some((p1, len1, esc1)), Some((p2, len2, esc2))) => {
+                if p1 <= p2 {
+                    Some((search_start + p1 + len1, esc1))
+                } else {
+                    Some((search_start + p2 + len2, esc2))
+                }
+            }
+            (Some((p1, len1, esc1)), None) => Some((search_start + p1 + len1, esc1)),
+            (None, Some((p2, len2, esc2))) => Some((search_start + p2 + len2, esc2)),
+            (None, None) => None,
+        };
+
+        if let Some((array_start, is_escaped)) = tiers_match {
+            let mut depth = 0;
+            let mut array_end = None;
+            for (idx, b) in raw_html[array_start..search_window_end].bytes().enumerate() {
+                if b == b'[' {
+                    depth += 1;
+                } else if b == b']' {
+                    depth -= 1;
+                    if depth == 0 {
+                        array_end = Some(array_start + idx + 1);
+                        break;
+                    }
+                }
+            }
+            if let Some(end) = array_end {
+                let raw_json_slice = &raw_html[array_start..end];
+                let json_str = if is_escaped {
+                    raw_json_slice.replace(r#"\""#, "\"")
+                } else {
+                    raw_json_slice.to_string()
+                };
+                let cleaned = json_str.replace("$undefined", "null");
+                if let Ok(Value::Array(items)) = serde_json::from_str(&cleaned) {
+                    let mut tiers = Vec::new();
+                    for item in items {
+                        let Some(obj) = item.as_object() else {
+                            continue;
+                        };
+                        let max_context = if let Some(s) = obj.get("context").and_then(Value::as_str) {
+                            parse_context_str(s)
+                        } else if let Some(n) = obj.get("context").and_then(Value::as_u64) {
+                            Some(n)
+                        } else {
+                            obj.get("maxContext")
+                                .or_else(|| obj.get("max_context"))
+                                .or_else(|| obj.get("upTo"))
+                                .and_then(Value::as_u64)
+                        };
+
+                        let rates = obj.get("rates").and_then(Value::as_object).unwrap_or(obj);
+                        let input = rates
+                            .get("input")
+                            .or_else(|| rates.get("inputCost"))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0);
+                        let output = rates
+                            .get("output")
+                            .or_else(|| rates.get("outputCost"))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0);
+                        let cache_read = rates
+                            .get("cacheRead")
+                            .or_else(|| rates.get("cacheReadCost"))
+                            .or_else(|| rates.get("cache_read"))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0);
+                        let cache_write = rates
+                            .get("cacheWrite")
+                            .or_else(|| rates.get("cacheWriteCost"))
+                            .or_else(|| rates.get("cache_write"))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0);
+                        tiers.push(ContextPriceTier {
+                            max_context,
+                            input,
+                            cache_read,
+                            cache_write,
+                            output,
+                            off_peaks: Vec::new(),
+                        });
+                    }
+                    if !tiers.is_empty() {
+                        results.insert(model_id.to_string(), tiers);
+                    }
+                }
+            }
+        }
+        pos = search_start + 1;
+    }
+    results
+}
 
 /// Canonical OpenCode Zen Free template id. Its model-list sync is the only one
 /// that filters by upstream pricing, because a free provider must never import a
@@ -374,6 +634,7 @@ pub(super) fn parse_model_list_source(
                 off_peaks: previous_model.map(|model| model.off_peaks.clone()).unwrap_or_default(),
                 reasoning_efforts: previous_model.map(|model| model.reasoning_efforts.clone()).unwrap_or_default(),
                 context_window: previous_model.and_then(|model| model.context_window),
+                context_tiers: previous_model.map(|model| model.context_tiers.clone()).unwrap_or_default(),
             });
             continue;
         }
@@ -476,19 +737,23 @@ pub(super) fn parse_model_list_source(
         };
         let context_window =
             resolve_source_context_window(object, &identifier, previous_model)?;
+        let (input, cache_read, cache_write, output) =
+            resolve_source_pricing_rates(object, previous_model);
+        let context_tiers = resolve_source_context_tiers(object, previous_model);
         merged.push(ProviderTemplateModel {
             upstream_model: identifier,
             local_model,
             display_name,
             protocol: protocol.or_else(|| previous_model.and_then(|model| model.protocol)),
             enabled: previous_model.map(|model| model.enabled).unwrap_or(true),
-            input: previous_model.map(|model| model.input).unwrap_or(0.0),
-            cache_read: previous_model.map(|model| model.cache_read).unwrap_or(0.0),
-            cache_write: previous_model.map(|model| model.cache_write).unwrap_or(0.0),
-            output: previous_model.map(|model| model.output).unwrap_or(0.0),
+            input,
+            cache_read,
+            cache_write,
+            output,
             off_peaks: previous_model.map(|model| model.off_peaks.clone()).unwrap_or_default(),
             reasoning_efforts,
             context_window,
+            context_tiers,
         });
     }
 
@@ -567,7 +832,19 @@ where
     let client = fetch(COMMANDCODE_CLIENT_URL.to_string())
         .await
         .map_err(|reason| format!("failed to fetch {COMMANDCODE_CLIENT_URL}: {reason}"))?;
-    join_commandcode_client_capabilities(&ordinary, &client)
+
+    let has_context_tiers = client.contains("contextTiers");
+    let needs_web_fallback = !has_context_tiers && client.contains("\"pricing\"");
+    let web_tiers = if needs_web_fallback {
+        match fetch(COMMANDCODE_GOAT_PLAN_URL.to_string()).await {
+            Ok(html) => parse_goat_web_tiers(&html),
+            Err(_) => std::collections::HashMap::new(),
+        }
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    join_commandcode_client_capabilities_with_web_fallback(&ordinary, &client, &web_tiers)
 }
 
 /// The client-catalog failure message, always naming the client URL.
@@ -594,14 +871,23 @@ fn model_entries_mut(value: &mut Value) -> Option<&mut Vec<Value>> {
 }
 
 /// Enrich an ordinary CommandCode model list with the official client catalog's
-/// declared reasoning efforts, joined by exact upstream id. Only capabilities
-/// are joined: the ordinary entries, their order, names and endpoints are
-/// untouched, and a client-only or hidden catalog entry never adds a model.
-/// Effort values are normalized, then filtered to the CommandCode Provider API
-/// set so a CLI-only `off` is never exported.
+/// declared reasoning efforts and pricing, joined by exact upstream id.
+#[allow(dead_code)]
 fn join_commandcode_client_capabilities(
     ordinary: &str,
     client: &str,
+) -> Result<String, String> {
+    join_commandcode_client_capabilities_with_web_fallback(
+        ordinary,
+        client,
+        &std::collections::HashMap::new(),
+    )
+}
+
+fn join_commandcode_client_capabilities_with_web_fallback(
+    ordinary: &str,
+    client: &str,
+    web_tiers: &std::collections::HashMap<String, Vec<ContextPriceTier>>,
 ) -> Result<String, String> {
     let client_value: Value = serde_json::from_str(client)
         .map_err(|error| commandcode_client_error(format!("not valid JSON: {error}")))?;
@@ -613,7 +899,7 @@ fn join_commandcode_client_capabilities(
         .and_then(Value::as_array)
         .ok_or_else(|| commandcode_client_error("the catalog is missing its model data array"))?;
 
-    let mut declared: Vec<(String, Option<Vec<String>>)> =
+    let mut declared: Vec<(String, Option<Vec<String>>, Option<Value>)> =
         Vec::with_capacity(client_entries.len());
     for entry in client_entries {
         let object = entry
@@ -626,7 +912,7 @@ fn join_commandcode_client_capabilities(
             .filter(|id| !id.is_empty())
             .ok_or_else(|| commandcode_client_error("the catalog contains an entry without an id"))?
             .to_string();
-        if declared.iter().any(|(existing, _)| existing == &id) {
+        if declared.iter().any(|(existing, _, _)| existing == &id) {
             return Err(commandcode_client_error(format!(
                 "the catalog declares the duplicate id {id}"
             )));
@@ -639,7 +925,8 @@ fn join_commandcode_client_capabilities(
                     .filter(|effort| COMMANDCODE_PROVIDER_API_EFFORTS.contains(&effort.as_str()))
                     .collect::<Vec<String>>()
             });
-        declared.push((id, efforts));
+        let pricing = object.get("pricing").cloned();
+        declared.push((id, efforts, pricing));
     }
 
     let mut ordinary_value: Value = serde_json::from_str(ordinary)
@@ -667,13 +954,41 @@ fn join_commandcode_client_capabilities(
         let Some(identifier) = identifier else {
             continue;
         };
-        let Some((_, Some(efforts))) = declared.iter().find(|(id, _)| id == &identifier) else {
-            continue;
-        };
-        object.insert(
-            "reasoningEfforts".to_string(),
-            Value::Array(efforts.iter().cloned().map(Value::String).collect()),
-        );
+        let mut entry_pricing = None;
+        if let Some((_, efforts, pricing)) = declared.iter().find(|(id, _, _)| id == &identifier) {
+            if let Some(efforts) = efforts {
+                object.insert(
+                    "reasoningEfforts".to_string(),
+                    Value::Array(efforts.iter().cloned().map(Value::String).collect()),
+                );
+            }
+            if let Some(pricing) = pricing {
+                entry_pricing = Some(pricing.clone());
+            }
+        }
+        if let Some(web_tiers_for_model) = web_tiers.get(&identifier) {
+            let needs_fallback = match &entry_pricing {
+                None => true,
+                Some(p) => !p
+                    .get("contextTiers")
+                    .and_then(Value::as_array)
+                    .map_or(false, |arr| !arr.is_empty()),
+            };
+            if needs_fallback {
+                let serialized_tiers =
+                    serde_json::to_value(web_tiers_for_model).unwrap_or(Value::Null);
+                if let Some(Value::Object(ref mut p_map)) = entry_pricing {
+                    p_map.insert("contextTiers".to_string(), serialized_tiers);
+                } else {
+                    let mut p_map = serde_json::Map::new();
+                    p_map.insert("contextTiers".to_string(), serialized_tiers);
+                    entry_pricing = Some(Value::Object(p_map));
+                }
+            }
+        }
+        if let Some(pricing) = entry_pricing {
+            object.insert("pricing".to_string(), pricing);
+        }
     }
 
     serde_json::to_string(&ordinary_value)

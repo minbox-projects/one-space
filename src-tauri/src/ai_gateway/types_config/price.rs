@@ -81,6 +81,24 @@ pub struct OffPeakPrice {
     pub days: Option<Vec<u8>>,
 }
 
+/// Pricing tier configuration based on context window/prompt length.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextPriceTier {
+    /// Upper bound of context token count (inclusive). `None` indicates unbounded / fallback (e.g. > 100K).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context: Option<u64>,
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_peaks: Vec<OffPeakPrice>,
+}
+
 /// Unit prices for one upstream model, in US dollars per million tokens.
 ///
 /// Prices are matched against the upstream model name recorded at request time;
@@ -101,6 +119,8 @@ pub struct ModelPrice {
     pub output: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub off_peaks: Vec<OffPeakPrice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_tiers: Vec<ContextPriceTier>,
 }
 
 impl Default for ModelPrice {
@@ -113,6 +133,7 @@ impl Default for ModelPrice {
             cache_write: 0.0,
             output: 0.0,
             off_peaks: Vec::new(),
+            context_tiers: Vec::new(),
         }
     }
 }

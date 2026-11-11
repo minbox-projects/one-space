@@ -6215,3 +6215,144 @@ fn zen_free_inference_endpoint() {
         Some("https://opencode.ai/zen/v1/models")
     );
 }
+
+#[tokio::test]
+async fn fetch_commandcode_source_joins_context_tiers_from_client_api() {
+    let template = commandcode_template(vec![ProviderTemplateModel {
+        upstream_model: "claude-haiku-5-5".to_string(),
+        display_name: Some("Claude Haiku 5.5".to_string()),
+        protocol: Some(UpstreamProtocol::AnthropicMessages),
+        ..ProviderTemplateModel::default()
+    }]);
+    let ordinary = json!({"data": [
+        {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "supported_endpoints": ["/messages"]}
+    ]})
+    .to_string();
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [
+            {
+                "id": "claude-haiku-5-5",
+                "pricing": {
+                    "input": 1.0,
+                    "output": 5.0,
+                    "contextTiers": [
+                        {
+                            "upTo": 200000,
+                            "input": 1.0,
+                            "output": 5.0,
+                            "cacheRead": 0.1,
+                            "cacheWrite": 1.25
+                        },
+                        {
+                            "upTo": null,
+                            "input": 1.25,
+                            "output": 6.25,
+                            "cacheRead": 0.125,
+                            "cacheWrite": 1.5625
+                        }
+                    ]
+                }
+            }
+        ]
+    })
+    .to_string();
+
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        let reply = if requested.contains("view=client") {
+            client.clone()
+        } else {
+            ordinary.clone()
+        };
+        async move { Ok::<String, String>(reply) }
+    })
+    .await
+    .expect("CommandCode sync must succeed");
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+        .expect("sync from body must succeed");
+
+    let haiku = view
+        .template
+        .models
+        .iter()
+        .find(|m| m.upstream_model == "claude-haiku-5-5")
+        .expect("haiku model must exist");
+
+    assert_eq!(haiku.context_tiers.len(), 2);
+    assert_eq!(haiku.context_tiers[0].max_context, Some(200_000));
+    assert_eq!(haiku.context_tiers[0].input, 1.0);
+    assert_eq!(haiku.context_tiers[0].output, 5.0);
+    assert_eq!(haiku.context_tiers[1].max_context, None);
+    assert_eq!(haiku.context_tiers[1].input, 1.25);
+    assert_eq!(haiku.context_tiers[1].output, 6.25);
+}
+
+#[tokio::test]
+async fn fetch_commandcode_source_falls_back_to_goat_web_tiers_when_client_lacks_tiers() {
+    let template = commandcode_template(vec![ProviderTemplateModel {
+        upstream_model: "Qwen/Qwen3.7-Flash".to_string(),
+        display_name: Some("Qwen 3.7 Flash".to_string()),
+        protocol: Some(UpstreamProtocol::ChatCompletions),
+        ..ProviderTemplateModel::default()
+    }]);
+    let ordinary = json!({"data": [
+        {"id": "Qwen/Qwen3.7-Flash", "name": "Qwen 3.7 Flash", "supported_endpoints": ["/chat/completions"]}
+    ]})
+    .to_string();
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [
+            {
+                "id": "Qwen/Qwen3.7-Flash",
+                "pricing": {
+                    "input": 0.05,
+                    "output": 0.4
+                }
+            }
+        ]
+    })
+    .to_string();
+
+    let goat_html = r#"
+    <html><body>
+    <script>
+    self.__next_f.push([1,"...{\"id\":\"Qwen/Qwen3.7-Flash\",\"tiers\":[{\"context\":131072,\"input\":0.05,\"output\":0.4,\"cacheRead\":0.01,\"cacheWrite\":0.05},{\"context\":null,\"input\":0.1,\"output\":0.8,\"cacheRead\":0.02,\"cacheWrite\":0.1}]}..."]);
+    </script></body></html>
+    "#;
+
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        let reply = if requested.contains("view=client") {
+            client.clone()
+        } else if requested.contains("commandcode.ai/docs/plans/goat") {
+            goat_html.to_string()
+        } else {
+            ordinary.clone()
+        };
+        async move { Ok::<String, String>(reply) }
+    })
+    .await
+    .expect("CommandCode sync with web fallback must succeed");
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+        .expect("sync from body must succeed");
+
+    let qwen = view
+        .template
+        .models
+        .iter()
+        .find(|m| m.upstream_model == "Qwen/Qwen3.7-Flash")
+        .expect("qwen model must exist");
+
+    assert_eq!(qwen.context_tiers.len(), 2);
+    assert_eq!(qwen.context_tiers[0].max_context, Some(131_072));
+    assert_eq!(qwen.context_tiers[0].input, 0.05);
+    assert_eq!(qwen.context_tiers[1].max_context, None);
+    assert_eq!(qwen.context_tiers[1].input, 0.1);
+}
+
+
