@@ -9,6 +9,7 @@ import {
   Search,
   Server,
   Sparkles,
+  Tag,
   X,
   ArrowRight,
 } from "lucide-react";
@@ -105,30 +106,32 @@ function UpstreamPriceDisplay({
 
   const hasContextTiers = Boolean(price.context_tiers && price.context_tiers.length > 0);
   const hasOffPeaks = Boolean(price.off_peaks && price.off_peaks.length > 0);
+  const showBasePrice = !hasContextTiers && !hasOffPeaks;
 
   return (
     <div
       data-testid="ai-gateway-model-list-upstream-price"
       className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-border/40 text-[11px]"
     >
-      {/* 基础费率标签 */}
-      <span
-        data-testid="ai-gateway-model-list-base-price"
-        className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] font-medium text-foreground/90 shadow-2xs"
-        title={t("aiGatewayModelListPriceStandardTier", "标准基准费率")}
-      >
-        <span className="text-[10px] font-sans text-muted-foreground">
-          {t("aiGatewayModelListPrice", "计价")}:
-        </span>{" "}
-        <span>
-          {t("aiGatewayModelListPriceInputShort", "入")} {formatRate(price.input)} / {t("aiGatewayModelListPriceOutputShort", "出")} {formatRate(price.output)}
-        </span>
-        {price.cache_read > 0 ? (
-          <span className="text-muted-foreground/80">
-            {" "}· {t("aiGatewayModelListPriceCacheReadShort", "读缓")} {formatRate(price.cache_read)}
+      {/* 基础费率标签（仅在无上下文分阶且无峰谷优惠时展示） */}
+      {showBasePrice ? (
+        <span
+          data-testid="ai-gateway-model-list-base-price"
+          className="inline-flex items-center gap-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:text-emerald-300 shadow-2xs"
+          title={t("aiGatewayModelListPriceStandardTier", "标准基准费率")}
+        >
+          <Tag className="h-2.5 w-2.5 text-emerald-500 shrink-0" />
+          <span className="font-semibold">{t("aiGatewayModelListPrice", "计价")}:</span>{" "}
+          <span>
+            {t("aiGatewayModelListPriceInputShort", "入")} {formatRate(price.input)} / {t("aiGatewayModelListPriceOutputShort", "出")} {formatRate(price.output)}
           </span>
-        ) : null}
-      </span>
+          {price.cache_read > 0 ? (
+            <span className="text-emerald-600/70 dark:text-emerald-400/70">
+              {" "}· {t("aiGatewayModelListPriceCacheReadShort", "读缓")} {formatRate(price.cache_read)}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
 
       {/* 上下文阶梯费率标签组 */}
       {hasContextTiers

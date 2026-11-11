@@ -1569,7 +1569,7 @@ describe("ModelListPanel 绑定后池行与来源行的档位隔离（binding）
       expect(basePrice).toHaveTextContent("Pricing: In $0.15 / Out $0.6 · Cache read $0.075");
     });
 
-    it("正确渲染包含上下文阶梯与峰谷优惠的完整计价", async () => {
+    it("存在上下文阶梯或峰谷优惠时隐藏基础费率标签，并正确渲染阶梯与峰谷标签", async () => {
       await i18n.changeLanguage("zh");
       const p1 = makeProvider({
         id: "p1",
@@ -1605,9 +1605,8 @@ describe("ModelListPanel 绑定后池行与来源行的档位隔离（binding）
 
       const upstream = screen.getByTestId("ai-gateway-model-list-upstream");
 
-      // 基础价格
-      const basePrice = within(upstream).getByTestId("ai-gateway-model-list-base-price");
-      expect(basePrice).toHaveTextContent("计价: 入 $0.1 / 出 $0.5 · 读缓 $0.01");
+      // 存在上下文阶梯和峰谷优惠时，不展示基础价格标签
+      expect(within(upstream).queryByTestId("ai-gateway-model-list-base-price")).toBeNull();
 
       // 上下文阶梯 0: ≤100K
       const tier0 = within(upstream).getByTestId("ai-gateway-model-list-context-tier-0");
