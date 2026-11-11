@@ -220,7 +220,7 @@ pub async fn cloud_agent_deploy(
     let inspection = inspect_installation(&host, &agent_dir, &local_version, &shell);
     let registry = deployment_registry();
     registry.may_deploy(&host, &agent_dir, inspection.state)?;
-    registry.begin(host.clone(), agent_dir.clone(), operation_id.clone())?;
+    registry.begin(host.clone(), operation_id.clone())?;
 
     let outcome = run_deploy_process_async(
         &deployer,

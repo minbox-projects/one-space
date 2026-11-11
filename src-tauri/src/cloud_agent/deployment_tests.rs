@@ -369,9 +369,9 @@ fn validate_local_payload_and_bundle() {
 #[test]
 fn registry_guards() {
     let reg = deployment::DeploymentRegistry::new();
-    assert!(reg.begin("host-a".to_string(), "/path-a".to_string(), "op-1".to_string()).is_ok());
-    assert!(reg.begin("host-b".to_string(), "/path-b".to_string(), "op-2".to_string()).is_err());
-    assert!(reg.begin("host-a".to_string(), "/path-a".to_string(), "op-1".to_string()).is_err());
+    assert!(reg.begin("host-a".to_string(), "op-1".to_string()).is_ok());
+    assert!(reg.begin("host-b".to_string(), "op-2".to_string()).is_err());
+    assert!(reg.begin("host-a".to_string(), "op-1".to_string()).is_err());
     reg.finish("op-1");
     reg.finish("unknown");
 
