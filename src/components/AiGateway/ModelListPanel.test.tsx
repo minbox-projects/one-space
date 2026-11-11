@@ -1639,10 +1639,9 @@ describe("ModelListPanel 绑定后池行与来源行的档位隔离（binding）
         name: "Smart Pool",
         model: "smart-pool",
         enabled: true,
-        protocol: "chat_completions",
         candidates: [
-          { provider_id: "p1", upstream_model: "upstream-1", local_model: "m1", protocol: "chat_completions", weight: 1, priority: 1 },
-          { provider_id: "p2", upstream_model: "upstream-2", local_model: "m2", protocol: "chat_completions", weight: 1, priority: 2 },
+          { provider_id: "p1", upstream_model: "upstream-1", local_model: "m1", protocol: "chat_completions", weight: 1 },
+          { provider_id: "p2", upstream_model: "upstream-2", local_model: "m2", protocol: "chat_completions", weight: 1 },
         ],
       };
 
