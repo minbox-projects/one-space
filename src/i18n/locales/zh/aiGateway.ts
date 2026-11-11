@@ -822,7 +822,21 @@ const aiGateway = {
   "aiGatewayTemplateSyncNotificationTitle": "服务商模板 {{template}} 模型已变更",
   "aiGatewayTemplateSyncNotificationProviderCount": "{{count}} 个服务商受影响",
   "aiGatewayTemplateSyncNotificationAddedCount": "新增 {{count}}",
-  "aiGatewayTemplateSyncNotificationDetailProvider": "{{provider}}：{{models}}"
+  "aiGatewayTemplateSyncNotificationDetailProvider": "{{provider}}：{{models}}",
+  "aiGatewayModelListPrice": "计价",
+  "aiGatewayModelListPriceUnset": "未配置计价",
+  "aiGatewayModelListPriceRates": "费率",
+  "aiGatewayModelListPriceUnit": "$/1M tokens",
+  "aiGatewayModelListPriceInputShort": "入",
+  "aiGatewayModelListPriceOutputShort": "出",
+  "aiGatewayModelListPriceCacheReadShort": "读缓",
+  "aiGatewayModelListPriceCacheWriteShort": "写缓",
+  "aiGatewayModelListContextTierPrefix": "阶梯",
+  "aiGatewayModelListContextTierUnbounded": "默认",
+  "aiGatewayModelListOffPeakPrefix": "峰谷",
+  "aiGatewayModelListPriceDetailsTitle": "费率明细",
+  "aiGatewayModelListPriceTierLabel": "计价阶梯 / 窗口",
+  "aiGatewayModelListPriceStandardTier": "标准基准费率"
 };
 
 export default aiGateway;

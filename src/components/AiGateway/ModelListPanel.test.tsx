@@ -1472,7 +1472,7 @@ describe("ModelListPanel 绑定后池行与来源行的档位隔离（binding）
     ).toBeNull();
   });
 
-  it("当同一个模型不同服务商部分未配置上下文时，第一列显示已配置的最小值且格式为 'xxxK — 不完整'", async () => {
+  it("当同一个模型不同服务商部分未配置上下文时，模型名称列不渲染保守上下文，各上游来源仍保留上下文 tag", async () => {
     await i18n.changeLanguage("zh");
     const p1 = makeProvider({
       id: "p1",
@@ -1518,15 +1518,170 @@ describe("ModelListPanel 绑定后池行与来源行的档位隔离（binding）
       .find((item) => item.getAttribute("data-model") === "mixed-model");
     expect(row).toBeDefined();
 
-    // 第一列应显示已知最小值 "128K — 不完整"
-    const contextContainer = within(row!).getByTestId("ai-gateway-model-list-context");
-    expect(contextContainer).toHaveTextContent("128K — 不完整");
+    // 模型名称列不再渲染全局保守有效上下文
+    expect(within(row!).queryByTestId("ai-gateway-model-list-context")).toBeNull();
 
-    // 第三列上游上下文徽章
+    // 第三列上游上下文徽章保留各个上游来源的上下文
     const upstreams = within(row!).getAllByTestId("ai-gateway-model-list-upstream");
     expect(within(upstreams[0]).getByTestId("ai-gateway-model-list-upstream-context")).toHaveTextContent("128K");
     expect(within(upstreams[1]).getByTestId("ai-gateway-model-list-upstream-context")).toHaveTextContent("256K");
     expect(within(upstreams[2]).getByTestId("ai-gateway-model-list-upstream-context")).toHaveTextContent("未指定");
+  });
+
+  describe("ModelListPanel 模型计价与阶梯展示", () => {
+    it("未配置计价时渲染未配置计价标签", async () => {
+      await i18n.changeLanguage("zh");
+      const p1 = makeProvider({
+        id: "p1",
+        name: "Provider 1",
+        mappings: [{ local_model: "free-model", upstream_model: "upstream-free" }],
+      });
+
+      renderWithProviders(<ModelListPanel providers={[p1]} prices={[]} />);
+
+      const upstream = screen.getByTestId("ai-gateway-model-list-upstream");
+      const priceContainer = within(upstream).getByTestId("ai-gateway-model-list-upstream-price");
+      expect(priceContainer).toHaveTextContent("未配置计价");
+    });
+
+    it("正确渲染标准基础计价与缓存读价格", async () => {
+      await i18n.changeLanguage("en");
+      const p1 = makeProvider({
+        id: "p1",
+        name: "Provider 1",
+        mappings: [{ local_model: "standard-model", upstream_model: "upstream-std" }],
+      });
+      const prices = [
+        {
+          provider_id: "p1",
+          upstream_model: "upstream-std",
+          input: 0.15,
+          output: 0.6,
+          cache_read: 0.075,
+          cache_write: 0,
+        },
+      ];
+
+      renderWithProviders(<ModelListPanel providers={[p1]} prices={prices} />);
+
+      const upstream = screen.getByTestId("ai-gateway-model-list-upstream");
+      const basePrice = within(upstream).getByTestId("ai-gateway-model-list-base-price");
+      expect(basePrice).toHaveTextContent("Pricing: In $0.15 / Out $0.6 · Cache read $0.075");
+    });
+
+    it("正确渲染包含上下文阶梯与峰谷优惠的完整计价", async () => {
+      await i18n.changeLanguage("zh");
+      const p1 = makeProvider({
+        id: "p1",
+        name: "CommandCode",
+        mappings: [{ local_model: "haiku", upstream_model: "claude-haiku-5-5" }],
+      });
+      const prices = [
+        {
+          provider_id: "p1",
+          upstream_model: "claude-haiku-5-5",
+          input: 0.1,
+          output: 0.5,
+          cache_read: 0.01,
+          cache_write: 0.125,
+          context_tiers: [
+            { max_context: 100000, input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
+            { max_context: null, input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.625 },
+          ],
+          off_peaks: [
+            {
+              start_time: "00:30",
+              end_time: "08:30",
+              input: 0.05,
+              output: 0.25,
+              cache_read: 0.005,
+              cache_write: 0.0625,
+            },
+          ],
+        },
+      ];
+
+      renderWithProviders(<ModelListPanel providers={[p1]} prices={prices} />);
+
+      const upstream = screen.getByTestId("ai-gateway-model-list-upstream");
+
+      // 基础价格
+      const basePrice = within(upstream).getByTestId("ai-gateway-model-list-base-price");
+      expect(basePrice).toHaveTextContent("计价: 入 $0.1 / 出 $0.5 · 读缓 $0.01");
+
+      // 上下文阶梯 0: ≤100K
+      const tier0 = within(upstream).getByTestId("ai-gateway-model-list-context-tier-0");
+      expect(tier0).toHaveTextContent("≤100K: 入 $0.1 / 出 $0.5 · 读缓 $0.01");
+
+      // 上下文阶梯 1: >100K
+      const tier1 = within(upstream).getByTestId("ai-gateway-model-list-context-tier-1");
+      expect(tier1).toHaveTextContent(">100K: 入 $0.5 / 出 $2.5 · 读缓 $0.05");
+
+      // 峰谷时段
+      const offPeak = within(upstream).getByTestId("ai-gateway-model-list-off-peak-0");
+      expect(offPeak).toHaveTextContent("00:30-08:30: 入 $0.05 / 出 $0.25");
+    });
+
+    it("模型池候选模型正确显示各自来源的计价", async () => {
+      await i18n.changeLanguage("en");
+      const p1 = makeProvider({
+        id: "p1",
+        name: "Provider 1",
+        mappings: [{ local_model: "m1", upstream_model: "upstream-1" }],
+      });
+      const p2 = makeProvider({
+        id: "p2",
+        name: "Provider 2",
+        mappings: [{ local_model: "m2", upstream_model: "upstream-2" }],
+      });
+
+      const pool: GatewayModelPool = {
+        id: "pool-1",
+        name: "Smart Pool",
+        model: "smart-pool",
+        enabled: true,
+        protocol: "chat_completions",
+        candidates: [
+          { provider_id: "p1", upstream_model: "upstream-1", local_model: "m1", protocol: "chat_completions", weight: 1, priority: 1 },
+          { provider_id: "p2", upstream_model: "upstream-2", local_model: "m2", protocol: "chat_completions", weight: 1, priority: 2 },
+        ],
+      };
+
+      const prices = [
+        {
+          provider_id: "p1",
+          upstream_model: "upstream-1",
+          input: 1.0,
+          output: 2.0,
+          cache_read: 0,
+          cache_write: 0,
+        },
+        // p2 未定价
+      ];
+
+      renderWithProviders(
+        <ModelListPanel
+          providers={[p1, p2]}
+          modelPools={[pool]}
+          prices={prices}
+        />,
+      );
+
+      // 切换到只看模型池或者找到 pool 行
+      const poolRow = screen
+        .getAllByTestId("ai-gateway-model-list-row")
+        .find((r) => r.getAttribute("data-model") === "smart-pool");
+      expect(poolRow).toBeDefined();
+
+      const upstreams = within(poolRow!).getAllByTestId("ai-gateway-model-list-upstream");
+      expect(upstreams).toHaveLength(2);
+
+      // 第一个候选来自 p1，有价格
+      expect(within(upstreams[0]).getByTestId("ai-gateway-model-list-base-price")).toHaveTextContent("Pricing: In $1 / Out $2");
+
+      // 第二个候选来自 p2，未定价
+      expect(within(upstreams[1]).getByTestId("ai-gateway-model-list-upstream-price")).toHaveTextContent("Unpriced");
+    });
   });
 });
 

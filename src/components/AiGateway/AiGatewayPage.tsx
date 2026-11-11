@@ -397,6 +397,7 @@ export function AiGateway({ isVisible = true }: { isVisible?: boolean }) {
             <ModelListPanel
               providers={config.providers}
               modelPools={modelPoolsForView}
+              prices={config.model_prices ?? []}
               port={config.port}
               isActive={activeTab === "models"}
               onNavigateProviders={navigateToProviders}

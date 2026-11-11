@@ -822,7 +822,21 @@ const aiGateway = {
   "aiGatewayTemplateSyncNotificationTitle": "Provider template {{template}} models changed",
   "aiGatewayTemplateSyncNotificationProviderCount": "{{count}} provider(s) affected",
   "aiGatewayTemplateSyncNotificationAddedCount": "{{count}} added",
-  "aiGatewayTemplateSyncNotificationDetailProvider": "{{provider}}: {{models}}"
+  "aiGatewayTemplateSyncNotificationDetailProvider": "{{provider}}: {{models}}",
+  "aiGatewayModelListPrice": "Pricing",
+  "aiGatewayModelListPriceUnset": "Unpriced",
+  "aiGatewayModelListPriceRates": "Rates",
+  "aiGatewayModelListPriceUnit": "$/1M tokens",
+  "aiGatewayModelListPriceInputShort": "In",
+  "aiGatewayModelListPriceOutputShort": "Out",
+  "aiGatewayModelListPriceCacheReadShort": "Cache read",
+  "aiGatewayModelListPriceCacheWriteShort": "Cache write",
+  "aiGatewayModelListContextTierPrefix": "Tier",
+  "aiGatewayModelListContextTierUnbounded": "Default",
+  "aiGatewayModelListOffPeakPrefix": "Off-peak",
+  "aiGatewayModelListPriceDetailsTitle": "Pricing breakdown",
+  "aiGatewayModelListPriceTierLabel": "Tier / Window",
+  "aiGatewayModelListPriceStandardTier": "Standard base rates"
 };
 
 export default aiGateway;

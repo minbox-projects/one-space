@@ -1,9 +1,11 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Check,
   Copy,
+  Info,
   Layers,
+  Moon,
   Search,
   Server,
   Sparkles,
@@ -22,16 +24,263 @@ import {
   resolveAggregatedModelName,
   resolveAggregatedReasoningEfforts,
   resolveMappingContextWindow,
-  resolveOrdinaryContextSummary,
-  resolvePoolContextSummary,
+  resolveProviderPriceRow,
   selectPoolReasoningCoverageRow,
   type AggregatedModel,
   type GatewayModelPool,
   type GatewayUpstreamProtocol,
   type GatewayUpstreamProvider,
   type ModelPoolReasoningCoverage,
+  type ModelPrice,
 } from "@/lib/aiGateway";
 import { protocolShortLabel } from "./gatewayShared";
+
+function formatRate(value: number): string {
+  if (value === 0) return "$0";
+  const str = value.toFixed(4);
+  return "$" + str.replace(/\.?0+$/, "");
+}
+
+function UpstreamPriceDisplay({
+  price,
+}: {
+  price?: ModelPrice;
+}) {
+  const { t } = useTranslation();
+  const [detailOpen, setDetailOpen] = useState(false);
+  const detailId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!detailOpen) return;
+    const position = () => {
+      const trigger = triggerRef.current;
+      const detail = detailRef.current;
+      if (!trigger || !detail) return;
+      const anchor = trigger.getBoundingClientRect();
+      const { width, height } = detail.getBoundingClientRect();
+      const showAbove = anchor.bottom + height > window.innerHeight - 8;
+      detail.style.left = `${Math.max(8, Math.min(anchor.right - width, window.innerWidth - width - 8))}px`;
+      detail.style.top = `${Math.max(8, showAbove ? anchor.top - height : anchor.bottom)}px`;
+    };
+    position();
+    window.addEventListener("resize", position);
+    document.addEventListener("scroll", position, true);
+    return () => {
+      window.removeEventListener("resize", position);
+      document.removeEventListener("scroll", position, true);
+    };
+  }, [detailOpen]);
+
+  if (!price) {
+    return (
+      <div
+        data-testid="ai-gateway-model-list-upstream-price"
+        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 pt-0.5 border-t border-border/30"
+      >
+        <span>{t("aiGatewayModelListPriceUnset", "未配置计价")}</span>
+      </div>
+    );
+  }
+
+  const isPriced =
+    price.input > 0 ||
+    price.output > 0 ||
+    price.cache_read > 0 ||
+    price.cache_write > 0 ||
+    (price.context_tiers && price.context_tiers.length > 0) ||
+    (price.off_peaks && price.off_peaks.length > 0);
+
+  if (!isPriced) {
+    return (
+      <div
+        data-testid="ai-gateway-model-list-upstream-price"
+        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 pt-0.5 border-t border-border/30"
+      >
+        <span>{t("aiGatewayModelListPriceUnset", "未配置计价")}</span>
+      </div>
+    );
+  }
+
+  const hasContextTiers = Boolean(price.context_tiers && price.context_tiers.length > 0);
+  const hasOffPeaks = Boolean(price.off_peaks && price.off_peaks.length > 0);
+
+  return (
+    <div
+      data-testid="ai-gateway-model-list-upstream-price"
+      className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-border/40 text-[11px]"
+    >
+      {/* 基础费率标签 */}
+      <span
+        data-testid="ai-gateway-model-list-base-price"
+        className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] font-medium text-foreground/90 shadow-2xs"
+        title={t("aiGatewayModelListPriceStandardTier", "标准基准费率")}
+      >
+        <span className="text-[10px] font-sans text-muted-foreground">
+          {t("aiGatewayModelListPrice", "计价")}:
+        </span>{" "}
+        <span>
+          {t("aiGatewayModelListPriceInputShort", "入")} {formatRate(price.input)} / {t("aiGatewayModelListPriceOutputShort", "出")} {formatRate(price.output)}
+        </span>
+        {price.cache_read > 0 ? (
+          <span className="text-muted-foreground/80">
+            {" "}· {t("aiGatewayModelListPriceCacheReadShort", "读缓")} {formatRate(price.cache_read)}
+          </span>
+        ) : null}
+      </span>
+
+      {/* 上下文阶梯费率标签组 */}
+      {hasContextTiers
+        ? price.context_tiers!.map((tier, idx) => {
+            const rangeLabel =
+              tier.max_context != null
+                ? `≤${formatContextWindowDisplay(tier.max_context)}`
+                : idx > 0 && price.context_tiers![idx - 1]?.max_context != null
+                  ? `>${formatContextWindowDisplay(price.context_tiers![idx - 1]!.max_context!)}`
+                  : t("aiGatewayModelListContextTierUnbounded", "默认");
+            return (
+              <span
+                key={idx}
+                data-testid={`ai-gateway-model-list-context-tier-${idx}`}
+                className="inline-flex items-center gap-1 rounded border border-indigo-500/25 bg-indigo-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-indigo-700 dark:text-indigo-300 shadow-2xs"
+                title={`${t("aiGatewayModelListContextTierPrefix", "阶梯")} ${rangeLabel}`}
+              >
+                <Layers className="h-2.5 w-2.5 text-indigo-500 shrink-0" />
+                <span className="font-semibold">{rangeLabel}:</span>{" "}
+                <span>
+                  {t("aiGatewayModelListPriceInputShort", "入")} {formatRate(tier.input)} / {t("aiGatewayModelListPriceOutputShort", "出")} {formatRate(tier.output)}
+                </span>
+                {tier.cache_read > 0 ? (
+                  <span className="text-indigo-600/70 dark:text-indigo-400/70">
+                    {" "}· {t("aiGatewayModelListPriceCacheReadShort", "读缓")} {formatRate(tier.cache_read)}
+                  </span>
+                ) : null}
+              </span>
+            );
+          })
+        : null}
+
+      {/* 峰谷优惠费率标签组 */}
+      {hasOffPeaks
+        ? price.off_peaks!.map((op, idx) => {
+            const timeRange = `${op.start_time}-${op.end_time}`;
+            return (
+              <span
+                key={idx}
+                data-testid={`ai-gateway-model-list-off-peak-${idx}`}
+                className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-300 shadow-2xs"
+                title={`${t("aiGatewayModelListOffPeakPrefix", "峰谷")} (${timeRange})`}
+              >
+                <Moon className="h-2.5 w-2.5 text-amber-500 shrink-0" />
+                <span className="font-semibold">{timeRange}:</span>{" "}
+                <span>
+                  {t("aiGatewayModelListPriceInputShort", "入")} {formatRate(op.input)} / {t("aiGatewayModelListPriceOutputShort", "出")} {formatRate(op.output)}
+                </span>
+              </span>
+            );
+          })
+        : null}
+
+      {/* 费率明细弹层按钮 */}
+      <div
+        className="relative inline-flex items-center"
+        onMouseEnter={() => setDetailOpen(true)}
+        onMouseLeave={(event) => {
+          if (!event.currentTarget.contains(document.activeElement)) setDetailOpen(false);
+        }}
+        onFocus={() => setDetailOpen(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.matches(":hover")) setDetailOpen(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setDetailOpen(false);
+        }}
+      >
+        <button
+          ref={triggerRef}
+          type="button"
+          data-testid="ai-gateway-model-list-price-detail-btn"
+          aria-label={t("aiGatewayModelListPriceDetailsTitle", "费率明细")}
+          aria-describedby={detailId}
+          className="inline-flex items-center justify-center rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground focus:outline-none"
+        >
+          <Info className="h-3 w-3" aria-hidden="true" />
+        </button>
+
+        <div
+          ref={detailRef}
+          id={detailId}
+          role="tooltip"
+          className={`fixed z-50 w-80 max-w-[calc(100vw-1rem)] flex-col gap-1.5 rounded-lg border bg-popover p-2.5 text-left text-xs text-popover-foreground shadow-lg ${
+            detailOpen ? "flex" : "hidden"
+          }`}
+        >
+          <div className="flex items-center justify-between border-b pb-1 font-semibold text-[11px] text-foreground">
+            <span>{t("aiGatewayModelListPriceDetailsTitle", "费率明细")}</span>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              {t("aiGatewayModelListPriceUnit", "$/1M tokens")}
+            </span>
+          </div>
+          <table className="w-full border-collapse text-[11px]">
+            <thead>
+              <tr className="border-b text-muted-foreground text-left">
+                <th className="py-1 font-medium">{t("aiGatewayModelListPriceTierLabel", "计价阶梯 / 窗口")}</th>
+                <th className="py-1 text-right font-medium">{t("aiGatewayModelListPriceInputShort", "入")}</th>
+                <th className="py-1 text-right font-medium">{t("aiGatewayModelListPriceOutputShort", "出")}</th>
+                <th className="py-1 text-right font-medium">{t("aiGatewayModelListPriceCacheReadShort", "读缓")}</th>
+                <th className="py-1 text-right font-medium">{t("aiGatewayModelListPriceCacheWriteShort", "写缓")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/40 font-mono">
+              <tr>
+                <td className="py-1 font-sans text-foreground/90 font-medium">
+                  {t("aiGatewayModelListPriceStandardTier", "标准基准费率")}
+                </td>
+                <td className="py-1 text-right">{formatRate(price.input)}</td>
+                <td className="py-1 text-right">{formatRate(price.output)}</td>
+                <td className="py-1 text-right">{formatRate(price.cache_read)}</td>
+                <td className="py-1 text-right">{formatRate(price.cache_write)}</td>
+              </tr>
+              {price.context_tiers?.map((tier, idx) => {
+                const label =
+                  tier.max_context != null
+                    ? `≤${formatContextWindowDisplay(tier.max_context)}`
+                    : idx > 0 && price.context_tiers![idx - 1]?.max_context != null
+                      ? `>${formatContextWindowDisplay(price.context_tiers![idx - 1]!.max_context!)}`
+                      : t("aiGatewayModelListContextTierUnbounded", "默认");
+                return (
+                  <tr key={`ctx-${idx}`} className="text-indigo-700 dark:text-indigo-300">
+                    <td className="py-1 font-sans font-medium flex items-center gap-1">
+                      <Layers className="h-2.5 w-2.5 shrink-0" />
+                      <span>{label}</span>
+                    </td>
+                    <td className="py-1 text-right">{formatRate(tier.input)}</td>
+                    <td className="py-1 text-right">{formatRate(tier.output)}</td>
+                    <td className="py-1 text-right">{formatRate(tier.cache_read)}</td>
+                    <td className="py-1 text-right">{formatRate(tier.cache_write)}</td>
+                  </tr>
+                );
+              })}
+              {price.off_peaks?.map((op, idx) => (
+                <tr key={`op-${idx}`} className="text-amber-700 dark:text-amber-400">
+                  <td className="py-1 font-sans font-medium flex items-center gap-1">
+                    <Moon className="h-2.5 w-2.5 shrink-0" />
+                    <span>{op.start_time}-{op.end_time}</span>
+                  </td>
+                  <td className="py-1 text-right">{formatRate(op.input)}</td>
+                  <td className="py-1 text-right">{formatRate(op.output)}</td>
+                  <td className="py-1 text-right">{formatRate(op.cache_read)}</td>
+                  <td className="py-1 text-right">{formatRate(op.cache_write)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function endpointPath(protocol: GatewayUpstreamProtocol): string {
   if (protocol === "responses") return "/responses";
@@ -68,6 +317,8 @@ type ModelListPanelProps = {
   providers: GatewayUpstreamProvider[];
   /** Enabled model pools are advertised once alongside aggregated local models. */
   modelPools?: GatewayModelPool[];
+  /** Model price records configured for provider mappings. */
+  prices?: ModelPrice[];
   port?: number;
   /** When false the hidden panel renders nothing while keeping its search state. */
   isActive?: boolean;
@@ -80,6 +331,7 @@ export type ModelTypeFilter = "all" | "pools" | "providers";
 function ModelListPanelComponent({
   providers,
   modelPools = [],
+  prices = [],
   port = AI_GATEWAY_DEFAULT_PORT,
   isActive = true,
   onNavigateProviders,
@@ -103,7 +355,6 @@ function ModelListPanelComponent({
   const rows = useMemo(() => {
     if (!isActive) return [];
     const aggregateRows = aggregateModels(providers).map((entry) => {
-      const contextSummary = resolveOrdinaryContextSummary(providers, entry.model);
       return {
         entry,
         name: resolveAggregatedModelName(entry),
@@ -111,8 +362,6 @@ function ModelListPanelComponent({
           new Set(entry.providers.map((upstream) => upstream.endpoint)),
         ) as GatewayUpstreamProtocol[],
         reasoningEfforts: resolveAggregatedReasoningEfforts(entry),
-        contextWindow: contextSummary.conservative,
-        contextSummary,
         pool: undefined as GatewayModelPool | undefined,
         poolDefault: undefined as string | undefined,
         poolCoverage: undefined as ModelPoolReasoningCoverage[] | undefined,
@@ -143,7 +392,6 @@ function ModelListPanelComponent({
         const poolHasReasoning =
           pool.candidates.some((candidate) => candidate.reasoning != null) ||
           catalog.default_reasoning_effort !== "auto";
-        const contextSummary = resolvePoolContextSummary(providers, pool);
         return {
           entry,
           name: pool.name,
@@ -155,8 +403,6 @@ function ModelListPanelComponent({
             "responses",
           ] as GatewayUpstreamProtocol[],
           reasoningEfforts: catalog.reasoning_efforts,
-          contextWindow: contextSummary.conservative,
-          contextSummary,
           pool,
           poolDefault: catalog.default_reasoning_effort,
           poolCoverage: poolHasReasoning
@@ -324,7 +570,6 @@ function ModelListPanelComponent({
     name,
     protocols,
     reasoningEfforts,
-    contextSummary,
     pool,
     poolDefault,
     poolCoverage,
@@ -439,79 +684,6 @@ function ModelListPanelComponent({
                 ))}
               </div>
             )}
-            {(() => {
-              if (contextSummary.conservative) {
-                return (
-                  <div
-                    data-testid="ai-gateway-model-list-context"
-                    className="flex flex-wrap items-center gap-1.5 pt-0.5"
-                  >
-                    <span
-                      className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
-                      title={t(
-                        "aiGatewayModelListEffectiveContext",
-                        "Conservative effective context",
-                      )}
-                    >
-                      <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
-                      <span>
-                        {t(
-                          "aiGatewayModelListEffectiveContext",
-                          "Conservative effective context",
-                        )}
-                        : {t("aiGatewayModelListContextTokens", {
-                            value: formatContextWindowDisplay(contextSummary.conservative),
-                            defaultValue: "{{value}} tokens",
-                          })}
-                      </span>
-                    </span>
-                  </div>
-                );
-              }
-              if (contextSummary.known) {
-                const displayVal = formatContextWindowDisplay(contextSummary.known);
-                return (
-                  <div
-                    data-testid="ai-gateway-model-list-context"
-                    className="flex flex-wrap items-center gap-1.5 pt-0.5"
-                  >
-                    <span
-                      className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400 shadow-2xs"
-                      title={t(
-                        "aiGatewayModelListContextIncomplete",
-                        "Incomplete — unknown context",
-                      )}
-                    >
-                      <Layers className="h-2.5 w-2.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
-                      <span>
-                        {t("aiGatewayModelListContextIncompleteWithKnown", {
-                          value: displayVal,
-                          defaultValue: `${displayVal} — 不完整`,
-                        })}
-                      </span>
-                    </span>
-                  </div>
-                );
-              }
-              return (
-                <div
-                  data-testid="ai-gateway-model-list-context"
-                  className="flex flex-wrap items-center gap-1.5 pt-0.5"
-                >
-                  <span
-                    className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400 shadow-2xs"
-                  >
-                    <Layers className="h-2.5 w-2.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
-                    <span>
-                      {t(
-                        "aiGatewayModelListContextIncomplete",
-                        "Incomplete — unknown context",
-                      )}
-                    </span>
-                  </span>
-                </div>
-              );
-            })()}
             {reasoningEfforts.length > 0 ? (
               <div
                 data-testid="ai-gateway-model-list-reasoning-efforts"
@@ -584,101 +756,110 @@ function ModelListPanelComponent({
                 sourceLocalModel,
                 upstream.upstreamModel,
               );
+              const price = resolveProviderPriceRow(
+                prices,
+                upstream.providerId,
+                upstream.upstreamModel,
+              );
 
               return (
                 <li
                   key={upstreamKey}
                   data-testid="ai-gateway-model-list-upstream"
                   data-default={upstream.isDefault ? "true" : "false"}
-                  className={`flex items-center justify-between gap-2.5 rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
+                  className={`flex flex-col gap-1.5 rounded-lg border px-2.5 py-2 text-xs transition-colors ${
                     isPool
                       ? "border-indigo-500/20 bg-indigo-500/[0.03] hover:bg-indigo-500/[0.07]"
                       : "border-border/60 bg-muted/20 hover:bg-muted/40"
                   }`}
                 >
-                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                    <span
-                      data-testid="ai-gateway-model-list-upstream-provider"
-                      className="font-medium text-foreground"
-                    >
-                      {upstream.providerName}
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      className="text-muted-foreground/60 text-[11px]"
-                    >
-                      →
-                    </span>
-                    <code
-                      data-testid="ai-gateway-model-list-upstream-model"
-                      className={`rounded border px-1.5 py-0.5 font-mono text-[11px] text-foreground ${
-                        isPool
-                          ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-900 dark:text-indigo-200"
-                          : "border-border/40 bg-muted/60"
-                      }`}
-                    >
-                      {upstream.upstreamModel}
-                    </code>
-                    <button
-                      type="button"
-                      data-testid="ai-gateway-model-list-upstream-copy-btn"
-                      aria-label={t(
-                        "aiGatewayModelListCopyUpstreamAria",
-                        "Copy upstream model ID",
-                      )}
-                      onClick={() =>
-                        void handleCopy(
-                          upstream.upstreamModel,
-                          upstreamTargetKey,
-                        )
-                      }
-                      className="rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                    >
-                      {isUpstreamCopied ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-500" />
+                  <div className="flex items-center justify-between gap-2.5">
+                    <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                      <span
+                        data-testid="ai-gateway-model-list-upstream-provider"
+                        className="font-medium text-foreground"
+                      >
+                        {upstream.providerName}
+                      </span>
+                      <span
+                        aria-hidden="true"
+                        className="text-muted-foreground/60 text-[11px]"
+                      >
+                        →
+                      </span>
+                      <code
+                        data-testid="ai-gateway-model-list-upstream-model"
+                        className={`rounded border px-1.5 py-0.5 font-mono text-[11px] text-foreground ${
+                          isPool
+                            ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-900 dark:text-indigo-200"
+                            : "border-border/40 bg-muted/60"
+                        }`}
+                      >
+                        {upstream.upstreamModel}
+                      </code>
+                      <button
+                        type="button"
+                        data-testid="ai-gateway-model-list-upstream-copy-btn"
+                        aria-label={t(
+                          "aiGatewayModelListCopyUpstreamAria",
+                          "Copy upstream model ID",
+                        )}
+                        onClick={() =>
+                          void handleCopy(
+                            upstream.upstreamModel,
+                            upstreamTargetKey,
+                          )
+                        }
+                        className="rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                      >
+                        {isUpstreamCopied ? (
+                          <Check className="h-3.5 w-3.5 text-emerald-500" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                      {upstream.isDefault ? (
+                        <span
+                          data-testid="ai-gateway-model-list-upstream-default"
+                          className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                        >
+                          {t(
+                            "aiGatewayAggregatedModelDefaultBadge",
+                            "Default",
+                          )}
+                        </span>
+                      ) : null}
+                      {sourceContext ? (
+                        <span
+                          data-testid="ai-gateway-model-list-upstream-context"
+                          className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
+                          title={t(
+                            "aiGatewayModelListEffectiveContext",
+                            "Conservative effective context",
+                          )}
+                        >
+                          <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
+                          <span>{formatContextWindowDisplay(sourceContext)}</span>
+                        </span>
                       ) : (
-                        <Copy className="h-3.5 w-3.5" />
+                        <span
+                          data-testid="ai-gateway-model-list-upstream-context"
+                          className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400 shadow-2xs"
+                        >
+                          {t(
+                            "aiGatewayContextWindowUnspecified",
+                            "Unspecified",
+                          )}
+                        </span>
                       )}
-                    </button>
-                    {upstream.isDefault ? (
-                      <span
-                        data-testid="ai-gateway-model-list-upstream-default"
-                        className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
-                      >
-                        {t(
-                          "aiGatewayAggregatedModelDefaultBadge",
-                          "Default",
-                        )}
-                      </span>
-                    ) : null}
-                    {sourceContext ? (
-                      <span
-                        data-testid="ai-gateway-model-list-upstream-context"
-                        className="inline-flex items-center gap-1 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-cyan-700 dark:text-cyan-300 shadow-2xs"
-                        title={t(
-                          "aiGatewayModelListEffectiveContext",
-                          "Conservative effective context",
-                        )}
-                      >
-                        <Layers className="h-2.5 w-2.5 text-cyan-600/80 dark:text-cyan-400/80 shrink-0" />
-                        <span>{formatContextWindowDisplay(sourceContext)}</span>
-                      </span>
-                    ) : (
-                      <span
-                        data-testid="ai-gateway-model-list-upstream-context"
-                        className="inline-flex items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400 shadow-2xs"
-                      >
-                        {t(
-                          "aiGatewayContextWindowUnspecified",
-                          "Unspecified",
-                        )}
-                      </span>
-                    )}
+                    </div>
+
+                    <div className="shrink-0">
+                      <ProtocolBadge protocol={upstream.endpoint} />
+                    </div>
                   </div>
 
-                  <div className="shrink-0">
-                    <ProtocolBadge protocol={upstream.endpoint} />
-                  </div>
+                  <UpstreamPriceDisplay price={price} />
                 </li>
               );
             })}
