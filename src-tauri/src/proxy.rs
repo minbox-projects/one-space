@@ -197,6 +197,7 @@ impl ProxyManager {
             .ok_or_else(|| "Client not initialized".to_string())
     }
 
+    #[cfg(test)]
     pub fn apply_builder(&self, builder: ClientBuilder) -> Result<ClientBuilder, String> {
         apply_proxy_policy(builder, &self.current_snapshot())
     }

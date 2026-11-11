@@ -227,6 +227,7 @@ impl Default for AppUpdaterState {
 }
 
 impl AppUpdaterState {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -322,7 +323,7 @@ fn configured_stable_endpoints(app: &AppHandle) -> Result<Vec<url::Url>, String>
 /// The request uses the current managed proxy and is bounded by a fixed
 /// timeout; a failed lookup or an empty result simply leaves the check on the
 /// stable channel.
-async fn selected_beta_endpoint(app: &AppHandle) -> Result<Option<url::Url>, String> {
+async fn selected_beta_endpoint() -> Result<Option<url::Url>, String> {
     let client = crate::proxy::apply_current_proxy_to_builder(
         reqwest::Client::builder()
             .user_agent("OneSpace")
@@ -375,7 +376,7 @@ pub async fn app_updater_check(app: AppHandle) -> Result<Option<AppUpdateMetadat
         .unwrap_or(false);
 
     let update = if receive_beta_updates {
-        let beta_endpoint = selected_beta_endpoint(&app).await.ok().flatten();
+        let beta_endpoint = selected_beta_endpoint().await.ok().flatten();
         let stable_endpoints = configured_stable_endpoints(&app).unwrap_or_default();
         let endpoints = updater_endpoint_plan(true, beta_endpoint, stable_endpoints);
         check_endpoints_in_order(endpoints, |endpoint| {

@@ -8,10 +8,8 @@ mod tests;
 mod types_state;
 mod validation_ssh_config;
 
-pub(in crate::ssh_tunnels) use commands::*;
 pub(in crate::ssh_tunnels) use constants::*;
 pub(in crate::ssh_tunnels) use forwarding_runtime::*;
-pub(in crate::ssh_tunnels) use types_state::*;
 pub(in crate::ssh_tunnels) use validation_ssh_config::*;
 
 pub use commands::*;

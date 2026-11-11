@@ -14,7 +14,6 @@ pub(in crate::mcp_servers) use crypto::*;
 pub(in crate::mcp_servers) use model_configs::*;
 pub(in crate::mcp_servers) use paths_state::*;
 pub(in crate::mcp_servers) use state_merge::*;
-pub(in crate::mcp_servers) use types::*;
 pub(in crate::mcp_servers) use updates_state::*;
 
 pub use commands::*;

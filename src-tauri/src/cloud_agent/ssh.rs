@@ -14,6 +14,7 @@ use crate::cloud_agent::types::{
 const SSH_TIMEOUT: Duration = Duration::from_secs(12);
 const PLAN_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
+#[cfg(test)]
 pub(super) async fn run_with_stdin(cmd: Command, stdin_data: &[u8]) -> Result<Output, String> {
     run_with_stdin_timeout(cmd, stdin_data, SSH_TIMEOUT).await
 }

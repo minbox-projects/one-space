@@ -388,7 +388,6 @@ pub fn build_status_command(agent_dir: &str) -> String {
 
 struct ActiveDeployment {
     host: String,
-    path: String,
     operation_id: String,
 }
 
@@ -412,7 +411,6 @@ impl DeploymentRegistry {
     pub fn begin(
         &self,
         host: String,
-        path: String,
         operation_id: String,
     ) -> Result<(), String> {
         let mut state = self
@@ -433,7 +431,6 @@ impl DeploymentRegistry {
         }
         state.active = Some(ActiveDeployment {
             host,
-            path,
             operation_id,
         });
         Ok(())

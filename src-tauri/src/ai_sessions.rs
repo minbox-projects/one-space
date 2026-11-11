@@ -13,7 +13,6 @@ mod usage_cache;
 pub(in crate::ai_sessions) use history::*;
 pub(in crate::ai_sessions) use resolver::*;
 pub(in crate::ai_sessions) use terminal::*;
-pub(in crate::ai_sessions) use types_store::*;
 pub(in crate::ai_sessions) use usage_cache::*;
 
 pub use public_resolver::*;

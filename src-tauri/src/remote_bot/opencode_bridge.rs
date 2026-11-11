@@ -238,7 +238,6 @@ pub(super) struct BridgeTaskSnapshot {
     pub(super) session_id: Option<String>,
     pub(super) plan_id: Option<String>,
     pub(super) project_name: Option<String>,
-    pub(super) started_at: i64,
     pub(super) is_busy: bool,
 }
 
@@ -588,7 +587,6 @@ impl OpenCodeBridge {
             session_id: None,
             plan_id: Some(plan_id.to_string()),
             project_name: project_name_of(project_dir),
-            started_at: chrono::Utc::now().timestamp(),
             is_busy: true,
         });
     }
@@ -616,7 +614,6 @@ impl OpenCodeBridge {
             session_id,
             plan_id: None,
             project_name,
-            started_at: chrono::Utc::now().timestamp(),
             is_busy: true,
         });
     }
@@ -627,7 +624,6 @@ impl OpenCodeBridge {
             session_id: Some(session_id.to_string()),
             plan_id: None,
             project_name: project_name_of(project_dir),
-            started_at: chrono::Utc::now().timestamp(),
             is_busy: true,
         });
     }
@@ -658,6 +654,7 @@ impl OpenCodeBridge {
     }
 
     /// 当前任务世代；取消会递增它，使旧任务的迟到结果失效。
+    #[cfg(test)]
     pub(super) fn task_generation(&self) -> u64 {
         self.task_generation.load(Ordering::SeqCst)
     }
@@ -691,6 +688,7 @@ impl OpenCodeBridge {
     }
 
     /// 记录最近发出的提问卡片，取消时可将其改为已取消。
+    #[cfg(test)]
     pub(super) async fn track_question_message(&self, message_id: i64) {
         *self.active_question_message_id.write().await = Some(message_id);
     }
@@ -701,7 +699,7 @@ impl OpenCodeBridge {
     }
 
     /// 取消当前任务：终止受管进程组、作废迟到结果并清理交互卡片。
-    pub async fn cancel_active_task(&self) -> CancelOutcome {
+    pub(super) async fn cancel_active_task(&self) -> CancelOutcome {
         let busy = self.is_busy.load(Ordering::SeqCst);
         let has_task = self.current_task.read().await.is_some();
         let tracked_pid = *self.active_process_group.lock().await;
@@ -1342,6 +1340,7 @@ impl OpenCodeBridge {
     }
 
     /// Return the shared permission runtime (registry, reply and card delivery).
+    #[cfg(test)]
     pub(super) fn permission_runtime(&self) -> Arc<PermissionRuntime> {
         self.permission_runtime.clone()
     }
@@ -1350,7 +1349,7 @@ impl OpenCodeBridge {
     ///
     /// An unavailable server counts as a failed reply so the pending request
     /// is kept for another attempt instead of being silently dropped.
-    pub async fn decide_permission(
+    pub(super) async fn decide_permission(
         &self,
         request_id: &str,
         decision: PermissionDecision,
