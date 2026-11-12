@@ -43,6 +43,7 @@ type ProviderFixture = {
     local_model: string;
     upstream_model: string;
     protocol?: "chat_completions" | "responses";
+    context_window?: number | null;
   }>;
   enabled?: boolean;
 };
@@ -3178,6 +3179,39 @@ describe("ModelPoolDialog 有序回退模型（Step 3）", () => {
     expect(
       screen.queryByTestId("model-pool-fallback-combobox-menu"),
     ).not.toBeInTheDocument();
+  });
+
+  it("回退模型项与下拉候选项展示协议与上下文标签", async () => {
+    mockState.config = buildConfig(
+      [
+        fallbackPoolFixture({
+          fallback_models: ["local-b1"],
+        }),
+      ],
+      [
+        ...PROVIDERS.slice(0, 1),
+        makeProvider({
+          id: "p-b",
+          name: "Provider B",
+          protocol: "responses",
+          mappings: [
+            {
+              local_model: "local-b1",
+              upstream_model: "remote-b1",
+              context_window: 128000,
+            },
+          ],
+        }),
+      ],
+    );
+
+    await openEditedPool();
+
+    const row = fallbackRow("local-b1");
+    expect(within(row).getByText("Responses")).toBeInTheDocument();
+    expect(
+      within(row).getByTestId("model-pool-fallback-context-local-b1"),
+    ).toHaveTextContent("128K");
   });
 });
 

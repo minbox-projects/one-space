@@ -1076,6 +1076,7 @@ export function ModelPoolDialog({
           {/* Section 3: 高级路由策略与故障降级 */}
           <FallbackModelsSection
             t={t}
+            providers={providers}
             defaultEffort={defaultEffort}
             onDefaultEffortChange={handleDefaultEffortChange}
             fallbackModels={fallbackModels}
