@@ -34,8 +34,12 @@ use super::terminal::TerminalSyncRecord;
 /// canonical OpenCode Zen Free template snapshot and the providers bound to it
 /// from the legacy `/zen/v1` upstream base to the official
 /// `/inference/openai/v1` inference base, leaving every custom base URL,
-/// model, metadata, key, price and unrelated template untouched.
-pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 9;
+/// model, metadata, key, price and unrelated template untouched. Version 10
+/// replaces the single legacy CommandCode template with the plan-scoped
+/// `commandcode-max` identity, rebinding its providers, persisted template
+/// snapshots and deleted-template ids while preserving user-maintained fields
+/// and customized template names.
+pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 10;
 
 /// Persisted AI Gateway configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

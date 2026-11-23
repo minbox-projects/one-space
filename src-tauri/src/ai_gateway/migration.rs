@@ -9,7 +9,8 @@
 //! fallback list and its obsolete gateway-local proxy URL removed, and the
 //! persisted built-in OpenCode Zen Free template snapshot repointed to its
 //! declared sidecar transport, given its canonical model-list URL and moved to
-//! the official inference base; a usage
+//! the official inference base, and every legacy CommandCode identity rebound to
+//! the plan-scoped CommandCode Max template; a usage
 //! database older than [`USAGE_DB_VERSION`] has its legacy `cancelled` rows
 //! deleted once (version below 1), then gains the durable provider/day summary
 //! tables, the one-shot retained-row backfill and the continuity boundary
@@ -62,6 +63,18 @@ const OPENCODE_ZEN_FREE_PROVIDER_NAME: &str = "OpenCode Zen Free";
 const OPENCODE_ZEN_FREE_BASE_URL: &str = "https://opencode.ai/zen/v1";
 /// Official OpenCode inference base URL the schema-9 gate writes.
 const OPENCODE_ZEN_FREE_INFERENCE_BASE_URL: &str = "https://opencode.ai/inference/openai/v1";
+/// Legacy single CommandCode template identity, superseded by the plan-scoped
+/// CommandCode templates. The schema-10 gate rebinds it to
+/// [`COMMANDCODE_MAX_TEMPLATE_ID`]; this migration module is the only non-test
+/// production source allowed to name it.
+const LEGACY_COMMANDCODE_TEMPLATE_ID: &str = "commandcode";
+/// CommandCode Max plan template identity the legacy binding moves to.
+const COMMANDCODE_MAX_TEMPLATE_ID: &str = "commandcode-max";
+/// Exact default display name of the legacy CommandCode template. Only this
+/// exact value is renamed; a customized name is preserved.
+const LEGACY_COMMANDCODE_TEMPLATE_NAME: &str = "CommandCode";
+/// Default display name of the CommandCode Max plan template.
+const COMMANDCODE_MAX_TEMPLATE_NAME: &str = "CommandCode Max";
 const NAME_FIELD: &str = "name";
 const TEMPLATE_ID_FIELD: &str = "template_id";
 const TEMPLATE_FIELD: &str = "template";
@@ -611,6 +624,106 @@ fn migrate_opencode_zen_free_inference_base_url(object: &mut Map<String, Value>)
     changed
 }
 
+/// Rebind every legacy CommandCode identity to the CommandCode Max plan
+/// template in the raw configuration value. Only an exact `template_id` binding
+/// triggers a provider migration, so a provider whose base URL merely resembles
+/// CommandCode stays untouched. A persisted template snapshot moves to
+/// `commandcode-max` with its nested `id` repointed and its default name renamed,
+/// or is dropped when a `commandcode-max` snapshot already exists; the legacy id
+/// is removed from `deleted_template_ids` and no plan template id is added.
+/// Idempotent: a second pass finds no legacy identity and changes nothing.
+fn migrate_commandcode_to_max(object: &mut Map<String, Value>) -> bool {
+    let mut changed = false;
+
+    if let Some(providers) = object
+        .get_mut(PROVIDERS_FIELD)
+        .and_then(Value::as_array_mut)
+    {
+        for provider in providers.iter_mut() {
+            let Some(provider) = provider.as_object_mut() else {
+                continue;
+            };
+            if provider.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                != Some(LEGACY_COMMANDCODE_TEMPLATE_ID)
+            {
+                continue;
+            }
+            provider.insert(
+                TEMPLATE_ID_FIELD.to_string(),
+                Value::String(COMMANDCODE_MAX_TEMPLATE_ID.to_string()),
+            );
+            changed = true;
+        }
+    }
+
+    if let Some(states) = object
+        .get_mut(PROVIDER_TEMPLATES_FIELD)
+        .and_then(Value::as_array_mut)
+    {
+        let max_state_exists = states.iter().any(|state| {
+            state.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                == Some(COMMANDCODE_MAX_TEMPLATE_ID)
+        });
+        if max_state_exists {
+            // A Max snapshot already exists: drop the stale legacy duplicate
+            // deterministically and keep the existing entry in place.
+            let before = states.len();
+            states.retain(|state| {
+                state.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                    != Some(LEGACY_COMMANDCODE_TEMPLATE_ID)
+            });
+            if states.len() != before {
+                changed = true;
+            }
+        } else {
+            for state in states.iter_mut() {
+                if state.get(TEMPLATE_ID_FIELD).and_then(Value::as_str)
+                    != Some(LEGACY_COMMANDCODE_TEMPLATE_ID)
+                {
+                    continue;
+                }
+                let Some(state) = state.as_object_mut() else {
+                    continue;
+                };
+                state.insert(
+                    TEMPLATE_ID_FIELD.to_string(),
+                    Value::String(COMMANDCODE_MAX_TEMPLATE_ID.to_string()),
+                );
+                changed = true;
+                let Some(template) = state.get_mut(TEMPLATE_FIELD).and_then(Value::as_object_mut)
+                else {
+                    continue;
+                };
+                template.insert(
+                    ID_FIELD.to_string(),
+                    Value::String(COMMANDCODE_MAX_TEMPLATE_ID.to_string()),
+                );
+                if template.get(NAME_FIELD).and_then(Value::as_str)
+                    == Some(LEGACY_COMMANDCODE_TEMPLATE_NAME)
+                {
+                    template.insert(
+                        NAME_FIELD.to_string(),
+                        Value::String(COMMANDCODE_MAX_TEMPLATE_NAME.to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(deleted) = object
+        .get_mut(DELETED_TEMPLATE_IDS_FIELD)
+        .and_then(Value::as_array_mut)
+    {
+        let before = deleted.len();
+        deleted.retain(|id| id.as_str() != Some(LEGACY_COMMANDCODE_TEMPLATE_ID));
+        if deleted.len() != before {
+            changed = true;
+        }
+    }
+
+    changed
+}
+
 /// Legacy provider-level single credential field, superseded by the ordered
 /// `keys` pool. This is the only non-test production source allowed to name it.
 const LEGACY_SINGLE_KEY_FIELD: &str = "api_key";
@@ -750,65 +863,82 @@ fn remove_legacy_gateway_proxy_url(object: &mut Map<String, Value>) -> bool {
 /// proxy URL is removed; the canonical OpenCode Zen Free template snapshot is
 /// repointed to the sidecar transport and given its canonical `models_url` when
 /// missing or blank, then repoints the canonical OpenCode Zen Free template and
-/// its bound providers from the legacy `/zen/v1` base to the inference base. A
-/// schema-5 value skips every earlier gate, drops the obsolete proxy URL,
-/// repairs the transport and `models_url`, then the base URL; a schema-6 value
-/// repairs the transport, `models_url` and base URL; a schema-7 value repairs
-/// the `models_url` and base URL; a schema-8 value only repoints the base URL;
-/// a schema-9 or newer value is untouched. Missing fields are tolerated so a
-/// legacy shape can never fail the whole parse.
+/// its bound providers from the legacy `/zen/v1` base to the inference base; and
+/// every legacy CommandCode identity is rebound to the `commandcode-max` plan
+/// template. A schema-5 value skips every earlier gate, drops the obsolete proxy
+/// URL, repairs the transport and `models_url`, then the base URL; a schema-6
+/// value repairs the transport, `models_url` and base URL; a schema-7 value
+/// repairs the `models_url` and base URL; a schema-8 value only repoints the base
+/// URL; a schema-9 value only rebinds the CommandCode identities; a schema-10 or
+/// newer value is untouched. Missing fields are tolerated so a legacy shape can
+/// never fail the whole parse.
 pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value, stored_version: u32) -> bool {
     if !config.is_object() {
         return false;
     }
-    if stored_version >= 9 {
+    if stored_version >= 10 {
         // Current and future files already carry the delivered shape; never
         // rerun a migration or downgrade their version.
         return false;
     }
-    if stored_version >= 8 {
-        // A schema-8 file already completed every earlier gate. Advancing it to
-        // schema 9 only repoints the canonical OpenCode Zen Free upstream base
-        // and never reapplies an earlier migration.
+    if stored_version >= 9 {
+        // A schema-9 file already completed every earlier gate. Advancing it to
+        // schema 10 only rebinds the legacy CommandCode identities to the
+        // CommandCode Max plan template.
         let object = config
             .as_object_mut()
             .expect("config was checked to be an object");
-        return migrate_opencode_zen_free_inference_base_url(object);
+        return migrate_commandcode_to_max(object);
+    }
+    if stored_version >= 8 {
+        // A schema-8 file already completed every earlier gate. Advancing it to
+        // schema 10 only repoints the canonical OpenCode Zen Free upstream base
+        // and rebinds the legacy CommandCode identities; it never reapplies an
+        // earlier migration.
+        let object = config
+            .as_object_mut()
+            .expect("config was checked to be an object");
+        let changed = migrate_opencode_zen_free_inference_base_url(object);
+        return changed | migrate_commandcode_to_max(object);
     }
     if stored_version >= 7 {
         // A schema-7 file already completed every earlier gate. Advancing it to
-        // schema 9 repairs the canonical OpenCode Zen Free template `models_url`
-        // and base URL without reapplying an earlier migration.
+        // schema 10 repairs the canonical OpenCode Zen Free template `models_url`
+        // and base URL, then rebinds the legacy CommandCode identities, without
+        // reapplying an earlier migration.
         let object = config
             .as_object_mut()
             .expect("config was checked to be an object");
         let changed = migrate_opencode_zen_free_template_models_url(object);
-        return changed | migrate_opencode_zen_free_inference_base_url(object);
+        let changed = changed | migrate_opencode_zen_free_inference_base_url(object);
+        return changed | migrate_commandcode_to_max(object);
     }
     if stored_version >= 6 {
         // A schema-6 file already completed every earlier gate. Advancing it to
-        // schema 9 repairs the canonical OpenCode Zen Free template transport,
-        // `models_url` and base URL without reapplying an earlier binding
-        // migration.
+        // schema 10 repairs the canonical OpenCode Zen Free template transport,
+        // `models_url` and base URL, then rebinds the legacy CommandCode
+        // identities, without reapplying an earlier binding migration.
         let object = config
             .as_object_mut()
             .expect("config was checked to be an object");
         let changed = migrate_opencode_zen_free_template_transport(object);
         let changed = changed | migrate_opencode_zen_free_template_models_url(object);
-        return changed | migrate_opencode_zen_free_inference_base_url(object);
+        let changed = changed | migrate_opencode_zen_free_inference_base_url(object);
+        return changed | migrate_commandcode_to_max(object);
     }
     if stored_version >= 5 {
         // A schema-5 file already completed every earlier gate. Advancing it to
-        // schema 9 removes only the obsolete gateway-local proxy URL and then
-        // repairs the canonical OpenCode Zen Free template transport,
-        // `models_url` and base URL.
+        // schema 10 removes only the obsolete gateway-local proxy URL, repairs
+        // the canonical OpenCode Zen Free template transport, `models_url` and
+        // base URL, and rebinds the legacy CommandCode identities.
         let object = config
             .as_object_mut()
             .expect("config was checked to be an object");
         let changed = remove_legacy_gateway_proxy_url(object);
         let changed = changed | migrate_opencode_zen_free_template_transport(object);
         let changed = changed | migrate_opencode_zen_free_template_models_url(object);
-        return changed | migrate_opencode_zen_free_inference_base_url(object);
+        let changed = changed | migrate_opencode_zen_free_inference_base_url(object);
+        return changed | migrate_commandcode_to_max(object);
     }
     // The schema-3 Zen-to-Go identity migration runs first so reachability and
     // price scoping see the migrated provider bindings and mappings.
@@ -822,7 +952,8 @@ pub(in crate::ai_gateway) fn migrate_legacy_config(config: &mut Value, stored_ve
         let changed = changed | remove_legacy_gateway_proxy_url(object);
         let changed = changed | migrate_opencode_zen_free_template_transport(object);
         let changed = changed | migrate_opencode_zen_free_template_models_url(object);
-        changed | migrate_opencode_zen_free_inference_base_url(object)
+        let changed = changed | migrate_opencode_zen_free_inference_base_url(object);
+        changed | migrate_commandcode_to_max(object)
     };
     let reachable = reachable_provider_models(config);
     let Some(object) = config.as_object_mut() else {

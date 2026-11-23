@@ -819,7 +819,7 @@ fn claude_target_explains_below_minimum_and_unknown_choices() {
 
 fn bound_refresh_config() -> GatewayConfig {
     let mut config = gateway_config(PORT);
-    config.providers[0].template_id = Some("commandcode".to_string());
+    config.providers[0].template_id = Some("commandcode-max".to_string());
     config.providers[0].mappings = vec![
         context_mapping("gpt-4o", "gpt-4o-2024", Some("GPT-4o"), Some(128000)),
         context_mapping("ds", "deepseek-chat", None, Some(128000)),
@@ -860,7 +860,7 @@ async fn template_refresh_carries_fetched_context_into_the_terminal_payload_once
     let providers_for_sync = providers_data.clone();
     let view = apply_template_sync_with_terminal_refresh(
         &mut config,
-        "commandcode",
+        "commandcode-max",
         |_| Ok(REFRESH_BODY.to_string()),
         |next| write_config(next).map_err(|error| error.to_string()),
         &providers_data,
@@ -929,7 +929,7 @@ async fn failed_or_invalid_template_refresh_performs_no_terminal_work() {
         let calls_for_sync = calls.clone();
         let result = apply_template_sync_with_terminal_refresh(
             &mut config,
-            "commandcode",
+            "commandcode-max",
             fetch,
             persist,
             &providers_data,
@@ -958,7 +958,7 @@ async fn failed_or_invalid_template_refresh_performs_no_terminal_work() {
     let calls_for_sync = calls.clone();
     let result = apply_template_sync_with_terminal_refresh(
         &mut config,
-        "commandcode",
+        "commandcode-max",
         |_| Ok(REFRESH_BODY.to_string()),
         |_| Err("persist failed".to_string()),
         &providers_data,
@@ -983,7 +983,7 @@ async fn terminal_failure_during_refresh_keeps_the_persisted_gateway_change() {
     let calls_for_sync = calls.clone();
     let view = apply_template_sync_with_terminal_refresh(
         &mut config,
-        "commandcode",
+        "commandcode-max",
         |_| Ok(REFRESH_BODY.to_string()),
         |next| write_config(next).map_err(|error| error.to_string()),
         &providers_data,
@@ -1015,7 +1015,7 @@ async fn template_refresh_never_enrolls_an_unsynchronized_tool() {
     let calls_for_sync = calls.clone();
     apply_template_sync_with_terminal_refresh(
         &mut config,
-        "commandcode",
+        "commandcode-max",
         |_| Ok(REFRESH_BODY.to_string()),
         |next| write_config(next).map_err(|error| error.to_string()),
         &json!({ "providers": [] }),

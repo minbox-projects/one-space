@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-10-10-provider-template-bound-strategies.md
-2026-10-10-provider-template-bound-strategies.md: 7bcdf171c756b1374ffd000e91c03fff82a30371
-2026-10-10-provider-template-bound-strategies.zh.md: 2836596263e8eabaa7f32183a9b24e82ec414459
+2026-10-10-provider-template-bound-strategies.md: 7869639a2d3e21c714423ea6f0b18df3d5b38c07
+2026-10-10-provider-template-bound-strategies.zh.md: e86a2086e9655d07b4254af1adbbb6b85546cf4a
