@@ -696,7 +696,7 @@ async fn go_usage_command_rejects_a_commandcode_policy_before_fetch() {
     let config = config_with_provider(bound_go_provider(
         SECRET_KEY,
         "https://opencode.ai/zen/go/v1",
-        "commandcode",
+        "commandcode-max",
     ));
     let calls = Arc::new(AtomicUsize::new(0));
     let fetch_calls = Arc::clone(&calls);

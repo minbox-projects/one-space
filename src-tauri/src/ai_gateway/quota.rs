@@ -599,7 +599,7 @@ mod proxy_switch_named {
                 "value": "SAFE_FIXTURE_quota_key",
                 "enabled": true,
             }],
-            "template_id": "commandcode",
+            "template_id": "commandcode-max",
             "protocol": "chat_completions",
             "enabled": true,
         }))

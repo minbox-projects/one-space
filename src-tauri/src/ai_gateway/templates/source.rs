@@ -210,13 +210,54 @@ pub(super) fn complete_model_display_name(base: Option<&str>, identifier: &str) 
     Some(format!("{base} {transformed}"))
 }
 
-/// Built-in CommandCode template id and its two official model views: the
-/// ordinary list stays authoritative for membership, names and endpoints, while
-/// the client catalog supplies explicit reasoning-effort declarations.
-const COMMANDCODE_TEMPLATE_ID: &str = "commandcode";
+/// The two official CommandCode model views shared by the four plan templates:
+/// the ordinary list stays authoritative for membership, names and endpoints,
+/// while the client catalog declares reasoning efforts, pricing and each model's
+/// `minimumPlan` subscription tier.
 const COMMANDCODE_ORDINARY_URL: &str = "https://api.commandcode.ai/provider/v1/models";
 const COMMANDCODE_CLIENT_URL: &str = "https://api.commandcode.ai/provider/v1/models?view=client";
 const COMMANDCODE_GOAT_PLAN_URL: &str = "https://commandcode.ai/docs/plans/goat";
+
+/// The CommandCode subscription tier a built-in plan template syncs for. Tiers
+/// are cumulative: a plan keeps only the ordinary-list models whose client
+/// `minimumPlan` is part of its tier, so every higher tier stays a superset.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandCodePlanTier {
+    Go,
+    Goat,
+    Pro,
+    Max,
+}
+
+impl CommandCodePlanTier {
+    /// The tier a built-in template id syncs for; any other id is not
+    /// plan-scoped and keeps the single-fetch sync.
+    fn from_template_id(id: &str) -> Option<Self> {
+        match id {
+            "commandcode-go" => Some(Self::Go),
+            "commandcode-goat" => Some(Self::Goat),
+            "commandcode-pro" => Some(Self::Pro),
+            "commandcode-max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    /// Whether a normalized `minimumPlan` belongs to this tier. `None` covers an
+    /// absent, null or blank declaration. `Max` keeps every model, including one
+    /// with an unrecognized or missing declaration; the lower tiers keep only an
+    /// explicitly allowed plan.
+    fn includes(self, minimum_plan: Option<&str>) -> bool {
+        if self == Self::Max {
+            return true;
+        }
+        match minimum_plan {
+            Some("individual-go") => true,
+            Some("individual-goat") => matches!(self, Self::Goat | Self::Pro),
+            Some("individual-pro") => self == Self::Pro,
+            _ => false,
+        }
+    }
+}
 
 /// Provider API reasoning-effort values CommandCode accepts; `off` is a CLI
 /// control that must never be exported as an upstream effort.
@@ -794,16 +835,19 @@ pub(super) fn parse_model_list_source(
 }
 
 /// Fetch a template's model list through an injectable request seam and, for the
-/// canonical CommandCode template, enrich the ordinary list with the official
-/// client catalog's capabilities.
+/// built-in CommandCode plan templates, keep only the ordinary-list entries their
+/// plan tier allows while enriching them from the official client catalog.
 ///
 /// The ordinary list stays authoritative for membership, names and endpoints: a
 /// second credential-free request reads the client view and only joins matching
-/// declared efforts by exact upstream id, so a client-only entry never adds a
-/// model. The seam returns the final ordinary-list JSON body. Any client failure
-/// (request, unsupported `schemaVersion`, invalid `data`, missing or duplicate
-/// id, malformed declared effort) fails the whole operation naming the client
-/// URL. Every other URL is fetched once as configured.
+/// declared efforts and pricing by exact upstream id, so a client-only entry never
+/// adds a model. A plan template drops every ordinary entry that is absent from the
+/// client catalog or declares a `minimumPlan` outside its cumulative tier, while
+/// `Max` keeps them all. The seam returns the final ordinary-list JSON body. Any
+/// client failure (request, unsupported `schemaVersion`, invalid `data`, missing or
+/// duplicate id, malformed declared effort or a non-string `minimumPlan`) fails the
+/// whole operation naming the client URL. Every other URL or template id is fetched
+/// once as configured, without the client view or plan filtering.
 pub(in crate::ai_gateway) async fn fetch_template_models_with<F, Fut>(
     template: &ProviderTemplate,
     mut fetch: F,
@@ -820,11 +864,13 @@ where
         .ok_or_else(|| "template has no model-list URL configured".to_string())?
         .to_string();
 
-    if template.id.trim() != COMMANDCODE_TEMPLATE_ID || url != COMMANDCODE_ORDINARY_URL {
+    let Some(tier) = CommandCodePlanTier::from_template_id(template.id.trim())
+        .filter(|_| url == COMMANDCODE_ORDINARY_URL)
+    else {
         return fetch(url.clone())
             .await
             .map_err(|reason| format!("failed to fetch {url}: {reason}"));
-    }
+    };
 
     let ordinary = fetch(COMMANDCODE_ORDINARY_URL.to_string())
         .await
@@ -844,7 +890,7 @@ where
         std::collections::HashMap::new()
     };
 
-    join_commandcode_client_capabilities_with_web_fallback(&ordinary, &client, &web_tiers)
+    join_commandcode_client_capabilities_with_web_fallback(&ordinary, &client, &web_tiers, tier)
 }
 
 /// The client-catalog failure message, always naming the client URL.
@@ -870,8 +916,8 @@ fn model_entries_mut(value: &mut Value) -> Option<&mut Vec<Value>> {
     }
 }
 
-/// Enrich an ordinary CommandCode model list with the official client catalog's
-/// declared reasoning efforts and pricing, joined by exact upstream id.
+/// Enrich an unfiltered ordinary CommandCode model list with the official client
+/// catalog's declared reasoning efforts and pricing, joined by exact upstream id.
 #[allow(dead_code)]
 fn join_commandcode_client_capabilities(
     ordinary: &str,
@@ -881,6 +927,7 @@ fn join_commandcode_client_capabilities(
         ordinary,
         client,
         &std::collections::HashMap::new(),
+        CommandCodePlanTier::Max,
     )
 }
 
@@ -888,6 +935,7 @@ fn join_commandcode_client_capabilities_with_web_fallback(
     ordinary: &str,
     client: &str,
     web_tiers: &std::collections::HashMap<String, Vec<ContextPriceTier>>,
+    tier: CommandCodePlanTier,
 ) -> Result<String, String> {
     let client_value: Value = serde_json::from_str(client)
         .map_err(|error| commandcode_client_error(format!("not valid JSON: {error}")))?;
@@ -899,7 +947,7 @@ fn join_commandcode_client_capabilities_with_web_fallback(
         .and_then(Value::as_array)
         .ok_or_else(|| commandcode_client_error("the catalog is missing its model data array"))?;
 
-    let mut declared: Vec<(String, Option<Vec<String>>, Option<Value>)> =
+    let mut declared: Vec<(String, Option<Vec<String>>, Option<Value>, Option<String>)> =
         Vec::with_capacity(client_entries.len());
     for entry in client_entries {
         let object = entry
@@ -912,7 +960,7 @@ fn join_commandcode_client_capabilities_with_web_fallback(
             .filter(|id| !id.is_empty())
             .ok_or_else(|| commandcode_client_error("the catalog contains an entry without an id"))?
             .to_string();
-        if declared.iter().any(|(existing, _, _)| existing == &id) {
+        if declared.iter().any(|(existing, ..)| existing == &id) {
             return Err(commandcode_client_error(format!(
                 "the catalog declares the duplicate id {id}"
             )));
@@ -926,7 +974,18 @@ fn join_commandcode_client_capabilities_with_web_fallback(
                     .collect::<Vec<String>>()
             });
         let pricing = object.get("pricing").cloned();
-        declared.push((id, efforts, pricing));
+        let minimum_plan = match object.get("minimumPlan") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(plan)) => Some(plan.trim())
+                .filter(|plan| !plan.is_empty())
+                .map(str::to_string),
+            Some(_) => {
+                return Err(commandcode_client_error(format!(
+                    "the catalog entry {id} declares a non-string minimumPlan"
+                )))
+            }
+        };
+        declared.push((id, efforts, pricing, minimum_plan));
     }
 
     let mut ordinary_value: Value = serde_json::from_str(ordinary)
@@ -934,8 +993,14 @@ fn join_commandcode_client_capabilities_with_web_fallback(
     let entries = model_entries_mut(&mut ordinary_value)
         .ok_or_else(|| "response is missing the model list".to_string())?;
 
-    for entry in entries.iter_mut() {
+    let mut kept: Vec<Value> = Vec::with_capacity(entries.len());
+    for mut entry in entries.drain(..) {
         let Some(object) = entry.as_object_mut() else {
+            // A non-object entry carries no id to join or tier-filter on, so only
+            // the unfiltered plan keeps it.
+            if tier == CommandCodePlanTier::Max {
+                kept.push(entry);
+            }
             continue;
         };
         let identifier = object
@@ -951,11 +1016,18 @@ fn join_commandcode_client_capabilities_with_web_fallback(
                     .filter(|value| !value.is_empty())
             })
             .map(str::to_string);
+        let matched = identifier
+            .as_deref()
+            .and_then(|identifier| declared.iter().find(|(id, ..)| id == identifier));
+        if !tier.includes(matched.and_then(|(.., minimum_plan)| minimum_plan.as_deref())) {
+            continue;
+        }
         let Some(identifier) = identifier else {
+            kept.push(entry);
             continue;
         };
         let mut entry_pricing = None;
-        if let Some((_, efforts, pricing)) = declared.iter().find(|(id, _, _)| id == &identifier) {
+        if let Some((_, efforts, pricing, _)) = matched {
             if let Some(efforts) = efforts {
                 object.insert(
                     "reasoningEfforts".to_string(),
@@ -989,7 +1061,9 @@ fn join_commandcode_client_capabilities_with_web_fallback(
         if let Some(pricing) = entry_pricing {
             object.insert("pricing".to_string(), pricing);
         }
+        kept.push(entry);
     }
+    *entries = kept;
 
     serde_json::to_string(&ordinary_value)
         .map_err(|error| format!("failed to encode the enriched model list: {error}"))

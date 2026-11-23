@@ -10,7 +10,8 @@ use crate::ai_gateway::quota::{
     QuotaCredits, QuotaWindow, QuotaWindowLimits, COMMANDCODE_QUOTA_URL,
     QUOTA_CACHE_TTL_MS,
 };
-use crate::ai_gateway::{GatewayConfig, GatewayUpstreamProvider, UsageLogStore};
+use crate::ai_gateway::templates::effective_quota_strategy;
+use crate::ai_gateway::{GatewayConfig, GatewayUpstreamProvider, QuotaStrategy, UsageLogStore};
 use serde_json::json;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -61,6 +62,19 @@ fn quota_provider(api_key: &str, base_url: &str) -> GatewayUpstreamProvider {
 fn config_with_provider(provider: GatewayUpstreamProvider) -> GatewayConfig {
     let mut config = GatewayConfig::default();
     config.providers.push(provider);
+    // A persisted plan template keeps quota-policy resolution stable across the
+    // built-in split: the credited strategy comes from the binding, not the URL.
+    config.provider_templates.push(serde_json::from_value(json!({
+        "template_id": "commandcode-max",
+        "template": {
+            "id": "commandcode-max",
+            "name": "CommandCode Max",
+            "base_url": "https://api.commandcode.ai/provider/v1",
+            "quota_strategy": "commandcode",
+            "models": []
+        }
+    }))
+    .expect("the persisted CommandCode plan template fixture must deserialize"));
     config
 }
 
@@ -231,7 +245,7 @@ fn resolve_quota_request_follows_the_effective_commandcode_policy() {
     let bound = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://any.example.com/v1",
-        "commandcode",
+        "commandcode-max",
     ));
     let request = resolve_quota_request(&bound, &bound.providers[0])
         .expect("a CommandCode-bound provider must be accepted");
@@ -242,7 +256,7 @@ fn resolve_quota_request_follows_the_effective_commandcode_policy() {
         // An unbound CommandCode-looking URL never resolves the policy.
         quota_provider(SECRET_KEY, "https://API.CommandCode.AI:8443/a/path"),
         // A blank key on a bound provider is still rejected.
-        bound_quota_provider("   ", "https://api.commandcode.ai/v1", "commandcode"),
+        bound_quota_provider("   ", "https://api.commandcode.ai/v1", "commandcode-max"),
     ] {
         let config = config_with_provider(provider);
         let error = resolve_quota_request(&config, &config.providers[0])
@@ -250,6 +264,62 @@ fn resolve_quota_request_follows_the_effective_commandcode_policy() {
         assert!(
             !error.contains(SECRET_KEY),
             "request-resolution error leaked the stored key: {error}"
+        );
+    }
+}
+
+/// REQ-004 / AC-006: every canonical CommandCode plan template resolves the
+/// CommandCode quota policy and the fixed credits endpoint, while an unbound
+/// provider or an unknown template id is rejected before any fetch.
+#[test]
+fn all_commandcode_plan_templates_resolve_the_commandcode_quota_policy() {
+    for plan_id in [
+        "commandcode-go",
+        "commandcode-goat",
+        "commandcode-pro",
+        "commandcode-max",
+    ] {
+        let config = config_with_provider(bound_quota_provider(
+            SECRET_KEY,
+            "https://any.example.com/v1",
+            plan_id,
+        ));
+        let provider = &config.providers[0];
+        assert_eq!(
+            effective_quota_strategy(&config, provider),
+            QuotaStrategy::Commandcode,
+            "{plan_id} must declare the CommandCode quota policy"
+        );
+        let request = resolve_quota_request(&config, provider)
+            .unwrap_or_else(|error| panic!("{plan_id} must resolve quota: {error}"));
+        assert_eq!(request.url, COMMANDCODE_QUOTA_URL, "{plan_id} quota endpoint");
+        assert_eq!(request.api_key, SECRET_KEY, "{plan_id} pinned key");
+    }
+
+    for (label, provider) in [
+        (
+            "an unbound provider",
+            quota_provider(SECRET_KEY, "https://api.commandcode.ai/provider/v1"),
+        ),
+        (
+            "an unknown template id",
+            bound_quota_provider(
+                SECRET_KEY,
+                "https://api.commandcode.ai/provider/v1",
+                "commandcode-unknown",
+            ),
+        ),
+    ] {
+        let config = config_with_provider(provider);
+        let provider = &config.providers[0];
+        assert_eq!(
+            effective_quota_strategy(&config, provider),
+            QuotaStrategy::NoQuota,
+            "{label} must not resolve the CommandCode policy"
+        );
+        assert!(
+            resolve_quota_request(&config, provider).is_err(),
+            "{label} must be rejected before any fetch"
         );
     }
 }
@@ -343,7 +413,7 @@ async fn provider_quota_fetches_on_miss_caches_success_and_forces_refresh() {
     let config = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     ));
     let cache = Mutex::new(QuotaCache::new());
     let calls = Arc::new(AtomicUsize::new(0));
@@ -471,7 +541,7 @@ async fn fetch_and_parse_failures_are_not_cached_or_returned_with_the_key() {
         let config = config_with_provider(bound_quota_provider(
             SECRET_KEY,
             "https://api.commandcode.ai/provider/v1",
-            "commandcode",
+            "commandcode-max",
         ));
         let cache = Mutex::new(QuotaCache::new());
         let calls = Arc::new(AtomicUsize::new(0));
@@ -547,7 +617,7 @@ async fn quota_queries_do_not_write_config_or_usage_logs() {
     let config = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     ));
     crate::ai_gateway::storage::write_config(&config).expect("write initial gateway config");
     let config_file = crate::ai_gateway::storage::config_path().expect("gateway config path");
@@ -597,7 +667,7 @@ async fn quota_command_path_is_read_only_and_uses_the_shared_cache() {
     let config = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     ));
     crate::ai_gateway::storage::write_config(&config).expect("write initial gateway config");
     let config_file = crate::ai_gateway::storage::config_path().expect("gateway config path");
@@ -728,9 +798,19 @@ fn write_quota_pool(keys: Vec<serde_json::Value>) {
             "name": "Quota Pool",
             "base_url": "https://api.commandcode.ai/provider/v1",
             "protocol": "chat_completions",
-            "template_id": "commandcode",
+            "template_id": "commandcode-max",
             "keys": keys,
             "mappings": [],
+        }],
+        "provider_templates": [{
+            "template_id": "commandcode-max",
+            "template": {
+                "id": "commandcode-max",
+                "name": "CommandCode Max",
+                "base_url": "https://api.commandcode.ai/provider/v1",
+                "quota_strategy": "commandcode",
+                "models": []
+            }
         }],
     }));
 }
@@ -1070,7 +1150,7 @@ async fn provider_bound_to_commandcode_uses_quota_regardless_of_base_url() {
     let config = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://my-gateway.example.com/v1",
-        "commandcode",
+        "commandcode-max",
     ));
 
     let result = provider_quota_with(
@@ -1176,7 +1256,7 @@ async fn quota_cache_is_not_reused_across_a_binding_change() {
     let mut config = config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/v1",
-        "commandcode",
+        "commandcode-max",
     ));
     let cache = Mutex::new(QuotaCache::new());
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1314,7 +1394,7 @@ async fn concurrent_matching_cold_quota_lookups_share_one_network_fetch() {
     let config = Arc::new(config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     )));
     let cache = Arc::new(Mutex::new(QuotaCache::new()));
     let control = Arc::new(QuotaFlightControl::new());
@@ -1368,7 +1448,7 @@ async fn concurrent_matching_forced_quota_refreshes_join_one_flight() {
     let config = Arc::new(config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     )));
     let mut cache = QuotaCache::new();
     cache.store(
@@ -1432,12 +1512,12 @@ async fn concurrent_quota_lookups_with_distinct_base_urls_do_not_share() {
     let first_config = Arc::new(config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/first/v1",
-        "commandcode",
+        "commandcode-max",
     )));
     let second_config = Arc::new(config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/second/v1",
-        "commandcode",
+        "commandcode-max",
     )));
 
     let first = spawn_quota_lookup(
@@ -1490,12 +1570,12 @@ async fn concurrent_quota_lookups_with_distinct_keys_do_not_share() {
     let first_config = Arc::new(config_with_provider(bound_quota_provider(
         "sk-first-source",
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     )));
     let second_config = Arc::new(config_with_provider(bound_quota_provider(
         "sk-second-source",
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     )));
 
     let first = spawn_quota_lookup(
@@ -1545,7 +1625,7 @@ async fn concurrent_quota_failure_settles_and_a_later_lookup_retries() {
     let config = Arc::new(config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     )));
     let cache = Arc::new(Mutex::new(QuotaCache::new()));
     let control = Arc::new(QuotaFlightControl::new());
@@ -1617,7 +1697,7 @@ async fn cancelled_quota_owner_does_not_strand_a_later_lookup() {
     let config = Arc::new(config_with_provider(bound_quota_provider(
         SECRET_KEY,
         "https://api.commandcode.ai/provider/v1",
-        "commandcode",
+        "commandcode-max",
     )));
     let cache = Arc::new(Mutex::new(QuotaCache::new()));
     let control = Arc::new(QuotaFlightControl::new());

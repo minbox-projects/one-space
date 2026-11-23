@@ -184,44 +184,69 @@ fn find_price_row<'a>(
 #[test]
 fn builtin_templates_declare_their_model_list_urls() {
     let templates = builtin_templates().expect("built-in templates must parse");
-    assert_eq!(templates.len(), 3, "the snapshot must ship exactly three templates");
+    let ids: Vec<&str> = templates.iter().map(|template| template.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "commandcode-go",
+            "commandcode-goat",
+            "commandcode-pro",
+            "commandcode-max",
+            "opencode-go",
+            "opencode-zen-free",
+        ],
+        "the four CommandCode plan templates must precede the OpenCode templates in tier order"
+    );
+
+    for (id, name) in [
+        ("commandcode-go", "CommandCode Go"),
+        ("commandcode-goat", "CommandCode GOAT"),
+        ("commandcode-pro", "CommandCode Pro"),
+        ("commandcode-max", "CommandCode Max"),
+    ] {
+        let plan = templates
+            .iter()
+            .find(|template| template.id == id)
+            .unwrap_or_else(|| panic!("the {id} template must exist"));
+        let value = serde_json::to_value(plan).expect("serialize the plan template");
+        assert_eq!(plan.name, name, "{id} display name");
+        assert_eq!(plan.base_url, "https://api.commandcode.ai/provider/v1", "{id} base URL");
+        assert_eq!(value["protocol"], json!("chat_completions"), "{id} protocol");
+        assert_eq!(value["sync_strategy"], json!("generic"), "{id} sync strategy");
+        assert_eq!(value["quota_strategy"], json!("commandcode"), "{id} quota strategy");
+        assert_eq!(value["error_strategy"], json!("generic"), "{id} error strategy");
+        assert_eq!(plan.source, "https://api.commandcode.ai/provider/v1/models", "{id} source");
+        assert_eq!(
+            plan.models_url.as_deref(),
+            Some("https://api.commandcode.ai/provider/v1/models"),
+            "{id} model-list URL"
+        );
+        assert_eq!(plan.icon.as_deref(), Some("commandcode"), "{id} icon");
+        assert!(plan.models.is_empty(), "{id} must ship no models");
+    }
+    assert!(
+        !ids.contains(&"commandcode"),
+        "the legacy commandcode template must be removed"
+    );
 
     let go = templates
         .iter()
         .find(|template| template.id == "opencode-go")
         .expect("the opencode-go template must exist");
-    let commandcode = templates
-        .iter()
-        .find(|template| template.id == "commandcode")
-        .expect("the commandcode template must exist");
     let zen_free = templates
         .iter()
         .find(|template| template.id == "opencode-zen-free")
         .expect("the opencode-zen-free template must exist");
-
-    assert!(
-        commandcode.models.is_empty(),
-        "commandcode must ship no models"
-    );
 
     assert_eq!(
         go.models_url.as_deref(),
         Some("https://opencode.ai/zen/go/v1/models")
     );
     assert_eq!(
-        commandcode.models_url.as_deref(),
-        Some("https://api.commandcode.ai/provider/v1/models")
-    );
-    assert_eq!(
         go.source, "https://opencode.ai/zen/go/v1/models",
         "the source must equal the model-list URL"
     );
-    assert_eq!(
-        commandcode.source, "https://api.commandcode.ai/provider/v1/models",
-        "the source must equal the model-list URL"
-    );
     assert_eq!(go.icon.as_deref(), Some("opencode"));
-    assert_eq!(commandcode.icon.as_deref(), Some("commandcode"));
 
     assert_eq!(zen_free.base_url, "https://opencode.ai/inference/openai/v1");
     assert_eq!(zen_free.source, "https://opencode.ai/zen/v1/models");
@@ -280,24 +305,21 @@ fn builtin_templates_declare_their_model_list_urls() {
         ]
     );
 
-    assert_eq!(
-        find_builtin_template("opencode-go")
-            .expect("opencode-go must resolve")
-            .id,
-        "opencode-go"
-    );
-    assert_eq!(
-        find_builtin_template("commandcode")
-            .expect("commandcode must resolve")
-            .id,
-        "commandcode"
-    );
-    assert_eq!(
-        find_builtin_template("opencode-zen-free")
-            .expect("opencode-zen-free must resolve")
-            .id,
-        "opencode-zen-free"
-    );
+    for id in [
+        "commandcode-go",
+        "commandcode-goat",
+        "commandcode-pro",
+        "commandcode-max",
+        "opencode-go",
+        "opencode-zen-free",
+    ] {
+        assert_eq!(
+            find_builtin_template(id)
+                .unwrap_or_else(|_| panic!("{id} must resolve"))
+                .id,
+            id
+        );
+    }
 }
 
 /// AC-001 / REQ-002: before any sync both built-in views fall back to the
@@ -307,12 +329,12 @@ fn builtin_templates_declare_their_model_list_urls() {
 fn provider_template_views_expose_the_builtin_snapshot() {
     let config = GatewayConfig::default();
     let views = provider_template_views(&config).expect("built-in templates must resolve");
-    assert_eq!(views.len(), 3, "all three built-in templates must be returned");
+    assert_eq!(views.len(), 6, "all six built-in templates must be returned");
 
     let commandcode = views
         .iter()
-        .find(|view| view.template.id == "commandcode")
-        .expect("the commandcode view must exist");
+        .find(|view| view.template.id == "commandcode-max")
+        .expect("the commandcode-max view must exist");
     let go = views
         .iter()
         .find(|view| view.template.id == "opencode-go")
@@ -600,8 +622,12 @@ fn find_builtin_template_unknown_id_reports_error() {
 
     let opencode = find_builtin_template("opencode-go").expect("opencode-go must resolve");
     assert_eq!(opencode.id, "opencode-go");
-    let commandcode = find_builtin_template("commandcode").expect("commandcode must resolve");
-    assert_eq!(commandcode.id, "commandcode");
+    let commandcode = find_builtin_template("commandcode-max").expect("commandcode-max must resolve");
+    assert_eq!(commandcode.id, "commandcode-max");
+    assert!(
+        find_builtin_template("commandcode").is_err(),
+        "the legacy commandcode id must no longer resolve"
+    );
 }
 
 /// Compatibility: an old `ai_gateway.json` without any new field deserializes
@@ -2557,11 +2583,11 @@ fn test_template_delete_fails_when_used_by_provider() {
 #[test]
 fn test_template_delete_succeeds_when_unused() {
     let mut config = GatewayConfig::default();
-    let views = apply_delete_provider_template(&mut config, "commandcode", |_| Ok(()))
+    let views = apply_delete_provider_template(&mut config, "commandcode-max", |_| Ok(()))
         .expect("delete should succeed");
 
-    assert!(views.iter().all(|view| view.template.id != "commandcode"));
-    assert!(config.deleted_template_ids.contains(&"commandcode".to_string()));
+    assert!(views.iter().all(|view| view.template.id != "commandcode-max"));
+    assert!(config.deleted_template_ids.contains(&"commandcode-max".to_string()));
 }
 
 // ---------------------------------------------------------------------------
@@ -4499,22 +4525,29 @@ fn valid_template_strategy_values_survive_upsert_and_reload() {
     assert_eq!(views.len(), reloaded.len());
 }
 
-/// AC-002: the built-in catalog is exactly CommandCode, OpenCode Go and
-/// OpenCode Zen Free; the legacy OpenCode Zen built-in is gone and each
-/// built-in carries its approved strategies.
+/// AC-001: the built-in catalog is exactly the four CommandCode plan templates,
+/// OpenCode Go and OpenCode Zen Free; the legacy OpenCode Zen built-in is gone
+/// and each built-in carries its approved strategies.
 #[test]
-fn builtin_catalog_ships_exactly_commandcode_opencode_go_and_opencode_zen_free() {
+fn builtin_catalog_ships_four_commandcode_plans_and_opencode_templates() {
     let builtins = builtin_templates().expect("the built-in snapshot must parse");
     let mut ids: Vec<String> = builtins.iter().map(|t| t.id.clone()).collect();
     ids.sort();
     assert_eq!(
         ids,
         vec![
-            "commandcode".to_string(),
+            "commandcode-go".to_string(),
+            "commandcode-goat".to_string(),
+            "commandcode-max".to_string(),
+            "commandcode-pro".to_string(),
             "opencode-go".to_string(),
-            "opencode-zen-free".to_string()
+            "opencode-zen-free".to_string(),
         ],
-        "the catalog must ship exactly CommandCode, OpenCode Go and OpenCode Zen Free"
+        "the catalog must ship exactly the four CommandCode plan templates, OpenCode Go and OpenCode Zen Free"
+    );
+    assert!(
+        !ids.iter().any(|id| id == "commandcode"),
+        "the legacy commandcode built-in must be removed"
     );
     assert!(
         !ids.iter().any(|id| id == "opencode-zen"),
@@ -4529,10 +4562,17 @@ fn builtin_catalog_ships_exactly_commandcode_opencode_go_and_opencode_zen_free()
             .unwrap_or_else(|| panic!("the {id} built-in must exist"))
     };
 
-    let commandcode = by_id("commandcode");
-    assert_eq!(commandcode["sync_strategy"], json!("generic"));
-    assert_eq!(commandcode["quota_strategy"], json!("commandcode"));
-    assert_eq!(commandcode["error_strategy"], json!("generic"));
+    for id in [
+        "commandcode-go",
+        "commandcode-goat",
+        "commandcode-pro",
+        "commandcode-max",
+    ] {
+        let plan = by_id(id);
+        assert_eq!(plan["sync_strategy"], json!("generic"), "{id} sync strategy");
+        assert_eq!(plan["quota_strategy"], json!("commandcode"), "{id} quota strategy");
+        assert_eq!(plan["error_strategy"], json!("generic"), "{id} error strategy");
+    }
 
     let go = by_id("opencode-go");
     assert_eq!(go["sync_strategy"], json!("opencode_go"));
@@ -5655,8 +5695,8 @@ const COMMANDCODE_CLIENT_URL: &str = "https://api.commandcode.ai/provider/v1/mod
 /// ordinary list.
 fn commandcode_template(models: Vec<ProviderTemplateModel>) -> ProviderTemplate {
     ProviderTemplate {
-        id: "commandcode".to_string(),
-        name: "CommandCode".to_string(),
+        id: "commandcode-max".to_string(),
+        name: "CommandCode Max".to_string(),
         description: String::new(),
         base_url: "https://api.commandcode.ai/provider/v1".to_string(),
         protocol: UpstreamProtocol::ChatCompletions,
@@ -5728,7 +5768,7 @@ async fn fetch_commandcode_source_joins_client_capabilities_by_exact_id() {
 
     let mut config = GatewayConfig::default();
     seed_template(&mut config, template);
-    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode-max", &body)
         .expect("the enriched ordinary body must sync");
 
     let ids: Vec<&str> = view
@@ -5867,7 +5907,7 @@ async fn fetch_commandcode_missing_client_id_preserves_previous_capabilities() {
 
     let mut config = GatewayConfig::default();
     seed_template(&mut config, template);
-    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode-max", &body)
         .expect("the sync must succeed");
     let kept = view
         .template
@@ -5979,7 +6019,7 @@ async fn fetch_commandcode_source_filters_efforts_to_the_provider_api_set() {
 
     let mut config = GatewayConfig::default();
     seed_template(&mut config, template);
-    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode-max", &body)
         .expect("the enriched body must sync");
     let model = view
         .template
@@ -6085,7 +6125,7 @@ async fn the_commandcode_join_preserves_the_ordinary_context_metadata() {
 
     let mut config = GatewayConfig::default();
     seed_template(&mut config, template);
-    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode-max", &body)
         .expect("the enriched ordinary body must sync");
     let model = view
         .template
@@ -6271,7 +6311,7 @@ async fn fetch_commandcode_source_joins_context_tiers_from_client_api() {
 
     let mut config = GatewayConfig::default();
     seed_template(&mut config, template);
-    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode-max", &body)
         .expect("sync from body must succeed");
 
     let haiku = view
@@ -6338,7 +6378,7 @@ async fn fetch_commandcode_source_falls_back_to_goat_web_tiers_when_client_lacks
 
     let mut config = GatewayConfig::default();
     seed_template(&mut config, template);
-    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode", &body)
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode-max", &body)
         .expect("sync from body must succeed");
 
     let qwen = view
@@ -6353,6 +6393,338 @@ async fn fetch_commandcode_source_falls_back_to_goat_web_tiers_when_client_lacks
     assert_eq!(qwen.context_tiers[0].input, 0.05);
     assert_eq!(qwen.context_tiers[1].max_context, None);
     assert_eq!(qwen.context_tiers[1].input, 0.1);
+}
+
+// ---------------------------------------------------------------------------
+// CommandCode plan-tiered sync (REQ-002, AC-002, AC-003)
+// ---------------------------------------------------------------------------
+
+const COMMANDCODE_PLAN_TIERS: [(&str, &str); 4] = [
+    ("commandcode-go", "CommandCode Go"),
+    ("commandcode-goat", "CommandCode GOAT"),
+    ("commandcode-pro", "CommandCode Pro"),
+    ("commandcode-max", "CommandCode Max"),
+];
+
+fn commandcode_plan_template(plan_id: &str, models_url: &str) -> ProviderTemplate {
+    let name = COMMANDCODE_PLAN_TIERS
+        .iter()
+        .find(|(id, _)| *id == plan_id)
+        .map(|(_, name)| *name)
+        .unwrap_or(plan_id);
+    ProviderTemplate {
+        id: plan_id.to_string(),
+        name: name.to_string(),
+        base_url: "https://api.commandcode.ai/provider/v1".to_string(),
+        protocol: UpstreamProtocol::ChatCompletions,
+        source: COMMANDCODE_ORDINARY_URL.to_string(),
+        models_url: Some(models_url.to_string()),
+        icon: Some("commandcode".to_string()),
+        ..ProviderTemplate::default()
+    }
+}
+
+fn tier_ordinary_body(ids: &[&str]) -> String {
+    let data: Vec<Value> = ids
+        .iter()
+        .map(|id| {
+            json!({
+                "id": id,
+                "name": format!("Model {id}"),
+                "supported_endpoints": ["/chat/completions"],
+            })
+        })
+        .collect();
+    json!({ "data": data }).to_string()
+}
+
+fn tier_client_entry(id: &str, minimum_plan: Value, efforts: &[&str], with_pricing: bool) -> Value {
+    let mut entry = json!({
+        "id": id,
+        "minimumPlan": minimum_plan,
+        "reasoningEfforts": efforts,
+    });
+    if with_pricing {
+        entry["pricing"] = json!({
+            "input": 1.0,
+            "output": 5.0,
+            "contextTiers": [{"upTo": 200000, "input": 1.0, "output": 5.0}],
+        });
+    }
+    entry
+}
+
+/// Run the full plan-aware fetch-and-parse seam for one canonical plan template.
+async fn sync_plan_tier(
+    plan_id: &str,
+    ordinary: String,
+    client: String,
+) -> Result<(ProviderTemplateView, Vec<String>), String> {
+    let template = commandcode_plan_template(plan_id, COMMANDCODE_ORDINARY_URL);
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_in = seen.clone();
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        seen_in.lock().expect("url log").push(requested.clone());
+        let reply = if requested.contains("view=client") {
+            client.clone()
+        } else {
+            ordinary.clone()
+        };
+        async move { Ok::<String, String>(reply) }
+    })
+    .await?;
+    let urls = seen.lock().expect("url log").clone();
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, plan_id, &body)?;
+    Ok((view, urls))
+}
+
+fn tier_ids(view: &ProviderTemplateView) -> Vec<&str> {
+    view.template
+        .models
+        .iter()
+        .map(|model| model.upstream_model.as_str())
+        .collect()
+}
+
+/// REQ-002 / AC-002: each plan template keeps the cumulative subscription tiers
+/// from the client catalog; the ordinary list stays authoritative for membership.
+#[tokio::test]
+async fn plan_templates_keep_their_cumulative_minimum_plan_tiers() {
+    let ordinary = tier_ordinary_body(&[
+        "go-model",
+        "goat-model",
+        "pro-model",
+        "max-model",
+        "provider-model",
+    ]);
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [
+            tier_client_entry("go-model", json!("individual-go"), &["low"], true),
+            tier_client_entry("goat-model", json!("individual-goat"), &["medium"], false),
+            tier_client_entry("pro-model", json!("individual-pro"), &["xhigh"], false),
+            tier_client_entry("max-model", json!("individual-max"), &["max"], false),
+            tier_client_entry("provider-model", json!("individual-provider"), &["low"], false),
+            tier_client_entry("client-only", json!("individual-go"), &["max"], false),
+        ]
+    })
+    .to_string();
+
+    let expected: [(&str, &[&str]); 4] = [
+        ("commandcode-go", &["go-model"]),
+        ("commandcode-goat", &["go-model", "goat-model"]),
+        ("commandcode-pro", &["go-model", "goat-model", "pro-model"]),
+        (
+            "commandcode-max",
+            &["go-model", "goat-model", "pro-model", "max-model", "provider-model"],
+        ),
+    ];
+    for (plan_id, ids) in expected {
+        let (view, urls) = sync_plan_tier(plan_id, ordinary.clone(), client.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{plan_id} sync must succeed: {error}"));
+        assert_eq!(
+            urls,
+            vec![COMMANDCODE_ORDINARY_URL.to_string(), COMMANDCODE_CLIENT_URL.to_string()],
+            "{plan_id} must fetch the ordinary list then the client catalog"
+        );
+        assert_eq!(tier_ids(&view).as_slice(), ids, "{plan_id} tier membership");
+        assert!(
+            tier_ids(&view).iter().all(|id| *id != "client-only"),
+            "{plan_id} must never add a client-only model"
+        );
+    }
+}
+
+/// REQ-002 / AC-002: plan-aware sync keeps the existing enrichment — CLI-only
+/// `off` is stripped from the five Provider API efforts and client pricing with
+/// context tiers survives the ordinary-list parse for every plan template.
+#[tokio::test]
+async fn plan_tier_sync_preserves_effort_filtering_pricing_and_context_tiers() {
+    let ordinary = tier_ordinary_body(&["go-model"]);
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [tier_client_entry(
+            "go-model",
+            json!("individual-go"),
+            &["off", " low ", "medium", "low", "high", "xhigh", "max", "bogus", ""],
+            true,
+        )]
+    })
+    .to_string();
+
+    for (plan_id, _) in COMMANDCODE_PLAN_TIERS {
+        let (view, _) = sync_plan_tier(plan_id, ordinary.clone(), client.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{plan_id} sync must succeed: {error}"));
+        let model = view
+            .template
+            .models
+            .iter()
+            .find(|model| model.upstream_model == "go-model")
+            .unwrap_or_else(|| panic!("{plan_id} must keep go-model"));
+        assert_eq!(
+            model.reasoning_efforts,
+            vec!["low", "medium", "high", "xhigh", "max"],
+            "{plan_id} must expose only the five Provider API efforts once"
+        );
+        assert_eq!(model.input, 1.0, "{plan_id} must merge client input pricing");
+        assert_eq!(model.output, 5.0, "{plan_id} must merge client output pricing");
+        assert_eq!(
+            model.context_tiers.len(),
+            1,
+            "{plan_id} must keep the client context tier"
+        );
+        assert_eq!(
+            model.context_tiers[0].max_context,
+            Some(200_000),
+            "{plan_id} context tier ceiling"
+        );
+    }
+}
+
+/// REQ-002 / AC-003: a lower tier excludes an ordinary model absent from the
+/// client catalog or carrying a missing, blank, null, unknown or higher tier.
+#[tokio::test]
+async fn lower_tiers_exclude_models_without_an_allowed_minimum_plan() {
+    let ordinary = tier_ordinary_body(&[
+        "valid-go",
+        "absent",
+        "missing-plan",
+        "blank-plan",
+        "null-plan",
+        "unknown-plan",
+        "higher-plan",
+    ]);
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [
+            tier_client_entry("valid-go", json!("individual-go"), &["low"], false),
+            {"id": "missing-plan", "reasoningEfforts": ["low"]},
+            {"id": "blank-plan", "minimumPlan": "   ", "reasoningEfforts": ["low"]},
+            {"id": "null-plan", "minimumPlan": null, "reasoningEfforts": ["low"]},
+            {"id": "unknown-plan", "minimumPlan": "individual-unknown", "reasoningEfforts": ["low"]},
+            {"id": "higher-plan", "minimumPlan": "individual-max", "reasoningEfforts": ["low"]},
+            {"id": "client-only", "minimumPlan": "individual-go", "reasoningEfforts": ["max"]},
+        ]
+    })
+    .to_string();
+
+    for plan_id in ["commandcode-go", "commandcode-goat", "commandcode-pro"] {
+        let (view, _) = sync_plan_tier(plan_id, ordinary.clone(), client.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{plan_id} sync must succeed: {error}"));
+        assert_eq!(
+            tier_ids(&view),
+            vec!["valid-go"],
+            "{plan_id} must keep only the explicitly allowed minimumPlan"
+        );
+    }
+}
+
+/// REQ-002 / AC-003: a lower tier whose ordinary list contains only higher-tier
+/// models ends with an empty filtered set and fails without persisting anything.
+#[tokio::test]
+async fn a_lower_tier_with_only_higher_tier_models_fails_without_persisting() {
+    let template = commandcode_plan_template("commandcode-go", COMMANDCODE_ORDINARY_URL);
+    let ordinary = tier_ordinary_body(&["pro-only"]);
+    let client = json!({
+        "schemaVersion": 1,
+        "data": [{"id": "pro-only", "minimumPlan": "individual-pro", "reasoningEfforts": ["low"]}]
+    })
+    .to_string();
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template.clone());
+    config.provider_templates[0].synced_at = Some(1);
+    let before = serde_json::to_value(&config).expect("encode before");
+
+    let fetched = fetch_template_models_with(&template, {
+        let ordinary = ordinary.clone();
+        move |requested: String| {
+            let reply = if requested.contains("view=client") {
+                client.clone()
+            } else {
+                ordinary.clone()
+            };
+            async move { Ok::<String, String>(reply) }
+        }
+    })
+    .await;
+    let outcome = match fetched {
+        Err(error) => Err(error),
+        Ok(body) => apply_template_sync_from_body(&mut config, "commandcode-go", &body).map(|_| ()),
+    };
+    assert!(outcome.is_err(), "an empty filtered set must fail the sync");
+    assert_eq!(
+        before,
+        serde_json::to_value(&config).expect("encode after"),
+        "an empty filtered set must not mutate template state or synced_at"
+    );
+}
+
+/// REQ-002 / AC-003: a non-string, non-null minimumPlan fails naming the client
+/// catalog URL and publishes no enriched body.
+#[tokio::test]
+async fn a_non_string_minimum_plan_fails_naming_the_client_url() {
+    let template = commandcode_plan_template("commandcode-go", COMMANDCODE_ORDINARY_URL);
+    let ordinary = tier_ordinary_body(&["go-model"]);
+    for bad in [json!(42), json!({"tier": "go"})] {
+        let client = json!({
+            "schemaVersion": 1,
+            "data": [{"id": "go-model", "minimumPlan": bad, "reasoningEfforts": ["low"]}]
+        })
+        .to_string();
+        let ordinary = ordinary.clone();
+        let error = fetch_template_models_with(&template, move |requested: String| {
+            let reply = if requested.contains("view=client") {
+                client.clone()
+            } else {
+                ordinary.clone()
+            };
+            async move { Ok::<String, String>(reply) }
+        })
+        .await
+        .expect_err("a non-string minimumPlan must fail the plan-aware join");
+        assert!(
+            error.contains(COMMANDCODE_CLIENT_URL),
+            "the error must name the client catalog URL: {error}"
+        );
+    }
+}
+
+/// REQ-002 / AC-003: a plan template whose models_url is a custom mirror fetches
+/// only that trimmed URL once, with no client-catalog call and no plan filtering.
+#[tokio::test]
+async fn a_plan_template_with_a_custom_models_url_skips_the_client_catalog() {
+    let custom_url = "https://mirror.example.com/v1/models";
+    let template = commandcode_plan_template("commandcode-go", &format!("  {custom_url}  "));
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_in = seen.clone();
+    let body = fetch_template_models_with(&template, move |requested: String| {
+        seen_in.lock().expect("url log").push(requested.clone());
+        let reply = tier_ordinary_body(&["go-model", "max-model"]);
+        async move { Ok::<String, String>(reply) }
+    })
+    .await
+    .expect("a custom mirror must fetch once");
+    assert_eq!(
+        *seen.lock().expect("url log"),
+        vec![custom_url.to_string()],
+        "only the trimmed custom URL may be fetched once"
+    );
+
+    let mut config = GatewayConfig::default();
+    seed_template(&mut config, template);
+    let (view, _) = apply_template_sync_from_body(&mut config, "commandcode-go", &body)
+        .expect("the custom mirror body must sync");
+    assert_eq!(
+        tier_ids(&view),
+        vec!["go-model", "max-model"],
+        "a custom mirror must not be filtered by minimumPlan"
+    );
 }
 
 
