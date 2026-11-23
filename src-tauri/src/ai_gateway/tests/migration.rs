@@ -1966,14 +1966,14 @@ fn persisted_config_with_unknown_strategy_values_reads_with_generic_defaults() {
     );
 }
 
-/// The current configuration schema is pinned to 9 for the Zen Free inference
-/// endpoint change.
+/// The current configuration schema is pinned to 10 for the CommandCode
+/// plan-template migration gate.
 #[test]
-fn gateway_config_schema_version_advances_to_nine() {
+fn gateway_config_schema_version_advances_to_ten() {
     assert_eq!(
         crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION,
-        9,
-        "the Zen Free inference endpoint change must be gated by schema version 9"
+        10,
+        "the CommandCode plan-template migration must be gated by schema version 10"
     );
 }
 
@@ -3605,4 +3605,480 @@ fn zen_free_inference_endpoint_schema9_migrates_base_url() {
             "a current or future version must not rerun the base_url migration"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Schema-10 CommandCode plan-template migration (REQ-003 / AC-004 / AC-005)
+//
+// Every fixture is raw JSON and every assertion observes either the in-memory
+// config returned by `read_config()` or the decrypted on-disk JSON, so a red is
+// an observable mismatch (schema stays 9, binding stays `commandcode`, template
+// state never moves) rather than a compile error from a missing internal symbol.
+// ---------------------------------------------------------------------------
+
+const COMMANDCODE_BASE_URL: &str = "https://api.commandcode.ai/provider/v1";
+const COMMANDCODE_MODELS_URL: &str = "https://api.commandcode.ai/provider/v1/models";
+
+/// A schema-9 fixture with one `commandcode`-bound provider carrying every
+/// user-maintained field, one `commandcode` template snapshot whose name is
+/// supplied by the caller, and a deleted legacy template id alongside an
+/// unrelated id that must survive.
+fn commandcode_schema9_fixture(template_name: &str) -> Value {
+    json!({
+        "schema_version": 9,
+        "enabled": true,
+        "providers": [{
+            "id": "cc-bound",
+            "name": "My CommandCode",
+            "base_url": COMMANDCODE_BASE_URL,
+            "protocol": "chat_completions",
+            "template_id": "commandcode",
+            "enabled": true,
+            "keys": [super::pool_key("key-cc", "Default", "SAFE_FIXTURE_sk-cc", true)],
+            "default_model": "cc-default-model",
+            "weight": 6,
+            "tags": ["prod", "cc"],
+            "icon": "commandcode-custom-icon",
+            "mappings": [
+                {"local_model": "local-cc", "upstream_model": "remote-cc", "enabled": true}
+            ],
+            "ignored_models": ["retired-cc-model"]
+        }],
+        "model_prices": [
+            {"provider_id": "cc-bound", "upstream_model": "remote-cc", "input": 1.25, "output": 2.5}
+        ],
+        "provider_templates": [{
+            "template_id": "commandcode",
+            "synced_at": 123456789,
+            "source": COMMANDCODE_MODELS_URL,
+            "template": {
+                "id": "commandcode",
+                "name": template_name,
+                "base_url": COMMANDCODE_BASE_URL,
+                "protocol": "chat_completions",
+                "sync_strategy": "generic",
+                "quota_strategy": "commandcode",
+                "error_strategy": "generic",
+                "source": COMMANDCODE_MODELS_URL,
+                "models_url": COMMANDCODE_MODELS_URL,
+                "models": [
+                    {"upstream_model": "remote-cc", "protocol": "chat_completions"}
+                ],
+                "icon": "commandcode"
+            }
+        }],
+        "deleted_template_ids": ["commandcode", "unrelated-deleted"]
+    })
+}
+
+/// AC-004: the first read of a schema-9 config rebinds a `commandcode` provider
+/// and its persisted template state to `commandcode-max`, stamps schema 10,
+/// renames the default template name and removes the deleted legacy id while
+/// every user-maintained field survives unchanged.
+#[test]
+fn commandcode_schema9_binding_migrates_to_max_and_preserves_user_data() {
+    let _home = isolated_temp_home("migration-commandcode-schema10");
+    write_encrypted_config(&commandcode_schema9_fixture("CommandCode"));
+
+    let loaded = read_config().expect("the schema-9 config must stay readable");
+    assert_eq!(
+        loaded.schema_version, 10,
+        "the read must advance the persisted config to schema 10"
+    );
+
+    let provider = loaded
+        .providers
+        .iter()
+        .find(|provider| provider.id == "cc-bound")
+        .expect("the bound provider must be preserved");
+    assert_eq!(
+        provider.template_id.as_deref(),
+        Some("commandcode-max"),
+        "a commandcode-bound provider must be rebound to commandcode-max"
+    );
+    assert_eq!(provider.name, "My CommandCode");
+    assert_eq!(provider.base_url, COMMANDCODE_BASE_URL);
+    assert!(provider.enabled);
+    assert_eq!(provider.keys.len(), 1);
+    assert_eq!(provider.keys[0].id, "key-cc");
+    assert_eq!(provider.keys[0].name, "Default");
+    assert_eq!(provider.keys[0].value, "SAFE_FIXTURE_sk-cc");
+    assert!(provider.keys[0].enabled);
+    assert_eq!(provider.default_model.as_deref(), Some("cc-default-model"));
+    assert_eq!(provider.weight, 6);
+    assert_eq!(provider.tags, vec!["prod".to_string(), "cc".to_string()]);
+    assert_eq!(provider.icon.as_deref(), Some("commandcode-custom-icon"));
+    assert_eq!(provider.mappings.len(), 1);
+    assert_eq!(provider.mappings[0].local_model, "local-cc");
+    assert_eq!(provider.mappings[0].upstream_model, "remote-cc");
+    assert!(provider.mappings[0].enabled);
+    assert_eq!(provider.ignored_models, vec!["retired-cc-model".to_string()]);
+    assert_eq!(loaded.model_prices.len(), 1);
+    assert_eq!(loaded.model_prices[0].provider_id.as_deref(), Some("cc-bound"));
+    assert_eq!(loaded.model_prices[0].upstream_model, "remote-cc");
+    assert_eq!(loaded.model_prices[0].input, 1.25);
+
+    assert!(
+        !loaded
+            .provider_templates
+            .iter()
+            .any(|state| state.template_id == "commandcode"),
+        "the stale commandcode template state must not survive"
+    );
+    let max_states: Vec<_> = loaded
+        .provider_templates
+        .iter()
+        .filter(|state| state.template_id == "commandcode-max")
+        .collect();
+    assert_eq!(max_states.len(), 1, "exactly one commandcode-max state must exist");
+    let state = max_states[0];
+    assert_eq!(state.synced_at, Some(123456789));
+    assert_eq!(state.source.as_deref(), Some(COMMANDCODE_MODELS_URL));
+    let template = state.template.as_ref().expect("the migrated snapshot");
+    assert_eq!(template.id, "commandcode-max");
+    assert_eq!(template.name, "CommandCode Max");
+    assert_eq!(template.base_url, COMMANDCODE_BASE_URL);
+    assert_eq!(template.models_url.as_deref(), Some(COMMANDCODE_MODELS_URL));
+    assert_eq!(template.models.len(), 1);
+    assert_eq!(template.models[0].upstream_model, "remote-cc");
+
+    assert!(
+        !loaded.deleted_template_ids.iter().any(|id| id == "commandcode"),
+        "the deleted commandcode id must be removed"
+    );
+    for new_id in [
+        "commandcode-go",
+        "commandcode-goat",
+        "commandcode-pro",
+        "commandcode-max",
+    ] {
+        assert!(
+            !loaded.deleted_template_ids.iter().any(|id| id == new_id),
+            "migration must not add {new_id} to deleted_template_ids"
+        );
+    }
+    assert!(
+        loaded.deleted_template_ids.iter().any(|id| id == "unrelated-deleted"),
+        "an unrelated deleted id must be preserved"
+    );
+
+    let on_disk = decrypted_config_json();
+    assert_eq!(on_disk["schema_version"], json!(10));
+    let disk_provider = on_disk["providers"]
+        .as_array()
+        .expect("providers")
+        .iter()
+        .find(|provider| provider["id"] == "cc-bound")
+        .expect("persisted provider");
+    assert_eq!(disk_provider["template_id"], json!("commandcode-max"));
+    assert_eq!(disk_provider["name"], json!("My CommandCode"));
+    assert_eq!(disk_provider["default_model"], json!("cc-default-model"));
+    assert_eq!(disk_provider["weight"], json!(6));
+    assert_eq!(disk_provider["icon"], json!("commandcode-custom-icon"));
+    assert_eq!(disk_provider["tags"], json!(["prod", "cc"]));
+    assert_eq!(disk_provider["ignored_models"], json!(["retired-cc-model"]));
+    assert_eq!(disk_provider["keys"][0]["value"], json!("SAFE_FIXTURE_sk-cc"));
+    let disk_states = on_disk["provider_templates"]
+        .as_array()
+        .expect("provider_templates");
+    assert!(!disk_states.iter().any(|state| state["template_id"] == json!("commandcode")));
+    let disk_max = disk_states
+        .iter()
+        .find(|state| state["template_id"] == json!("commandcode-max"))
+        .expect("persisted commandcode-max state");
+    assert_eq!(disk_max["template"]["id"], json!("commandcode-max"));
+    assert_eq!(disk_max["template"]["name"], json!("CommandCode Max"));
+    let disk_deleted = on_disk["deleted_template_ids"]
+        .as_array()
+        .expect("deleted_template_ids");
+    assert!(!disk_deleted.iter().any(|id| id == &json!("commandcode")));
+}
+
+/// AC-004: a customized persisted template name is preserved when the state
+/// moves to `commandcode-max`; only the exact default name is renamed.
+#[test]
+fn commandcode_schema9_custom_template_name_is_preserved() {
+    let _home = isolated_temp_home("migration-commandcode-custom-name");
+    write_encrypted_config(&commandcode_schema9_fixture("My CC"));
+
+    let loaded = read_config().expect("the schema-9 config must stay readable");
+    assert_eq!(loaded.schema_version, 10, "the read must stamp schema 10");
+    let state = loaded
+        .provider_templates
+        .iter()
+        .find(|state| state.template_id == "commandcode-max")
+        .expect("the template state must move to commandcode-max");
+    let template = state.template.as_ref().expect("the migrated snapshot");
+    assert_eq!(template.id, "commandcode-max");
+    assert_eq!(template.name, "My CC", "a customized template name must not be overwritten");
+
+    let on_disk = decrypted_config_json();
+    let disk_max = on_disk["provider_templates"]
+        .as_array()
+        .expect("provider_templates")
+        .iter()
+        .find(|state| state["template_id"] == json!("commandcode-max"))
+        .expect("persisted commandcode-max state");
+    assert_eq!(disk_max["template"]["name"], json!("My CC"));
+}
+
+/// AC-004 / Error boundary: when a schema-9 config already carries both a
+/// `commandcode` and a `commandcode-max` template state, migration keeps the
+/// existing `commandcode-max` entry and drops the stale `commandcode` entry
+/// deterministically.
+#[test]
+fn commandcode_schema9_duplicate_max_state_keeps_existing_and_drops_stale() {
+    let _home = isolated_temp_home("migration-commandcode-duplicate-max");
+    let mut fixture = commandcode_schema9_fixture("CommandCode");
+    fixture["provider_templates"]
+        .as_array_mut()
+        .expect("provider_templates")
+        .push(json!({
+            "template_id": "commandcode-max",
+            "synced_at": 987654321,
+            "source": COMMANDCODE_MODELS_URL,
+            "template": {
+                "id": "commandcode-max",
+                "name": "My Max",
+                "base_url": COMMANDCODE_BASE_URL,
+                "protocol": "chat_completions",
+                "source": COMMANDCODE_MODELS_URL,
+                "models_url": COMMANDCODE_MODELS_URL,
+                "models": [],
+                "icon": "commandcode"
+            }
+        }));
+    write_encrypted_config(&fixture);
+
+    let loaded = read_config().expect("the duplicate-state config must migrate and read");
+    assert_eq!(loaded.schema_version, 10, "the read must stamp schema 10");
+    let max_states: Vec<_> = loaded
+        .provider_templates
+        .iter()
+        .filter(|state| state.template_id == "commandcode-max")
+        .collect();
+    assert_eq!(max_states.len(), 1, "exactly one commandcode-max state must remain");
+    assert!(
+        !loaded.provider_templates.iter().any(|state| state.template_id == "commandcode"),
+        "the stale commandcode state must be dropped"
+    );
+    let kept = max_states[0];
+    assert_eq!(
+        kept.synced_at, Some(987654321),
+        "the pre-existing commandcode-max state must be kept deterministically"
+    );
+    assert_eq!(kept.template.as_ref().expect("snapshot").name, "My Max");
+    let provider = loaded
+        .providers
+        .iter()
+        .find(|provider| provider.id == "cc-bound")
+        .expect("bound provider");
+    assert_eq!(provider.template_id.as_deref(), Some("commandcode-max"));
+}
+
+/// AC-005 counterexample: an unbound provider and a provider bound to another
+/// template are never migrated even when their base URL is the CommandCode URL.
+/// The schema-9 read still has to stamp schema 10, so this fails until the
+/// version-gated migration exists.
+#[test]
+fn commandcode_schema9_url_only_and_other_template_providers_are_not_migrated() {
+    let _home = isolated_temp_home("migration-commandcode-counterexamples");
+    let fixture = json!({
+        "schema_version": 9,
+        "enabled": true,
+        "providers": [
+            {
+                "id": "url-only",
+                "name": "URL Only",
+                "base_url": COMMANDCODE_BASE_URL,
+                "protocol": "chat_completions",
+                "keys": [super::pool_key("key-url", "Default", "SAFE_FIXTURE_sk-url", true)],
+                "enabled": false,
+                "mappings": [{"local_model": "local-url", "upstream_model": "remote-url", "enabled": true}]
+            },
+            {
+                "id": "other-bound",
+                "name": "Other Bound",
+                "base_url": COMMANDCODE_BASE_URL,
+                "protocol": "chat_completions",
+                "template_id": "other-template",
+                "keys": [super::pool_key("key-other", "Default", "SAFE_FIXTURE_sk-other", true)],
+                "default_model": "other-default",
+                "weight": 3,
+                "tags": ["keep"],
+                "icon": "other-icon",
+                "mappings": [{"local_model": "local-other", "upstream_model": "remote-other", "enabled": true}]
+            }
+        ]
+    });
+    write_encrypted_config(&fixture);
+
+    let loaded = read_config().expect("the schema-9 config must stay readable");
+    assert_eq!(loaded.schema_version, 10, "a schema-9 read must stamp schema 10");
+
+    let url_only = loaded
+        .providers
+        .iter()
+        .find(|provider| provider.id == "url-only")
+        .expect("url-only provider");
+    assert_eq!(url_only.template_id, None, "an unbound provider must never be migrated");
+    assert_eq!(url_only.base_url, COMMANDCODE_BASE_URL);
+    assert_eq!(url_only.name, "URL Only");
+    assert!(!url_only.enabled);
+    assert_eq!(url_only.keys[0].value, "SAFE_FIXTURE_sk-url");
+    assert_eq!(url_only.mappings.len(), 1);
+    assert_eq!(url_only.mappings[0].upstream_model, "remote-url");
+
+    let other = loaded
+        .providers
+        .iter()
+        .find(|provider| provider.id == "other-bound")
+        .expect("other-template provider");
+    assert_eq!(
+        other.template_id.as_deref(),
+        Some("other-template"),
+        "a different-template provider must never be migrated"
+    );
+    assert_eq!(other.base_url, COMMANDCODE_BASE_URL);
+    assert_eq!(other.name, "Other Bound");
+    assert_eq!(other.default_model.as_deref(), Some("other-default"));
+    assert_eq!(other.weight, 3);
+    assert_eq!(other.tags, vec!["keep".to_string()]);
+    assert_eq!(other.icon.as_deref(), Some("other-icon"));
+    assert_eq!(other.keys[0].value, "SAFE_FIXTURE_sk-other");
+    assert_eq!(other.mappings[0].upstream_model, "remote-other");
+
+    let on_disk = decrypted_config_json();
+    let disk_providers = on_disk["providers"].as_array().expect("providers");
+    let url_disk = disk_providers
+        .iter()
+        .find(|provider| provider["id"] == "url-only")
+        .expect("persisted url-only provider");
+    assert!(
+        url_disk.get("template_id").is_none() || url_disk["template_id"].is_null(),
+        "an unbound provider must stay unbound on disk: {url_disk}"
+    );
+    let other_disk = disk_providers
+        .iter()
+        .find(|provider| provider["id"] == "other-bound")
+        .expect("persisted other provider");
+    assert_eq!(other_disk["template_id"], json!("other-template"));
+}
+
+/// AC-005: once migrated, a second read of the schema-10 file is byte-stable
+/// and keeps the rebound identity.
+#[test]
+fn commandcode_schema10_migration_second_read_is_byte_stable() {
+    let _home = isolated_temp_home("migration-commandcode-idempotent");
+    write_encrypted_config(&commandcode_schema9_fixture("CommandCode"));
+    let legacy_bytes = raw_config_bytes();
+
+    let first = read_config().expect("the first read must migrate");
+    assert_eq!(first.schema_version, 10, "the first read must stamp schema 10");
+    let bytes_after_first = raw_config_bytes();
+    assert_ne!(
+        bytes_after_first, legacy_bytes,
+        "the first read must persist the migrated bytes"
+    );
+    let on_disk = decrypted_config_json();
+    assert_eq!(on_disk["schema_version"], json!(10));
+    assert_eq!(
+        on_disk["providers"][0]["template_id"], json!("commandcode-max"),
+        "the first read must persist the rebound provider"
+    );
+
+    let second = read_config().expect("the second read must succeed");
+    assert_eq!(second.schema_version, 10);
+    assert_eq!(
+        raw_config_bytes(),
+        bytes_after_first,
+        "a second read must not rewrite the migrated bytes"
+    );
+}
+
+/// AC-005: a future schema-11 file is read without downgrade, rewrite or a
+/// CommandCode migration, even when it carries a legacy `commandcode` binding.
+#[test]
+fn commandcode_future_schema11_file_is_not_downgraded_or_rewritten() {
+    let _home = isolated_temp_home("migration-commandcode-future-schema11");
+    let mut fixture = commandcode_schema9_fixture("CommandCode");
+    // Schema 11 is the first version beyond the schema-10 gate: before the gate
+    // advances, this fixture is only schema 10, so this case is red too.
+    fixture["schema_version"] = json!(crate::ai_gateway::GATEWAY_CONFIG_SCHEMA_VERSION + 1);
+    write_encrypted_config(&fixture);
+    let before = raw_config_bytes();
+
+    let loaded = read_config().expect("a future-version config must stay readable");
+    assert_eq!(
+        loaded.schema_version, 11,
+        "a schema-11 file must not be downgraded below the schema-10 gate"
+    );
+    let provider = loaded
+        .providers
+        .iter()
+        .find(|provider| provider.id == "cc-bound")
+        .expect("provider");
+    assert_eq!(
+        provider.template_id.as_deref(),
+        Some("commandcode"),
+        "a future version must not run the CommandCode migration"
+    );
+    let state = loaded
+        .provider_templates
+        .iter()
+        .find(|state| state.template_id == "commandcode")
+        .expect("the untouched template state");
+    assert_eq!(state.template.as_ref().expect("snapshot").name, "CommandCode");
+    assert_eq!(
+        raw_config_bytes(),
+        before,
+        "a future-version file must not be rewritten"
+    );
+}
+
+/// AC-005: a write failure during the schema-10 migration preserves the
+/// original encrypted bytes for retry on a later read.
+#[cfg(unix)]
+#[test]
+fn commandcode_migration_failed_rewrite_preserves_bytes_and_retries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _home = isolated_temp_home("migration-commandcode-readonly-retry");
+    write_encrypted_config(&commandcode_schema9_fixture("CommandCode"));
+    let legacy_bytes = raw_config_bytes();
+
+    let dir = crate::config::get_app_dir().expect("app dir");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500))
+        .expect("make the app directory read-only");
+    let _restore = RestoreDirPermissions(dir.clone());
+
+    let migrated = read_config().expect("the read must still return the migrated value");
+    assert_eq!(
+        migrated.schema_version, 10,
+        "the in-memory value must be migrated even when the rewrite fails"
+    );
+    let provider = migrated
+        .providers
+        .iter()
+        .find(|provider| provider.id == "cc-bound")
+        .expect("provider");
+    assert_eq!(provider.template_id.as_deref(), Some("commandcode-max"));
+    assert_eq!(
+        raw_config_bytes(),
+        legacy_bytes,
+        "a failed rewrite must keep the previous complete bytes on disk"
+    );
+
+    drop(_restore);
+    let completed = read_config().expect("the retry read must succeed");
+    assert_eq!(completed.schema_version, 10);
+    let on_disk = decrypted_config_json();
+    assert_eq!(on_disk["schema_version"], json!(10), "the retry must persist the migration");
+    let disk_provider = on_disk["providers"]
+        .as_array()
+        .expect("providers")
+        .iter()
+        .find(|provider| provider["id"] == "cc-bound")
+        .expect("provider");
+    assert_eq!(disk_provider["template_id"], json!("commandcode-max"));
 }
