@@ -129,46 +129,35 @@ function localizeQuotaGroupName(
   name: string,
   t: ReturnType<typeof useTranslation>["t"],
 ): string {
-  const lower = name.toLowerCase();
-  if (lower.includes("gemini")) {
+  if (name === "Gemini Models") {
     return t("aiUsageQuotaGroup_googleModels", name);
   }
-  if (lower.includes("claude") || lower.includes("gpt")) {
+  if (name === "Claude and GPT models") {
     return t("aiUsageQuotaGroup_claudeGptModels", name);
   }
   return name;
 }
 
 function localizeQuotaGroupDesc(
-  name: string,
   desc: string | null,
   t: ReturnType<typeof useTranslation>["t"],
 ): string | null {
   if (!desc) return null;
-  const lower = name.toLowerCase();
-  if (lower.includes("gemini")) {
-    return t("aiUsageQuotaGroupDesc_googleModels", desc);
-  }
-  if (lower.includes("claude") || lower.includes("gpt")) {
-    return t("aiUsageQuotaGroupDesc_claudeGptModels", desc);
-  }
-  return desc;
+  const prefix = "Models within this group:";
+  if (!desc.startsWith(prefix)) return desc;
+  return t("aiUsageQuotaGroupDesc_models", "Models within this group: {{models}}", {
+    models: desc.slice(prefix.length).trimStart(),
+  });
 }
 
 function localizeQuotaBucketName(
   name: string,
   t: ReturnType<typeof useTranslation>["t"],
 ): string {
-  const lower = name.toLowerCase();
-  if (lower.includes("weekly")) {
+  if (name === "Weekly Limit Remaining") {
     return t("aiUsageQuotaBucket_weekly", name);
   }
-  if (
-    lower.includes("five hour") ||
-    lower.includes("5-hour") ||
-    lower.includes("5h") ||
-    lower.includes("5 hour")
-  ) {
+  if (name === "Five Hour Limit Remaining") {
     return t("aiUsageQuotaBucket_5h", name);
   }
   return name;
@@ -733,7 +722,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                         </div>
                         {group.description && (
                           <div className="text-xs text-muted-foreground">
-                            {localizeQuotaGroupDesc(group.name, group.description, t)}
+                            {localizeQuotaGroupDesc(group.description, t)}
                           </div>
                         )}
                         <div className="mt-2 space-y-2.5">

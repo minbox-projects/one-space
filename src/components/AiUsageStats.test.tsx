@@ -1120,6 +1120,120 @@ describe("AiUsageStats", () => {
     expect(within(quota).getByText(/95% remaining|剩余 95%/)).toBeInTheDocument();
   });
 
+  it("preserves CLI-reported group, model-list and bucket text while localizing only exact fixed labels", async () => {
+    const quotaResponse = {
+      groups: [
+        {
+          name: "Gemini Models",
+          description:
+            "Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Orchestrator (Neon), Gemini 3.8 Flash",
+          buckets: [
+            {
+              id: "gemini-weekly",
+              name: "Weekly Limit Remaining",
+              window: "weekly",
+              remaining_fraction: 0.62,
+              reset_time: "2026-11-23T02:30:00Z",
+              description: null,
+            },
+            {
+              id: "gemini-5h",
+              name: "Five Hour Limit Remaining",
+              window: "5h",
+              remaining_fraction: 0.41,
+              reset_time: "2026-11-22T05:00:00Z",
+              description: null,
+            },
+          ],
+        },
+        {
+          name: "Claude and GPT models",
+          description:
+            "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+          buckets: [
+            {
+              id: "claude-gpt-weekly",
+              name: "Weekly Limit Remaining",
+              window: "weekly",
+              remaining_fraction: 0.73,
+              reset_time: "2026-11-29T00:00:00Z",
+              description: null,
+            },
+          ],
+        },
+        {
+          name: "Gemini 4 Argon",
+          description:
+            "For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.",
+          buckets: [
+            {
+              id: "argon-weekly",
+              name: "Gemini 4 Argon Weekly Limit",
+              window: "weekly",
+              remaining_fraction: 0.33,
+              reset_time: "2026-11-30T00:00:00Z",
+              description: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_antigravity_quota") {
+        return quotaResponse;
+      }
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return makeDayStats(args?.date || "");
+      }
+      if (command === "sessions_usage_clear_cache") {
+        return null;
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+
+    const quota = await screen.findByTestId("ai-usage-quota-card");
+    await within(quota).findByText("5 小时额度剩余");
+
+    // Known group names localize on exact match only.
+    expect(within(quota).getAllByText("Gemini 模型")).toHaveLength(1);
+    expect(within(quota).getAllByText("Claude 与 GPT 模型")).toHaveLength(1);
+    expect(within(quota).getAllByText("Gemini 4 Argon")).toHaveLength(1);
+
+    // Model-list descriptions keep the CLI models verbatim behind a localized prefix.
+    expect(
+      within(quota).getByText(
+        "包含模型：Gemini 4 Neon, Gemini 4 Hydrogen, Orchestrator (Neon), Gemini 3.8 Flash",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(quota).getByText(
+        "包含模型：Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(quota).getByText(
+        "For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.",
+      ),
+    ).toBeInTheDocument();
+
+    // Stale hardcoded model names must not be rendered.
+    expect(within(quota).queryByText(/Gemini Pro/)).not.toBeInTheDocument();
+    expect(within(quota).queryByText(/Gemini Flash/)).not.toBeInTheDocument();
+
+    // Only the two generic bucket names localize; the account-specific name stays verbatim.
+    expect(within(quota).getAllByText("每周额度剩余")).toHaveLength(2);
+    expect(within(quota).getAllByText("5 小时额度剩余")).toHaveLength(1);
+    expect(
+      within(quota).getByText("Gemini 4 Argon Weekly Limit"),
+    ).toBeInTheDocument();
+  });
+
   it("renders Antigravity with quota and local activity when calls is zero, avoiding empty message", async () => {
     invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
       if (command === "sessions_usage_tool_stats" && args?.tool === "antigravity") {
