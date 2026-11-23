@@ -1,4 +1,3 @@
-import { v4 as uuidv4 } from 'uuid';
 import {
   getActiveProviderIds,
   type AiProvider,
@@ -104,7 +103,7 @@ export function unwrapApiResp<T>(response: ApiResp<T>, fallbackMessage = 'Reques
 export function buildSyncedProviderActivationPayload(
   deviceId: string,
   provider: SyncedDeviceProvider,
-  targetId: string = uuidv4(),
+  targetId: string = crypto.randomUUID(),
   now: () => number = Date.now,
 ): { targetId: string; targetTool: CliTool; payload: AiProvider } | null {
   const deviceSlug = String(deviceId || '')

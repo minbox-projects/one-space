@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { Code2, Plus, Search, Copy, Check, Trash2, TerminalSquare, Folder, Tag, X, ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
-import { v4 as uuidv4 } from 'uuid';
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import { useConfirmDialog } from './ConfirmDialogProvider';
@@ -155,7 +154,7 @@ export function Snippets() {
     } else {
       // Create
       const newSnippet: Snippet = {
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         title: editTitle,
         language: editLanguage,
         code: editCode,

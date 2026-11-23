@@ -1,4 +1,3 @@
-import { v4 as uuidv4 } from 'uuid';
 
 export type ServiceProviderPresetEndpoints = {
   openai_base_url?: string;
@@ -119,9 +118,9 @@ export function createProviderCopyDraft(source: ProviderCopySource): ProviderCop
 
   return {
     ...copied,
-    id: uuidv4(),
-    provider_key: `copy_${uuidv4().replaceAll('-', '')}`,
-    code: `copy-${uuidv4()}`,
+    id: crypto.randomUUID(),
+    provider_key: `copy_${crypto.randomUUID().replaceAll('-', '')}`,
+    code: `copy-${crypto.randomUUID()}`,
     name: `${source.name} 副本`,
   } as ProviderCopyDraft;
 }

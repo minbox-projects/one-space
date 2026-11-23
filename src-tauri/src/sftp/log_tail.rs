@@ -1,5 +1,5 @@
 use super::paths::quote_remote_path;
-use super::session::get_active_tailers;
+use super::session::{get_active_tailers, ActiveTail};
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -38,7 +38,7 @@ pub async fn sftp_start_log_tail(
     let app_clone = app.clone();
 
     // 在 Tokio 异步任务中流式分发日志行
-    tokio::spawn(async move {
+    let reader = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
         let event_name = format!("sftp-log-line-{}", tail_id_clone);
 
@@ -49,21 +49,38 @@ pub async fn sftp_start_log_tail(
 
     {
         let mut lock = get_active_tailers().lock().map_err(|e| e.to_string())?;
-        lock.insert(tail_id, child);
+        lock.insert(tail_id, ActiveTail { child, reader });
     }
 
     Ok(())
 }
 
+/// Terminates every active remote tail: aborts its streaming task, kills the
+/// SSH child process and clears the global registry. Idempotent at app exit.
+pub fn shutdown_all_tails() {
+    let tails = {
+        match get_active_tailers().lock() {
+            Ok(mut lock) => std::mem::take(&mut *lock),
+            Err(_) => return,
+        }
+    };
+
+    for (_, mut tail) in tails {
+        tail.reader.abort();
+        let _ = tail.child.start_kill();
+    }
+}
+
 #[tauri::command]
 pub async fn sftp_stop_log_tail(tail_id: String) -> Result<(), String> {
-    let maybe_child = {
+    let maybe_tail = {
         let mut lock = get_active_tailers().lock().map_err(|e| e.to_string())?;
         lock.remove(&tail_id)
     };
 
-    if let Some(mut child) = maybe_child {
-        let _ = child.kill().await;
+    if let Some(mut tail) = maybe_tail {
+        tail.reader.abort();
+        let _ = tail.child.kill().await;
     }
     Ok(())
 }

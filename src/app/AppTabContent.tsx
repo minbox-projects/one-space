@@ -1,5 +1,6 @@
+import { lazy, Suspense } from "react";
+import { useTranslation } from "react-i18next";
 import { AiSessions } from "@/components/AiSessions";
-import { CloudAgent } from "@/components/CloudAgent";
 import { Workspaces } from "@/components/Workspaces";
 import { AiEnvironments } from "@/components/AiEnvironments";
 import { AiUsageStats } from "@/components/AiUsageStats";
@@ -7,21 +8,46 @@ import { AiGateway } from "@/components/AiGateway";
 import { Skills } from "@/components/Skills";
 import { Subagents } from "@/components/Subagents";
 import { MCPServers } from "@/components/MCPServers";
-import { Mail } from "@/components/Mail";
 import { AiNews } from "@/components/AiNews";
 import { Launcher } from "@/components/Launcher";
 import { MoreToolsHub } from "@/components/MoreToolsHub";
 import { Notes } from "@/components/Notes";
-import { SettingsView } from "@/components/SettingsView";
 import { Snippets } from "@/components/Snippets";
 import { Documentation } from "@/components/Documentation";
-import { FishPond } from "@/components/FishPond";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import type {
   CapabilityTargetTab,
   WorkspaceCapabilityContext,
 } from "@/components/workspaceCapabilityContext";
 import type { JttParserTab, MoreToolsSection } from "@/lib/navigation";
+
+const CloudAgent = lazy(() =>
+  import("@/components/CloudAgent").then((m) => ({ default: m.CloudAgent })),
+);
+const Mail = lazy(() =>
+  import("@/components/Mail").then((m) => ({ default: m.Mail })),
+);
+const FishPond = lazy(() =>
+  import("@/components/FishPond").then((m) => ({ default: m.FishPond })),
+);
+const SettingsView = lazy(() =>
+  import("@/components/SettingsView").then((m) => ({ default: m.SettingsView })),
+);
+
+function TabLoadingFallback() {
+  const { t } = useTranslation();
+  return (
+    <div
+      className="h-full w-full flex items-center justify-center"
+      role="status"
+      aria-live="polite"
+    >
+      <span className="text-sm text-muted-foreground">
+        {t("loading", "Loading...")}
+      </span>
+    </div>
+  );
+}
 
 type AppTabContentProps = {
   activeTab: string;
@@ -103,7 +129,9 @@ export function AppTabContent({
       {shouldRenderTab("cloud-agent") && (
         <div className={activeTab === "cloud-agent" ? "h-full" : "hidden"}>
           <AppErrorBoundary label="AI 云端智能体" resetKey={activeTab}>
-            <CloudAgent isVisible={activeTab === "cloud-agent"} />
+            <Suspense fallback={<TabLoadingFallback />}>
+              <CloudAgent isVisible={activeTab === "cloud-agent"} />
+            </Suspense>
           </AppErrorBoundary>
         </div>
       )}
@@ -201,24 +229,30 @@ export function AppTabContent({
       )}
       {shouldRenderTab("mail") && (
         <div className={activeTab === "mail" ? "h-full" : "hidden"}>
-          <Mail isVisible={activeTab === "mail"} />
+          <Suspense fallback={<TabLoadingFallback />}>
+            <Mail isVisible={activeTab === "mail"} />
+          </Suspense>
         </div>
       )}
       {shouldRenderTab("fish-pond") && (
         <div className={activeTab === "fish-pond" ? "h-full" : "hidden"}>
-          <FishPond />
+          <Suspense fallback={<TabLoadingFallback />}>
+            <FishPond />
+          </Suspense>
         </div>
       )}
       {shouldRenderTab("settings") && (
         <div className={activeTab === "settings" ? "h-full min-h-0 flex-1 flex flex-col overflow-hidden" : "hidden"}>
-          <SettingsView
-            initialTab={settingsInitialTab}
-            onBack={() => {
-              setActiveTab(previousTab);
-              setSettingsInitialTab("storage");
-              scheduleLoadCounts(0);
-            }}
-          />
+          <Suspense fallback={<TabLoadingFallback />}>
+            <SettingsView
+              initialTab={settingsInitialTab}
+              onBack={() => {
+                setActiveTab(previousTab);
+                setSettingsInitialTab("storage");
+                scheduleLoadCounts(0);
+              }}
+            />
+          </Suspense>
         </div>
       )}
     </div>

@@ -401,7 +401,11 @@ impl ServerMonitorStore {
 fn init_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
-            "CREATE TABLE IF NOT EXISTS server_monitor_samples (
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 2000;
+
+             CREATE TABLE IF NOT EXISTS server_monitor_samples (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 target_id TEXT NOT NULL,
                 collected_at_ms INTEGER NOT NULL,

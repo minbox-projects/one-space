@@ -4,7 +4,6 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Server, AlertCircle, Loader2, ArrowRight, Plus, History, Key, Lock, FolderOpen, Terminal, Star, EyeOff, Eye } from 'lucide-react';
-import { v4 as uuidv4 } from 'uuid';
 import { formatDistanceToNow } from 'date-fns';
 import { getToolboxTool } from "@/toolbox/registry";
 import { isToolboxInvokeAvailable } from "@/toolbox/invoke";
@@ -169,7 +168,7 @@ export function SshServers() {
     try {
       await invoke('connect_ssh', { host: host.name });
       saveHistory({
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         type: 'config',
         name: host.name,
         host_name: host.host_name,
@@ -199,7 +198,7 @@ export function SshServers() {
       });
 
       saveHistory({
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         type: 'custom',
         name: `${customUser}@${customHost}`,
         host_name: customHost,

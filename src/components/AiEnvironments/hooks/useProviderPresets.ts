@@ -2,7 +2,6 @@ import { useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { TFunction } from 'i18next';
 import { invoke } from '@tauri-apps/api/core';
-import { v4 as uuidv4 } from 'uuid';
 import type { ApiResp } from '@/lib/serviceProviders';
 import {
   normalizeClaudePresetTemplate,
@@ -64,7 +63,7 @@ export function useProviderPresets({ t, setMessage }: UseProviderPresetsParams) 
       claude_model_mappings: presetDraft.claude_model_mappings,
     });
     const payload: ServiceProviderPresetRecord = {
-      id: presetDraft.id || `preset-${uuidv4()}`,
+      id: presetDraft.id || `preset-${crypto.randomUUID()}`,
       name: presetDraft.name.trim(),
       description: presetDraft.description.trim() || undefined,
       icon: presetDraft.icon.trim() || undefined,

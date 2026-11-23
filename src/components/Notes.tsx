@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { StickyNote, Plus, Search, Trash2, Folder, Tag, X, Loader2 } from 'lucide-react';
-import { v4 as uuidv4 } from 'uuid';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useConfirmDialog } from './ConfirmDialogProvider';
@@ -138,7 +137,7 @@ export function Notes() {
     } else {
       // Create
       const newNote: Note = {
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         title: editTitle || t('untitledNote'),
         content: editContent,
         group: editGroup || undefined,

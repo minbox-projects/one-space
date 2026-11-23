@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { Star, Plus, Search, Trash2, ExternalLink, FolderOpen, Globe, Edit2, Loader2 } from 'lucide-react';
-import { v4 as uuidv4 } from 'uuid';
 import { useConfirmDialog } from './ConfirmDialogProvider';
 import { useToast } from './ToastProvider';
 import { notifyMessage } from '@/lib/messages';
@@ -119,7 +118,7 @@ export function Bookmarks() {
     } else {
       // Create new
       const newBookmark: Bookmark = {
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         name: editName,
         url: editUrl,
         description: editDesc,

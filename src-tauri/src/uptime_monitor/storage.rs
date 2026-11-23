@@ -36,6 +36,10 @@ pub fn open_uptime_db() -> Result<Connection, String> {
 pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA busy_timeout = 2000;
+
         CREATE TABLE IF NOT EXISTS uptime_heartbeats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             monitor_id TEXT NOT NULL,

@@ -1,7 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { TFunction } from 'i18next';
 import { emit } from '@tauri-apps/api/event';
-import { v4 as uuidv4 } from 'uuid';
 import {
   getActiveProviderIds,
   projectionApply,
@@ -188,7 +187,7 @@ export function useProviderActions({
   };
 
   const buildProviderForSave = (provider: Partial<AiProvider>): AiProvider => {
-    const newId = provider.id || uuidv4();
+    const newId = provider.id || crypto.randomUUID();
     let baseProvider: Record<string, any> = { ...provider };
 
     if (provider.tool === 'opencode') {
@@ -235,7 +234,7 @@ export function useProviderActions({
       return { ok: false };
     }
 
-    const newId = provider.id || uuidv4();
+    const newId = provider.id || crypto.randomUUID();
 
     try {
       const finalProvider = buildProviderForSave(provider);
@@ -393,7 +392,7 @@ export function useProviderActions({
   };
 
   const handleAddCustom = (toolName: string, preset?: ServiceProviderPresetRecord) => {
-    const newId = uuidv4();
+    const newId = crypto.randomUUID();
     const baseProvider: AiProvider = {
       id: newId,
       name: preset?.name || `${t('newPreset', 'New Service Provider')} (${toolName})`,

@@ -35,8 +35,18 @@ pub fn captured_app_handle() -> Option<tauri::AppHandle> {
 pub struct UptimeScheduler {
     state_machine: Arc<StateMachineRegistry>,
     semaphore: Arc<Semaphore>,
-    #[allow(dead_code)]
     stop_tx: watch::Sender<bool>,
+}
+
+/// Signals the process-wide probe loop to stop and releases the captured app handle.
+/// Safe to call more than once during shutdown.
+pub fn shutdown() {
+    if let Some(scheduler) = SCHEDULER.get() {
+        let _ = scheduler.stop_tx.send(true);
+    }
+    if let Ok(mut guard) = app_handle_slot().lock() {
+        *guard = None;
+    }
 }
 
 impl UptimeScheduler {

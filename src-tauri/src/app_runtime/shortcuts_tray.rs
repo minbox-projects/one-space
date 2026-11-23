@@ -246,6 +246,10 @@ pub(super) fn shutdown_runtime_services() {
     crate::ssl_certificate::stop_ssl_scheduler();
     // Stop the process-owned server monitor scheduler and close owned sessions.
     crate::server_monitor::runtime::shutdown_global();
+    // Stop the uptime probe loop so no probe task outlives the app.
+    crate::uptime_monitor::scheduler::shutdown();
+    // Kill every active SFTP log-tail SSH process and its reader task.
+    crate::sftp::shutdown_all_tails();
     // Stop the process-owned webhook listener; `stop` is idempotent.
     let _ = crate::webhook_catcher::server::WebhookServerManager::global().stop();
     // Stop the remote bot manager and tear down its owned task and server.

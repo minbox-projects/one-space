@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { v4 as uuidv4 } from "uuid";
 import { useConfirmDialog } from "./ConfirmDialogProvider";
 import { TerminalPermissionConfirmDialog } from "./TerminalPermissionConfirmDialog";
 import { useToast } from "./ToastProvider";
@@ -296,7 +295,7 @@ export function OmniSearch({
               let history = historyStr ? JSON.parse(historyStr) : [];
 
               const entry = {
-                id: uuidv4(),
+                id: crypto.randomUUID(),
                 type: "config",
                 name: h.name,
                 host_name: h.host_name,
