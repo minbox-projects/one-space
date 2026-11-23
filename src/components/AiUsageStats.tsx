@@ -229,6 +229,11 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
       .then((data) => {
         if (dayRequestSeqRef.current !== requestSeq) return;
         setDayStats(data);
+        if (data.date && data.date !== date) {
+          // The backend clamps a date that is ahead of its own today; show the
+          // date it actually aggregated so the picker matches the numbers.
+          setSelectedDate(data.date);
+        }
         setDayStatsLoading(false);
       })
       .catch((error) => {

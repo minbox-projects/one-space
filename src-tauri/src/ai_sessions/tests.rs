@@ -2045,12 +2045,14 @@ fn usage_day_stats_aggregates_all_tools_for_specific_date() {
 }
 
 #[test]
-fn usage_day_stats_rejects_future_date() {
-    let future = (Local::now().date_naive() + chrono::Duration::days(1))
+fn usage_day_stats_clamps_future_date_to_today() {
+    let today = Local::now().date_naive();
+    let future = (today + chrono::Duration::days(1))
         .format("%Y-%m-%d")
         .to_string();
-    let error = super::sessions_usage_day_stats(future).expect_err("should reject future");
-    assert!(error.contains("cannot query future dates"));
+    let stats = super::sessions_usage_day_stats(future).expect("clamped future date");
+    assert_eq!(stats.date, today.format("%Y-%m-%d").to_string());
+    assert_eq!(stats.breakdown.len(), 4);
 }
 
 #[test]

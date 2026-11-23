@@ -36,16 +36,19 @@ pub fn sessions_usage_day_stats(date: String) -> Result<SessionUsageDayStats, St
     let parsed_date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
         .map_err(|_| format!("invalid date format: {date}, expected YYYY-MM-DD"))?;
 
+    // The webview and this process can observe different "today" values (timezone
+    // overrides, clock skew), so a date the caller considers today may look like
+    // tomorrow here. Answer with today's stats and report that effective date
+    // instead of failing the whole page.
     let today = Local::now().date_naive();
-    if parsed_date > today {
-        return Err("cannot query future dates".to_string());
-    }
+    let target_date = parsed_date.min(today);
+    let target = target_date.format("%Y-%m-%d").to_string();
 
-    let window = usage_day_window(parsed_date);
+    let window = usage_day_window(target_date);
     let tool_stats = USAGE_TOOLS
         .iter()
         .map(|tool| build_sessions_usage_tool_stats_for_window(tool, &window, true))
         .collect::<Vec<_>>();
 
-    Ok(aggregate_day_stats_from_tool_stats(date, &tool_stats))
+    Ok(aggregate_day_stats_from_tool_stats(target, &tool_stats))
 }

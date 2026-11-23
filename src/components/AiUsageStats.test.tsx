@@ -561,6 +561,34 @@ describe("AiUsageStats", () => {
     expect(within(section).getByText("12M")).toBeInTheDocument();
   });
 
+  it("adopts the backend-clamped date so the picker matches the stats", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_clear_cache") return null;
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        const date = String(args?.date || "");
+        // Simulate a backend whose "today" is behind the webview's today.
+        return makeDayStats(date === "2999-12-31" ? "2026-11-22" : date);
+      }
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    renderWithProviders(<AiUsageStats />);
+    const dateInput = screen.getByLabelText(
+      /Select Date|选择日期/,
+    ) as HTMLInputElement;
+    await waitFor(() => expect(screen.getByText("2.2K")).toBeInTheDocument());
+
+    fireEvent.change(dateInput, { target: { value: "2999-12-31" } });
+
+    await waitFor(() => expect(dateInput.value).toBe("2026-11-22"));
+    expect(
+      within(screen.getByTestId("ai-usage-day-stats")).getByText("12M"),
+    ).toBeInTheDocument();
+  });
+
   it("renders failed tool error without blocking other tools", async () => {
     invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
       if (command === "sessions_usage_tool_stats" && args?.tool === "antigravity") {
