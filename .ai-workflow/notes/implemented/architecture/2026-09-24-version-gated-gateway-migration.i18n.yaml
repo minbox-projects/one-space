@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-24-version-gated-gateway-migration.md
-2026-09-24-version-gated-gateway-migration.md: c0b7223ca88f7e75373e2e1de33a2658d2b2545b
-2026-09-24-version-gated-gateway-migration.zh.md: cab801c28aa738265027e52e50b25d4a1a6e9061
+2026-09-24-version-gated-gateway-migration.md: 7c507d8d64c4dc87619433bfbfa840db84846469
+2026-09-24-version-gated-gateway-migration.zh.md: 199122938a890c43981f187fe022074650fe4de6
