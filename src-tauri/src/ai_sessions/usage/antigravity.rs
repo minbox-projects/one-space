@@ -82,12 +82,11 @@ fn read_antigravity_db_tokens(
                 .get(&idx)
                 .cloned()
                 .unwrap_or_else(|| fallback_model.clone());
-            let total = total_or_sum(
-                0,
-                step_tokens.input_tokens,
-                step_tokens.output_tokens,
-                step_tokens.cache_tokens,
-            );
+            // Antigravity reports `total_tokens = input_tokens + output_tokens`.
+            // Cache reads are budgeted separately and are not part of that total.
+            let total = step_tokens
+                .input_tokens
+                .saturating_add(step_tokens.output_tokens);
             record_usage_parsed_entry();
             records.push(UsageRecord {
                 session_id: session_id.to_string(),

@@ -3459,10 +3459,10 @@ fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
     assert_eq!(stats.summary.input_tokens, 1200);
     assert_eq!(stats.summary.output_tokens, 300);
     assert_eq!(stats.summary.cache_tokens, 500);
-    assert_eq!(stats.summary.total_tokens, 2000);
+    assert_eq!(stats.summary.total_tokens, 1500);
     assert_eq!(stats.summary.sessions, 1);
 
-    // Verify daily breakdown has 2000 total tokens on today
+    // Verify daily breakdown has 1500 total tokens on today
     let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
     let today_stat = stats
         .daily
@@ -3470,7 +3470,7 @@ fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
         .find(|d| d.date == today_str)
         .expect("today in daily breakdown");
     assert_eq!(today_stat.calls, 1);
-    assert_eq!(today_stat.total_tokens, 2000);
+    assert_eq!(today_stat.total_tokens, 1500);
     assert_eq!(today_stat.input_tokens, 1200);
     assert_eq!(today_stat.output_tokens, 300);
     assert_eq!(today_stat.cache_tokens, 500);
@@ -3484,7 +3484,7 @@ fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
         .find(|b| b.tool == "antigravity")
         .expect("antigravity in day stats breakdown");
     assert_eq!(ag_breakdown.calls, 1);
-    assert_eq!(ag_breakdown.total_tokens, 2000);
+    assert_eq!(ag_breakdown.total_tokens, 1500);
     assert_eq!(ag_breakdown.input_tokens, 1200);
     assert_eq!(ag_breakdown.output_tokens, 300);
     assert_eq!(ag_breakdown.cache_tokens, 500);
@@ -3495,7 +3495,7 @@ fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
         .find(|m| m.model == "gemini-3.8-flash")
         .expect("gemini-3.8-flash in models breakdown");
     assert_eq!(gemini_model.calls, 1);
-    assert_eq!(gemini_model.total_tokens, 2000);
+    assert_eq!(gemini_model.total_tokens, 1500);
     assert_eq!(gemini_model.input_tokens, 1200);
     assert_eq!(gemini_model.output_tokens, 300);
     assert_eq!(gemini_model.cache_tokens, 500);
@@ -3556,7 +3556,8 @@ fn antigravity_sqlite_database_prevents_duplicate_calls_from_brain_transcript() 
     assert_eq!(stats.scanned_sessions, 1);
     assert_eq!(stats.scanned_calls, 1);
     assert_eq!(stats.summary.calls, 1);
-    assert_eq!(stats.summary.total_tokens, 1100);
+    assert_eq!(stats.summary.cache_tokens, 100);
+    assert_eq!(stats.summary.total_tokens, 1000);
 
     let _ = fs::remove_dir_all(root);
 }
