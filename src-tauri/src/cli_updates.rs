@@ -3,6 +3,11 @@ use std::time::Duration;
 
 const VERSION_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
+const OPENCODE_V1_LATEST_URL: &str = "https://registry.npmjs.org/opencode-ai/latest";
+const OPENCODE_V2_LATEST_URL: &str = "https://registry.npmjs.org/@opencode%2Fcli/latest";
+const OPENCODE_V1_UPDATE_COMMAND: &str = "curl -fsSL https://opencode.ai/install | bash";
+const OPENCODE_V2_UPDATE_COMMAND: &str = "curl -fsSL https://opencode.ai/v2/install | bash";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliUpdateInfo {
     pub tool: String,
@@ -41,7 +46,20 @@ struct CliToolMetadata {
     update_command: &'static str,
 }
 
-fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
+/// OpenCode publishes 1.x and 2.x as separate release and installer channels, so the
+/// channel is selected by the installed major version; unparseable versions use 1.x.
+fn opencode_major_version(installed_version: &str) -> u32 {
+    crate::cli_probe::extract_semver(installed_version)
+        .and_then(|version| {
+            version
+                .split('.')
+                .next()
+                .and_then(|major| major.parse::<u32>().ok())
+        })
+        .unwrap_or(1)
+}
+
+fn get_tool_metadata(tool: &str, installed_version: &str) -> Option<CliToolMetadata> {
     match tool {
         "claude" => Some(CliToolMetadata {
             tool: "claude",
@@ -70,15 +88,22 @@ fn get_tool_metadata(tool: &str) -> Option<CliToolMetadata> {
             fallback_url: None,
             update_command: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
         }),
-        "opencode" => Some(CliToolMetadata {
-            tool: "opencode",
-            cmd_name: "opencode",
-            latest_source: "github_release",
-            latest_url: "https://api.github.com/repos/anomalyco/opencode/releases/latest",
-            fallback_source: Some("npm_registry"),
-            fallback_url: Some("https://registry.npmjs.org/opencode-ai/latest"),
-            update_command: "curl -fsSL https://opencode.ai/install | bash",
-        }),
+        "opencode" => {
+            let (latest_url, update_command) = if opencode_major_version(installed_version) >= 2 {
+                (OPENCODE_V2_LATEST_URL, OPENCODE_V2_UPDATE_COMMAND)
+            } else {
+                (OPENCODE_V1_LATEST_URL, OPENCODE_V1_UPDATE_COMMAND)
+            };
+            Some(CliToolMetadata {
+                tool: "opencode",
+                cmd_name: "opencode",
+                latest_source: "npm_registry",
+                latest_url,
+                fallback_source: None,
+                fallback_url: None,
+                update_command,
+            })
+        }
         _ => None,
     }
 }
@@ -90,9 +115,11 @@ fn validate_tool(tool: &str) -> Result<(), String> {
     }
 }
 
-fn get_update_command(tool: &str) -> Result<&'static str, String> {
+fn get_update_command(tool: &str, installed_version: &str) -> Result<&'static str, String> {
     validate_tool(tool)?;
-    Ok(get_tool_metadata(tool).map(|m| m.update_command).unwrap())
+    Ok(get_tool_metadata(tool, installed_version)
+        .map(|m| m.update_command)
+        .unwrap())
 }
 
 async fn fetch_npm_version(client: &reqwest::Client, url: &str) -> Result<String, String> {
@@ -334,12 +361,14 @@ fn compare_core(cur: (i32, i32, i32), lat: (i32, i32, i32)) -> i32 {
 #[tauri::command]
 pub async fn check_cli_update(tool: String) -> Result<CliUpdateInfo, String> {
     validate_tool(&tool)?;
-    let meta = get_tool_metadata(&tool).unwrap();
+    // Channel-independent metadata first: it supplies the command name to probe.
+    let meta = get_tool_metadata(&tool, "").unwrap();
 
     let cmd_name = meta.cmd_name.to_string();
     let probe = tokio::task::spawn_blocking(move || crate::cli_probe::probe_cli_version(&cmd_name))
         .await
         .map_err(|e| format!("probe task failed: {}", e))?;
+    let meta = get_tool_metadata(&tool, &probe.version).unwrap();
     if !probe.installed {
         return Ok(CliUpdateInfo {
             tool: tool.clone(),
@@ -401,7 +430,11 @@ pub async fn check_cli_update(tool: String) -> Result<CliUpdateInfo, String> {
 #[tauri::command]
 pub async fn apply_cli_update(tool: String) -> Result<CliUpdateApplyResult, String> {
     validate_tool(&tool)?;
-    let update_command = get_update_command(&tool)?.to_string();
+    let cmd_name = get_tool_metadata(&tool, "").unwrap().cmd_name.to_string();
+    let probe = tokio::task::spawn_blocking(move || crate::cli_probe::probe_cli_version(&cmd_name))
+        .await
+        .map_err(|e| format!("probe task failed: {}", e))?;
+    let update_command = get_update_command(&tool, &probe.version)?.to_string();
 
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let working_dir = home_dir.to_string_lossy().to_string();
@@ -439,19 +472,19 @@ mod tests {
 
     #[test]
     fn test_update_commands_match_spec() {
-        let claude = get_tool_metadata("claude").unwrap();
+        let claude = get_tool_metadata("claude", "").unwrap();
         assert_eq!(
             claude.update_command,
             "curl -fsSL https://claude.ai/install.sh | bash"
         );
-        let codex = get_tool_metadata("codex").unwrap();
+        let codex = get_tool_metadata("codex", "").unwrap();
         assert_eq!(codex.update_command, "codex update");
-        let antigravity = get_tool_metadata("antigravity").unwrap();
+        let antigravity = get_tool_metadata("antigravity", "").unwrap();
         assert_eq!(
             antigravity.update_command,
             "curl -fsSL https://antigravity.google/cli/install.sh | bash"
         );
-        let opencode = get_tool_metadata("opencode").unwrap();
+        let opencode = get_tool_metadata("opencode", "1.19.6").unwrap();
         assert_eq!(
             opencode.update_command,
             "curl -fsSL https://opencode.ai/install | bash"
@@ -460,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_antigravity_metadata_targets_agy_and_official_installer() {
-        let meta = get_tool_metadata("antigravity").unwrap();
+        let meta = get_tool_metadata("antigravity", "").unwrap();
         assert_eq!(meta.tool, "antigravity");
         assert_eq!(meta.cmd_name, "agy");
         assert_eq!(meta.latest_source, "official_installer");
@@ -470,7 +503,7 @@ mod tests {
         );
         assert!(!meta.update_command.contains("npm"));
         assert!(!meta.update_command.contains("gemini-cli"));
-        assert!(get_tool_metadata("gemini").is_none());
+        assert!(get_tool_metadata("gemini", "").is_none());
     }
 
     #[test]
@@ -536,18 +569,52 @@ mod tests {
     }
 
     #[test]
-    fn test_opencode_latest_metadata_has_npm_fallback() {
-        let meta = get_tool_metadata("opencode").unwrap();
-        assert_eq!(meta.latest_source, "github_release");
+    fn opencode_update_channel_follows_installed_major() {
+        let v2 = get_tool_metadata("opencode", "2.4.1").unwrap();
+        assert_eq!(v2.latest_source, "npm_registry");
         assert_eq!(
-            meta.latest_url,
-            "https://api.github.com/repos/anomalyco/opencode/releases/latest"
+            v2.latest_url,
+            "https://registry.npmjs.org/@opencode%2Fcli/latest"
         );
-        assert_eq!(meta.fallback_source, Some("npm_registry"));
+        assert_eq!(v2.fallback_source, None);
+        assert_eq!(v2.fallback_url, None);
+        assert_eq!(v2.update_command, "curl -fsSL https://opencode.ai/v2/install | bash");
+
+        let v2_prerelease = get_tool_metadata("opencode", "2.0.0-beta.1").unwrap();
+        assert_eq!(v2_prerelease.latest_source, "npm_registry");
         assert_eq!(
-            meta.fallback_url,
-            Some("https://registry.npmjs.org/opencode-ai/latest")
+            v2_prerelease.latest_url,
+            "https://registry.npmjs.org/@opencode%2Fcli/latest"
         );
+        assert_eq!(v2_prerelease.fallback_source, None);
+        assert_eq!(v2_prerelease.fallback_url, None);
+        assert_eq!(
+            v2_prerelease.update_command,
+            "curl -fsSL https://opencode.ai/v2/install | bash"
+        );
+
+        let v1 = get_tool_metadata("opencode", "1.19.6").unwrap();
+        assert_eq!(v1.latest_source, "npm_registry");
+        assert_eq!(
+            v1.latest_url,
+            "https://registry.npmjs.org/opencode-ai/latest"
+        );
+        assert_eq!(v1.fallback_source, None);
+        assert_eq!(v1.fallback_url, None);
+        assert_eq!(v1.update_command, "curl -fsSL https://opencode.ai/install | bash");
+    }
+
+    #[test]
+    fn test_opencode_latest_metadata_is_npm_only_per_channel() {
+        let v2 = get_tool_metadata("opencode", "2.4.1").unwrap();
+        assert_eq!(v2.latest_source, "npm_registry");
+        assert_eq!(v2.fallback_source, None);
+        assert_eq!(v2.fallback_url, None);
+
+        let v1 = get_tool_metadata("opencode", "1.19.6").unwrap();
+        assert_eq!(v1.latest_source, "npm_registry");
+        assert_eq!(v1.fallback_source, None);
+        assert_eq!(v1.fallback_url, None);
     }
 
     #[test]
@@ -577,16 +644,18 @@ mod tests {
     }
 
     #[test]
-    fn test_opencode_latest_selects_npm_fallback_after_github_failure() {
-        let meta = get_tool_metadata("opencode").unwrap();
-        let primary: Result<String, String> =
-            Err("No tag_name in GitHub release response".to_string());
+    fn test_selects_npm_fallback_after_claude_release_failure() {
+        let meta = get_tool_metadata("claude", "").unwrap();
+        let primary: Result<String, String> = Err("Claude release fetch failed".to_string());
         let fallback: Result<String, String> = Ok("1.3.0".to_string());
 
         let result = select_latest_version_result(&meta, primary, Some(fallback)).unwrap();
         assert_eq!(result.version, "1.3.0");
         assert_eq!(result.source, "npm_registry");
-        assert_eq!(result.url, "https://registry.npmjs.org/opencode-ai/latest");
+        assert_eq!(
+            result.url,
+            "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest"
+        );
     }
 
     #[test]
@@ -621,30 +690,29 @@ mod tests {
 
     #[test]
     fn test_select_latest_version_result_both_sources_fail() {
-        let meta = get_tool_metadata("opencode").unwrap();
-        let primary: Result<String, String> =
-            Err("No tag_name in GitHub release response".to_string());
+        let meta = get_tool_metadata("claude", "").unwrap();
+        let primary: Result<String, String> = Err("Claude release fetch failed".to_string());
         let fallback: Result<String, String> = Err("No version field in npm response".to_string());
 
         let result = select_latest_version_result(&meta, primary, Some(fallback));
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("github_release"));
+        assert!(err.contains("claude_release"));
         assert!(err.contains("npm_registry failed"));
     }
 
     #[test]
     fn test_select_latest_version_result_primary_success() {
-        let meta = get_tool_metadata("opencode").unwrap();
+        let meta = get_tool_metadata("claude", "").unwrap();
         let primary = Ok("2.0.0".to_string());
         let result = select_latest_version_result(&meta, primary, None).unwrap();
         assert_eq!(result.version, "2.0.0");
-        assert_eq!(result.source, "github_release");
+        assert_eq!(result.source, "claude_release");
     }
 
     #[test]
     fn test_select_latest_version_result_no_fallback_failure() {
-        let meta = get_tool_metadata("codex").unwrap();
+        let meta = get_tool_metadata("codex", "").unwrap();
         let primary: Result<String, String> = Err("network error".to_string());
         let result = select_latest_version_result(&meta, primary, None);
         assert!(result.is_err());
