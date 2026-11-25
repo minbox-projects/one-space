@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/architecture/2026-09-19-provider-template-manual-model-sync.md
-2026-09-19-provider-template-manual-model-sync.md: 5ad3e3ab3f12140005f047db640083fafb2b8877
-2026-09-19-provider-template-manual-model-sync.zh.md: 4b80f1015ec8b3cf55f299fe5233ff0f95ea6381
+2026-09-19-provider-template-manual-model-sync.md: 179bb229b98ff454a0adf2a88f18882adf219891
+2026-09-19-provider-template-manual-model-sync.zh.md: 7470f15f468b3275204309b1226f9c0c961cdd61
