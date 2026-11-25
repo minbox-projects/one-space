@@ -1,4 +1,7 @@
-use super::anthropic::{convert_request, is_conversion_path, is_messages_path, DEFAULT_ANTHROPIC_VERSION};
+use super::anthropic::{
+    convert_request, hoist_system_role_messages, is_conversion_path, is_messages_path,
+    DEFAULT_ANTHROPIC_VERSION,
+};
 use super::openai_conversion;
 use super::{GatewayUpstreamProvider, TransportStrategy, UpstreamProtocol};
 use bytes::Bytes;
@@ -146,6 +149,39 @@ pub(in crate::ai_gateway) fn rewrite_body_model(
     }
 }
 
+/// Rewrite the top-level `model` of a native Anthropic Messages request and
+/// hoist its `system`-role `messages[]` entries into the top-level `system`
+/// field. Strict Anthropic-compatible upstreams reject any other role inside
+/// `messages[]`, and Claude Code sends exactly that shape.
+fn rewrite_native_anthropic_body(body: &[u8], model: &str) -> Result<Vec<u8>, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "request body must be a JSON object".to_string())?;
+    object.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.to_string()),
+    );
+    hoist_system_role_messages(object)?;
+    serde_json::to_vec(&value).map_err(|error| error.to_string())
+}
+
+/// Apply the same system-role hoist to an already-converted Anthropic body so a
+/// conversion never leaves a `system` entry inside `messages[]`. The original
+/// bytes are reused when nothing moved.
+fn hoist_converted_system_role_messages(body: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|error| error.to_string())?;
+    let Some(object) = value.as_object_mut() else {
+        return Ok(body);
+    };
+    if !hoist_system_role_messages(object)? {
+        return Ok(body);
+    }
+    serde_json::to_vec(&value).map_err(|error| error.to_string())
+}
+
 async fn build_request(
     provider: &GatewayUpstreamProvider,
     path: &str,
@@ -184,9 +220,11 @@ async fn build_request(
     };
     let body: &[u8] = stripped.as_deref().unwrap_or(body);
     let rewritten = if converted {
-        convert_request(path, body, model)?
+        hoist_converted_system_role_messages(convert_request(path, body, model)?)?
     } else if openai_converted {
         openai_conversion::convert_request(path, body, model, upstream_protocol)?
+    } else if upstream_protocol == UpstreamProtocol::AnthropicMessages {
+        rewrite_native_anthropic_body(body, model)?
     } else {
         rewrite_body_model(body, model)?
     };
