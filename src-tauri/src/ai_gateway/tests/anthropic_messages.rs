@@ -802,3 +802,128 @@ async fn native_messages_post_byte_failure_retains_merged_attempt_usage() {
         "the failed attempt must retain the field-wise merged start/delta usage"
     );
 }
+
+/// Claude Code sends a `role: "system"` entry inside `messages[]`; an
+/// Anthropic-compatible upstream rejects it. The gateway must remove those
+/// entries and append their text to the top-level `system` field.
+#[tokio::test]
+async fn native_messages_hoists_system_role_messages_into_top_level_system() {
+    let home = temp_home("native-messages-hoist-system-role");
+    let port = free_port().await;
+    let (upstream_url, log) =
+        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "msg_1", "type": "message", "content": []}))).await;
+    write_raw_gateway_config(&raw_config_with_provider(
+        port,
+        anthropic_provider_value(
+            "p-native-hoist",
+            &upstream_url,
+            LOCAL_CLAUDE,
+            UPSTREAM_CLAUDE,
+            UPSTREAM_SECRET,
+        ),
+    ));
+    start_server(None).await.expect("start the native listener");
+
+    let first_tools = json!([{
+        "name": "lookup",
+        "description": "Look up a key",
+        "input_schema": {"type": "object", "properties": {"key": {"type": "string"}}}
+    }]);
+    let first_request = json!({
+        "model": LOCAL_CLAUDE,
+        "max_tokens": 256,
+        "tools": first_tools.clone(),
+        "system": [{"type": "text", "text": "existing system"}],
+        "messages": [
+            {"role": "user", "content": "first user"},
+            {"role": "system", "content": [
+                {"type": "text", "text": "hoisted one"},
+                {"type": "text", "text": "hoisted two"}
+            ]},
+            {"role": "assistant", "content": "first assistant"},
+            {"role": "user", "content": "second user"}
+        ]
+    });
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/messages",
+        &[("authorization", "Bearer local-key")],
+        Some(first_request.clone()),
+    )
+    .await;
+    assert_eq!(status, 200, "the first native request must succeed: {text}");
+
+    let second_request = json!({
+        "model": LOCAL_CLAUDE,
+        "max_tokens": 128,
+        "tools": first_tools.clone(),
+        "system": "plain existing system",
+        "messages": [
+            {"role": "user", "content": "plain user"},
+            {"role": "system", "content": "plain hoisted system"},
+            {"role": "assistant", "content": "plain assistant"}
+        ]
+    });
+    let (status, _content_type, text) = call_gateway(
+        port,
+        "POST",
+        "/v1/messages",
+        &[("authorization", "Bearer local-key")],
+        Some(second_request.clone()),
+    )
+    .await;
+    assert_eq!(status, 200, "the second native request must succeed: {text}");
+
+    let captured = log.lock().expect("mock log").clone();
+    assert_eq!(captured.len(), 2, "both requests must reach the upstream");
+    let first_sent: Value = serde_json::from_slice(&captured[0].body).expect("first upstream body must be JSON");
+    let second_sent: Value = serde_json::from_slice(&captured[1].body).expect("second upstream body must be JSON");
+
+    assert_eq!(first_sent["model"], UPSTREAM_CLAUDE);
+    assert_eq!(second_sent["model"], UPSTREAM_CLAUDE);
+    assert_eq!(first_sent["max_tokens"], first_request["max_tokens"]);
+    assert_eq!(second_sent["max_tokens"], second_request["max_tokens"]);
+    assert_eq!(first_sent["tools"], first_request["tools"]);
+    assert_eq!(second_sent["tools"], second_request["tools"]);
+
+    assert_eq!(
+        json!({
+            "messages": first_sent["messages"].clone(),
+            "system": first_sent["system"].clone(),
+        }),
+        json!({
+            "messages": [
+                {"role": "user", "content": "first user"},
+                {"role": "assistant", "content": "first assistant"},
+                {"role": "user", "content": "second user"}
+            ],
+            "system": [
+                {"type": "text", "text": "existing system"},
+                {"type": "text", "text": "hoisted one"},
+                {"type": "text", "text": "hoisted two"}
+            ],
+        }),
+        "system-role messages must be removed from messages and appended to the top-level system array"
+    );
+    assert_eq!(
+        json!({
+            "messages": second_sent["messages"].clone(),
+            "system": second_sent["system"].clone(),
+        }),
+        json!({
+            "messages": [
+                {"role": "user", "content": "plain user"},
+                {"role": "assistant", "content": "plain assistant"}
+            ],
+            "system": [
+                {"type": "text", "text": "plain existing system"},
+                {"type": "text", "text": "plain hoisted system"}
+            ],
+        }),
+        "string system content must be converted to text blocks after the existing system content"
+    );
+
+    stop_server().await.expect("stop the native listener");
+    drop(home);
+}

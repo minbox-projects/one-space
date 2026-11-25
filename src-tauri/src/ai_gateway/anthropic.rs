@@ -655,6 +655,54 @@ fn convert_responses(body: &Map<String, Value>, model: &str) -> Result<Value, St
     Ok(Value::Object(result))
 }
 
+/// Normalize one Anthropic `system` value into content blocks: a plain string
+/// becomes a text block unless blank, and a block array is kept verbatim so
+/// fields such as `cache_control` survive. Anything else, including absent or
+/// null content, contributes nothing.
+fn system_blocks(content: &Value) -> Vec<Value> {
+    match content {
+        Value::String(text) => text_block(text).into_iter().collect(),
+        Value::Array(blocks) => blocks.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Merge `messages[]` entries whose role is `system` into the top-level
+/// `system` field and remove them. Strict Anthropic-compatible upstreams reject
+/// every role other than `user`/`assistant` inside `messages[]`, while Claude
+/// Code sends exactly such entries. Existing system content stays first and the
+/// hoisted content follows in original order. A string becomes one text block;
+/// a block array is kept as-is. Returns whether anything moved, so callers can
+/// reuse the original bytes when they did not.
+pub(in crate::ai_gateway) fn hoist_system_role_messages(
+    body: &mut Map<String, Value>,
+) -> Result<bool, String> {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return Ok(false);
+    };
+    let mut hoisted = Vec::new();
+    messages.retain(|message| {
+        if message.get("role").and_then(Value::as_str) == Some("system") {
+            hoisted.push(message.get("content").cloned().unwrap_or(Value::Null));
+            false
+        } else {
+            true
+        }
+    });
+    if hoisted.is_empty() {
+        return Ok(false);
+    }
+    let mut system = match body.remove("system") {
+        Some(content) => system_blocks(&content),
+        None => Vec::new(),
+    };
+    for content in hoisted {
+        system.extend(system_blocks(&content));
+    }
+    body.insert("system".to_string(), Value::Array(system));
+    Ok(true)
+}
+
 pub(in crate::ai_gateway) fn convert_request(
     path: &str,
     body: &[u8],
