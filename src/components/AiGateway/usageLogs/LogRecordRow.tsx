@@ -1,4 +1,12 @@
-import { AlertCircle, ArrowDown, ArrowUp, Info, Zap } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Copy,
+  Info,
+  Zap,
+} from "lucide-react";
 import type { TFunction } from "i18next";
 import {
   formatCacheTokensK,
@@ -11,6 +19,7 @@ import {
   usageStatusTranslationKey,
   type UsageLogRecord,
 } from "@/lib/aiGateway";
+import { useCopyToClipboard } from "@/toolbox/useCopyToClipboard";
 import { CostDetail } from "./CostDetail";
 import { LatencyMetricRow } from "./LatencyMetricRow";
 import {
@@ -35,6 +44,8 @@ export function LogRecordRow({
   recordCount,
   t,
 }: LogRecordRowProps) {
+  const { copied, copy: copyToClipboard } = useCopyToClipboard();
+
   return (
     <tr
       className="border-t"
@@ -150,7 +161,27 @@ export function LogRecordRow({
       </td>
       <td className="px-3 py-2 min-w-0">
         <div className="flex items-center gap-1.5 whitespace-nowrap min-w-0">
-          <span className="font-medium truncate" title={item.local_model}>{item.local_model}</span>
+          <div className="group/model flex items-center gap-1 min-w-0">
+            <span className="font-medium truncate" title={item.local_model}>{item.local_model}</span>
+            <button
+              type="button"
+              data-testid="ai-gateway-logs-copy-model"
+              aria-label={t("aiGatewayModelListCopyAria", "Copy model ID")}
+              title={t("aiGatewayModelListCopyAria", "Copy model ID")}
+              onClick={() => void copyToClipboard(item.local_model)}
+              className={`shrink-0 rounded p-0.5 transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 ${
+                copied
+                  ? "text-emerald-500 opacity-100"
+                  : "text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/model:opacity-100"
+              }`}
+            >
+              {copied ? (
+                <Check className="h-3 w-3" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+            </button>
+          </div>
           {item.reasoning_effort ? (
             <span
               className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-normal leading-none bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 shrink-0"

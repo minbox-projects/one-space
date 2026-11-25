@@ -1012,6 +1012,31 @@ describe("UsageLogsPanel", () => {
     ).toHaveTextContent("claude-3-7-sonnet-20250219");
   });
 
+  it("模型列悬停显示复制图标，点击图标复制本地模型 ID", async () => {
+    const user = userEvent.setup();
+    const writeTextSpy = vi.spyOn(navigator.clipboard, "writeText");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command !== "ai_gateway_request_logs") {
+        throw new Error(`Unhandled command: ${command}`);
+      }
+      return page({
+        records: [record({ local_model: "claude-3-7-sonnet" })],
+      });
+    });
+
+    renderWithProviders(<UsageLogsPanel />);
+    await screen.findByTestId("ai-gateway-logs-ungrouped");
+
+    const copyBtn = screen.getByTestId("ai-gateway-logs-copy-model");
+    expect(copyBtn).toHaveAttribute("aria-label", "Copy model ID");
+    expect(copyBtn.className).toContain("opacity-0");
+    expect(copyBtn.className).toContain("group-hover/model:opacity-100");
+
+    await user.click(copyBtn);
+
+    expect(writeTextSpy).toHaveBeenCalledWith("claude-3-7-sonnet");
+  });
+
   it("模型列展示推理强度徽章，无推理强度时不展示徽章", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command !== "ai_gateway_request_logs") {
