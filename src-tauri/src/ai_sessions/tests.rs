@@ -1280,6 +1280,31 @@ fn opencode_json_usage_parser_reads_message_tokens() {
 }
 
 #[test]
+fn opencode_json_usage_parser_includes_reasoning_in_output_and_total() {
+    let root = make_temp_dir("opencode-usage-reasoning");
+    let messages_dir = root.join("message/ses_reasoning");
+    write_temp_file(
+        &messages_dir.join("msg_1.json"),
+        r#"{
+  "role": "assistant",
+  "modelID": "deepseek-v4",
+  "time": { "created": 1770800496647 },
+  "tokens": { "input": 50, "output": 70, "reasoning": 13, "cache": { "read": 20, "write": 5 } }
+}"#,
+    );
+
+    let (records, errors) = parse_opencode_message_usage_dir(&messages_dir, "ses_reasoning");
+    assert!(errors.is_empty());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].input_tokens, 50);
+    assert_eq!(records[0].output_tokens, 83);
+    assert_eq!(records[0].cache_tokens, 25);
+    assert_eq!(records[0].total_tokens, 158);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn opencode_db_usage_query_only_reads_requested_time_window() {
     let conn = Connection::open_in_memory().expect("in-memory opencode db");
     conn.execute_batch(
@@ -3459,10 +3484,10 @@ fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
     assert_eq!(stats.summary.input_tokens, 1200);
     assert_eq!(stats.summary.output_tokens, 300);
     assert_eq!(stats.summary.cache_tokens, 500);
-    assert_eq!(stats.summary.total_tokens, 1500);
+    assert_eq!(stats.summary.total_tokens, 2000);
     assert_eq!(stats.summary.sessions, 1);
 
-    // Verify daily breakdown has 1500 total tokens on today
+    // Verify daily breakdown has 2000 total tokens on today
     let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
     let today_stat = stats
         .daily
@@ -3470,7 +3495,7 @@ fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
         .find(|d| d.date == today_str)
         .expect("today in daily breakdown");
     assert_eq!(today_stat.calls, 1);
-    assert_eq!(today_stat.total_tokens, 1500);
+    assert_eq!(today_stat.total_tokens, 2000);
     assert_eq!(today_stat.input_tokens, 1200);
     assert_eq!(today_stat.output_tokens, 300);
     assert_eq!(today_stat.cache_tokens, 500);
@@ -3484,7 +3509,7 @@ fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
         .find(|b| b.tool == "antigravity")
         .expect("antigravity in day stats breakdown");
     assert_eq!(ag_breakdown.calls, 1);
-    assert_eq!(ag_breakdown.total_tokens, 1500);
+    assert_eq!(ag_breakdown.total_tokens, 2000);
     assert_eq!(ag_breakdown.input_tokens, 1200);
     assert_eq!(ag_breakdown.output_tokens, 300);
     assert_eq!(ag_breakdown.cache_tokens, 500);
@@ -3495,7 +3520,7 @@ fn antigravity_sqlite_database_scans_tokens_and_aggregates_into_tool_stats() {
         .find(|m| m.model == "gemini-3.8-flash")
         .expect("gemini-3.8-flash in models breakdown");
     assert_eq!(gemini_model.calls, 1);
-    assert_eq!(gemini_model.total_tokens, 1500);
+    assert_eq!(gemini_model.total_tokens, 2000);
     assert_eq!(gemini_model.input_tokens, 1200);
     assert_eq!(gemini_model.output_tokens, 300);
     assert_eq!(gemini_model.cache_tokens, 500);
@@ -3557,7 +3582,7 @@ fn antigravity_sqlite_database_prevents_duplicate_calls_from_brain_transcript() 
     assert_eq!(stats.scanned_calls, 1);
     assert_eq!(stats.summary.calls, 1);
     assert_eq!(stats.summary.cache_tokens, 100);
-    assert_eq!(stats.summary.total_tokens, 1000);
+    assert_eq!(stats.summary.total_tokens, 1100);
 
     let _ = fs::remove_dir_all(root);
 }

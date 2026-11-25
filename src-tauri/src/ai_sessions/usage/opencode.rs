@@ -464,8 +464,11 @@ fn parse_opencode_usage_message_file(
 fn parse_opencode_tokens_value(tokens: Option<&Value>) -> Option<(u64, u64, u64, u64, u64)> {
     let tokens = tokens?;
     let input = json_u64(tokens.get("input")).saturating_add(json_u64(tokens.get("input_tokens")));
-    let output =
-        json_u64(tokens.get("output")).saturating_add(json_u64(tokens.get("output_tokens")));
+    // OpenCode reports reasoning separately from visible output; the usage page
+    // treats it as output so totals stay comparable with the other tools.
+    let output = json_u64(tokens.get("output"))
+        .saturating_add(json_u64(tokens.get("output_tokens")))
+        .saturating_add(json_u64(tokens.get("reasoning")));
     let cache_read = json_u64(tokens.get("cache_read"))
         .saturating_add(json_u64(tokens.get("cached")))
         .saturating_add(json_u64(tokens.get("cache_read_tokens")))

@@ -82,11 +82,13 @@ fn read_antigravity_db_tokens(
                 .get(&idx)
                 .cloned()
                 .unwrap_or_else(|| fallback_model.clone());
-            // Antigravity reports `total_tokens = input_tokens + output_tokens`.
-            // Cache reads are budgeted separately and are not part of that total.
+            // The usage page totals every processed token tier. Antigravity reports
+            // input as uncached input and cache reads as a separate tier, while
+            // output already includes thinking, so all three tiers are added here.
             let total = step_tokens
                 .input_tokens
-                .saturating_add(step_tokens.output_tokens);
+                .saturating_add(step_tokens.output_tokens)
+                .saturating_add(step_tokens.cache_tokens);
             record_usage_parsed_entry();
             records.push(UsageRecord {
                 session_id: session_id.to_string(),
