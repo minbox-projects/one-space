@@ -873,23 +873,27 @@ fn sync_accepts_data_models_root_and_string_shapes() {
 }
 
 /// AC-001 / AC-002 / REQ-001: `supported_endpoints` decides the protocol with
-/// the Chat Completions, then Responses, then Messages preference; `/messages`
-/// and `/v1/messages` are both recognized Messages declarations, an entry
-/// without endpoint information is kept with no protocol (inheriting the
+/// the Responses, then Chat Completions, then Messages preference; declaring
+/// both `/responses` and `/chat/completions` therefore selects Responses.
+/// `/messages` and `/v1/messages` are both recognized Messages declarations, an
+/// entry without endpoint information is kept with no protocol (inheriting the
 /// template protocol), and an entry declaring only unknown endpoints is
 /// dropped.
 #[test]
-fn sync_derives_protocol_from_supported_endpoints_with_chat_then_responses_then_messages() {
+fn sync_derives_protocol_from_supported_endpoints_with_responses_then_chat_then_messages() {
     let mut config = seeded_config(UpstreamProtocol::ChatCompletions, vec![]);
     let body = json!({
         "data": [
-            {"id": "chat-wins", "supported_endpoints": ["/messages", "/responses", "/chat/completions"]},
-            {"id": "resp-wins", "supported_endpoints": ["/v1/messages", "/responses"]},
+            {"id": "responses-over-chat", "supported_endpoints": ["/chat/completions", "/responses"]},
+            {"id": "chat-only", "supported_endpoints": ["/chat/completions"]},
+            {"id": "responses-only", "supported_endpoints": ["/responses"]},
             {"id": "messages-only", "supported_endpoints": ["/messages"]},
             {"id": "v1-messages-only", "supported_endpoints": ["/v1/messages"]},
             {"id": "unlabeled"},
             {"id": "non-array", "supported_endpoints": "/chat/completions"},
-            {"id": "unknown-only", "supported_endpoints": ["/completions"]}
+            {"id": "unknown-only", "supported_endpoints": ["/completions"]},
+            {"id": "gpt-5.6-luna", "supported_endpoints": ["/chat/completions", "/responses"]},
+            {"id": "gpt-5.6-sol", "supported_endpoints": ["/chat/completions", "/responses"]}
         ]
     })
     .to_string();
@@ -912,14 +916,19 @@ fn sync_derives_protocol_from_supported_endpoints_with_chat_then_responses_then_
     };
 
     assert_eq!(
-        protocol("chat-wins"),
-        json!("chat_completions"),
-        "Chat Completions wins when every endpoint is declared"
+        protocol("responses-over-chat"),
+        json!("responses"),
+        "Responses wins when both Responses and Chat Completions are declared"
     );
     assert_eq!(
-        protocol("resp-wins"),
+        protocol("chat-only"),
+        json!("chat_completions"),
+        "a Chat Completions only declaration selects Chat Completions"
+    );
+    assert_eq!(
+        protocol("responses-only"),
         json!("responses"),
-        "Responses wins over Messages when Chat Completions is absent"
+        "a Responses only declaration selects Responses"
     );
     assert_eq!(
         protocol("messages-only"),
@@ -940,6 +949,16 @@ fn sync_derives_protocol_from_supported_endpoints_with_chat_then_responses_then_
     assert!(
         find("unknown-only").is_none(),
         "an entry declaring only unknown endpoints is dropped"
+    );
+    assert_eq!(
+        protocol("gpt-5.6-luna"),
+        json!("responses"),
+        "the reported gpt-5.6-luna regression selects Responses over Chat Completions"
+    );
+    assert_eq!(
+        protocol("gpt-5.6-sol"),
+        json!("responses"),
+        "the reported gpt-5.6-sol regression selects Responses over Chat Completions"
     );
 }
 

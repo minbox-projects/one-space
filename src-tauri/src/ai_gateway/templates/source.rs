@@ -606,7 +606,7 @@ fn source_entry_is_hidden(object: &serde_json::Map<String, Value>) -> bool {
 /// source `name` completed with the identifier segment's uncovered remainder
 /// (a blank source name falls back to the previously stored display name, and
 /// a missing base transforms the identifier segment on its own). When
-/// `supported_endpoints` is an array: Chat Completions wins over Responses,
+/// `supported_endpoints` is an array: Responses wins over Chat Completions,
 /// which wins over Anthropic Messages; an array declaring none of those drops
 /// the entry. A missing or non-array field keeps the entry with no protocol so
 /// it inherits the template protocol. An object entry may also declare
@@ -718,10 +718,10 @@ pub(super) fn parse_model_list_source(
                         .iter()
                         .any(|endpoint| endpoint.as_str() == Some(needle))
                 };
-                if has("/chat/completions") {
-                    Some(UpstreamProtocol::ChatCompletions)
-                } else if has("/responses") {
+                if has("/responses") {
                     Some(UpstreamProtocol::Responses)
+                } else if has("/chat/completions") {
+                    Some(UpstreamProtocol::ChatCompletions)
                 } else if has("/messages") || has("/v1/messages") {
                     Some(UpstreamProtocol::AnthropicMessages)
                 } else {
