@@ -166,7 +166,9 @@ sudo xattr -cr /Applications/OneSpace.app
 
 ## 开发
 
-需要 Node.js、Rust 与 Tauri CLI。构建内置的 OpenCode Zen sidecar 还需要 `cmake` 与 `ninja`（macOS：`brew install cmake ninja`，Windows：`choco install cmake ninja`）。
+需要 Node.js 26 及以上（见仓库根的 `.nvmrc`）、Rust 与 Tauri CLI。构建内置的 OpenCode Zen sidecar 还需要 `cmake` 与 `ninja`（macOS：`brew install cmake ninja`，Windows：`choco install cmake ninja`）。
+
+Node 26 定义了返回 `undefined` 的全局 `localStorage`/`sessionStorage` 访问器，jsdom 无法覆盖已存在的全局键，因此测试环境由 `src/test/setup.ts` 显式装回 jsdom 自己的 storage；更低版本未做支持声明。
 
 ```bash
 npm install
