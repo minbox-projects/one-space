@@ -1,5 +1,8 @@
 use super::*;
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
 #[derive(Debug)]
 pub(in crate::ai_gateway) struct HttpRequest {
     pub(in crate::ai_gateway) method: String,
@@ -198,5 +201,70 @@ pub(super) async fn write_stream_headers<W: AsyncWrite + Unpin>(
         .write_all(header.as_bytes())
         .await
         .map_err(|e| e.to_string())
+}
+
+/// A downstream writer that can be muted after the client has gone away.
+///
+/// While `suppressed` is set every write reports the whole buffer as written and
+/// flush/shutdown succeed without touching the inner writer, so the relay can
+/// keep consuming an upstream stream that already reached its terminal outcome
+/// instead of failing on the dead socket. While the flag is clear the wrapper is
+/// transparent and forwards bytes unchanged; its first write also marks
+/// `started`, which tells the connection handler whether the response had begun
+/// before the client left.
+pub(super) struct SuppressibleWriter<W> {
+    inner: W,
+    suppressed: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+}
+
+impl<W> SuppressibleWriter<W> {
+    pub(super) fn new(
+        inner: W,
+        suppressed: Arc<AtomicBool>,
+        started: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            inner,
+            suppressed,
+            started,
+        }
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for SuppressibleWriter<W> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if self.suppressed.load(Ordering::Relaxed) {
+            return std::task::Poll::Ready(Ok(buf.len()));
+        }
+        if !buf.is_empty() {
+            self.started.store(true, Ordering::Relaxed);
+        }
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.suppressed.load(Ordering::Relaxed) {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.suppressed.load(Ordering::Relaxed) {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 

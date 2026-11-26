@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 # ai-workflow notes pairing --project <project-root> --write .ai-workflow/notes/implemented/simplification/2026-09-21-gateway-cancelled-requests-are-not-logs.md
-2026-09-21-gateway-cancelled-requests-are-not-logs.md: 3724097f0129db83efc264a936889102ca4d0ab2
-2026-09-21-gateway-cancelled-requests-are-not-logs.zh.md: a0d9bdfdc2fda8db032bcda111e0bd3e3a688912
+2026-09-21-gateway-cancelled-requests-are-not-logs.md: 7e931f95de26f717715f0ca9f6c3e8002dcad6ef
+2026-09-21-gateway-cancelled-requests-are-not-logs.zh.md: ae9a2ebb479ae9dc0eccd606f52c5733cc478e5a

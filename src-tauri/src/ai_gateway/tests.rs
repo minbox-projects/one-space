@@ -12308,6 +12308,67 @@ fn sse_usage_accumulator_parses_usage_across_chunk_boundaries() {
     assert_eq!(accumulator.usage(), Some(tokens(8, 3, 0, 7)));
 }
 
+/// Protocol-level guard for the late-close fix: pin each Chat/Responses/[DONE]
+/// wire signal that marks a stream as having delivered its own terminal outcome,
+/// so a later downstream close is not misread as a cancellation. Complements the
+/// end-to-end reproduction and observes `terminal_seen()` only.
+#[test]
+fn sse_usage_accumulator_tracks_chat_and_responses_terminal_events() {
+    // A plain Chat delta (no finish_reason) is not a terminal outcome.
+    let mut chat_delta = SseUsageAccumulator::default();
+    chat_delta.feed(b"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n");
+    assert!(
+        !chat_delta.terminal_seen(),
+        "a Chat delta without finish_reason must not be terminal"
+    );
+
+    // A non-null finish_reason is the Chat terminal outcome.
+    let mut chat_finished = SseUsageAccumulator::default();
+    chat_finished.feed(b"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+    assert!(
+        chat_finished.terminal_seen(),
+        "a non-null finish_reason must be terminal"
+    );
+
+    // Responses: `response.created` is in-flight, `response.completed` (with
+    // nested usage) is the terminal outcome on a fresh accumulator.
+    let mut responses = SseUsageAccumulator::default();
+    responses.feed(b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\",\"status\":\"in_progress\"}}\n\n");
+    assert!(
+        !responses.terminal_seen(),
+        "response.created must not be terminal"
+    );
+    responses.feed(b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n");
+    assert!(
+        responses.terminal_seen(),
+        "response.completed must be terminal"
+    );
+
+    // The Chat Completions `[DONE]` marker is terminal on a fresh accumulator.
+    let mut done = SseUsageAccumulator::default();
+    done.feed(b"data: [DONE]\n\n");
+    assert!(done.terminal_seen(), "the [DONE] marker must be terminal");
+
+    // Accumulating a valid usage object and then a non-terminal (null
+    // finish_reason) or malformed delta must not produce a false terminal.
+    let mut after_usage = SseUsageAccumulator::default();
+    after_usage.feed(b"data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":7,\"total_tokens\":19}}\n\n");
+    assert!(
+        !after_usage.terminal_seen(),
+        "a usage-bearing delta without finish_reason must not be terminal"
+    );
+    after_usage.feed(b"data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":null}]}\n\n");
+    assert!(
+        !after_usage.terminal_seen(),
+        "an explicit null finish_reason must not be terminal"
+    );
+    after_usage.feed(b"data: {not-json\n\n");
+    assert!(
+        !after_usage.terminal_seen(),
+        "a malformed trailing delta must not turn the stream terminal"
+    );
+}
+
 fn usage_store(name: &str) -> (PathBuf, UsageLogStore) {
     let dir = make_temp_dir(name);
     let store = UsageLogStore::at(dir.join("ai_gateway_usage.db"));
@@ -15044,6 +15105,109 @@ async fn downstream_cancel_during_streaming_writes_zero_rows() {
     );
     assert_eq!(stats.totals.total_tokens, 0);
     assert_eq!(stats.totals.amount, 0.0);
+    drop(home);
+}
+
+/// A streaming request whose upstream response has already delivered its final
+/// usage event must still persist exactly one terminal success row when the
+/// downstream client closes before the gateway finishes its post-forward
+/// bookkeeping. A close before the upstream reaches its terminal outcome still
+/// persists zero rows.
+#[tokio::test]
+async fn streaming_client_close_after_usage_still_records_completed_request() {
+    let home = temp_home("usage-complete-after-client-close");
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind usage-complete upstream");
+    let upstream_url = format!("http://{}", listener.local_addr().expect("upstream address"));
+    let (used_tx, used_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let delta = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+    let usage = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n";
+    let done = "data: [DONE]\n\n";
+    let body_len = delta.len() + usage.len() + done.len();
+    let upstream = tokio::spawn(async move {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("accept usage-complete upstream");
+        super::runtime_http::read_http_request(&mut stream)
+            .await
+            .expect("read usage-complete upstream request");
+        let header = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body_len
+        );
+        let _ = stream.write_all(header.as_bytes()).await;
+        let _ = stream.write_all(delta.as_bytes()).await;
+        let _ = stream.write_all(usage.as_bytes()).await;
+        let _ = used_tx.send(());
+        let _ = release_rx.await;
+        let _ = stream.write_all(done.as_bytes()).await;
+        let _ = stream.flush().await;
+    });
+
+    let mut config = GatewayConfig::default();
+    config.keys.push(key_named("k1", "local-key"));
+    config.providers.push(upstream_provider(
+        "p1",
+        "Provider One",
+        &upstream_url,
+        "sk",
+        Some("remote-default"),
+    ));
+    super::storage::write_config(&config).expect("write relay config");
+
+    let (mut client, mut handler) = spawn_handle_connection(true).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), used_rx)
+        .await
+        .expect("the upstream must write the usage chunk")
+        .expect("the upstream usage-written signal must not be dropped");
+
+    let mut response = Vec::new();
+    let mut buf = [0u8; 4096];
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !String::from_utf8_lossy(&response).contains("\"cached_tokens\":3") {
+            let read = client.read(&mut buf).await.expect("read relay stream");
+            if read == 0 {
+                break;
+            }
+            response.extend_from_slice(&buf[..read]);
+        }
+    })
+    .await
+    .expect("the usage event must reach the client within 5s");
+    let response_text = String::from_utf8_lossy(&response);
+    assert!(
+        response_text.contains("\"cached_tokens\":3"),
+        "the client must receive the final usage event before closing: {response_text}"
+    );
+
+    drop(client);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let _ = release_tx.send(());
+
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(5), &mut handler)
+        .await
+        .expect("the handler must exit after the client close and upstream completion");
+    let inner = joined.expect("handle_connection must not join-err");
+    assert!(inner.is_ok(), "handle_connection must return Ok: {inner:?}");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), upstream).await;
+
+    let records = default_usage_store().all_records().unwrap_or_default();
+    assert_eq!(
+        records.len(),
+        1,
+        "a completed upstream request must persist one terminal row even when the client closed: {} observed",
+        records.len()
+    );
+    let record = &records[0];
+    assert!(record.terminal, "the completed request is the terminal row");
+    assert_eq!(record.result, UsageResult::Success);
+    assert_eq!(record.input_tokens, 8);
+    assert_eq!(record.cache_read_tokens, 3);
+    assert_eq!(record.output_tokens, 7);
+    assert_eq!(record.total_tokens, 18);
     drop(home);
 }
 
