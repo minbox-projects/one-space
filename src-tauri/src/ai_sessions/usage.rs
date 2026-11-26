@@ -22,6 +22,8 @@ pub(crate) use self::quota::__cmd__sessions_antigravity_quota;
 pub use self::quota::{
     antigravity_quota_cache_fresh, parse_antigravity_quota_envelope, sessions_antigravity_quota,
 };
+#[cfg(test)]
+pub(crate) use self::quota::set_test_agy_program;
 pub use self::service::build_sessions_usage_tool_stats;
 pub use self::types::*;
 

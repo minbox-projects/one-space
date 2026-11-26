@@ -4785,6 +4785,44 @@ async fn cancel_spawn_group(
     (child, CancelGroupGuard { pgid })
 }
 
+/// Spawn a process group that really ignores SIGTERM, and return only once the
+/// shell reports that its `trap` is installed.
+///
+/// A bare `sh -c 'trap "" TERM; sleep 30'` does not ignore TERM: the shell
+/// execs its last command, so the surviving process is `sleep`, which takes the
+/// default action. Keeping the shell alive with a trailing loop leaves a group
+/// whose every surviving member ignores TERM, and the readiness line removes
+/// the spawn-to-`trap` race that otherwise let TERM land before the trap was
+/// installed.
+#[cfg(unix)]
+async fn cancel_spawn_term_ignoring_group() -> (tokio::process::Child, CancelGroupGuard) {
+    use std::os::unix::process::CommandExt;
+    use tokio::io::AsyncBufReadExt;
+
+    const READY_MARKER: &str = "cancel-ready";
+
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(format!("trap '' TERM; printf '{READY_MARKER}\\n'; while :; do sleep 1; done"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    command.as_std_mut().process_group(0);
+    let mut child = command.spawn().expect("spawn grouped child");
+    let pgid = child.id().expect("grouped child pid");
+
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().expect("piped stdout")).lines();
+    let readiness = tokio::time::timeout(Duration::from_secs(5), lines.next_line()).await;
+    let ready = matches!(readiness, Ok(Ok(Some(ref line))) if line == READY_MARKER);
+    assert!(
+        ready,
+        "the SIGTERM-ignoring child must report readiness before cancellation"
+    );
+
+    (child, CancelGroupGuard { pgid })
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn cancel_process_group_terminates_sleep_child() {
@@ -4809,8 +4847,7 @@ async fn cancel_process_group_terminates_sleep_child() {
 async fn cancel_process_group_force_kills_after_grace() {
     use super::opencode_bridge::terminate_process_group;
 
-    let (mut child, _guard) =
-        cancel_spawn_group("/bin/sh", &["-c", "trap \"\" TERM; sleep 30"]).await;
+    let (mut child, _guard) = cancel_spawn_term_ignoring_group().await;
     let pid = child.id().expect("shell pid");
 
     let outcome = terminate_process_group(pid, Duration::from_millis(300)).await;
@@ -4974,8 +5011,7 @@ async fn cancel_forced_outcome_reported() {
     use super::opencode_bridge::CANCEL_GRACE;
 
     let bridge = OpenCodeBridge::new(Arc::new(TelegramClient::new("dummy-test-token")));
-    let (mut child, _guard) =
-        cancel_spawn_group("/bin/sh", &["-c", "trap \"\" TERM; sleep 30"]).await;
+    let (mut child, _guard) = cancel_spawn_term_ignoring_group().await;
     let pid = child.id().expect("shell pid");
 
     bridge.track_active_process(pid).await;

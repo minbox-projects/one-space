@@ -304,8 +304,6 @@ fn concurrent_collect_keepalive_no_overlap() {
     assert!(st.max_active <= 1);
 }
 
-static SMOKE_HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 #[ignore = "requires MONITOR_SMOKE_* and a controlled Linux SSH target"]
 fn real_ssh_persistent_and_oneshot_sessions_smoke() {
@@ -342,7 +340,10 @@ fn real_ssh_persistent_and_oneshot_sessions_smoke() {
         }
     };
 
-    let _guard = SMOKE_HOME_MUTEX.lock().unwrap();
+    // Holds the crate-wide home lock: this smoke swaps the process `HOME`, and
+    // the private mutex it used to take could not serialize against the other
+    // suites that also change `HOME` or rotate the profile master key.
+    let _guard = crate::lock_test_home_env();
     let original_home = std::env::var("HOME").ok();
     let tmp_home = std::env::temp_dir().join(format!("onespace-smoke-home-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp_home).unwrap();

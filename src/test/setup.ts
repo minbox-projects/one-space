@@ -34,6 +34,28 @@ await import("@/i18n");
 await import("@/test/mocks/tauri");
 await import("@/test/mocks/messages");
 
+// Node 26 defines global localStorage/sessionStorage accessors that yield
+// undefined without --localstorage-file, and jsdom cannot overwrite globals that
+// already exist. Install jsdom's own storage so jsdom-based tests can use them.
+interface JsdomStorageHost {
+  localStorage: Storage;
+  sessionStorage: Storage;
+}
+const jsdomWindow = (globalThis as { jsdom?: { window?: JsdomStorageHost } }).jsdom
+  ?.window;
+if (jsdomWindow) {
+  Object.defineProperty(globalThis, "localStorage", {
+    value: jsdomWindow.localStorage,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    value: jsdomWindow.sessionStorage,
+    configurable: true,
+    writable: true,
+  });
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();

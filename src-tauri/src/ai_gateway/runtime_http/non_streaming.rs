@@ -24,6 +24,35 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
     probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
 ) -> HttpResponse {
+    attempt_non_streaming_with_settings(
+        ordered,
+        path,
+        body,
+        requested,
+        client_headers,
+        suppress_transport_failures,
+        probe,
+        attempts,
+        &GatewaySettings::default(),
+    )
+    .await
+}
+
+/// Same as [`attempt_non_streaming`], with caller-supplied settings. Tests use
+/// it to exercise a real transport failure under a short, documented timeout
+/// instead of waiting out the shipped default.
+#[cfg(test)]
+pub(in crate::ai_gateway) async fn attempt_non_streaming_with_settings(
+    ordered: &[GatewayUpstreamProvider],
+    path: &str,
+    body: &[u8],
+    requested: Option<&str>,
+    client_headers: &HashMap<String, String>,
+    suppress_transport_failures: bool,
+    probe: Option<&ProbeCandidate>,
+    attempts: &mut Vec<AttemptLog>,
+    settings: &GatewaySettings,
+) -> HttpResponse {
     attempt_non_streaming_inner(
         ordered,
         path,
@@ -34,7 +63,7 @@ pub(in crate::ai_gateway) async fn attempt_non_streaming(
         probe,
         attempts,
         &[],
-        &GatewaySettings::default(),
+        settings,
     )
     .await
 }

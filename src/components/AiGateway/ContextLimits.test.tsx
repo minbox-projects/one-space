@@ -423,7 +423,7 @@ describe("context window limits", () => {
   });
 
   describe("model list", () => {
-    it("shows each source value and the conservative aggregate with formatted units", () => {
+    it("shows each upstream source's context value with formatted units", () => {
       const providers = [
         providerWith(
           [{ local_model: "shared", upstream_model: "a-128k", context_window: 128000 }],
@@ -441,10 +441,15 @@ describe("context window limits", () => {
         .find((entry) => entry.getAttribute("data-model") === "shared");
       expect(row).toBeDefined();
       const upstreams = within(row!).getAllByTestId("ai-gateway-model-list-upstream");
-      expect(within(upstreams[0]).getByText(/128K/)).toBeInTheDocument();
-      expect(within(upstreams[1]).getByText(/256K/)).toBeInTheDocument();
-      expect(within(row!).getByText(/conservative|effective context/i)).toBeInTheDocument();
-      expect(within(row!).getAllByText(/128K/).length).toBeGreaterThan(0);
+      expect(
+        within(upstreams[0]).getByTestId("ai-gateway-model-list-upstream-context"),
+      ).toHaveTextContent("128K");
+      expect(
+        within(upstreams[1]).getByTestId("ai-gateway-model-list-upstream-context"),
+      ).toHaveTextContent("256K");
+      expect(
+        within(row!).queryByTestId("ai-gateway-model-list-context"),
+      ).toBeNull();
     });
 
     it("formats context windows below 10,000 as comma-separated and above 1,000,000 as M", () => {
@@ -463,15 +468,20 @@ describe("context window limits", () => {
       const smallRow = within(screen.getByTestId("ai-gateway-model-list"))
         .getAllByTestId("ai-gateway-model-list-row")
         .find((entry) => entry.getAttribute("data-model") === "small-ctx");
-      expect(within(smallRow!).getAllByText(/4,096 tokens/).length).toBeGreaterThan(0);
+      const smallUpstream = within(smallRow!).getAllByTestId("ai-gateway-model-list-upstream")[0];
+      const smallContext = within(smallUpstream).getByTestId("ai-gateway-model-list-upstream-context");
+      expect(smallContext).toHaveTextContent("4,096");
+      expect(smallContext).not.toHaveTextContent("tokens");
 
       const megaRow = within(screen.getByTestId("ai-gateway-model-list"))
         .getAllByTestId("ai-gateway-model-list-row")
         .find((entry) => entry.getAttribute("data-model") === "mega-ctx");
-      expect(within(megaRow!).getAllByText(/1M tokens/).length).toBeGreaterThan(0);
+      const megaUpstream = within(megaRow!).getAllByTestId("ai-gateway-model-list-upstream")[0];
+      const megaContext = within(megaUpstream).getByTestId("ai-gateway-model-list-upstream-context");
+      expect(megaContext).toHaveTextContent("1M");
     });
 
-    it("marks an ordinary model incomplete when any contributing source is unknown", () => {
+    it("keeps the known source and marks the unknown upstream Unspecified", () => {
       const providers = [
         providerWith(
           [{ local_model: "shared", upstream_model: "known", context_window: 256000 }],
@@ -487,10 +497,16 @@ describe("context window limits", () => {
       const row = screen
         .getAllByTestId("ai-gateway-model-list-row")
         .find((entry) => entry.getAttribute("data-model") === "shared");
-      expect(within(row!).getByText(/incomplete|unknown context/i)).toBeInTheDocument();
+      const upstreams = within(row!).getAllByTestId("ai-gateway-model-list-upstream");
+      expect(
+        within(upstreams[0]).getByTestId("ai-gateway-model-list-upstream-context"),
+      ).toHaveTextContent("256K");
+      expect(
+        within(upstreams[1]).getByTestId("ai-gateway-model-list-upstream-context"),
+      ).toHaveTextContent("Unspecified");
     });
 
-    it("shows a pool's conservative context without an editable override", () => {
+    it("shows each pool candidate's context without an editable override", () => {
       const providers = [
         providerWith(
           [{ local_model: "model-a", upstream_model: "upstream-a", context_window: 256000 }],
@@ -532,10 +548,10 @@ describe("context window limits", () => {
       expect(within(row!).queryByRole("textbox")).not.toBeInTheDocument();
     });
 
-    it("shows a pool's unified context window limit when explicitly configured", () => {
+    it("renders a pool candidate's declared context on its upstream badge as 1.1M without a unit suffix", () => {
       const providers = [
         providerWith(
-          [{ local_model: "model-a", upstream_model: "upstream-a", context_window: 256000 }],
+          [{ local_model: "model-a", upstream_model: "upstream-a", context_window: 1050000 }],
           { id: "p1", name: "Provider One" },
         ),
       ];
@@ -544,7 +560,6 @@ describe("context window limits", () => {
         name: "Unified Pool",
         model: "unified-pool",
         enabled: true,
-        context_window: 1050000, // 1050K -> 格式化为 1.1M tokens
         candidates: [
           {
             provider_id: "p1",
@@ -560,7 +575,10 @@ describe("context window limits", () => {
       const row = screen
         .getAllByTestId("ai-gateway-model-list-row")
         .find((entry) => entry.getAttribute("data-model") === "unified-pool");
-      expect(within(row!).getAllByText(/1\.1M tokens/).length).toBeGreaterThan(0);
+      const upstream = within(row!).getAllByTestId("ai-gateway-model-list-upstream")[0];
+      const context = within(upstream).getByTestId("ai-gateway-model-list-upstream-context");
+      expect(context).toHaveTextContent("1.1M");
+      expect(context).not.toHaveTextContent("tokens");
     });
 
     it("keeps the hidden panel free of context rows", () => {

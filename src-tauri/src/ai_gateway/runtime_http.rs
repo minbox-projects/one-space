@@ -102,6 +102,6 @@ pub(in crate::ai_gateway) use server::{
 #[allow(unused_imports)]
 pub(in crate::ai_gateway) use server::{force_next_accept_failure, retire_listener_epoch};
 #[cfg(test)]
-pub(in crate::ai_gateway) use non_streaming::attempt_non_streaming;
+pub(in crate::ai_gateway) use non_streaming::{attempt_non_streaming, attempt_non_streaming_with_settings};
 #[cfg(test)]
 pub(in crate::ai_gateway) use streaming::attempt_streaming;

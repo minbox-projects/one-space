@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 import { RefreshCw } from "lucide-react";
 import { skillModelOptions } from "./skillsModelOptions";
 import { errorToMessage } from "@/lib/messages";
@@ -57,14 +58,16 @@ function initialToolStates(): Record<AiModelId, ToolState> {
 }
 
 function formatCompactNumber(value: number): string {
-  return new Intl.NumberFormat(undefined, {
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  return new Intl.NumberFormat(locale, {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(value);
 }
 
 function formatWholeNumber(value: number): string {
-  return new Intl.NumberFormat(undefined).format(value);
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  return new Intl.NumberFormat(locale).format(value);
 }
 
 function formatChineseUnitNumber(value: number): string {
@@ -78,7 +81,8 @@ function formatChineseUnitNumber(value: number): string {
   const unit = units.find((item) => absValue >= item.threshold);
   if (!unit) return formatWholeNumber(value);
 
-  const formatted = new Intl.NumberFormat(undefined, {
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  const formatted = new Intl.NumberFormat(locale, {
     maximumFractionDigits: 1,
   }).format(value / unit.threshold);
   return `${formatted}${unit.suffix}`;
@@ -95,7 +99,8 @@ function localDateString(date = new Date()): string {
 function formatUsageDate(date: string): string {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return date;
-  return new Intl.DateTimeFormat(undefined, {
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
   }).format(parsed);
@@ -180,7 +185,8 @@ function localizeQuotaWindow(
 function formatQuotaResetTime(resetTime: string): string {
   const parsed = new Date(resetTime);
   if (Number.isNaN(parsed.getTime())) return resetTime;
-  return new Intl.DateTimeFormat(undefined, {
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
+  return new Intl.DateTimeFormat(locale, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
