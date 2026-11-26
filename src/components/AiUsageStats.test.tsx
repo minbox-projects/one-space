@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { AiUsageStats } from "@/components/AiUsageStats";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
@@ -365,7 +366,8 @@ function makeAntigravityQuotaResponse(): { groups: AntigravityQuotaGroup[] } {
 }
 
 describe("AiUsageStats", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     resetTauriMocks();
     invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
       if (command === "sessions_usage_tool_stats") {
@@ -844,7 +846,7 @@ describe("AiUsageStats", () => {
 
     // Reset times should be formatted in local timezone, not raw ISO strings.
     const formatExpectedReset = (iso: string) =>
-      new Intl.DateTimeFormat(undefined, {
+      new Intl.DateTimeFormat("en", {
         month: "numeric",
         day: "numeric",
         hour: "2-digit",
@@ -871,10 +873,10 @@ describe("AiUsageStats", () => {
 
     // Window bucket `window` renders its window label + remaining time.
     expect(
-      within(quotaPanel).getAllByText(/weekly|每周/).length,
+      within(quotaPanel).getAllByText(/weekly|每周/i).length,
     ).toBeGreaterThanOrEqual(1);
     expect(
-      within(quotaPanel).getAllByText(/5h|5 小时/).length,
+      within(quotaPanel).getAllByText(/5h|5 小时|5-hour/i).length,
     ).toBeGreaterThanOrEqual(1);
 
     // The quota command must have been invoked with no arguments.
@@ -1149,6 +1151,7 @@ describe("AiUsageStats", () => {
   });
 
   it("preserves CLI-reported group, model-list and bucket text while localizing only exact fixed labels", async () => {
+    await i18n.changeLanguage("zh");
     const quotaResponse = {
       groups: [
         {

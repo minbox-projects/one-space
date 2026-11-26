@@ -3292,7 +3292,7 @@ fn antigravity_transcript_numeric_timestamp_counts_correctly() {
 }
 
 // ============================================================================
-// R5 — cache freshness probe (纯函数) + fake-agy PATH probe
+// R5 — cache freshness probe (纯函数) + fake-agy fixture probe
 // ============================================================================
 
 /// R5 — `antigravity_quota_cache_fresh()` pure function: 5-minute TTL probe.
@@ -3312,24 +3312,44 @@ fn antigravity_quota_cache_fresh_returns_false_after_five_minutes() {
     assert!(!antigravity_quota_cache_fresh(base, base + StdDuration::from_secs(301)));
 }
 
-/// R5 — fake `agy` in temp dir: sets up a temporary directory with a mock
-/// `agy` script that outputs a valid quota envelope, prepends it to PATH,
-/// then calls `sessions_antigravity_quota()` expecting successful parsing.
-///
-/// If `crate::cli_probe::augmented_path()` does NOT respect test-time PATH
-/// modifications, this test will fail. In that case, mark it `#[ignore]`.
+/// Fake `agy` program: an executable fixture that prints a valid quota
+/// envelope, pointed at through the quota module's test seam so no process-wide
+/// `PATH` is touched, then exercised through `sessions_antigravity_quota()`.
 #[test]
-fn sessions_antigravity_quota_with_fake_agy_in_test_path() {
+fn sessions_antigravity_quota_parses_fake_agy_envelope() {
     let root = make_temp_dir("fake-agy-path");
 
     // Create a fake `agy` script that outputs a minimal valid envelope.
     let bin_dir = root.join("bin");
     fs::create_dir_all(&bin_dir).expect("create fake agy bin dir");
     let fake_agy = bin_dir.join("agy");
-    let script_content = format!(
-        "#!/bin/sh\nprintf '{{\n  \"status\": \"SUCCESS\",\n  \"command\": {{\n    \"name\": \"usage\",\n    \"data\": {{\n      \"groups\": [{{\n        \"name\": \"Test Group\",\n        \"buckets\": [{{\n          \"id\": \"test-weekly\",\n          \"name\": \"Weekly Limit\",\n          \"window\": \"weekly\",\n          \"remaining_fraction\": 0.5,\n          \"reset_time\": \"2026-12-01T00:00:00Z\"\n        }}]\n      }}]\n    }}\n  }}\n}}'\n"
-    );
-    fs::write(&fake_agy, script_content).expect("write fake agy script");
+    // The envelope is built as a raw literal so the shell heredoc-free `printf`
+    // stays readable; it is the exact shape `agy -p /usage --output-format json`
+    // prints, with one group and one weekly bucket.
+    const ENVELOPE: &str = r#"{
+  "status": "SUCCESS",
+  "command": {
+    "name": "usage",
+    "data": {
+      "groups": [
+        {
+          "name": "Test Group",
+          "buckets": [
+            {
+              "id": "test-weekly",
+              "name": "Weekly Limit",
+              "window": "weekly",
+              "remaining_fraction": 0.5,
+              "reset_time": "2026-12-01T00:00:00Z"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}"#;
+    let script_content = format!("#!/bin/sh\nprintf '%s\\n' '{ENVELOPE}'\n");
+    fs::write(&fake_agy, &script_content).expect("write fake agy script");
     // Make it executable.
     #[cfg(not(target_os = "windows"))]
     std::process::Command::new("chmod")
@@ -3338,40 +3358,16 @@ fn sessions_antigravity_quota_with_fake_agy_in_test_path() {
         .status()
         .ok();
 
-    // Prepend fake bin to PATH.
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.to_string_lossy(), old_path);
-    std::env::set_var("PATH", &new_path);
+    // Run the fixture through the module's thread-scoped program seam.
+    let _agy_override = super::set_test_agy_program(Some(fake_agy.clone()));
 
     // Clear any cached quota data.
     sessions_usage_clear_cache();
 
-    // Try to fetch quota via `sessions_antigravity_quota()`.
-    // The child process inherits the modified PATH, so our fake agy should be
-    // found — BUT only if augmented_path() respects test-time PATH changes.
     let result = sessions_antigravity_quota(None);
-
-    // Restore old PATH.
-    std::env::set_var("PATH", old_path);
-
-    if result.is_ok() {
-        // Success: the fake agy was found and its output parsed.
-        let snap = result.expect("quota snapshot from fake agy");
-        assert_eq!(snap.groups.len(), 1);
-        assert_eq!(snap.groups[0].name, "Test Group");
-    } else {
-        // Failure: either agy not found in PATH or augmented_path() ignores test PATH.
-        // This is expected if cli_probe::augmented_path() does not pass through
-        // the caller's test-time environment PATH modification.
-        let err = result.unwrap_err();
-        // Accept known failure modes gracefully for now.
-        if err.contains("未检测到 Antigravity CLI") || err.contains("无法启动") {
-            // Expected when agy is not discoverable despite PATH override.
-        } else {
-            // Unexpected parse error — something else went wrong.
-            panic!("unexpected quota error: {}", err);
-        }
-    }
+    let snap = result.expect("quota snapshot from fake agy");
+    assert_eq!(snap.groups.len(), 1);
+    assert_eq!(snap.groups[0].name, "Test Group");
 
     let _ = fs::remove_dir_all(root);
 }

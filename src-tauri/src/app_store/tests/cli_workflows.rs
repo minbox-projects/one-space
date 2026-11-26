@@ -53,26 +53,21 @@ fn write_executable(path: &Path, content: &str) {
     fs::set_permissions(path, perms).expect("chmod stub");
 }
 
+/// Point the `claude` create command at an absolute path through the device
+/// configuration the launch path reads.
+///
+/// The stub is selected per test this way instead of by rewriting the process
+/// `PATH`: `PATH` is shared by every concurrently running test, and the ones
+/// that shell out to system tools (`git`, `cat`, `kill`) would lose them.
 #[cfg(unix)]
-struct PathRestore(Option<String>);
-
-#[cfg(unix)]
-impl Drop for PathRestore {
-    fn drop(&mut self) {
-        match self.0.take() {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
-        }
-    }
-}
-
-/// Temporarily point the child-process search path at isolated stubs. The guard
-/// restores the previous value on drop, including during an assertion unwind.
-#[cfg(unix)]
-fn set_path(value: &str) -> PathRestore {
-    let previous = std::env::var("PATH").ok();
-    std::env::set_var("PATH", value);
-    PathRestore(previous)
+fn configure_claude_launch_command(command: &str) {
+    let app_dir = crate::config::get_app_dir().expect("resolve app dir");
+    let mut device = crate::config::DeviceConfig::default();
+    let mut commands = device.ai_model_launch_commands.take().unwrap_or_default();
+    commands.insert("claude".to_string(), command.to_string());
+    device.ai_model_launch_commands = Some(commands);
+    let serialized = serde_json::to_string(&device).expect("serialize device config");
+    fs::write(app_dir.join("config.json"), serialized).expect("write device config");
 }
 
 /// AC-001 OpenCode active-set consistency: the real internal CLI `env use`
@@ -164,15 +159,16 @@ fn create_in_current_terminal_publishes_encrypted_pending_record_with_launch_arg
 
         let argv_log = home.join("native-argv.log");
         let cwd_log = home.join("native-cwd.log");
+        let stub = stub_bin.join("claude");
         write_executable(
-            &stub_bin.join("claude"),
+            &stub,
             &format!(
                 "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > '{argv}'\npwd > '{cwd}'\nexit 0\n",
                 argv = argv_log.display(),
                 cwd = cwd_log.display()
             ),
         );
-        let _path = set_path(&format!("{}:/usr/bin:/bin", stub_bin.display()));
+        configure_claude_launch_command(&stub.to_string_lossy());
 
         let name = "my project's \"odd\" name";
         let session = claude_session(&working_dir, name);
@@ -237,11 +233,11 @@ fn create_in_current_terminal_spawn_failure_rolls_back_but_nonzero_child_is_pend
         let working_dir = home.join("project");
         fs::create_dir_all(&working_dir).expect("create working dir");
 
-        // Spawn failure: no native tool is reachable on an isolated PATH.
+        // Spawn failure: the configured command names an absolute path that does
+        // not exist, so the exec itself fails without any `PATH` change.
         {
-            let empty_bin = home.join("empty-bin");
-            fs::create_dir_all(&empty_bin).expect("create empty bin");
-            let _path = set_path(&empty_bin.to_string_lossy());
+            let missing = home.join("missing-bin").join("claude");
+            configure_claude_launch_command(&missing.to_string_lossy());
             let error = tauri::async_runtime::block_on(
                 session_service::create_session_in_current_terminal(
                     claude_session(&working_dir, "spawn should fail"),
@@ -262,11 +258,9 @@ fn create_in_current_terminal_spawn_failure_rolls_back_but_nonzero_child_is_pend
         // Real nonzero child: registration remains pending and recoverable.
         let stub_bin = home.join("nonzero-bin");
         fs::create_dir_all(&stub_bin).expect("create stub bin");
-        write_executable(
-            &stub_bin.join("claude"),
-            "#!/usr/bin/env bash\nexit 7\n",
-        );
-        let _path = set_path(&format!("{}:/usr/bin:/bin", stub_bin.display()));
+        let stub = stub_bin.join("claude");
+        write_executable(&stub, "#!/usr/bin/env bash\nexit 7\n");
+        configure_claude_launch_command(&stub.to_string_lossy());
         let (response, status) = tauri::async_runtime::block_on(
             session_service::create_session_in_current_terminal(
                 claude_session(&working_dir, "nonzero child"),

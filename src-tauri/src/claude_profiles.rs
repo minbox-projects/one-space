@@ -65,6 +65,28 @@ pub(crate) async fn materialize_claude_settings_sp_async(
     materialize_claude_settings_sp_async_inner(provider, profile_dir).await
 }
 
+/// Test-only override for the protocol-router start result.
+///
+/// Materializing a Claude profile for a `protocol_router` provider starts the
+/// real router, which binds its configured port. Tests assert the written
+/// profile, not the listener, so an override lets them skip the bind instead of
+/// depending on a fixed port being free in the process.
+#[cfg(test)]
+thread_local! {
+    static TEST_ROUTER_START: std::cell::RefCell<
+        Option<Result<crate::protocol_router::ProtocolRouterStatus, String>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Replace the router start result for the current thread; the previous
+/// override is returned so a guard can restore it.
+#[cfg(test)]
+pub(crate) fn set_test_router_start(
+    value: Option<Result<crate::protocol_router::ProtocolRouterStatus, String>>,
+) -> Option<Result<crate::protocol_router::ProtocolRouterStatus, String>> {
+    TEST_ROUTER_START.with(|slot| slot.replace(value))
+}
+
 fn materialize_claude_settings_sp_sync(
     provider: &crate::app_store::ServiceProviderRecord,
     profile_dir: &Path,
@@ -76,6 +98,17 @@ async fn materialize_claude_settings_sp_async_inner(
     provider: &crate::app_store::ServiceProviderRecord,
     profile_dir: &Path,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let overridden = TEST_ROUTER_START.with(|slot| slot.borrow_mut().take());
+        if let Some(result) = overridden {
+            return materialize_claude_settings_sp_with_router_start(
+                provider,
+                profile_dir,
+                Some(result),
+            );
+        }
+    }
     materialize_claude_settings_sp_with_router_start(
         provider,
         profile_dir,

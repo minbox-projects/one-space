@@ -6458,29 +6458,29 @@ async fn ai_gateway_start_and_stop_persist_enabled_flag() {
     );
 }
 
-/// Finding C (low): a blackholed upstream connect must be classified as a
-/// retryable failure and switch to the next candidate instead of hanging or
-/// being treated as success (AC-010, AC-011).
+/// An upstream that accepts the TCP connection but never answers must not hang
+/// the forwarding request. The enforced read timeout makes it a retryable
+/// failure that switches to the next candidate and counts toward the failure
+/// threshold.
 ///
-/// TEST-NET-1 (`192.0.2.0/24`) is reserved and non-routable, so the SYN is
-/// dropped and the connect blackholes until a connect/request timeout is
-/// enforced. The 15s bound below encodes "must not hang"; it is generous enough
-/// for a conventional connect timeout (the repo's `proxy.rs` uses 10s).
-/// Deliberately real-time (not `start_paused`): this drives a genuine connect to
-/// a non-routable TEST-NET address. The connect is completed by the real OS
-/// network stack, so a paused clock cannot coordinate it: measured under
-/// `start_paused` the attempt raced to the 60s read timeout and never observed
-/// the real route failure, changing which production timeout fired. The 15s
-/// wall bound below is therefore a real-time guard.
+/// The unresponsive upstream is a local loopback listener, so the failure is
+/// deterministic rather than dependent on a host's route to a reserved address.
+/// The test is deliberately real-time (not `start_paused`): it drives genuine
+/// loopback I/O, so a paused clock could not coordinate with the client's real
+/// timeouts. A short, explicit read timeout keeps the wall time bounded while
+/// still exercising the real transport; the outer wall bound only encodes
+/// "must not hang".
 #[tokio::test]
-async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
-    let _home = isolated_temp_home("connect-timeout-retry");
-    let blackhole_url = "http://192.0.2.1:81";
+async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
+    const READ_TIMEOUT_SECS: u32 = 5;
+
+    let _home = isolated_temp_home("unresponsive-timeout");
+    let hang_url = spawn_unresponsive_upstream().await;
     let (ok_url, ok_log) =
         spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
 
     let mut config = config_with_key(0);
-    let mut a = upstream_provider("a", "Provider A", blackhole_url, "sk-a", Some("remote-model"));
+    let mut a = upstream_provider("a", "Provider A", &hang_url, "sk-a", Some("remote-model"));
     let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
     // Each provider needs a mapping for row-level health assertions.
     a.mappings.push(mapping("local-model", "remote-model", None));
@@ -6495,10 +6495,14 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
     // the persisted configuration.
     super::storage::write_config(&config).expect("seed relay config");
 
+    let settings = super::GatewaySettings {
+        read_timeout_secs: READ_TIMEOUT_SECS,
+        ..super::GatewaySettings::default()
+    };
     let mut attempts = Vec::new();
     let response = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        super::runtime_http::attempt_non_streaming(
+        std::time::Duration::from_secs(30),
+        super::runtime_http::attempt_non_streaming_with_settings(
             &[a, b],
             "/v1/chat/completions",
             &body,
@@ -6507,10 +6511,11 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
             false,
             None,
             &mut attempts,
+            &settings,
         ),
     )
     .await
-    .expect("a blackhole connect must not hang; it must time out and be retryable");
+    .expect("an unresponsive upstream must not hang; a timeout must be enforced");
 
     assert_eq!(response.status, 200, "a timed-out candidate must switch");
     assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
@@ -6523,9 +6528,8 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
     assert_eq!(attempts[0].provider_id, "a");
     assert_eq!(attempts[0].result, UsageResult::Failure);
     assert!(attempts[0].duration_ms >= 1);
-    // A direct connect timeout records status 0 with a `network error: …` text.
-    // This environment proxies TEST-NET-1 and answers a real HTTP 502 instead,
-    // so neither value is asserted here; the local-mock tests
+    // The failure status and message shape vary with how the response stream
+    // fails, so neither is asserted here; the local-mock tests
     // `end_to_end_network_failure_falls_back_and_tries_first_candidate_once` and
     // `streaming_all_unavailable_network_error_logs_zero_status` pin that shape.
     assert_eq!(attempts[1].provider_id, "b");
@@ -6534,7 +6538,7 @@ async fn blackhole_connection_timeout_is_retryable_and_switches_within_bound() {
     let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
     assert_eq!(
         a_stored.mappings[0].consecutive_failures, 1,
-        "a connection timeout must count as a failure"
+        "a response timeout must count as a failure"
     );
     assert!(!a_stored.mappings[0].auto_disabled, "one timeout must not auto-disable");
 }
@@ -6558,65 +6562,6 @@ async fn spawn_unresponsive_upstream() -> String {
         }
     });
     format!("http://{}", addr)
-}
-
-/// Finding C (low), deterministic path: an upstream that accepts the TCP
-/// connection but never answers must not hang the forwarding request. The
-/// enforced idle read timeout (60s, see `forwarding::UPSTREAM_READ_TIMEOUT`)
-/// makes it a retryable failure that switches to the next candidate and counts
-/// toward the failure threshold (AC-010, AC-011).
-///
-/// The 75s bound only encodes "must not hang": it is deliberately generous
-/// because the idle budget before the first byte arrives is now 60s. It no
-/// longer encodes "fails fast" — a fast first-byte deadline is not a
-/// requirement, as `slow_first_byte_upstream_is_served_within_the_relaxed_budget`
-/// pins down.
-#[tokio::test(start_paused = true)]
-async fn unresponsive_upstream_is_a_retryable_timeout_not_a_hang() {
-    let _home = isolated_temp_home("unresponsive-timeout");
-    let hang_url = spawn_unresponsive_upstream().await;
-    let (ok_url, ok_log) =
-        spawn_mock_upstream(|_| MockReply::Json(200, json!({"id": "from-b"}))).await;
-
-    let mut config = config_with_key(0);
-    let mut a = upstream_provider("a", "Provider A", &hang_url, "sk-a", Some("remote-model"));
-    let mut b = upstream_provider("b", "Provider B", &ok_url, "sk-b", Some("remote-model"));
-    // Each provider needs a mapping for row-level health assertions.
-    a.mappings.push(mapping("local-model", "remote-model", None));
-    b.mappings.push(mapping("local-model", "remote-model", None));
-    config.providers.push(a.clone());
-    config.providers.push(b.clone());
-    let body = serde_json::to_vec(&json!({"model": "local-model"})).unwrap();
-
-    // Health settlement merges into the latest persisted state (it never
-    // writes back a request-start snapshot), so the request inputs must exist
-    // on disk first — mirroring production, where candidates always come from
-    // the persisted configuration.
-    super::storage::write_config(&config).expect("seed relay config");
-
-    let (response, _elapsed) = tokio::time::timeout(
-        std::time::Duration::from_secs(75),
-        attempt_non_streaming_paused(
-            &[a, b],
-            "/v1/chat/completions",
-            &body,
-            Some("local-model"),
-            &mut config,
-        ),
-    )
-    .await
-    .expect("an unresponsive upstream must not hang; a timeout must be enforced");
-
-    assert_eq!(response.status, 200, "a timed-out candidate must switch");
-    assert!(String::from_utf8_lossy(&response.body).contains("from-b"));
-    assert_eq!(ok_log.lock().unwrap().len(), 1);
-    let live = super::storage::read_config().expect("read persisted provider state");
-    let a_stored = live.providers.iter().find(|p| p.id == "a").unwrap();
-    assert_eq!(
-        a_stored.mappings[0].consecutive_failures, 1,
-        "a response timeout must count as a failure"
-    );
-    assert!(!a_stored.mappings[0].auto_disabled, "one timeout must not auto-disable");
 }
 
 /// Bind a loopback listener that accepts connections, reads the request and only
@@ -35387,12 +35332,12 @@ async fn gateway_cost_breakdown_retry_records_failed_attempt_then_priced_success
 
 
 #[test]
-fn opencode_zen_sidecar_transport_resolution_red() {
+fn opencode_zen_sidecar_transport_resolution() {
     use crate::ai_gateway::types_config::{GatewayConfig, GatewayUpstreamProvider, ProviderTemplate, ProviderTemplateState, TransportStrategy};
     use crate::ai_gateway::templates::builtin_templates;
     let builtins = builtin_templates().expect("built-in templates must parse");
     let tpl = builtins.iter().find(|t| t.id == "opencode-zen-free").expect("template exists");
-    assert_eq!(tpl.base_url, "https://opencode.ai/zen/v1");
+    assert_eq!(tpl.base_url, "https://opencode.ai/inference/openai/v1");
     assert_eq!(tpl.transport_strategy, TransportStrategy::OpencodeZenSidecar);
     assert_eq!(tpl.icon.as_deref(), Some("opencode"));
     let expected = [

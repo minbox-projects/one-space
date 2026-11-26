@@ -128,16 +128,27 @@ fn service_providers_upsert_materializes_claude_isolated_profile_without_touchin
             r#"{"theme":"dark"}"#,
         );
 
-        let response = tauri::async_runtime::block_on(service_providers_upsert_inner(json!({
-            "id": "claude-router",
-            "name": "Claude Router",
-            "tool": "claude",
-            "code": "work",
-            "api_key": "sk-upstream",
-            "base_url": "https://upstream.example.com/v1",
-            "claude_api_format": "open_ai_responses",
-            "claude_connection_mode": "protocol_router"
-        })))
+        let response = tauri::async_runtime::block_on(async {
+            let _router_start = crate::claude_profiles::set_test_router_start(Some(Ok(
+                crate::protocol_router::ProtocolRouterStatus {
+                    running: true,
+                    enabled: true,
+                    port: 18080,
+                    route_count: 0,
+                },
+            )));
+            service_providers_upsert_inner(json!({
+                "id": "claude-router",
+                "name": "Claude Router",
+                "tool": "claude",
+                "code": "work",
+                "api_key": "sk-upstream",
+                "base_url": "https://upstream.example.com/v1",
+                "claude_api_format": "open_ai_responses",
+                "claude_connection_mode": "protocol_router"
+            }))
+            .await
+        })
         .expect("upsert claude provider");
 
         let provider_id = response

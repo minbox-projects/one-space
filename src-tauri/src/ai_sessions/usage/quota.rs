@@ -16,6 +16,20 @@ const ANTIGRAVITY_QUOTA_CACHE_TTL: StdDuration = StdDuration::from_secs(300);
 const ANTIGRAVITY_QUOTA_EXEC_TIMEOUT: StdDuration = StdDuration::from_secs(35);
 const ANTIGRAVITY_QUOTA_TEXT_LIMIT: usize = 400;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_AGY_PROGRAM: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only seam: run the quota command from an absolute fixture path instead
+/// of resolving `agy` through the process-wide `PATH`. A global `PATH` change
+/// would also hide system tools from every concurrently running test.
+#[cfg(test)]
+pub(crate) fn set_test_agy_program(value: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    TEST_AGY_PROGRAM.with(|slot| slot.replace(value))
+}
+
 #[derive(Debug)]
 pub(super) struct CachedAntigravityQuota {
     collected_at: Instant,
@@ -144,7 +158,13 @@ pub fn parse_antigravity_quota_envelope(
 }
 
 fn run_antigravity_quota_command() -> Result<String, String> {
-    let mut command = Command::new("agy");
+    #[cfg(test)]
+    let program = TEST_AGY_PROGRAM
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or_else(|| std::path::PathBuf::from("agy"));
+    #[cfg(not(test))]
+    let program = std::path::PathBuf::from("agy");
+    let mut command = Command::new(program);
     command
         .arg("-p")
         .arg("/usage")

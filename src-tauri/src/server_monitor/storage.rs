@@ -72,7 +72,26 @@ impl ServerMonitorStore {
         self.root.join(DATABASE_FILE_NAME)
     }
 
-    fn master_password() -> Result<String, String> {
+    fn master_password(&self) -> Result<String, String> {
+        #[cfg(test)]
+        {
+            // A store's document lives under its own `root`, but the shipped
+            // key resolution reads the process-wide app directory. Tests run
+            // with per-test temp roots and concurrently swapped `HOME`, so
+            // saving and loading could otherwise derive different keys. Scope
+            // the test key to the store's own root to keep each store
+            // self-contained.
+            let path = self.root.join(".local_key");
+            self.ensure_root()?;
+            return if path.exists() {
+                fs::read_to_string(&path).map_err(|error| error.to_string())
+            } else {
+                let password = uuid::Uuid::new_v4().to_string();
+                fs::write(&path, &password).map_err(|error| error.to_string())?;
+                Ok(password)
+            };
+        }
+        #[cfg(not(test))]
         crate::crypto::get_or_init_master_password()
     }
 
@@ -93,7 +112,7 @@ impl ServerMonitorStore {
         if encrypted.trim().is_empty() {
             return Err("Server monitor config is empty".to_string());
         }
-        let password = Self::master_password()?;
+        let password = self.master_password()?;
         let plaintext = crate::crypto::decrypt(encrypted.trim(), &password)
             .map_err(|error| format!("Failed to decrypt server monitor config: {error}"))?;
         let config: ServerMonitorConfig = serde_json::from_str(&plaintext)
@@ -117,7 +136,7 @@ impl ServerMonitorStore {
         }
         let plaintext = serde_json::to_string(config)
             .map_err(|error| format!("Failed to serialize server monitor config: {error}"))?;
-        let password = Self::master_password()?;
+        let password = self.master_password()?;
         let encrypted = crate::crypto::encrypt(&plaintext, &password)?;
         crate::atomic_write_string(&self.config_path(), &encrypted)
     }

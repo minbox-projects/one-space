@@ -2,7 +2,54 @@
 
 use crate::server_monitor::runtime::{ServerMonitorClock, ServerMonitorEventSink, ServerMonitorHistoryRange, ServerMonitorRuntime, NoopEventSink};
 use crate::server_monitor::storage::{ServerMonitorConfig, ServerMonitorStore};
+use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Isolates the master key that encrypts the monitor configuration.
+///
+/// `ServerMonitorStore` encrypts with the profile master password, which lives
+/// in `<app_dir>/.local_key` under the real home directory unless overridden.
+/// The same key file is rotated by unrelated suites, so every case that reads
+/// or writes the encrypted config owns a private home for its whole body.
+///
+/// The scheduler and collection workers persist config on their own threads,
+/// where a thread-local home override is not visible, so the process `HOME`
+/// changes as well and the shared home lock keeps that change serialized.
+struct IsolatedMonitorHome {
+    path: PathBuf,
+    original: Option<std::ffi::OsString>,
+    _override: crate::config::test_home::TestHomeGuard,
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for IsolatedMonitorHome {
+    fn drop(&mut self) {
+        match self.original.take() {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn isolated_monitor_home(label: &str) -> IsolatedMonitorHome {
+    let serial = crate::lock_test_home_env();
+    let path = std::env::temp_dir().join(format!(
+        "onespace-sm-home-{}-{}",
+        label,
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&path).expect("create monitor temp home");
+    let override_guard = crate::config::test_home::TestHomeGuard::set(path.clone());
+    let original = std::env::var_os("HOME");
+    std::env::set_var("HOME", &path);
+    IsolatedMonitorHome {
+        path,
+        original,
+        _override: override_guard,
+        _serial: serial,
+    }
+}
 
 #[test]
 fn runtime_constructor_accepts_required_dependencies() {
@@ -111,6 +158,7 @@ fn framed_output() -> String {
 
 #[test]
 fn runtime_behavior_additive_fields_and_tick() {
+    let _home = isolated_monitor_home("tick");
     let root = std::env::temp_dir().join(format!("onespace-sm-rt-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -315,6 +363,7 @@ fn wait_until<F: Fn() -> bool>(mut cond: F, timeout_ms: u64) -> bool {
 
 #[test]
 fn daily_start_before_time_collects_once_per_target_at_the_due_minute() {
+    let _home = isolated_monitor_home("daily-before");
     let root = std::env::temp_dir().join(format!("onespace-sm-d1-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -358,6 +407,7 @@ fn daily_start_before_time_collects_once_per_target_at_the_due_minute() {
 
 #[test]
 fn daily_startup_after_the_minute_arms_only_future_times() {
+    let _home = isolated_monitor_home("daily-after");
     let root = std::env::temp_dir().join(format!("onespace-sm-d2-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -410,6 +460,7 @@ fn daily_startup_after_the_minute_arms_only_future_times() {
 
 #[test]
 fn daily_target_creation_or_resume_after_the_minute_does_not_replay() {
+    let _home = isolated_monitor_home("daily-create");
     // Scenario A
     let root = std::env::temp_dir().join(format!("onespace-sm-d3a-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
@@ -466,6 +517,7 @@ fn daily_target_creation_or_resume_after_the_minute_does_not_replay() {
 
 #[test]
 fn daily_claimed_slot_never_repeats_after_restart_or_clock_rollback() {
+    let _home = isolated_monitor_home("daily-claim");
     let root = std::env::temp_dir().join(format!("onespace-sm-d4-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -513,6 +565,7 @@ fn daily_claimed_slot_never_repeats_after_restart_or_clock_rollback() {
 
 #[test]
 fn daily_queued_target_starts_when_a_slot_frees_inside_the_minute() {
+    let _home = isolated_monitor_home("daily-queue");
     let root = std::env::temp_dir().join(format!("onespace-sm-d5-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -553,6 +606,7 @@ fn daily_queued_target_starts_when_a_slot_frees_inside_the_minute() {
 
 #[test]
 fn daily_claim_failure_makes_zero_network_calls_and_surfaces_error() {
+    let _home = isolated_monitor_home("claim-fail");
     let root = std::env::temp_dir().join(format!("onespace-sm-d6-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
     let db_path = root.join("server_monitor.db");
@@ -584,6 +638,7 @@ fn daily_claim_failure_makes_zero_network_calls_and_surfaces_error() {
 
 #[test]
 fn daily_blocked_target_is_not_retried_by_slots() {
+    let _home = isolated_monitor_home("daily-blocked");
     let root = std::env::temp_dir().join(format!("onespace-sm-d7-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -624,6 +679,7 @@ fn daily_blocked_target_is_not_retried_by_slots() {
 
 #[test]
 fn interval_start_collects_once_and_rearms_after_completion() {
+    let _home = isolated_monitor_home("interval");
     let root = std::env::temp_dir().join(format!("onespace-sm-i1-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -654,6 +710,7 @@ fn interval_start_collects_once_and_rearms_after_completion() {
 
 #[test]
 fn manual_refresh_shares_scheduled_inflight_collection() {
+    let _home = isolated_monitor_home("manual-refresh");
     let root = std::env::temp_dir().join(format!("onespace-sm-i2-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -682,6 +739,7 @@ fn manual_refresh_shares_scheduled_inflight_collection() {
 
 #[test]
 fn saving_interval_rearms_without_extra_collection() {
+    let _home = isolated_monitor_home("save-interval");
     let root = std::env::temp_dir().join(format!("onespace-sm-i3-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -711,6 +769,7 @@ fn saving_interval_rearms_without_extra_collection() {
 
 #[test]
 fn mode_switch_closes_old_session_without_overlap() {
+    let _home = isolated_monitor_home("mode-switch");
     let root = std::env::temp_dir().join(format!("onespace-sm-i4-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -752,6 +811,7 @@ fn mode_switch_closes_old_session_without_overlap() {
 
 #[test]
 fn pause_delete_source_change_and_shutdown_reject_late_results() {
+    let _home = isolated_monitor_home("late-results");
     // pause case
     {
         let root = std::env::temp_dir().join(format!("onespace-sm-pause-{}", uuid::Uuid::new_v4()));
@@ -851,6 +911,7 @@ fn pause_delete_source_change_and_shutdown_reject_late_results() {
 
 #[test]
 fn auth_blocked_target_waits_for_explicit_retry_or_resume() {
+    let _home = isolated_monitor_home("auth-blocked");
     // refresh retries
     {
         let root = std::env::temp_dir().join(format!("onespace-sm-auth1-{}", uuid::Uuid::new_v4()));
@@ -913,6 +974,7 @@ fn auth_blocked_target_waits_for_explicit_retry_or_resume() {
 
 #[test]
 fn auto_disabled_refresh_is_one_shot() {
+    let _home = isolated_monitor_home("auto-disabled");
     let root = std::env::temp_dir().join(format!("onespace-sm-auto-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -949,6 +1011,7 @@ fn auto_disabled_refresh_is_one_shot() {
 
 #[test]
 fn snapshot_reports_per_target_last_success_and_collecting() {
+    let _home = isolated_monitor_home("snapshot");
     // last_success per target
     {
         let root = std::env::temp_dir().join(format!("onespace-sm-snap1-{}", uuid::Uuid::new_v4()));
@@ -1029,6 +1092,7 @@ fn snapshot_reports_per_target_last_success_and_collecting() {
 
 #[test]
 fn daily_startup_inside_the_slot_grace_still_does_not_replay_today() {
+    let _home = isolated_monitor_home("daily-grace");
     let root = std::env::temp_dir().join(format!("onespace-sm-dgrace-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -1062,6 +1126,7 @@ fn daily_startup_inside_the_slot_grace_still_does_not_replay_today() {
 
 #[test]
 fn test_connection_uses_stored_password_and_persists_nothing() {
+    let _home = isolated_monitor_home("test-connection");
     let root = std::env::temp_dir().join(format!("onespace-sm-tc-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -1113,6 +1178,7 @@ fn test_connection_uses_stored_password_and_persists_nothing() {
 
 #[test]
 fn upsert_validation_boundaries_do_not_persist_invalid_targets() {
+    let _home = isolated_monitor_home("upsert-validation");
     let root = std::env::temp_dir().join(format!("onespace-sm-uv-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -1220,6 +1286,7 @@ fn upsert_validation_boundaries_do_not_persist_invalid_targets() {
 
 #[test]
 fn daily_spring_forward_gap_skips_configured_nonexistent_time() {
+    let _home = isolated_monitor_home("dst-spring");
     let root = std::env::temp_dir().join(format!("onespace-sm-dst-spring-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -1263,6 +1330,7 @@ fn daily_spring_forward_gap_skips_configured_nonexistent_time() {
 
 #[test]
 fn daily_fall_back_repeated_local_time_runs_once() {
+    let _home = isolated_monitor_home("dst-fall");
     let root = std::env::temp_dir().join(format!("onespace-sm-dst-fall-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();
@@ -1357,6 +1425,9 @@ fn real_ssh_runtime_interval_daily_and_pause_smoke() {
             .count()
     }
 
+    // This smoke swaps the process `HOME` and persists an encrypted config, so it
+    // shares the crate-wide home lock with the other home- and key-touching tests.
+    let _serial = crate::lock_test_home_env();
     let original_home = std::env::var("HOME").ok();
     let tmp_home = std::env::temp_dir().join(format!("onespace-smoke-rt-home-{}", uuid::Uuid::new_v4()));
     let tmp_root = std::env::temp_dir().join(format!("onespace-smoke-rt-root-{}", uuid::Uuid::new_v4()));
@@ -1486,6 +1557,7 @@ impl ServerMonitorEventSink for RecordingEventSink {
 
 #[test]
 fn collection_failure_notifies_event_sink() {
+    let _home = isolated_monitor_home("failure-notify");
     let root = std::env::temp_dir().join(format!("onespace-sm-notif-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let config = ServerMonitorConfig::default();
@@ -1527,6 +1599,7 @@ fn collection_failure_notifies_event_sink() {
 
 #[test]
 fn tunnel_target_upsert_validation_and_password_preservation() {
+    let _home = isolated_monitor_home("tunnel-validation");
     let root = std::env::temp_dir().join(format!("onespace-sm-tunnel-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let config = ServerMonitorConfig::default();
@@ -1723,6 +1796,7 @@ impl MonitorConnector for DynamicConnector {
 
 #[test]
 fn resource_alert_and_cooldown_behavior() {
+    let _home = isolated_monitor_home("alerts");
     let root = std::env::temp_dir().join(format!("onespace-sm-alert-{}", uuid::Uuid::new_v4()));
     let store = Arc::new(ServerMonitorStore::new(root.clone()));
     let mut config = ServerMonitorConfig::default();

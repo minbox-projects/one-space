@@ -195,11 +195,32 @@ fn run_version_command(command_path: &Path) -> std::io::Result<Output> {
     cmd.output()
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_PATH_BASE: std::cell::RefCell<Option<OsString>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only seam for the base of [`augmented_path`]: a test scopes fixture
+/// directories to its own thread instead of rewriting the process-wide `PATH`,
+/// so concurrently running tests that spawn system tools keep the real value.
+#[cfg(test)]
+pub(crate) fn set_test_path_base(value: Option<OsString>) -> Option<OsString> {
+    TEST_PATH_BASE.with(|slot| slot.replace(value))
+}
+
 pub(crate) fn augmented_path() -> Option<OsString> {
     let mut merged = Vec::<PathBuf>::new();
     let mut seen = HashSet::<PathBuf>::new();
 
-    if let Some(path_os) = env::var_os("PATH") {
+    #[cfg(test)]
+    let base = TEST_PATH_BASE
+        .with(|slot| slot.borrow().clone())
+        .or_else(|| env::var_os("PATH"));
+    #[cfg(not(test))]
+    let base = env::var_os("PATH");
+
+    if let Some(path_os) = base {
         for dir in env::split_paths(&path_os) {
             if seen.insert(dir.clone()) {
                 merged.push(dir);
@@ -288,11 +309,17 @@ fn discover_child_bin_dirs(root: &Path, layout: BinLayout) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_semver, fnm_node_version_roots, probe_cli_version};
+    use super::{extract_semver, fnm_node_version_roots, probe_cli_version, set_test_path_base};
     use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
 
+    /// Scope fixture directories as the CLI lookup base for this thread only.
+    ///
+    /// The lookup helper is process-global in production, but a test that
+    /// rewrote `PATH` would also strip system tools from every concurrently
+    /// running test. This guard swaps only the thread-local test base and
+    /// cleans up its fixture tree on drop.
     #[cfg(unix)]
     struct TestPath {
         previous: Option<OsString>,
@@ -302,23 +329,20 @@ mod tests {
     #[cfg(unix)]
     impl Drop for TestPath {
         fn drop(&mut self) {
-            if let Some(path) = self.previous.take() {
-                std::env::set_var("PATH", path);
-            } else {
-                std::env::remove_var("PATH");
-            }
+            set_test_path_base(self.previous.take());
             let _ = fs::remove_dir_all(&self.root);
         }
     }
 
     #[cfg(unix)]
-    static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[cfg(unix)]
-    fn lock_path() -> std::sync::MutexGuard<'static, ()> {
-        PATH_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn scope_path(root: &Path, dirs: &[&Path]) -> TestPath {
+        let previous = set_test_path_base(Some(
+            std::env::join_paths(dirs).expect("build fixture PATH"),
+        ));
+        TestPath {
+            previous,
+            root: root.to_path_buf(),
+        }
     }
 
     #[cfg(unix)]
@@ -370,8 +394,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn probe_cli_version_uses_the_newest_installed_copy() {
-        let _path_lock = lock_path();
-
         let root = std::env::temp_dir().join(format!(
             "onespace-cli-probe-{}-{}",
             std::process::id(),
@@ -385,15 +407,7 @@ mod tests {
         write_cli_version_fixture(&old_dir, "fixture-cli", "codex-cli", "0.145.0");
         write_cli_version_fixture(&new_dir, "fixture-cli", "codex-cli", "0.149.0");
 
-        let path_guard = TestPath {
-            previous: std::env::var_os("PATH"),
-            root: root.clone(),
-        };
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths([old_dir.as_path(), new_dir.as_path()])
-                .expect("build fixture PATH"),
-        );
+        let path_guard = scope_path(&root, &[old_dir.as_path(), new_dir.as_path()]);
 
         let result = probe_cli_version("fixture-cli");
 
@@ -405,8 +419,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn probe_cli_version_prefers_opencode_v2_over_v1() {
-        let _path_lock = lock_path();
-
         let root = std::env::temp_dir().join(format!(
             "onespace-opencode-probe-{}-{}",
             std::process::id(),
@@ -420,15 +432,7 @@ mod tests {
         write_cli_version_fixture(&v1_dir, "fixture-opencode", "opencode", "1.9.9");
         write_cli_version_fixture(&v2_dir, "fixture-opencode", "opencode", "2.0.0");
 
-        let path_guard = TestPath {
-            previous: std::env::var_os("PATH"),
-            root: root.clone(),
-        };
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths([v1_dir.as_path(), v2_dir.as_path()])
-                .expect("build OpenCode fixture PATH"),
-        );
+        let path_guard = scope_path(&root, &[v1_dir.as_path(), v2_dir.as_path()]);
 
         let result = probe_cli_version("fixture-opencode");
 
@@ -448,8 +452,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn probe_cli_version_orders_opencode_prerelease_identifiers_numerically() {
-        let _path_lock = lock_path();
-
         let root = std::env::temp_dir().join(format!(
             "onespace-opencode-prerelease-{}-{}",
             std::process::id(),
@@ -468,15 +470,7 @@ mod tests {
             "2.0.0-beta.10+build.7",
         );
 
-        let path_guard = TestPath {
-            previous: std::env::var_os("PATH"),
-            root: root.clone(),
-        };
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths([beta_2_dir.as_path(), beta_10_dir.as_path()])
-                .expect("build OpenCode fixture PATH"),
-        );
+        let path_guard = scope_path(&root, &[beta_2_dir.as_path(), beta_10_dir.as_path()]);
 
         let result = probe_cli_version("fixture-opencode");
 
@@ -488,8 +482,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn probe_cli_version_prefers_opencode_stable_over_prerelease() {
-        let _path_lock = lock_path();
-
         let root = std::env::temp_dir().join(format!(
             "onespace-opencode-stable-{}-{}",
             std::process::id(),
@@ -508,15 +500,7 @@ mod tests {
         );
         write_cli_version_fixture(&stable_dir, "fixture-opencode", "opencode", "2.0.0");
 
-        let path_guard = TestPath {
-            previous: std::env::var_os("PATH"),
-            root: root.clone(),
-        };
-        std::env::set_var(
-            "PATH",
-            std::env::join_paths([prerelease_dir.as_path(), stable_dir.as_path()])
-                .expect("build OpenCode fixture PATH"),
-        );
+        let path_guard = scope_path(&root, &[prerelease_dir.as_path(), stable_dir.as_path()]);
 
         let result = probe_cli_version("fixture-opencode");
 
