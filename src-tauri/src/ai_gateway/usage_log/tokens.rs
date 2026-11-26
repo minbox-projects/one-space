@@ -259,6 +259,36 @@ pub(in crate::ai_gateway) fn parse_usage_from_response(body: &[u8]) -> Option<Ca
 pub(in crate::ai_gateway) struct SseUsageAccumulator {
     buffer: String,
     usage: Option<CanonicalUsage>,
+    terminal: bool,
+}
+
+/// Whether one decoded Chat Completions or Responses event is the stream's own
+/// terminal outcome: a row with a non-null `finish_reason`, or a Responses event
+/// type that ends the response (`response.completed`, `response.incomplete`,
+/// `response.failed` or `error`).
+fn event_is_terminal(value: &Value) -> bool {
+    if value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| {
+            matches!(
+                kind,
+                "response.completed" | "response.incomplete" | "response.failed" | "error"
+            )
+        })
+    {
+        return true;
+    }
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .is_some_and(|reason| !reason.is_null())
+            })
+        })
 }
 
 impl SseUsageAccumulator {
@@ -280,12 +310,21 @@ impl SseUsageAccumulator {
             return;
         };
         let data = data.trim();
-        if data.is_empty() || data == "[DONE]" {
+        if data.is_empty() {
+            return;
+        }
+        // `[DONE]` is the Chat Completions terminal marker; it carries no
+        // payload to accumulate.
+        if data == "[DONE]" {
+            self.terminal = true;
             return;
         }
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return;
         };
+        if event_is_terminal(&value) {
+            self.terminal = true;
+        }
         // Chat Completions reports usage at the event top level; Responses
         // reports it nested under the response. A non-object payload (`null`,
         // string, number) never replaces the last valid object.
@@ -306,5 +345,11 @@ impl SseUsageAccumulator {
     /// The last valid usage object with its canonical validity classification.
     pub(in crate::ai_gateway) fn canonical_usage(&self) -> Option<CanonicalUsage> {
         self.usage
+    }
+
+    /// Whether the stream has already delivered its own terminal outcome event,
+    /// so a later downstream failure cannot turn it back into a cancellation.
+    pub(in crate::ai_gateway) fn terminal_seen(&self) -> bool {
+        self.terminal
     }
 }

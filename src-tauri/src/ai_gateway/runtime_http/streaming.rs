@@ -9,6 +9,24 @@ use super::errors::{
 };
 use super::http_io::{json_response, write_response, write_stream_headers};
 use super::routing::protocol_for_path;
+use std::sync::atomic::AtomicBool;
+
+/// Whether the upstream stream has already emitted its own terminal outcome
+/// event, so a downstream write failure is a late close rather than a
+/// cancellation.
+fn terminal_seen(
+    native_messages: bool,
+    native_sse: &Option<AnthropicSseObserver>,
+    usage: &SseUsageAccumulator,
+) -> bool {
+    if native_messages {
+        native_sse
+            .as_ref()
+            .is_some_and(|observer| observer.is_success())
+    } else {
+        usage.terminal_seen()
+    }
+}
 
 /// Try immediate fallback candidates, then bounded retries before downstream output.
 ///
@@ -30,6 +48,10 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
     probe: Option<&ProbeCandidate>,
     attempts: &mut Vec<AttemptLog>,
 ) -> Result<ForwardCapture, String> {
+    // The direct seam is never attached to a live downstream client, so its
+    // write gate stays open and completion is not signalled to a caller.
+    let suppress_writes = AtomicBool::new(false);
+    let upstream_completed = AtomicBool::new(false);
     attempt_streaming_inner(
         writer,
         ordered,
@@ -42,6 +64,8 @@ pub(in crate::ai_gateway) async fn attempt_streaming<W: AsyncWrite + Unpin>(
         attempts,
         &[],
         &GatewaySettings::default(),
+        &suppress_writes,
+        &upstream_completed,
     )
     .await
 }
@@ -58,6 +82,8 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
     attempts: &mut Vec<AttemptLog>,
     fallback: &[PoolFallbackStage],
     settings: &GatewaySettings,
+    suppress_writes: &AtomicBool,
+    upstream_completed: &AtomicBool,
 ) -> Result<ForwardCapture, String> {
     let protocol = protocol_for_path(path);
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -622,6 +648,14 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                         }
                         for output in &first_output {
                             if let Err(error) = writer.write_all(output).await {
+                                if terminal_seen(native_messages, &native_sse, &usage) {
+                                    // The upstream already ended: the request is
+                                    // complete, so stop writing to the dead client
+                                    // and keep consuming the stream for its log.
+                                    suppress_writes.store(true, Ordering::Relaxed);
+                                    capture.downstream_cancelled = true;
+                                    break;
+                                }
                                 health.apply();
                                 return Err(error.to_string());
                             }
@@ -634,9 +668,13 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                         .last()
                         .and_then(|output| output.last().copied());
                     if stream_error.is_none() && writer.flush().await.is_err() {
-                        health.apply();
+                        if !terminal_seen(native_messages, &native_sse, &usage) {
+                            health.apply();
+                            capture.downstream_cancelled = true;
+                            return Ok(capture);
+                        }
+                        suppress_writes.store(true, Ordering::Relaxed);
                         capture.downstream_cancelled = true;
-                        return Ok(capture);
                     }
                     loop {
                         // Bytes already sent: terminate the stream, never switch.
@@ -697,6 +735,10 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                                 first_token_ms,
                                 avg_tps,
                             ));
+                            // The failed attempt is this request's terminal
+                            // upstream outcome, so it stays loggable even if the
+                            // client has already gone.
+                            upstream_completed.store(true, Ordering::Relaxed);
                             // Complete the SSE event boundary so the error
                             // fragment parses standalone even when the last
                             // forwarded byte is not a newline, then append one
@@ -775,9 +817,17 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                                 }
                                 for item in &output {
                                     if writer.write_all(item).await.is_err() {
-                                        health.apply();
+                                        if !terminal_seen(native_messages, &native_sse, &usage) {
+                                            health.apply();
+                                            capture.downstream_cancelled = true;
+                                            return Ok(capture);
+                                        }
+                                        // A close after the upstream's terminal
+                                        // event: mute the writer and keep reading
+                                        // so the completed request is still logged.
+                                        suppress_writes.store(true, Ordering::Relaxed);
                                         capture.downstream_cancelled = true;
-                                        return Ok(capture);
+                                        break;
                                     }
                                 }
                                 last_forwarded = output
@@ -851,6 +901,10 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                                             first_token_ms,
                                             avg_tps,
                                         ));
+                                        // The stream ended here, so a client that
+                                        // already left still gets this terminal
+                                        // failure row.
+                                        upstream_completed.store(true, Ordering::Relaxed);
                                         if !observer.has_in_band_error() {
                                             if is_messages_path(path) {
                                                 let fragment =
@@ -966,6 +1020,10 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                                             first_token_ms,
                                             avg_tps,
                                         ));
+                                        // The converted stream ended in its
+                                        // terminal failure, so it stays loggable
+                                        // after a downstream close.
+                                        upstream_completed.store(true, Ordering::Relaxed);
                                         if last_forwarded != Some(b'\n') {
                                             let _ = writer.write_all(b"\n").await;
                                         }
@@ -1039,6 +1097,10 @@ async fn attempt_streaming_inner<W: AsyncWrite + Unpin>(
                                     first_token_ms,
                                     avg_tps,
                                 ));
+                                // The served success is this request's terminal
+                                // upstream outcome: the buffered attempts stay
+                                // loggable even when the client already left.
+                                upstream_completed.store(true, Ordering::Relaxed);
                                 // A completed, delivered stream is the served
                                 // success of this pool candidate: publish its
                                 // exact identity and the caller-protocol tool
@@ -1281,6 +1343,8 @@ pub(super) async fn attempt_streaming_request<W: AsyncWrite + Unpin>(
     attempts: &mut Vec<AttemptLog>,
     fallback: &[PoolFallbackStage],
     settings: &GatewaySettings,
+    suppress_writes: &AtomicBool,
+    upstream_completed: &AtomicBool,
 ) -> Result<ForwardCapture, String> {
     attempt_streaming_inner(
         writer,
@@ -1294,6 +1358,8 @@ pub(super) async fn attempt_streaming_request<W: AsyncWrite + Unpin>(
         attempts,
         fallback,
         settings,
+        suppress_writes,
+        upstream_completed,
     )
     .await
 }

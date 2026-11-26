@@ -29,3 +29,4 @@ Status: implemented
 - 正常 success、failure、重试恢复多尝试与无候选日志语义保持不变，错误文本、token 与费用处理、保留和 attempt 标签也保持不变。
 - 部分取代：[Gateway Per-Attempt Request Logging and Stored Error Text](../architecture/2026-09-20-gateway-per-attempt-logging-and-error-text.md) 对正常完成请求的按尝试日志、终止行、已存错误文本、迁移缺省值与隐私边界仍然具有权威性。本记录只替换其取消决策，即保留已完成尝试、写入合成 `cancelled` 终止行并在请求日志视图中暴露历史 cancelled 行的部分。
 - 部分取代：[Gateway Migration Is Permanent and Version-Gated](../architecture/2026-09-24-version-gated-gateway-migration.md) 只取代本记录让历史 `cancelled` 行物理保留并保留兼容表示的决定；"取消或不可交付的入站请求写零行"的规则及本记录其余全部决定仍然成立。
+- 部分取代：[Gateway Logs Completed Usage After a Late Client Close](../bug-fix/2026-11-26-gateway-completed-usage-after-client-close.md) 只取代本记录「每次下游关闭都丢弃缓冲的已完成 attempts」的规则；本记录「上游终态前的真实取消写零行」的规则及其余全部决定仍然成立。

@@ -2,12 +2,22 @@ use super::*;
 use super::errors::{
     all_unavailable_payload_for_path, error_envelope, local_error_payload, no_candidate_message,
 };
-use super::http_io::{write_response, NativeHttpWriter};
+use super::http_io::{write_response, NativeHttpWriter, SuppressibleWriter};
 use super::non_streaming::attempt_non_streaming_request;
 use super::streaming::attempt_streaming_request;
 use super::usage::{
     record_request_usage_logs, record_usage_log, synthetic_terminal_row,
 };
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+/// Bounded time the connection handler keeps consuming an upstream stream after
+/// the downstream client has gone away, so a stream that already reached its
+/// terminal outcome can still be logged without stalling the handler. It only
+/// has to cover the last terminal event, which follows the client's close by a
+/// few hundred milliseconds; a longer window would misread a genuinely
+/// cancelled stream whose upstream trickles on afterwards as a completion.
+const DOWNSTREAM_CLOSE_GRACE: Duration = Duration::from_secs(2);
 
 fn clean_path(path: &str) -> &str {
     path.split('?').next().unwrap_or(path)
@@ -669,86 +679,126 @@ connection: close\r\n\r\n";
             .is_some_and(|id| candidates.iter().any(|provider| provider.id == id));
         (ordered, bound_was_eligible)
     };
-    let (mut reader, mut writer) = stream.into_split();
-    let disconnected = async {
-        let mut buf = [0u8; 1024];
-        loop {
-            match reader.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-        }
-    };
     // One entry per completed upstream attempt, owned by the connection handler
     // and borrowed by the forwarding future: dropping an in-flight attempt keeps
     // every entry that already completed.
     let mut attempts: Vec<AttemptLog> = Vec::new();
-    let forward = async {
-        if wants_stream {
-            if is_messages_path(path) {
-                let mut native_writer = NativeHttpWriter::new(&mut writer);
-                attempt_streaming_request(
-                    &mut native_writer,
-                    &ordered,
-                    path,
-                    &request.body,
-                    requested.as_deref(),
-                    &request.headers,
-                    suppress_transport_failures,
-                    probe.as_ref(),
-                    &mut attempts,
-                    &pool_fallback,
-                    &config.settings,
-                )
-                .await
-            } else {
-                attempt_streaming_request(
-                    &mut writer,
-                    &ordered,
-                    path,
-                    &request.body,
-                    requested.as_deref(),
-                    &request.headers,
-                    suppress_transport_failures,
-                    probe.as_ref(),
-                    &mut attempts,
-                    &pool_fallback,
-                    &config.settings,
-                )
-                .await
-            }
-        } else {
-            let mut response = attempt_non_streaming_request(
-                &ordered,
-                path,
-                &request.body,
-                requested.as_deref(),
-                &request.headers,
-                suppress_transport_failures,
-                probe.as_ref(),
-                &mut attempts,
-                &pool_fallback,
-                &config.settings,
-            )
-            .await;
-            let status = response.status;
-            let mut capture = response.capture.take().unwrap_or_default();
-            if is_pool && capture.result() == UsageResult::Success {
-                if let Ok(value) = serde_json::from_slice::<Value>(&response.body) {
-                    capture.served_tool_ids = pool_context_hold::tool_identities(path, &value);
+    // Set once the streaming upstream reached its own terminal outcome, so a
+    // client close afterwards cannot discard the completed request.
+    let upstream_completed = Arc::new(AtomicBool::new(false));
+    // Mutes downstream writes after the client has gone away, letting the relay
+    // keep consuming the upstream stream instead of failing on the dead socket.
+    let suppress_writes = Arc::new(AtomicBool::new(false));
+    // Whether any response byte was handed to the client. A close before that is
+    // a true cancellation and is never awaited, so a pending retry or backoff
+    // ends immediately.
+    let downstream_started = Arc::new(AtomicBool::new(false));
+    // Whether the downstream client closed before the forwarding future ended.
+    let mut client_disconnected = false;
+    let outcome: Option<Result<ForwardCapture, String>> = {
+        let (mut reader, mut writer) = stream.into_split();
+        let disconnected = async {
+            let mut buf = [0u8; 1024];
+            loop {
+                match reader.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
                 }
             }
-            write_response(&mut writer, response).await?;
-            Ok(ForwardCapture { status, ..capture })
+        };
+        let forward = async {
+            if wants_stream {
+                let mut gated = SuppressibleWriter::new(
+                    &mut writer,
+                    Arc::clone(&suppress_writes),
+                    Arc::clone(&downstream_started),
+                );
+                if is_messages_path(path) {
+                    let mut native_writer = NativeHttpWriter::new(&mut gated);
+                    attempt_streaming_request(
+                        &mut native_writer,
+                        &ordered,
+                        path,
+                        &request.body,
+                        requested.as_deref(),
+                        &request.headers,
+                        suppress_transport_failures,
+                        probe.as_ref(),
+                        &mut attempts,
+                        &pool_fallback,
+                        &config.settings,
+                        &suppress_writes,
+                        &upstream_completed,
+                    )
+                    .await
+                } else {
+                    attempt_streaming_request(
+                        &mut gated,
+                        &ordered,
+                        path,
+                        &request.body,
+                        requested.as_deref(),
+                        &request.headers,
+                        suppress_transport_failures,
+                        probe.as_ref(),
+                        &mut attempts,
+                        &pool_fallback,
+                        &config.settings,
+                        &suppress_writes,
+                        &upstream_completed,
+                    )
+                    .await
+                }
+            } else {
+                let mut response = attempt_non_streaming_request(
+                    &ordered,
+                    path,
+                    &request.body,
+                    requested.as_deref(),
+                    &request.headers,
+                    suppress_transport_failures,
+                    probe.as_ref(),
+                    &mut attempts,
+                    &pool_fallback,
+                    &config.settings,
+                )
+                .await;
+                let status = response.status;
+                let mut capture = response.capture.take().unwrap_or_default();
+                if is_pool && capture.result() == UsageResult::Success {
+                    if let Ok(value) = serde_json::from_slice::<Value>(&response.body) {
+                        capture.served_tool_ids = pool_context_hold::tool_identities(path, &value);
+                    }
+                }
+                write_response(&mut writer, response).await?;
+                Ok(ForwardCapture { status, ..capture })
+            }
+        };
+        tokio::pin!(disconnected, forward);
+        let mut forwarded: Option<Result<ForwardCapture, String>> = None;
+        tokio::select! {
+            // Check disconnect first so a ready retry cannot start after EOF.
+            biased;
+            _ = &mut disconnected => client_disconnected = true,
+            result = &mut forward => forwarded = Some(result),
         }
-    };
-    let outcome: Option<Result<ForwardCapture, String>> = tokio::select! {
-        // Check disconnect first so a ready retry cannot start after EOF.
-        // Dropping forwarding cancels upstream I/O and backoff without recording
-        // the client cancellation as an upstream health failure.
-        biased;
-        _ = disconnected => None,
-        result = forward => Some(result),
+        match forwarded {
+            Some(result) => Some(result),
+            // A streaming client that left early must not drop a response already
+            // in flight: mute its writes and keep awaiting the forwarding future
+            // for a bounded time so a stream that completes is still persisted. A
+            // close before any response byte is a true cancellation, and a close
+            // before the streaming response starts therefore ends the wait at
+            // once, exactly as before. The non-streaming path keeps its existing
+            // zero-row behavior by dropping the in-flight response.
+            None if wants_stream && downstream_started.load(Ordering::Relaxed) => {
+                match tokio::time::timeout(DOWNSTREAM_CLOSE_GRACE, forward.as_mut()).await {
+                    Ok(result) => Some(result),
+                    Err(_) => None,
+                }
+            }
+            None => None,
+        }
     };
     // A completed business outcome persists its buffered attempts with exactly
     // one terminal row (the successful, `ReturnToClient`, mid-stream-failure or
@@ -758,7 +808,7 @@ connection: close\r\n\r\n";
     // whole buffer, including completed attempts, is discarded. Logging is
     // best-effort and never changes the caller-visible response.
     match outcome {
-        Some(Ok(capture)) if !capture.downstream_cancelled => {
+        Some(Ok(capture)) if !client_disconnected && !capture.downstream_cancelled => {
             // Settle the binding once per request at this terminal outcome,
             // before the best-effort usage rows are persisted so the binding
             // is already settled when the caller observes the response. A
@@ -842,6 +892,21 @@ connection: close\r\n\r\n";
                 )
                 .await;
             }
+        }
+        // The client left, but the upstream stream had already reached its
+        // terminal outcome: the buffered attempts are a completed request. Only
+        // logging is kept here; session affinity and the pool continuation
+        // preference are never settled for a response the caller did not see.
+        _ if upstream_completed.load(Ordering::Relaxed) && !attempts.is_empty() => {
+            let terminal = attempts.len() - 1;
+            record_request_usage_logs(
+                &config,
+                requested.as_deref(),
+                reasoning_effort.clone(),
+                &attempts,
+                terminal,
+            )
+            .await;
         }
         // A downstream cancellation or an undeliverable response is an internal
         // transport lifecycle event, not a business outcome: discard the entire
