@@ -1,7 +1,15 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { RefreshCw } from "lucide-react";
+import { useVisibleInterval } from "@/toolbox/useVisibleInterval";
 import { skillModelOptions } from "./skillsModelOptions";
 import { errorToMessage } from "@/lib/messages";
 import {
@@ -214,6 +222,9 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
 
   const [todayStr, setTodayStr] = useState(localDateString);
   const [selectedDate, setSelectedDate] = useState(todayStr);
+  const selectedDateRef = useRef(selectedDate);
+  // Whether the picker follows "today" or a date the user chose explicitly.
+  const followingTodayRef = useRef(true);
   const [dayStats, setDayStats] = useState<AiUsageDayStats | null>(null);
   const [dayStatsLoading, setDayStatsLoading] = useState(false);
   const [dayStatsError, setDayStatsError] = useState("");
@@ -224,30 +235,53 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
   });
   const [isQuotaRefreshing, setIsQuotaRefreshing] = useState(false);
 
-  const queryDayStats = (date: string) => {
-    if (!date) return;
-    const requestSeq = dayRequestSeqRef.current + 1;
-    dayRequestSeqRef.current = requestSeq;
-    setDayStatsError("");
-    setDayStatsLoading(true);
-    setDayStats(null);
-    void sessionsUsageDayStats(date)
-      .then((data) => {
-        if (dayRequestSeqRef.current !== requestSeq) return;
-        setDayStats(data);
-        if (data.date && data.date !== date) {
-          // The backend clamps a date that is ahead of its own today; show the
-          // date it actually aggregated so the picker matches the numbers.
-          setSelectedDate(data.date);
-        }
-        setDayStatsLoading(false);
-      })
-      .catch((error) => {
-        if (dayRequestSeqRef.current !== requestSeq) return;
-        setDayStatsError(errorToMessage(error));
-        setDayStatsLoading(false);
-      });
-  };
+  const queryDayStats = useCallback(
+    (date: string, options?: { clear?: boolean }) => {
+      if (!date) return;
+      const requestSeq = dayRequestSeqRef.current + 1;
+      dayRequestSeqRef.current = requestSeq;
+      setDayStatsError("");
+      setDayStatsLoading(true);
+      if (options?.clear) {
+        // A new date starts from an empty panel; a background refresh keeps the
+        // previous numbers visible until the response lands.
+        setDayStats(null);
+      }
+      void sessionsUsageDayStats(date)
+        .then((data) => {
+          if (dayRequestSeqRef.current !== requestSeq) return;
+          setDayStats(data);
+          if (data.date && data.date !== date) {
+            // The backend clamps a date that is ahead of its own today; show the
+            // date it actually aggregated so the picker matches the numbers.
+            selectedDateRef.current = data.date;
+            setSelectedDate(data.date);
+          }
+          setDayStatsLoading(false);
+        })
+        .catch((error) => {
+          if (dayRequestSeqRef.current !== requestSeq) return;
+          setDayStatsError(errorToMessage(error));
+          setDayStatsLoading(false);
+        });
+    },
+    [],
+  );
+
+  // Requery the selected day. While the picker follows today, re-read the local
+  // date so a page left open across midnight (or reopened the next day) moves
+  // forward; a manually selected historical date stays put.
+  const refreshSelectedDay = useCallback(() => {
+    if (followingTodayRef.current) {
+      const currentToday = localDateString();
+      setTodayStr(currentToday);
+      selectedDateRef.current = currentToday;
+      setSelectedDate(currentToday);
+      queryDayStats(currentToday);
+      return;
+    }
+    queryDayStats(selectedDateRef.current);
+  }, [queryDayStats]);
 
   const loadUsage = (nextDays: AiUsageWindowDays) => {
     const requestSeq = requestSeqRef.current + 1;
@@ -322,26 +356,26 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
       .finally(() => {
         void loadUsage(days);
         if (dayRequestSeqRef.current === scheduledDayRequestSeq) {
-          queryDayStats(selectedDate);
+          refreshSelectedDay();
         }
       });
   };
 
-  const hasAutoQueried = useRef(false);
-
   useEffect(() => {
     if (!isVisible) return;
     void loadUsage(days);
-    if (!hasAutoQueried.current) {
-      hasAutoQueried.current = true;
-      queryDayStats(todayStr);
-    }
-  }, [isVisible, days, todayStr]);
+    // Every hidden -> visible transition refreshes the selected day, including
+    // re-entry after the page was mounted but inactive.
+    refreshSelectedDay();
+  }, [isVisible, days, refreshSelectedDay]);
 
   useEffect(() => {
     if (!isVisible) return;
     void loadQuota();
   }, [isVisible]);
+
+  // Keep the selected day fresh while the page stays open and visible.
+  useVisibleInterval(refreshSelectedDay, 5 * 60 * 1000, isVisible);
 
   return (
     <div className="h-full overflow-y-auto bg-background p-6">
@@ -414,8 +448,11 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                 max={todayStr}
                 onFocus={() => setTodayStr(localDateString())}
                 onChange={(e) => {
-                  setSelectedDate(e.target.value);
-                  queryDayStats(e.target.value);
+                  const value = e.target.value;
+                  followingTodayRef.current = value === localDateString();
+                  selectedDateRef.current = value;
+                  setSelectedDate(value);
+                  queryDayStats(value, { clear: true });
                 }}
                 className="rounded-lg border bg-background px-3 py-1.5 text-xs"
                 aria-label={t("aiUsageDayStatsSelectDate", "Select Date")}
@@ -424,9 +461,11 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
                 type="button"
                 onClick={() => {
                   const currentToday = localDateString();
+                  followingTodayRef.current = true;
                   setTodayStr(currentToday);
+                  selectedDateRef.current = currentToday;
                   setSelectedDate(currentToday);
-                  queryDayStats(currentToday);
+                  queryDayStats(currentToday, { clear: true });
                 }}
                 className="rounded-lg border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
@@ -435,7 +474,7 @@ export function AiUsageStats({ isVisible = true }: { isVisible?: boolean }) {
             </div>
           </div>
 
-          {dayStatsLoading && (
+          {dayStatsLoading && !dayStats && (
             <div className="mt-4 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground">
               {t("aiUsageLoadingData", "Loading usage data...")}
             </div>

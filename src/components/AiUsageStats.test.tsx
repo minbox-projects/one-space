@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { AiUsageStats } from "@/components/AiUsageStats";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialogProvider";
+import { ToastProvider } from "@/components/ToastProvider";
 import { renderWithProviders } from "@/test/mocks/render";
 import { invokeMock, resetTauriMocks } from "@/test/mocks/tauri";
 
@@ -363,6 +365,32 @@ function makeAntigravityQuotaResponse(): { groups: AntigravityQuotaGroup[] } {
       },
     ],
   };
+}
+
+// Rerender the same provider tree that renderWithProviders mounts so the
+// AiUsageStats instance stays mounted while its isVisible prop toggles.
+function statsTree(isVisible: boolean) {
+  return (
+    <ToastProvider>
+      <ConfirmDialogProvider>
+        <AiUsageStats isVisible={isVisible} />
+      </ConfirmDialogProvider>
+    </ToastProvider>
+  );
+}
+
+function dayStatsCalls() {
+  return invokeMock.mock.calls.filter(
+    ([command]) => command === "sessions_usage_day_stats",
+  );
+}
+
+function dayStatsCallsForDate(date: string) {
+  return invokeMock.mock.calls.filter(
+    ([command, args]) =>
+      command === "sessions_usage_day_stats" &&
+      (args?.date as string | undefined) === date,
+  );
 }
 
 describe("AiUsageStats", () => {
@@ -1378,5 +1406,87 @@ describe("AiUsageStats", () => {
     await waitFor(() => {
       expect(within(quotaCard).getByText(/42% remaining|剩余 42%/)).toBeInTheDocument();
     });
+  });
+
+  it("re-fetches Daily Stats when the page becomes visible again", async () => {
+    const { rerender } = renderWithProviders(<AiUsageStats isVisible={true} />);
+    const section = screen.getByTestId("ai-usage-day-stats");
+    expect(await within(section).findByText("12M")).toBeInTheDocument();
+
+    const callsBeforeReentry = dayStatsCalls().length;
+    expect(callsBeforeReentry).toBeGreaterThan(0);
+
+    rerender(statsTree(false));
+
+    // The backend data changed while the page was hidden.
+    invokeMock.mockImplementation(async (command: string, args?: InvokeArgs) => {
+      if (command === "sessions_usage_tool_stats") {
+        return makeToolStats(args?.tool || "claude", args?.days || 7);
+      }
+      if (command === "sessions_usage_day_stats") {
+        return { ...makeDayStats(args?.date || ""), total_tokens: 99_000_000 };
+      }
+      if (command === "sessions_usage_clear_cache") return null;
+      if (command === "sessions_antigravity_quota") return { groups: [] };
+      throw new Error(`Unhandled command: ${command}`);
+    });
+
+    rerender(statsTree(true));
+
+    await waitFor(() => {
+      expect(dayStatsCalls().length).toBeGreaterThan(callsBeforeReentry);
+    });
+    expect(await within(section).findByText("99M")).toBeInTheDocument();
+  });
+
+  it("advances to the new today on re-entry after midnight while following today", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(2026, 6, 15, 23, 59));
+      const { rerender } = renderWithProviders(<AiUsageStats isVisible={true} />);
+      const dateInput = screen.getByLabelText(
+        /Select Date|选择日期/,
+      ) as HTMLInputElement;
+      expect(dateInput).toHaveValue("2026-07-15");
+      const section = screen.getByTestId("ai-usage-day-stats");
+      expect(await within(section).findByText("12M")).toBeInTheDocument();
+
+      vi.setSystemTime(new Date(2026, 6, 16, 0, 1));
+      rerender(statsTree(false));
+      rerender(statsTree(true));
+
+      await waitFor(() => {
+        expect(dayStatsCallsForDate("2026-07-16").length).toBeGreaterThan(0);
+      });
+      expect(dateInput).toHaveValue("2026-07-16");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a manually selected historical date when the page refreshes on re-entry", async () => {
+    const { rerender } = renderWithProviders(<AiUsageStats isVisible={true} />);
+    const dateInput = screen.getByLabelText(
+      /Select Date|选择日期/,
+    ) as HTMLInputElement;
+    const section = screen.getByTestId("ai-usage-day-stats");
+    expect(await within(section).findByText("12M")).toBeInTheDocument();
+
+    fireEvent.change(dateInput, { target: { value: "2026-06-07" } });
+    expect(await within(section).findByText("12M")).toBeInTheDocument();
+    expect(dateInput).toHaveValue("2026-06-07");
+
+    const callsBeforeReentry = dayStatsCallsForDate("2026-06-07").length;
+    expect(callsBeforeReentry).toBeGreaterThan(0);
+
+    rerender(statsTree(false));
+    rerender(statsTree(true));
+
+    await waitFor(() => {
+      expect(dayStatsCallsForDate("2026-06-07").length).toBeGreaterThan(
+        callsBeforeReentry,
+      );
+    });
+    expect(dateInput).toHaveValue("2026-06-07");
   });
 });
